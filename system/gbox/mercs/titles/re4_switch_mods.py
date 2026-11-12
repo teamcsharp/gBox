@@ -1386,6 +1386,24 @@ def maintain(ad, snap: dict | None = None) -> dict:
         swapped = _boss_weapon(ad, snap, st) if BOSS_WEAPON else None
         if swapped is not None and swapped.get("verified") and not swapped.get("already"):
             out["boss_weapon_swapped"] = 1
+        # The bot's mine-thrower ring asks for the thrower in his hand (re4_switch.WEAPON_ASK): the same verified in-hand
+        # swap as the round's weapon. A request the game refuses is recorded (mine_ring_arm_error) and cleared: a ring
+        # never retries the same hand forever.
+        ask = getattr(D, "WEAPON_ASK", None)
+        if isinstance(ask, dict) and ask.get("item"):
+            if time.monotonic() < float(ask.get("until") or 0):
+                import random as _random
+                given = _give_weapon(ad, snap["module_base"], st, _random.Random(), fixed=int(ask["item"]))
+                if isinstance(given, dict) and given.get("verified"):
+                    given.update(asked=True, why=ask.get("why") or "the bot's ring")
+                    st["weapon_given"] = given
+                    out["weapon_given"] = 1
+                    ask.clear()
+                elif isinstance(given, dict) and given.get("reason"):
+                    st["mine_ring_arm_error"] = str(given.get("reason"))[:160]
+                    ask.clear()
+            else:
+                ask.clear()
         if st.get("aim_lock"):
             ram0, sway0 = st.get("aim_ram_writes", 0), st.get("aim_sway_zeroed", 0)
             n = _aim(ad, snap)

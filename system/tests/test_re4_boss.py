@@ -168,3 +168,71 @@ def test_the_re4_rule_reads_millimetres_as_centimetres():
     out = step(s, stats, 100.0, lambda _keys: True)
     assert out.get("fired") is True and fake.calls and fake.calls[0][0] == "flash"
     assert stats.get("ring_defends") == 1
+
+
+# ---- the mine-thrower ring (the operator's RE4 ring, through the weapon path) ---------------------------------------
+
+def _ring_snap(enemies=(), equipped=D.MINE_RING_ITEM, **extra):
+    s = snap(enemies, **extra)
+    s["equipped_id"] = equipped
+    return s
+
+
+def test_the_mine_ring_asks_for_the_thrower_in_his_hand():
+    b = bot()
+    s = _ring_snap([((0.0, 0.0, 800.0), 400, 400)], equipped=0x20)      # a TMP in hand at the start
+    b.tick(s, now=1.0)                                                  # the first tick arms the 90 s clock
+    assert b.stats.get("mine_ring_starts", 0) == 0
+    b.tick(s, now=1.0 + D.MINE_RING_EVERY_S + 0.5)
+    assert D.WEAPON_ASK.get("item") == D.MINE_RING_ITEM
+    assert b.stats["mine_ring_starts"] == 1 and b.doing == "mine_ring"
+
+
+def test_the_mine_ring_sweeps_ten_darts_round_him():
+    b = bot()
+    s = _ring_snap([((0.0, 0.0, 800.0), 400, 400)], rot=0.0)
+    b.stats["mine_ring_last_at"] = 1.0 - D.MINE_RING_EVERY_S            # the 1.5 minutes are up: sweep now
+    darts, headings, now = 0, set(), 1.0
+    for _ in range(90):                                                 # 90 ticks at 0.6 s: 54 s of play
+        act = b.tick(s, now=now)
+        if act.get("tap") == D.FIRE_BTN and str(b.why).startswith("dart "):
+            darts += 1
+            headings.add(str(b.why).rsplit(" at ", 1)[-1])
+        if any(k in (act.get("hold") or ()) for k in (D.TURN["left"], D.TURN["right"])):
+            # the game turns the body as the stick is held: follow the aim request's heading so the sweep can progress
+            want = float((D.AIM_REQUEST or {}).get("yaw") or 0.0)
+            rot = float(s["player"].get("rot") or 0.0)
+            err = (want - rot + math.pi) % (2.0 * math.pi) - math.pi
+            s["player"]["rot"] = rot + max(-0.45, min(0.45, err))
+        now += 0.6
+    assert darts == D.MINE_RING_N, "ten darts, one per 36 deg heading"
+    assert len(headings) == D.MINE_RING_N, "the ten headings are all different"
+    assert b.stats.get("mine_ring_shots") == D.MINE_RING_N
+    assert b.stats["mine_ring_last_at"] and "complete" in b.stats["mine_ring_decision"]
+
+
+def test_a_ring_that_cannot_arm_gives_up_instead_of_spinning():
+    b = bot()
+    s = _ring_snap([((0.0, 0.0, 800.0), 400, 400)], equipped=0x20)      # never the thrower
+    b.stats["mine_ring_last_at"] = 1.0 - D.MINE_RING_EVERY_S
+    b.tick(s, now=1.0)
+    b.tick(s, now=1.0 + D.MINE_RING_ARM_S + 0.1)
+    assert "not in his hand" in b.stats["mine_ring_decision"]
+    assert b.stats["mine_ring_last_at"] is not None
+    assert b.stats.get("mine_ring_shots", 0) == 0
+
+
+def test_the_ring_waits_the_ninety_seconds_between_sweeps():
+    b = bot()
+    s = _ring_snap([((0.0, 0.0, 800.0), 400, 400)])
+    b.stats["mine_ring_last_at"] = 1.0 - D.MINE_RING_EVERY_S
+    now = 1.0
+    for _ in range(60):
+        b.tick(s, now=now)
+        now += 0.6
+    first = b.stats["mine_ring_last_at"]
+    assert first is not None
+    b.tick(s, now=first + 10.0)                                         # ten seconds later: no sweep
+    assert b.stats["mine_ring_starts"] == 1
+    b.tick(s, now=first + D.MINE_RING_EVERY_S + 0.5)                    # the 1.5 minutes are up: a new sweep
+    assert b.stats["mine_ring_starts"] == 2

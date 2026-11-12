@@ -134,6 +134,9 @@ SEEN_PLAYER_CLASSES: dict = {}                  # class offset -> times read thr
 # facing by the mods each snapshot while it is fresh (the operator 2026-11-10: "using hooks and ram byte readers to
 # aim and shoot").
 AIM_REQUEST: dict = {}
+# The bot's request for a weapon in his hand, serviced by the mods module (re4_switch_mods.maintain -> _give_weapon).
+# The mine-thrower ring uses it; the round's random weapon is otherwise left alone.
+WEAPON_ASK: dict = {}
 
 
 def player_classes() -> tuple:
@@ -1702,6 +1705,25 @@ BOSS_FACE_RAD = 1.75          # ... else within this bearing of his facing (the 
 BOSS_LOST_S = 5.0             # a boss that drops out of the census keeps the lock this long (knocked down)
 BOSS_COMMIT_MM = 12000.0      # with a boss this close he stays on it: no keep-distance, no swarm escape, no melee
 BOSS_KEYS = frozenset({"salvador", "bella", "garrador", "garrador_armored", "jj", "super_salvador"})
+# --- the mine-thrower ring (operator 2026-11-12: "In RE4 have the bot spraying a 360 ring of mine thrower rounds during
+# the match", and "if a chainsaw boss approaches ... a 360 ... 10 round nitrous blast") -----------------------------------
+# The native harness cannot carry this ring on the live build: the live selftest of 2026-11-12 attaches (the clone is on
+# the player, attached_after true) but its dispatcher tick counter stays 0 (ticks_before 0, ticks 0) - the game never
+# calls the transform slot the clone redirects - and the same click's first blast times out. So RE4's protective ring is
+# done with the weapon the operator named, through the ordinary input path: the Mine Thrower (item 0x36) put in his hand
+# by the mods' verified in-hand swap, then one dart at each of MINE_RING_N headings round him - a ring of mines on the
+# floor. The cadence is the operator's 1.5 minutes; a chainsaw boss inside MINE_RING_DEFEND_MM may pull the ring early
+# (never more often than MINE_RING_DEFEND_S). Counters: mine_ring_starts / mine_ring_shots / mine_ring_decision.
+MINE_RING = True
+MINE_RING_EVERY_S = 90.0
+MINE_RING_DEFEND_S = 45.0
+MINE_RING_DEFEND_MM = 1000.0
+MINE_RING_N = 10                  # ten darts, 36 deg apart
+MINE_RING_ITEM = 0x36             # the Mine Thrower
+MINE_RING_SHOT_S = 0.5            # one dart this often (the throw's own animation)
+MINE_RING_WINDOW_S = 20.0         # the whole sweep's budget: an unarmed ring ends here and the next waits 90 s
+MINE_RING_ARM_S = 4.0             # wait this long for the in-hand swap, then give up this ring
+MINE_RING_TOL = 0.22              # rad: fire a dart within this bearing of its heading
 #: The bosses whose attack is a one-blow kill (a chainsaw: Dr. Salvador, the Bella Sisters, Super Salvador). A boss
 #: with one of these keys approaches -> the defensive ring (grenade_ring.defend: the Nitrous round where the title has
 #: it, the flash - the stun every RE title has - on RE4/RE5).
@@ -2384,6 +2406,77 @@ class Bot:
         return gate is None
 
     # --- the choice ---
+    def _mine_ring_step(self, p, snap, now):
+        """The mine-thrower ring (operator 2026-11-12): ten darts at 36 deg round him, every 1.5 min or to stop a boss.
+
+        It takes its own ticks: the weapon request goes through WEAPON_ASK (the mods module's verified in-hand swap), the
+        aim writer is aimed at each heading, and the dart is fired with the ordinary ZR tap once the body is within
+        MINE_RING_TOL of it. A ring that cannot get the thrower in MINE_RING_ARM_S or finish in MINE_RING_WINDOW_S ends
+        (recorded), and the next waits its 90 s - it never spins the bot in place forever.
+        """
+        if not MINE_RING or p is None or p.get("pos") is None:
+            return None
+        d = self.__dict__
+        st = d.get("_mine_ring")
+        if st is None:
+            last = self.stats.get("mine_ring_last_at")
+            if not isinstance(last, (int, float)):
+                # The first tick arms the 90 s clock instead of firing at the round's start: the operator's cadence is
+                # "every 1.5 minutes during the match", not a ring on the opening frame (and a bot whose stats are fresh
+                # must not hijack its own opening fight).
+                self.stats["mine_ring_last_at"] = now
+                return None
+            due = now - last >= MINE_RING_EVERY_S
+            early = isinstance(last, (int, float)) and now - last >= MINE_RING_DEFEND_S
+            defend = early and any(
+                isinstance(e, dict) and e.get("pos") and (e.get("chainsaw") is True or
+                                                          (e.get("hp_max") or 0) >= BOSS_HP_MIN)
+                and self._flat(p["pos"], e["pos"]) <= MINE_RING_DEFEND_MM
+                for e in (snap.get("enemies") or ()))
+            if not (due or defend):
+                return None
+            st = d["_mine_ring"] = {"at": now, "i": 0, "shots": 0, "last_shot": -1e9,
+                                    "base": p.get("rot") or 0.0, "armed_at": now}
+            self.stats["mine_ring_starts"] = int(self.stats.get("mine_ring_starts", 0)) + 1
+            self.stats["mine_ring_decision"] = "due" if due else "defend: a chainsaw boss is on him"
+            WEAPON_ASK.update(item=MINE_RING_ITEM, at=time.monotonic(),
+                              until=time.monotonic() + MINE_RING_ARM_S + 2.0, why="mine ring")
+        if now - float(st.get("at") or 0) > MINE_RING_WINDOW_S:
+            d.pop("_mine_ring", None)
+            self.stats["mine_ring_last_at"] = now
+            self.stats["mine_ring_decision"] = f"the sweep ran out of budget at dart {int(st.get('i') or 0) + 1}"
+            return None
+        if MINE_RING_ITEM is not None and snap.get("equipped_id") != MINE_RING_ITEM:
+            if now - float(st.get("armed_at") or 0) > MINE_RING_ARM_S:
+                d.pop("_mine_ring", None)
+                self.stats["mine_ring_last_at"] = now
+                self.stats["mine_ring_decision"] = (f"the mine thrower was not in his hand "
+                                                    f"(equipped {snap.get('equipped_id')})")
+            else:
+                self.doing, self.why = "mine_ring", "waiting for the mine thrower in his hand"
+                return {"hold": set()}
+        count = int(MINE_RING_N)
+        if int(st.get("i") or 0) >= count:
+            d.pop("_mine_ring", None)
+            self.stats["mine_ring_last_at"] = now
+            self.stats["mine_ring_shots"] = int(self.stats.get("mine_ring_shots", 0)) + int(st.get("shots") or 0)
+            self.stats["mine_ring_decision"] = f"ring complete: {int(st.get('shots') or 0)} darts"
+            return None
+        heading = float(st.get("base") or 0.0) + 2.0 * math.pi * int(st["i"]) / count
+        err = wrap(heading - (p.get("rot") or 0.0))
+        AIM_REQUEST.update(ptr=p.get("ptr"), yaw=wrap(heading), at=time.monotonic(), pitch=None, steady=False)
+        if abs(err) > MINE_RING_TOL:
+            self.doing, self.why = "mine_ring", f"turning to dart {int(st['i']) + 1}/{count}"
+            return {"hold": self._turn(err)}
+        if now - float(st.get("last_shot") or -1e9) < MINE_RING_SHOT_S:
+            self.doing, self.why = "mine_ring", f"dart {int(st['i']) + 1}/{count}: the throw's own pace"
+            return {"hold": {AIM_BTN}}
+        st["i"] = int(st["i"]) + 1
+        st["shots"] = int(st.get("shots") or 0) + 1
+        st["last_shot"] = now
+        self.doing, self.why = "mine_ring", f"dart {int(st['i'])}/{count} at {math.degrees(heading) % 360:.0f} deg"
+        return {"hold": {AIM_BTN}, "tap": FIRE_BTN}
+
     def _boss_pick(self, p, live, snap, now):
         """(distance, error, enemy) of the boss to neutralize, or None (operator 2026-11-12: "neutralize the boss until
         their HP is zero on sight each and every time").
@@ -2937,6 +3030,12 @@ class Bot:
             return {}
         self._count_kills(snap, now)
         self._aim_tick(snap, now)                     # the aim book: the open shots resolved by the census (AIM_BOOK)
+        # The mine-thrower ring takes its own ticks (operator 2026-11-12): a dart at each 36 deg round him every 1.5
+        # min, or early to stop a chainsaw boss. It runs before the fight, which resumes where it left him.
+        ring = self._mine_ring_step(p, snap, now)
+        if ring is not None:
+            self._publish_doing()
+            return ring
         if UNIVERSAL_CORE:
             self._core_tick(p, snap, now)             # the profile of this tick, who hurt him (combat.Threats)
             self._pose_tick(p, now)                   # moved or turned since the last tick: in control (AimStick)
