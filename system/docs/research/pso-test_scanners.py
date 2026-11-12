@@ -30,10 +30,13 @@ class FakeMemory:
         self.blocks[address] = bytes(data)
 
     def read(self, address, length):
+        """Return the readable part of a block and zero-fill the rest, as a real memory image would."""
         for start, data in self.blocks.items():
-            if start <= address and address + length <= start + len(data):
+            end = start + len(data)
+            if start <= address < end:
                 offset = address - start
-                return data[offset:offset + length]
+                chunk = data[offset:offset + length]
+                return chunk + b"\x00" * (length - len(chunk))
         return b"\x00" * length
 
 
@@ -44,7 +47,7 @@ def actor_table(memory, rows):
     for index, (name, x, y, z, hp, state) in enumerate(rows):
         actor = BASE + 0x1000 + index * 0x400
         name_pointer = BASE + 0x8000 + index * 0x40
-        memory.put(name_pointer, name.encode("ascii") + b"\x00")
+        memory.put(name_pointer, name.encode("ascii").ljust(64, b"\x00"))   # a name lives in a larger allocation
         struct_body = bytearray(0x340)
         struct.pack_into(">fff", struct_body, 0x38, x, y, z)
         struct.pack_into(">H", struct_body, 0x32C, hp)
