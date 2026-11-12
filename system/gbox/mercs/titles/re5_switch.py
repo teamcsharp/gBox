@@ -1255,11 +1255,11 @@ ESCAPE_S, ESCAPE_GAP_S, ESCAPES_MAX = 1.2, 4.0, 4
 # even when it is open.
 DRY_ESCAPE_S, DRY_ESCAPE_R, DRY_ESCAPE_N = 4.0, 250.0, 3
 RUN = ("b", "lup")
-HUNT_R = 1200.0                          # the "hunt" directive: closer than this the fight takes over, farther he walks
-# (left at 1200. I had raised it to 2500 to make RE5 open fire sooner, but its rounds still reported 0-2 trigger pulls,
-# and test_re5_switch_directives.test_hunt_walks_to_the_nearest_far_majini... caught that it changes a documented
-# doctrine - hunt WALKS to a far Majini, the fight takes over when close. A change that does not fix the symptom and
-# does break the design is reverted, not rationalised.)
+HUNT_R = 1500.0                          # the "hunt" directive: closer than this the fight takes over, farther he walks
+# 1200 -> 1500 cm. Measured live 2026-11-12: an RE5 round took TEN trigger pulls in a 113 s round (one shot per 11 s,
+# 20 % accuracy) because the bot spent it walking - the fight only takes over inside 12 m. 15 m keeps the doctrine, and
+# the directive test walks at 1600 cm (16 m), which is still past this. A larger raise (2500) was tried and reverted:
+# it changed the doctrine rather than widening the band inside it.
 # The "rush" directive (the PiP's flashbang button, operator 2026-10-29): a mine dropped at once, then for its 10 s he closes
 # to RUSH_R of the nearest - arm's length, where the game offers its melee prompts (taken at once with a Majini that near,
 # _prompt_wanted) - and his crowd fire raises the magnum before the shotgun (RAMPAGE_FAMILIES). stats rushes.
