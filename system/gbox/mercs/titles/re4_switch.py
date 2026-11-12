@@ -2783,7 +2783,10 @@ class Bot:
                 return act
         doctrine = self.__dict__.get("_doctrine_fire") is not None   # core.respond: he fires at the threat, no run-off
         fire_first = self._fire_first(p, snap, now)
-        low = None if doctrine else self._low_life(p, live, now, snap)   # (the doctrine's own answer is the live one)
+        # LOW_LIFE stays on under the doctrine too, for the same reason heavy evasion does (see below): the doctrine's
+        # answer was the live one, but "he fires at the threat, no run-off" must not mean "he stays in reach at 20 % life
+        # while a heavy closes". A one-shot does not care that the bot is mid-dispatch.
+        low = self._low_life(p, live, now, snap)
         if low is not None:
             return low
         heavy = None if fire_first else self._heavy_keep(live, now, p, snap)
