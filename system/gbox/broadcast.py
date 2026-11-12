@@ -1776,7 +1776,17 @@ class Hub:
             if pin.get("mode") == "session" and sid and why == "pinned (its relaunch)":
                 self.set_program("session", sid, by="gbox-broadcast")      # the pin follows the relaunch from now on
             elif pin.get("mode") == "session" and why.startswith("the pinned session ended"):
-                self.set_program("auto", by="gbox-broadcast")              # a pinned game that ended hands back to auto
+                # A pinned game that ended must NOT hand the stream to whatever the operator happens to be watching in
+                # another app window. The operator, 2026-11-12: "if i set the broadcast to be merc mode and my gbox
+                # instance is viewing another computer. Do not change the service. That is just me viewing the remote
+                # gbox session. I need the stream to remain on merc mode as i set it." Viewing a session is a private
+                # act; the pin is the service's. So it hands to the newest running agent-owned session - the MercMode
+                # rotation relaunching - and only falls back to auto when there is no agent session at all.
+                nxt = next((r for r in rows if r.get("agent_owned") and r.get("state") == "running"), None)
+                if nxt is not None:
+                    self.set_program("session", nxt["session_id"], by="gbox-broadcast")
+                else:
+                    self.set_program("auto", by="gbox-broadcast")
             with self.lock:
                 self.program_sid = sid
             return sid, why
