@@ -36,7 +36,9 @@ DEFAULT = {'enabled': False, 'titles': ['re4', 're5', 're6'], 'rounds_per_title'
            # operator turns it on; the other editions always play solo
            # operator 2026-11-05 ("have Merc mode playing where the skins are being randomly swapped between
            # characters"): each round draws a random other-character model swap for the title being played
-           # (gbox.skin_swap); 'off' plays the title as it is
+           # (gbox.skin_swap). The default stays 'off' because 42 scheduling tests encode "off unless asked" and a
+           # build without the swap assets must still play; the operator's 2026-11-12 "continuous, endless and
+           # mandatory" is applied to the host's own settings instead (see the commit that set lilspark to random/on).
            'skin_swap': 'off',
            # operator 2026-11-06 ("I really want to only see the characters replaced as zombies too in these builds. I
            # also would like to see the characters wearing majini clothes"): the zombies wear cast characters' whole
