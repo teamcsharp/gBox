@@ -646,3 +646,19 @@ def test_the_snapshot_builder_never_references_stats():
     import inspect
     src = inspect.getsource(D.snapshot)
     assert "stats[" not in src, "snapshot() must name things on the snap, never in a stats dict it does not have"
+
+
+def test_a_marginally_nearer_ganado_does_not_make_him_swap_and_turn_back():
+    """Live 2026-11-12: t_turn 463 and t_aim 590 against t_fire 150, walk_straight 0.08 over 15.7 s of walking and
+    walk_net_m 0.0 - the operator's "just turning back and forth in place". Two enemies either side, and the fight
+    re-picked "the nearest" every tick."""
+    b = bot()
+    right_near = snap([((300.0, 0.0, 0.0), 400), ((-320.0, 0.0, 0.0), 400)])
+    b.tick(right_near, now=1.0)
+    first = b.target
+    assert first is not None
+    left_near = snap([((320.0, 0.0, 0.0), 400), ((-300.0, 0.0, 0.0), 400)])
+    b.tick(left_near, now=1.0 + D.TARGET_HOLD_S / 2)
+    assert b.target == first, "inside TARGET_HOLD_S he stays on the one he is already turning to"
+    b.tick(left_near, now=1.0 + D.TARGET_HOLD_S + 0.2)
+    assert b.target != first, "past the window the nearer one wins again"

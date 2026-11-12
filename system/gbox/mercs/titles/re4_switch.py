@@ -1502,6 +1502,7 @@ BOSS_HP_MIN = 3000.0
 #  and dispatching these foes as quickly as possible" - the 12 m blind gate held the gun until the Ganado was on him.
 #  The gate was written before the line-of-sight gate was wired; with the nav/obstacle data the bot may fire to 35 m.)
 FIRE_FIRST_CLOSE_MM = 900.0                          # inside this ring a body in the line is the target: fire anyway
+TARGET_HOLD_S = 1.5                                  # stick with the chosen Ganado this long (no re-pick mid-turn)
 MINE_CLEAR_CM = 250.0 * MM_PER_CM                    # keep at least this far from an own hazard (parity with re5_switch_mines)
 
 # The fight (gbox.mercs.core.doctrine: never idle, shoot on sight, the combo every 2-5 s, crowds, locate by the map).
@@ -2256,6 +2257,17 @@ class Bot:
             self.why = "the combo is owed: the quickest kill"
             got = min(near, key=lambda t: ((t[2].get("hp") or 0) * 0.5 + 300.0 * abs(t[1])) * MM_PER_CM + t[0])
             return self._keep_pack(p, live, near, got, now, "the combo's pick") if p is not None else got
+        # Commit to the Ganado he is already on for TARGET_HOLD_S - but only on this, the plain "nearest" fallback: the
+        # crowd pick (the one on the gun's line) and the combo's quickest kill are better reasons than continuity and
+        # still win. Without the hold, two enemies on opposite sides made the fight re-pick every tick, so he turned
+        # back and forth instead of firing (live 2026-11-12: t_turn 463 and t_aim 590 against t_fire 150, walk_straight
+        # 0.08 over 15.7 s of walking, walk_net_m 0.0 - "just turning back and forth in place").
+        prev = self.target
+        if prev is not None and now - self.__dict__.get("_target_at", -1e9) < TARGET_HOLD_S:
+            for t in near:
+                if t[2].get("ptr") == prev:
+                    self.why = "the Ganado he is already on (no re-pick mid-turn)"
+                    return t
         self.why = "the nearest Ganado"
         return min(near, key=lambda t: t[0])
 
@@ -2755,6 +2767,8 @@ class Bot:
             fp_off = 0.0                                 # the fire pattern's yaw offset across his body (FIRE_PATTERN)
             if FIRE_PATTERN and not self.__dict__.get("_pick_blocked"):
                 dist, err, e, fp_off = self._fp_aim(p, live, dist, err, e, snap, now)
+            if e.get("ptr") != self.target:              # a real change of target restarts the commitment window
+                self.__dict__["_target_at"] = now
             self.target = e.get("ptr")
             if p.get("ptr") is not None and p.get("rot") is not None:
                 AIM_REQUEST.update(ptr=p["ptr"], yaw=wrap((p.get("rot") or 0.0) + err + fp_off), at=time.monotonic(),
