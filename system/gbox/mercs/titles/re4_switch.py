@@ -1669,6 +1669,10 @@ LADDER_ESCAPE_MM, LADDER_FOE_MARGIN_MM = 9000.0, 300.0
 # had undone 26 hits, then one took him from 1560 to 0), so one inside HEAVY_KEEP_MM is run from - the quick turn,
 # then B + up for HEAVY_RUN_S - and shot from beyond it.
 HEAVY_HP, HEAVY_KEEP_MM, HEAVY_RUN_S = 2000, 3500.0, 1.0
+# An APEX boss (6500 health measured live 2026-11-12) reaches far past the heavy radius - it killed the bot from
+# 13.4 m - so it has its own keep distance. The doctrine still hunts and destroys it; this only stops the bot from
+# standing inside its reach to do it.
+APEX_HP, APEX_KEEP_MM = 6000, 15000.0
 # The turn sign, checked live by the fight itself (2026-11-10: the stock round turned 4,365 ticks for 19 raises, the
 # shape of a turn that runs away from its target): every turn tick compares the bearing error with the last one on
 # the same Ganado; TURN_LEARN_N samples with the error growing at least 3x as often as it shrinks (+4) flip
@@ -3151,7 +3155,12 @@ class Bot:
             act = self._escaping(p, snap, now, "heavy")
             if act is not None:
                 return act
-        near = [t for t in live if t[0] <= HEAVY_KEEP_MM and (t[2].get("hp_max") or 0) >= HEAVY_HP]
+        near = [t for t in live if ((t[0] <= HEAVY_KEEP_MM and (t[2].get("hp_max") or 0) >= HEAVY_HP)
+                                    # an APEX boss keeps a much wider distance: a 6500-hp boss killed the bot from
+                                    # 13.4 m away (live 2026-11-12, last_hit_foe_hp_max 6500 / last_hit_foe_m 13.4),
+                                    # so a 3.5 m keep radius does nothing about it. It is still hunted and destroyed -
+                                    # the doctrine is intact - but not from inside its reach.
+                                    or (APEX_HP <= (t[2].get("hp_max") or 0) and t[0] <= APEX_KEEP_MM))]
         if not near:
             return None
         d, err, e = min(near, key=lambda t: t[0])
