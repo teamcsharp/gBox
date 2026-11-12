@@ -1430,6 +1430,20 @@ class Screensaver:
         old = self.store.all(LOG)
         for row in old[:max(0, len(old) - LOG_KEEP)]:            # keep the newest LOG_KEEP runs
             self.store.delete(LOG, row.get("key", ""))
+        # An ended session's emulator process can linger (live 2026-11-11 18:51: the RE5 ring hung its round, the
+        # session ended, eden stayed resident and the single-emulator rule held the next Switch launch): reap it with
+        # the worker's own stop_game so the next block is never blocked by a dead session's process.
+        try:
+            from . import mercmode
+            sid = str(run.get("session_id") or "")
+            host_cfg = mercmode.settings(self.store, w["name"])
+            title = (run.get("mercmode") or {}).get("title")
+            sess = self.store.get("session", sid) or {}
+            if sid.startswith(w["id"] + "-") and title and self._switch_slot(title, host_cfg) \
+                    and sess.get("state") in ("running", "ended"):
+                self._warm_stop(w, {"session_id": sid}, "the ended run's emulator process")
+        except Exception:                                        # noqa: BLE001 - the reap never blocks the finish
+            pass
         return f"ended: {why}"
 
     # --- worker reports ---
