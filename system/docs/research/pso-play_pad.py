@@ -144,6 +144,20 @@ def approach(pad, point, target, tolerance=3.0, seconds=0.35):
     return math.dist((after[0], after[2]), (target[0], target[1]))
 
 
+def choose_action(foes, switches, exits, rooms, me):
+    """What to do next, in progression order. Pure: no memory reads, no input."""
+    live_switches = [row for row in switches if row["state"] != 2]
+    if live_switches:
+        return "switch", live_switches[0]
+    if foes:
+        return "enemy", foes[0]
+    if exits:
+        return "exit", exits[0]
+    if rooms and me is not None:
+        return "room", min(rooms, key=lambda room: math.dist((me[0], me[2]), tuple(room["centre"])))
+    return "wait", None
+
+
 def boot(pad, limit=120):
     """Press through the title and menus until a character exists. Returns True when one does."""
     me = player()
@@ -178,10 +192,11 @@ def main(seconds=3600.0):
     if not table:
         log("calibration produced nothing - is the game in the field?")
         return 1
+
     started = time.time()
-    target_room = None
     start_floor = int.from_bytes(S.read_memory(0x805D5FC0, 4), "big")
     log(f"starting on floor {start_floor}")
+
     while time.time() - started < seconds:
         if os.path.exists(r"D:\gBox\pso-ds\PAUSED") or OP.operator_active():
             time.sleep(0.6)
@@ -190,15 +205,61 @@ def main(seconds=3600.0):
         if me is None:
             time.sleep(1.0)
             continue
+
         here_floor = int.from_bytes(S.read_memory(0x805D5FC0, 4), "big")
         if here_floor != start_floor:
             log(f"AREA CLEARED: floor {start_floor} -> {here_floor}")
             start_floor = here_floor
+
+        foes, switches = entities()
         way_out = exits()
-        if way_out:
-            log(f"exit {way_out[0]['class']} at {way_out[0]['distance']:.0f} units")
+        room_list = rooms_for(here_floor)
+        kind, target = choose_action(foes, switches, way_out, room_list, me)
+        log(f"decision: {kind}" + (f" ({target.get('class', target.get('room'))})" if isinstance(target, dict) else ""))
+
+        if kind == "switch":
+            log(f"switch {target['class']} state {target['state']} at {target['distance']:.0f} units")
+            for attempt in range(10):
+                current = player()
+                if current is None:
+                    break
+                gap = approach(pad, current, (target["x"], target["z"]), tolerance=2.5)
+                pad.press("a", 0.28)
+                time.sleep(0.25)
+                _foes, again = entities()
+                now = next((row for row in again if row["class"] == target["class"]
+                            and math.dist((row["x"], row["z"]), (target["x"], target["z"])) < 8), None)
+                state = now["state"] if now else None
+                log(f"  step+press x{attempt + 1}: at {gap if gap is None else round(gap, 1)} units, state {state}")
+                if state == 2 or now is None:
+                    log("  switch handled")
+                    break
+
+        elif kind == "enemy":
+            log(f"enemy {target['class']} hp {target['hp']} at {target['distance']:.0f} units")
+            for attempt in range(12):
+                current = player()
+                if current is None:
+                    break
+                gap = approach(pad, current, (target["x"], target["z"]), tolerance=3.0)
+                pad.press("a", 0.3)
+                if gap is not None and gap > 25:
+                    pad.press("b", 0.3)
+                time.sleep(0.2)
+                _foes, _switches = entities()
+                still = next((row for row in _foes if row["class"] == target["class"]), None)
+                if still is None:
+                    log("  enemy down")
+                    break
+                target = still
+
+        elif kind == "exit":
+            log(f"exit {target['class']} at {target['distance']:.0f} units")
             for _ in range(30):
-                gap = approach(pad, me, (way_out[0]["x"], way_out[0]["z"]), tolerance=2.5, seconds=0.4)
+                current = player()
+                if current is None:
+                    break
+                gap = approach(pad, current, (target["x"], target["z"]), tolerance=2.5, seconds=0.4)
                 pad.press("a", 0.3)
                 time.sleep(0.4)
                 now_floor = int.from_bytes(S.read_memory(0x805D5FC0, 4), "big")
@@ -208,61 +269,27 @@ def main(seconds=3600.0):
                     break
                 if gap is not None and gap < 3:
                     break
-            continue
-        foes, switches = entities()
-        live = [switch for switch in switches if switch["state"] != 2]
-        if live:
-            target = live[0]
-            log(f"switch {target['class']} state {target['state']} at {target['distance']:.0f} units")
-            for attempt in range(10):
-                gap = approach(pad, me, (target["x"], target["z"]), tolerance=2.5)
-                pad.press("a", 0.28)
-                time.sleep(0.25)
-                _f, again = entities()
-                now = next((row for row in again if row["class"] == target["class"]
-                            and math.dist((row["x"], row["z"]), (target["x"], target["z"])) < 8), None)
-                state = now["state"] if now else None
-                log(f"  step+press x{attempt + 1}: at {gap if gap is None else round(gap, 1)} units, state {state}")
-                if state == 2 or now is None:
-                    log("  switch handled")
-                    break
-            continue
-        if foes:
-            target = foes[0]
-            log(f"enemy {target['class']} hp {target['hp']} at {target['distance']:.0f} units")
-            for attempt in range(12):
-                gap = approach(pad, me, (target["x"], target["z"]), tolerance=3.0)
-                pad.press("a", 0.3)
-                if gap is not None and gap > 25:
-                    pad.press("b", 0.3)
-                time.sleep(0.2)
-                _f, _s = entities()
-                still = next((row for row in _f if row["class"] == target["class"]), None)
-                if still is None:
-                    log("  enemy down")
-                    break
-                target = still
-            continue
-        room_list = rooms_for(int.from_bytes(S.read_memory(0x805D5FC0, 4), "big"))
-        if room_list:
-            if target_room is None:
-                target_room = min(room_list, key=lambda room: math.dist((me[0], me[2]), tuple(room["centre"])))["room"]
-            room = next(row for row in room_list if row["room"] == target_room)
-            centre = (room["centre"][0], room["centre"][1])
-            log(f"heading for room {target_room}")
+
+        elif kind == "room":
+            label = target.get("room")
+            centre = (target["centre"][0], target["centre"][1])
+            log(f"heading for room {label}")
             for _ in range(40):
-                gap = approach(pad, me, centre, tolerance=20.0, seconds=0.4)
+                current = player()
+                if current is None:
+                    break
+                gap = approach(pad, current, centre, tolerance=20.0, seconds=0.4)
                 if gap is None or gap < 25:
-                    log(f"  room {target_room} reached")
-                    target_room = None
+                    log(f"  room {label} reached")
                     break
                 if OP.operator_active():
                     break
             else:
                 log("  could not reach it - trying another room")
-                target_room = None
-            continue
-        time.sleep(0.8)
+
+        else:
+            time.sleep(0.8)
+
     pad.reset()
     return 0
 
