@@ -499,6 +499,21 @@ def note_lesson(g: dict | None, entry: dict) -> bool:
         return False
 
 
+def _op_summary(op: str, res) -> str:
+    """One line for a round op's result in the live stats (merc_loadout's verified/writes/reason in particular)."""
+    if not isinstance(res, dict):
+        return f"{op}: {type(res).__name__}" if res is not None else f"{op}: no result"
+    if op == "merc_loadout":
+        bits = [f"verified={res.get('verified')}", f"writes={res.get('writes')}"]
+        if res.get("reason"):
+            bits.append(f"reason={res.get('reason')}")
+        if res.get("magnum_first"):
+            bits.append("magnum")
+        return "merc_loadout " + " ".join(bits)
+    key = next((k for k in ("verified", "on", "state") if k in res), None)
+    return f"{op}: {res.get(key)}" if key else ""
+
+
 def apply_ops(ad, ops, prof: dict | None = None, stats: dict | None = None) -> list[str]:
     """Run [[op, kwargs], ...] through the title's mods tool in this process (re_mods for RE4 on GameCube / Wii,
     re5_mods for RE5 on PS3, by the profile's platform); returns the ones that failed. An op's result that carries
@@ -529,10 +544,22 @@ def apply_ops(ad, ops, prof: dict | None = None, stats: dict | None = None) -> l
     for op, kw in ops:
         try:
             res = RM.run(ad, op, g=g, **dict(kw or {}))
+            if stats is not None:
+                # The round ops' own receipt in the live stats: a silent refusal here is invisible otherwise, and the
+                # 360 launcher ring depends on this op (the RE6 loadout spread puts 0x112 in the loadout). Live
+                # 2026-11-12: the RE6 ring kept refusing "the launcher is not in this inventory yet" with no way to see
+                # whether the spread ran, wrote, or refused the build's table.
+                summary = _op_summary(op, res)
+                if summary:
+                    runs = stats.get("round_ops") if isinstance(stats.get("round_ops"), list) else []
+                    stats["round_ops"] = (runs + [summary])[-6:]
             if stats is not None and isinstance(res, dict) and res.get("telemetry"):
                 stats["cheats"] = res["telemetry"]
         except Exception as e:                              # noqa: BLE001 - one failed mod never stops the run
             failed.append(f"{op}: {e}")
+            if stats is not None:
+                runs = stats.get("round_ops") if isinstance(stats.get("round_ops"), list) else []
+                stats["round_ops"] = (runs + [f"{op}: {e}"[:160]])[-6:]
     if (prof or {}).get("map_id") == "010018100CD46000":
         # Switch inventories are built when leaving the character select.
         # playing_ops and Driver.screen are too late for the first round;
@@ -767,11 +794,24 @@ def play(ad, send, stopped, stats: dict | None = None, game=None, sleep=time.sle
         if failed:
             stats["early_failed"] = "; ".join(failed)[:300]
     round_ops = [tuple(x) for x in prof.get("round_ops") or []]
+
+    def round_ops_hook(fast: bool = False):
+        """The profile's round_ops at each character select; a failure is a stat, never silent (the ring needs it).
+
+        `fast` counts the call as a round hook for telemetry when it is made on the burst path (Boot counts its own).
+        """
+        failed = training_ops(round_ops, stats)
+        if fast:
+            stats["rounds_hooked"] = int(stats.get("rounds_hooked", 0)) + 1
+        if failed:
+            stats["round_hooks_failed" if not fast else "round_ops_failed"] = "; ".join(failed)[:300]
+        return failed
+
     boot = Boot(menus, m, p1_send if coop is not None else send, sleep=sleep, clock=clock, stats=stats, ad=ad,
                 game=game,
                 hooks=(lambda: training_ops([x for x in package if x[0] not in early])) if ad is not None else None,
                 jump_at=prof.get("jump_at") or "select_player",
-                round_hooks=(lambda: training_ops(round_ops, stats)) if ad is not None and round_ops else None)
+                round_hooks=(round_ops_hook if ad is not None and round_ops else None))
     # A title that can move its menus in bursts (gbox.mercs.titles.re6_switch.fast_start) starts the next round that
     # way: whole cursor batches with only segment boundaries confirmed. It never guesses: when the screens do not line
     # up it returns False and the confirmed Navigator walk below takes over, so the worst case is the old behaviour.
@@ -780,6 +820,12 @@ def play(ad, send, stopped, stats: dict | None = None, game=None, sleep=time.sle
         try:
             first = menus.screen(m)
             if first.get("where") in getattr(menus, "FAST_SEGMENTS", ()):
+                # The round's mods BEFORE the burst start confirms the selects: fast_start never visits Boot's jump
+                # screen, so round_ops (the RE6 loadout spread that puts the grenade launcher in the inventory - the
+                # shell ring's precondition) were silently skipped on every fast-started round. Live 2026-11-12: the
+                # RE6 ring refused "the launcher is not in this inventory yet" all round while rounds_hooked was null.
+                if ad is not None and round_ops:
+                    round_ops_hook(fast=True)
                 fast(m, p1_send if coop is not None else send, stopped, stats=stats, sleep=sleep, clock=clock)
         except OSError as exc:                              # a booting title: the walker handles the RAM retry
             stats["fast_start_error"] = str(exc)[:160]
