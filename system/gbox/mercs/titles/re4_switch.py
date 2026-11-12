@@ -2041,7 +2041,13 @@ class Bot:
             key = e.get("ptr")
             if key is None:
                 continue
-            hp = e.get("hp") or 0
+            # `e.get("hp") or 0` turned an unreadable health into 0, and 0 is the value that means dead - so an enemy
+            # whose hp failed to read for one frame was stored as dead, and the next frame's `was > 0` was False: the
+            # hit AND the kill were dropped (live 2026-11-12: 54 shots, 0 hits, 0 kills over 15 rounds). An unreadable
+            # health is now skipped instead of being recorded as a corpse.
+            hp = e.get("hp")
+            if hp is None:
+                continue
             was = self._hp.get(key, 0)
             if was > 0 and hp < was:
                 self.stats["hits"] += 1
