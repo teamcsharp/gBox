@@ -1222,6 +1222,21 @@ def maintain(ad, snap: dict | None = None) -> dict:
             st["life_kept"] = st.get("life_kept", 0) + n
             if n:
                 out["life_kept"] = n
+        # The THRESHOLD heal (the operator, 2026-11-12: "they have unlimited healing items, so they should always have
+        # the ability to use a first aid spray and heal themselves if they need to in the game ... I don't want them
+        # bringing up the item screen"). This is NOT unlimited life: nothing is written while he is at or above
+        # heal_below, and one write happens per hurt snapshot, so it behaves as using a healing item the moment he is
+        # hurt. It is the only route that exists - the hand swap resolves WEAPON rows (re4_switch_mods._hand_hold raises
+        # "no weapon row for First Aid Spray") and RE4 has no "hold a spray" state, so the swap can never do it.
+        below = st.get("heal_below")
+        if below and not st.get("unlimited_health"):
+            p = (snap or {}).get("player") or {}
+            hp, top = p.get("hp"), p.get("hp_max")
+            if isinstance(hp, int) and isinstance(top, int) and top > 0 and 0 < hp <= top * float(below):
+                n = _keep_life(ad, snap)
+                if n:
+                    st["heals"] = st.get("heals", 0) + n
+                    out["heals"] = n
         if (st.get("weapon_power", 1.0) != 1.0 or st.get("max_level")) and st.get("fp_applied_boot") != boot:
             out["power_rows"] = _apply_power(ad, snap["module_base"], st)   # once a boot (the table is static data)
             st["fp_applied_boot"] = boot
