@@ -34,6 +34,7 @@ the knife, ZL + B reloads, left stick back + B the quick turn (180 deg in 0.3 s)
 from __future__ import annotations
 
 import math
+import os
 import struct
 import threading
 import time
@@ -564,6 +565,10 @@ YAW_DEAD, PITCH_DEAD = math.radians(0.6), math.radians(0.6)
 UNAIM_ERR = math.radians(35)             # the ray this far off him: the gun goes down and the body turns (faster)
 KEEP_TARGET = 1.5                        # the current Majini is kept unless another costs this much less ...
 THREAT_R = 250.0                         # ... or another is this near (he grabs next): that one
+# The RE5 journal diagnostic is opt-in: one line a second is too much to leave in a service log, and it is only wanted
+# while the withheld-trigger cause is being chased (see the note in Bot.tick). Set GBOX_RE5_DEBUG=1 in the service
+# environment to turn it back on.
+_RE5_DEBUG = bool(os.environ.get("GBOX_RE5_DEBUG"))
 READY_S = 0.15                           # ZL down this long before the laser is believed (the last aim's ray clears)
 # How much of the yaw error the aim writer corrects per tick. 1.0 commands the whole error, which is right only if the
 # write is read back before the next tick; when it is not (the camera's heading lags the write), the next tick adds the
@@ -6318,7 +6323,11 @@ class Bot:
         #   journalctl -u gbox.service | grep re5dbg
         # Placed AFTER _tick on purpose: printed before it, every line reads doing=none because the tick resets that
         # field before deciding (the first version did exactly that and reported an idle bot that was not idle).
-        if now - getattr(self, "_dbg_at", 0.0) >= 1.0:
+        # RE5 diagnostic, OFF unless GBOX_RE5_DEBUG is set in the service environment. It writes one journal line a
+        # second, which is how the withheld-trigger cause was found (2026-11-12: doing=aim, blk=ray=False d=1.5m
+        # yaw=-0.0 pitch=+0.0) - but it must never be left spamming the log, so it is opt-in and removed from the hot
+        # path entirely when unset.
+        if _RE5_DEBUG and now - getattr(self, "_dbg_at", 0.0) >= 1.0:
             self._dbg_at = now
             try:
                 print(f"[re5dbg] doing={self.doing} act={sorted(act.get('hold') or ())} wm={self._wm_active} "
