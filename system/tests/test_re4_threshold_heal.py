@@ -52,6 +52,12 @@ def life(ad):
     return struct.unpack("<H", ad.read_memory(BASE + D.PLAYER_LIFE, 2))[0]
 
 
+def test_the_setting_survives_the_saved_key_filter():
+    """_load_saved keeps SAVED_KEYS only. heal_below was missing from it, so the setting written on the host was
+    silently dropped and the heal never ran at all - live, hp 658/2400 with mods_heals absent."""
+    assert "heal_below" in M.SAVED_KEYS
+
+
 def test_a_hurt_player_is_healed_and_it_is_counted():
     ad, snap, st = world(400)
     out = M.maintain(ad, snap)

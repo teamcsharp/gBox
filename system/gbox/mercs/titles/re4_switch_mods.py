@@ -85,7 +85,10 @@ class Mem:
 # and a new session's state starts from them, the way RE5's saved mods profile is applied each round.
 SETTINGS_FILE = Path(__file__).resolve().parents[3] / "gbox-data" / "mercs" / "re4-mods.json"
 SAVED_KEYS = ("enemy_health", "one_hit", "kill_time", "unlimited_health", "weapon_power", "max_level", "aim_lock",
-              "fire_rate", "infinite_ammo", "random_weapon", "loadout_weapon")
+              "fire_rate", "infinite_ammo", "random_weapon", "loadout_weapon",
+              # heal_below is what the threshold heal reads; without it here _load_saved drops the setting and the
+              # heal silently never runs (live 2026-11-12: hp 658/2400 with mods_heals absent).
+              "heal_below")
 
 
 def _load_saved() -> dict:
