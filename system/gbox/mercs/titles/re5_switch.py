@@ -6331,6 +6331,8 @@ class Bot:
         self._flash_self_tick(snap, now)                 # his own motion after a flash (flash_self_*: measured)
         act = self._flash_window(snap, act, now)         # the flash's seconds used: mine, grenade, step, fire
         self._defer_trigger = False
+        act = re5_target_feedback.apply(self, snap, act, now)
+        act = re5_target_feedback.keep_active(self, snap, act, now)
         act = self._mesh_guard(act, snap)                # the way probed on the stage's own nav mesh before a wall
         act = self._room_guard(act, snap)                # ... and on its real collision (ROOM_MAP)
         if WALL_GOV_GOAL or getattr(self, "_goal_drive", None) != now:
@@ -6341,13 +6343,6 @@ class Bot:
         act = self._calm_sticks(act, snap, now)
         act = self._governor(act, snap, now)
         act = self._shot_tail(act, snap, now)
-        # The fire-permission layer runs AFTER the guards again, as it did before 2b222c04 (2026-10-30) moved it up
-        # beside _tick. Ordered the old way it sees the action the guards actually produced, instead of a raw _tick
-        # action that _never_stand/_governor/_shot_tail then rewrite. Measured 2026-11-12: RE5 holds a target at 1.5 m
-        # dead on (yaw -0.0, pitch +0.0) and fires nothing, reporting 0-1 kills where this file's own history records
-        # 13.8-19.6. This is the one structural change in the regression window (Oct 30 - Nov 10) on the gun path.
-        act = re5_target_feedback.apply(self, snap, act, now)
-        act = re5_target_feedback.keep_active(self, snap, act, now)
         act = self._native_equipment(act, snap)
         act = self._special("post", act, snap, now) or act  # the stagger shot's site, the specials line in the why
         self.stats.update(combat_action=self.doing, combat_reason=self.why,
