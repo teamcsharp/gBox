@@ -347,6 +347,7 @@ class Screensaver:
     # --- schedule ---
     def tick(self, now: float | None = None) -> dict:
         now = time.time() if now is None else now
+        from . import mercmode
         cfg = settings(self.store)
         out = {}
         with self.lock:
@@ -361,12 +362,22 @@ class Screensaver:
                 run = self.store.get(STATE, w["name"])
                 if run:
                     out[w["name"]] = self._advance(w, run, host_cfg, running, now)
+                    game_ended = str(out[w["name"]]) == 'ended: the game ended'
+                    # A game that simply ended (a session exit: a restart, a crash, a manual stop) starts the next
+                    # title in the same tick ONLY when no warm/prepared title is waiting - with one waiting, the next
+                    # tick's switch must take it over first (the switch-forced test). Operator 2026-11-11 18:33: the
+                    # stream must not sit on a slate between blocks.
                     if run.get('mercmode') and host_cfg["enabled"] and not _local_scheduler(w) \
-                            and self.store.get(STATE, w["name"]) is None and str(out[w["name"]]).startswith(
-                                (f'ended: {ROTATION}', f'ended: {NO_PROGRESS.format(minutes=NO_PROGRESS_S / 60)}',
-                                 *(f'ended: {why}' for why in BAD_ENDS.values()))):
-                        # a MercMode rotation, or a frozen / black game closed: the next title starts in this same tick
-                        # (the ready one is resumed at once: no 30 s gap between the park or the stop and the swap)
+                            and self.store.get(STATE, w["name"]) is None and (
+                                str(out[w["name"]]).startswith(
+                                    (f'ended: {ROTATION}', f'ended: {NO_PROGRESS.format(minutes=NO_PROGRESS_S / 60)}',
+                                     *(f'ended: {why}' for why in BAD_ENDS.values())))
+                                or (game_ended and not self.store.get(mercmode.NEXT, w["name"])
+                                    and not mercmode.warm_pool(self.store, w["name"]))):
+                        # a MercMode rotation, a frozen / black game, or a game that simply ended (a session exit: a
+                        # restart, a crash, a manual stop): the next title starts in this same tick (the ready one is
+                        # resumed at once: no 30 s gap between the park or the stop and the swap). Operator 2026-11-11
+                        # 18:33: the stream must not sit on a slate between blocks.
                         running = self.store.running_sessions()
                         reason = worker_reason(self.store, w, host_cfg, running, now)
                         out[w["name"]] = reason or self._start(w, host_cfg, now)
