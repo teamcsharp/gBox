@@ -66,7 +66,9 @@ GS_COMBO_ON, GS_COMBO, GS_MAX_COMBO, GS_COMBO_T, GS_SCORE = 0x970, 0x974, 0x978,
 PHASE_INTRO, PHASE_PLAYING, PHASE_OVER = 0, 1, 3
 # The grenade ring's auto-deploy rule (gbox.mercs.grenade_ring): settable from the PiP's bot-logic sidebar. RING off
 # never fires it; RING_N is the crowd inside a few metres that counts as surrounded; RING_EVERY_S is the cooldown.
-RING, RING_N, RING_EVERY_S, RING_KIND = True, 4, 20.0, "flash"
+RING, RING_N, RING_EVERY_S, RING_KIND = True, 4, 90.0, "launcher"
+# the operator's 360 launcher ring across the titles (2026-11-11 20:34: "every minute and a half across mercenaries RE
+# 4 5 and 6"): the launcher kind; the periodic every-90-s ring is grenade_ring.periodic_s (90.0).
 # The scatter barrage's own switches (gbox.mercs.grenade_ring.decide_scatter): fired when the going gets tough, at
 # most every SCATTER_EVERY_S, SCATTER_N rounds a barrage. **On** since checkpoint D (checkpoint 0.4 had it off): the
 # barrage's only verified kind is the flash, so every barrage is a flash cone and SCATTER_FLASH_ONLY puts it on the

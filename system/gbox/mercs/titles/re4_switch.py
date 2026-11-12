@@ -1537,7 +1537,10 @@ HEAVY_HP, HEAVY_KEEP_MM, HEAVY_RUN_S = 2000, 3500.0, 1.0
 # shape of a turn that runs away from its target): every turn tick compares the bearing error with the last one on
 # the same Ganado; TURN_LEARN_N samples with the error growing at least 3x as often as it shrinks (+4) flip
 # TURN_SIGN - here and in re4_walk, so the walker follows - and say so in stats (turn_sign, turn_sign_flips).
-TURN_SIGN = 1                            # 1: an error > 0 turns left (the GameCube convention); -1: right
+TURN_SIGN = -1                           # 1: an error > 0 turns left (the GameCube convention); -1: right
+# The Switch build's tank/aim axes are mirrored against the GameCube data (re4_switch_nav): with +1 the aim turn
+# pushed the error AWAY from the target and the bot span in a turn loop (live 2026-11-11 20:42: turns 495, raises 363,
+# shots 74, hits 4, doing "turn"). _learn_turn still checks the facing each turn tick and can correct this live.
 # Not in control (live 2026-11-10 21:00: the round intro's "Eliminate as many Ganados ..." after a Continue was not
 # named by the frame reader, and the RAM fight turned at a frozen scene for a minute): a never-stand step (a turn
 # and a walk) that ran its STAND_STEP_S without his position (FROZEN_MM) or his facing (FROZEN_RAD) changing is a
@@ -1703,7 +1706,11 @@ CAM_COLLAPSE_X, CAM_COLLAPSE_S, CAM_SETTLE_S = 0.6, 0.15, 1.0
 # hand 7000, the barrage mixed). Both automatic paths are OFF until a live receipt per kind; the ops stay available
 # for clicks/probes. Distances here are millimetres; the shared rule works in cm and the controller converts at its
 # boundary (`re4_switch_native`), so the knobs keep the shared names.
-RING, RING_N, RING_EVERY_S, RING_KIND = False, 4, 20.0, "flash"
+# Operator 2026-11-11 20:34: "i want to see 360 launcher blast grenade launcher protection rounds happening every
+# minute and a half across mercenaries RE 4 5 and 6." RE4's ring was off entirely; the launcher kind fires the title's
+# own rounds (grenade_ring.launcher_rounds falls back to the title's grenade kinds for the launcher). RING_EVERY_S is
+# the ring cooldown; the every-90-s periodic ring is grenade_ring.periodic_s (90.0), deployed.
+RING, RING_N, RING_EVERY_S, RING_KIND = True, 4, 90.0, "launcher"
 SCATTER, SCATTER_EVERY_S, SCATTER_N = False, 12.0, 8
 SCATTER_FLASH_ONLY = False            # flash and hand are built: the flash cap narrows the draw, never refuses it
 
@@ -2040,7 +2047,8 @@ class Bot:
                                  or self._room_map(snap) is not None):
             reach = ENGAGE_RANGE_LOS_CM
         gate = ("controls" if not CONTROLS_READY else "range" if dist > reach
-                else "sight" if not self._line_of_sight_ok(p, e, snap) else "hazard" if self._near_own_hazard(p, snap)
+                else "sight" if not (dist <= FIRE_FIRST_CLOSE_MM or self._line_of_sight_ok(p, e, snap))
+                else "hazard" if self._near_own_hazard(p, snap)
                 else None)
         self._gate = gate
         if gate is not None:
@@ -2073,7 +2081,10 @@ class Bot:
             near = kept or near                          # (only him in range: he is still fought, never stood at)
         if p is not None and snap is not None and (snap.get("nav") is not None or snap.get("obstacles") is not None
                                                    or self._room_map(snap) is not None):
-            clear = [t for t in near if self._line_of_sight_ok(p, t[2], snap)]
+            # Inside the close ring the body itself is the target: a Ganado with a shield (or any carried obstacle)
+            # is never cover for a shot at arm's length (operator 2026-11-11 20:52: "the bot needs to continue firing
+            # on them [with a shield] ... they need to decimate these enemies no matter what they are holding up").
+            clear = [t for t in near if t[0] <= FIRE_FIRST_CLOSE_MM or self._line_of_sight_ok(p, t[2], snap)]
             if clear:
                 if len(clear) < len(near):
                     self.stats["visible_picks"] += 1
