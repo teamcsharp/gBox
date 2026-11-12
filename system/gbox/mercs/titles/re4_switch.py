@@ -1826,6 +1826,11 @@ THROW_ITEMS = {"hand": 0x01, "fire": 0x02, "flash": 0x0E}     # re4_weapons.NAME
 # changing it to the first aid spray and using it in the game in order to survive."
 HEAL_ITEM = 0x05                        # re4_weapons.NAMES: "First Aid Spray"
 HEAL_BELOW, HEAL_HAND_S, HEAL_USE_S, HEAL_SETTLE_S = 0.55, 0.7, 0.15, 0.3
+# Hit, break contact (the operator's choice, 2026-11-12): asked to pick between fleeing a heavy first and firing first,
+# he said "keep firing but back off after the first heavy hit lands" and "I don't want the bot getting hurt - just have
+# the bot locating and fighting these threats". So the fire-first rule stands until a blow actually lands, which is the
+# only honest signal that the trade is being lost - a heavy kills from full life in one blow, so the second must miss.
+HIT_BACKOFF_S = 1.2
 HAND_REQUEST: dict = {}       # the bot's ask of re4_switch_mods: {"item": an item id, or None = the gun back, "seq", "at"}
 HAND_STATE: dict = {}         # its answer: {"seq", "item" (in hand now, None = the gun), "verified", "error"}
 # The doctrine's answer to a threat (gbox.mercs.core.respond; the operator 2026-11-10: "the secret to all adversarial
@@ -2650,6 +2655,9 @@ class Bot:
         heal = self._heal(p, snap, now)                  # hurt: the spray, without the item screen
         if heal is not None:
             return heal
+        hit = self._hit_backoff(p, live, snap, now)      # a landed blow: break contact before the next one
+        if hit is not None:
+            return hit
         if UNIVERSAL_CORE:
             act = self._throw_core(p, live, snap, now) if not self._fire_first(p, snap, now) else None
             if act is not None:                              # a grenade at the pack (THROWS): never with one on him
@@ -2881,6 +2889,30 @@ class Bot:
         if run and now < run["until"] and self._flat(p["pos"], run["goal"]) > ESCAPE_ARRIVED_MM:
             return self._run_to(p, run["goal"], snap)
         return None
+
+    def _hit_backoff(self, p, live, snap, now) -> dict | None:
+        """Hit: break contact for HIT_BACKOFF_S instead of trading another blow (the operator's choice, 2026-11-12).
+
+        His fire-first rule stays - the gun answers a threat on him - and only a landed blow breaks it, because a heavy
+        kills from full life in one blow (1560 -> 0) and a second one must not land. None when he has not been hit, or
+        the backoff has run, or he is walled in (then he fights it).
+        """
+        hp = p.get("hp")
+        last = self.__dict__.get("_hp_seen")
+        self.__dict__["_hp_seen"] = hp
+        if isinstance(hp, int) and isinstance(last, int) and hp < last:
+            self.__dict__["_hurt_at"] = now
+        at = self.__dict__.get("_hurt_at")
+        if at is None or now - at > HIT_BACKOFF_S:
+            return None
+        if p is None:
+            return None
+        act = self._escape(p, live, snap, now, "hit", HIT_BACKOFF_S)
+        if act is None:
+            return None                                  # walled in: he fights it
+        self.doing, self.why = "backoff", f"hit {now - at:.1f} s ago: breaking contact, then back to him"
+        self.stats["hit_backoffs"] = self.stats.get("hit_backoffs", 0) + 1
+        return act
 
     def _heal(self, p, snap, now) -> dict | None:
         """Hurt: the first aid spray into his hand, used, and the gun back - all through HAND_REQUEST, a flag write the
