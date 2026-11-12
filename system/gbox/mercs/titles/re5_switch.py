@@ -7623,6 +7623,13 @@ class Bot:
             keys |= self._yaw(yaw_err)
             if pitch_err is not None and adist >= CLOSE_PITCH_R:
                 keys |= self._pitch(pitch_err)
+        # Is the aim writer engaging at all, and on what error? Live 2026-11-12 a round held a STEADY -42 deg error with
+        # yaw_flips 1 (so it was not hunting) and no blocks, which means the aim was simply not being corrected: either
+        # the RAM writer is not running (cam_ok false, falling back to the slow stick) or it writes and the write does
+        # not take. This says which, next to the error it is working on.
+        self.stats["aim_writer"] = (f"cam_ok={cam_ok} wrote={wrote} yaw={math.degrees(yaw_err):+.1f} "
+                                    f"pitch={'none' if pitch_err is None else f'{math.degrees(pitch_err):+.1f}'} "
+                                    f"d={adist / 100:.1f}m")
         if p.get("motion") in W.rate_motions(item) and keys & {"rleft", "rright", "rup", "rdown"}:
             keys -= {"rleft", "rright", "rup", "rdown"}      # the weapon's scaled motion: no stick in it (shot_stick_drops)
             self.stats["shot_stick_drops"] += 1
