@@ -27,7 +27,10 @@ from . import enemy_identity
 DEFAULTS = {
     "enabled": True,
     "min_enemies": 4,              # a crowd this size inside near_cm is "surrounded"
-    "near_cm": 400.0,              # "a few metres" around the player
+    # 800 (not 400): the ring places its grenades at radius_cm 600, so a lone enemy at 5 m - well inside the blast -
+    # counted as nobody and the 90 s blast never fired (live 2026-11-11 23:46: RE6 ring armed, "nothing worth a ring: 0
+    # within 400 cm" while the ring was due). Every enemy the ring could catch now counts toward it.
+    "near_cm": 800.0,
     # the operator 2026-11-11: "at least once every two minutes ... deploying a grenade ring around them in the middle
     # of a group of enemies" - a ring is owed when this long has passed with a group on him, whatever the crowd tests
     # above say; the kind is drawn from the controller's honestly available kinds ("random ammunition types")
