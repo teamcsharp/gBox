@@ -2027,8 +2027,15 @@ class Bot:
 
     def _may_fire(self, p, e, dist, snap) -> bool:
         """The operator's fire-gates, all of which must pass before a shot: controls confirmed, in range, clear line
-        of sight (no wall shots), not on an own hazard (no mine standing)."""
-        gate = ("controls" if not CONTROLS_READY else "range" if dist > ENGAGE_RANGE_CM
+        of sight (no wall shots), not on an own hazard (no mine standing). The range gate follows the proven line:
+        ENGAGE_RANGE_LOS_CM (35 m) with the nav/obstacle data, the 12 m blind limit otherwise - the same reach the
+        target chooser uses, so a chosen 20 m target is not then held by a 12 m trigger gate (2026-11-11 19:36: the
+        operator's "not opening fire hard enough")."""
+        reach = ENGAGE_RANGE_CM
+        if snap is not None and (snap.get("nav") is not None or snap.get("obstacles") is not None
+                                 or self._room_map(snap) is not None):
+            reach = ENGAGE_RANGE_LOS_CM
+        gate = ("controls" if not CONTROLS_READY else "range" if dist > reach
                 else "sight" if not self._line_of_sight_ok(p, e, snap) else "hazard" if self._near_own_hazard(p, snap)
                 else None)
         self._gate = gate
