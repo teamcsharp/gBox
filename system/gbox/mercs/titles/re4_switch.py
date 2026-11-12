@@ -1819,6 +1819,13 @@ THROW_GAP_S, THROW_PACK_N, THROW_PACK_MM, THROW_FLASH_MM = 5.0, 3, 3000.0, 4000.
 THROW_MIN_MM, THROW_MAX_MM = 6000.0, 12000.0
 THROW_HAND_S, THROW_RAISE_S, THROW_SETTLE_S, THROW_MAX_S = 1.0, 0.4, 0.8, 3.0
 THROW_ITEMS = {"hand": 0x01, "fire": 0x02, "flash": 0x0E}     # re4_weapons.NAMES: hand / incendiary / flash grenade
+# The heal: hurt, the first aid spray into his hand through the same flag write the grenades use (HAND_REQUEST), used,
+# and the gun back - never the item screen. The operator, 2026-11-12: "they have unlimited healing items, so they should
+# always have the ability to use a first aid spray and heal themselves if they need to in the game ... I don't want them
+# bringing up the item screen. I want them able to just instantly just change their weapon by flipping a flag and
+# changing it to the first aid spray and using it in the game in order to survive."
+HEAL_ITEM = 0x05                        # re4_weapons.NAMES: "First Aid Spray"
+HEAL_BELOW, HEAL_HAND_S, HEAL_USE_S, HEAL_SETTLE_S = 0.55, 0.7, 0.15, 0.3
 HAND_REQUEST: dict = {}       # the bot's ask of re4_switch_mods: {"item": an item id, or None = the gun back, "seq", "at"}
 HAND_STATE: dict = {}         # its answer: {"seq", "item" (in hand now, None = the gun), "verified", "error"}
 # The doctrine's answer to a threat (gbox.mercs.core.respond; the operator 2026-11-10: "the secret to all adversarial
@@ -2640,6 +2647,9 @@ class Bot:
             self.doing, self.why = "backoff", "standing near his own explosive"
             near = min(live, key=lambda t: t[0]) if live else None
             return {"hold": {"lup", TURN["right" if near and near[1] > 0 else "left"]}}
+        heal = self._heal(p, snap, now)                  # hurt: the spray, without the item screen
+        if heal is not None:
+            return heal
         if UNIVERSAL_CORE:
             act = self._throw_core(p, live, snap, now) if not self._fire_first(p, snap, now) else None
             if act is not None:                              # a grenade at the pack (THROWS): never with one on him
@@ -2870,6 +2880,50 @@ class Bot:
         run = self.__dict__.get("_run_" + kind)
         if run and now < run["until"] and self._flat(p["pos"], run["goal"]) > ESCAPE_ARRIVED_MM:
             return self._run_to(p, run["goal"], snap)
+        return None
+
+    def _heal(self, p, snap, now) -> dict | None:
+        """Hurt: the first aid spray into his hand, used, and the gun back - all through HAND_REQUEST, a flag write the
+        mods answer, so the item screen is never opened (the operator, 2026-11-12; see HEAL_ITEM). Phases: hand (wait
+        for HAND_STATE to confirm the spray), use (tap it), settle, back (the gun again). Any failure aborts to the gun
+        with the reason in stats rather than standing there holding a spray."""
+        hp, top = p.get("hp"), p.get("hp_max")
+        if not isinstance(hp, int) or not isinstance(top, int) or top <= 0:
+            return None                                  # no life reading: never guess at a heal
+        st = self.__dict__.get("_heal")
+        if st is None:
+            if hp > top * HEAL_BELOW:
+                return None
+            st = self.__dict__["_heal"] = {"phase": "hand", "since": now, "seq": self._hand_ask(HEAL_ITEM)}
+        if st["phase"] == "hand":
+            if HAND_STATE.get("seq") == st["seq"] and HAND_STATE.get("verified") \
+                    and HAND_STATE.get("item") == HEAL_ITEM:
+                st.update(phase="use", since=now)
+            elif now - st["since"] > HEAL_HAND_S:
+                self.stats["heal_aborts"] = self.stats.get("heal_aborts", 0) + 1
+                self.stats["heal_abort_last"] = f"the swap: {HAND_STATE.get('error') or 'no answer'}"[:120]
+                st.update(phase="back", since=now, seq=self._hand_ask(None))
+            else:
+                self.doing, self.why = "heal", f"the first aid spray to hand ({hp} of {top})"
+                return {"hold": set()}
+        if st["phase"] == "use":
+            if now - st["since"] < HEAL_USE_S:
+                self.doing, self.why = "heal", f"the spray up ({hp} of {top})"
+                return {"hold": set()}
+            st.update(phase="settle", since=now)
+            self.stats["heals"] = self.stats.get("heals", 0) + 1
+            self.doing, self.why = "heal", f"the first aid spray used ({hp} of {top})"
+            return {"tap": ACTION_BTN}
+        if st["phase"] == "settle":
+            if now - st["since"] < HEAL_SETTLE_S:
+                self.doing, self.why = "heal", "the spray's settle"
+                return {"hold": set()}
+            st.update(phase="back", since=now, seq=self._hand_ask(None))
+        if st["phase"] == "back":
+            self.doing, self.why = "heal", "the gun back after the spray"
+            if HAND_STATE.get("seq") == st["seq"] or now - st["since"] > HEAL_HAND_S:
+                self.__dict__["_heal"] = None
+            return {"hold": set()}
         return None
 
     def _heavy_keep(self, live, now, p=None, snap=None) -> dict | None:
