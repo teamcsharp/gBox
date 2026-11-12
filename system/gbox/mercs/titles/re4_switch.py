@@ -1513,7 +1513,11 @@ FIRE_HALF_WIDTH_MM, FIRE_TOL_MIN, AIM_NUDGE = 300.0, 0.05, 0.2
 MELEE = True
 # Low life (PLAYER_LIFE): under LOW_LIFE of his maximum with a Ganado within LOW_LIFE_MM he turns and runs (the
 # quick turn, then B + up) for LOW_LIFE_RUN_S rather than trade another hit.
-LOW_LIFE, LOW_LIFE_MM, LOW_LIFE_RUN_S = 0.35, 3000.0, 1.2
+LOW_LIFE, LOW_LIFE_MM, LOW_LIFE_RUN_S = 0.5, 3500.0, 1.6
+# The operator's no-lost-rounds rule (2026-11-11 20:58: "I do not want to see the bot losing rounds. Only winning via
+# endless combos is acceptable"): the disengage threshold is half his health (was 35%), the danger ring 3.5 m (was 3),
+# and the run 1.6 s (was 1.2) - he leaves a losing trade earlier and longer, so the combo chain survives instead of a
+# death resetting it.
 # Every escape (low life, a heavy, a swarm) runs to a point ESCAPE_MM away along OPEN FLOOR (operator 2026-11-10: "just
 # walking into walls in RE4" - the low-life retreat had run him into a wall, blind, B + up after the quick turn):
 # the away line (each Ganado within ESCAPE_FROM_MM pushing by 1/d^2), then ESCAPE_TRIES_DEG off it, the first whose
