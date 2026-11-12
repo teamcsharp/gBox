@@ -1552,7 +1552,11 @@ FIRE_HALF_WIDTH_MM, FIRE_TOL_MIN, AIM_NUDGE = 300.0, 0.05, 0.2
 MELEE = True
 # Low life (PLAYER_LIFE): under LOW_LIFE of his maximum with a Ganado within LOW_LIFE_MM he turns and runs (the
 # quick turn, then B + up) for LOW_LIFE_RUN_S rather than trade another hit.
-LOW_LIFE, LOW_LIFE_MM, LOW_LIFE_RUN_S = 0.5, 3500.0, 1.6
+# 0.35 / 1500 / 0.9 (was 0.5 / 3500 / 1.6): running from a Ganado 3.5 m away is running from grab range - live
+# 2026-11-12 the bot recorded low_life 28 times in one session with 10 deaths and 0 kills in the round, because it kept
+# turning its back at 3.5 m and getting caught. It now only breaks away under 35% health with a Ganado inside 1.5 m, and
+# for under a second: far enough to clear a swing, not far enough to abandon the fight.
+LOW_LIFE, LOW_LIFE_MM, LOW_LIFE_RUN_S = 0.35, 1500.0, 0.9
 # The operator's no-lost-rounds rule (2026-11-11 20:58: "I do not want to see the bot losing rounds. Only winning via
 # endless combos is acceptable"): the disengage threshold is half his health (was 35%), the danger ring 3.5 m (was 3),
 # and the run 1.6 s (was 1.2) - he leaves a losing trade earlier and longer, so the combo chain survives instead of a
