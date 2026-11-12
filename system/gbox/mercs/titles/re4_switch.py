@@ -432,6 +432,21 @@ def laser_of(aim: dict | None, player: dict | None) -> dict | None:
     return {"from": lp, "at": lc, "up": aim.get("stat") in LASER_UP_STATS, "source": "ram"}
 
 
+def laser_gate(aim: dict | None, player: dict | None) -> str:
+    """Why laser_of() accepts or rejects this frame - the aim ticket's diagnostic (live 2026-11-11 22:53: RE4 fired
+    128 shots with 7 hits and never once took the laser path, so every aim was the fallback heading). Names the
+    condition, so a stat outside LASER_UP_STATS is not confused with a bad origin or a short ray."""
+    if not aim or not player or not player.get("pos"):
+        return "no aim/player"
+    lp, lc, pos = aim["lpos"], aim["lcross"], player["pos"]
+    flat = math.hypot(lp[0] - pos[0], lp[2] - pos[2])
+    high = lp[1] - pos[1]
+    ray = math.dist(lp, lc)
+    stat = aim.get("stat")
+    return (f"stat={stat} up={stat in LASER_UP_STATS} flat={int(flat)}mm high={int(high)}mm "
+            f"ray={int(ray)}mm wep={aim.get('wep')} sight={aim.get('sight')}")[:200]
+
+
 def game_state(m, base: int | None = None) -> dict | None:
     """decode_state() read from the session (a few small reads), or None when the fields cannot be read (no module, a
     pG pointer that is not one): the callers then fall back to the frame."""
@@ -920,6 +935,11 @@ def snapshot(m, now: float | None = None, search: bool = True) -> dict:
             try:
                 from . import re4_weapons as _w
                 snap["weapon_class"] = bytes(m.rd(base + _w.GAME_OBJ + _w.G_CLASS, 1))[0]
+                # The equipped ITEM id as well (item manager M_EQUIPPED_ID): the class byte is what the fire pattern
+                # keys on, but the bow's fast path must not depend on one byte reading right. Krauser's bow is item
+                # 0x52 / class 0x1C; live 2026-11-11 the bow was raised without discharging (the operator's "rain of
+                # arrows"), which is what a misread class byte does: bow=False, the rifle gap and the 0.25 s wait.
+                snap["equipped_id"] = struct.unpack("<H", bytes(m.rd(base + _w.ITEM_MGR + _w.M_EQUIPPED_ID, 2)))[0]
             except (ValueError, OSError, TypeError, IndexError, AttributeError):
                 pass
         if 0 <= game["kills"] <= MERC_KILLS_MAX:
@@ -2354,7 +2374,8 @@ class Bot:
         """The gun in hand is the bow (the fast-fire class family): arrows discharge on the bow's own fast path."""
         try:
             from . import re4_weapons as _w
-            return snap.get("weapon_class") in _w.MOTION_RATE_CLASSES
+            return (snap.get("weapon_class") in _w.MOTION_RATE_CLASSES
+                    or snap.get("equipped_id") == _w.BOW_ITEM)
         except Exception:                                    # noqa: BLE001 - a read miss keeps the rifle path
             return False
 

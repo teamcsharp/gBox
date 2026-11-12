@@ -439,6 +439,9 @@ def gate_frame(fr: float) -> int:
 # dispatched by r_no_2 (+0x116) at 0x3144A0 (its fire entry 0x314890 dispatching r_no_3 in turn); which class each
 # table belongs to is not traced - with another layout the class / routine test simply never matches.
 MOTION_RATE_CLASSES = {0x1C: "bow", 0x13: "hand grenade", 0x16: "incendiary grenade", 0x17: "flash grenade"}
+#: Krauser's Bow, the item the bow class (0x1C) maps from (CLASS_OF[0x52] = 0x1C). _bow_in_hand accepts either, so
+#: the 20 ms arrow path never depends on one class byte reading right.
+BOW_ITEM = 0x52
 ROUTINE_WEAPON, R2_FIRE = 6, 2          # r_no_1 6: the weapon routine; r_no_2 2: its fire state (pl_bow / pl_grenade)
 OBJ_MOTION_SPEED = 0x304                # the weapon object's own motion speed (cModel + 0x304: 0x317FA0 writes it)
 MOTION_SPEED_SANE = (0.05, 30.0)        # a speed outside this is not a motion's speed
