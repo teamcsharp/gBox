@@ -65,11 +65,20 @@ def background_input_works():
 
 def main():
     log("=== supervisor starting")
+    last_note = 0.0
+    was_waiting = False
     while True:
         if not session_alive():
-            log("no live session - waiting for the game to be launched")
+            now = time.time()
+            if not was_waiting or now - last_note > 300:
+                log("no live session - waiting for the game to be launched")
+                last_note = now
+            was_waiting = True
             time.sleep(10)
             continue
+        if was_waiting:
+            log("session detected")
+            was_waiting = False
         works, detail = background_input_works()
         log(f"background input test: {works} ({detail})")
         script = "play_background.py" if works else "play_when_focused.py"
