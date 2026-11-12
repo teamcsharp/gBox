@@ -29,6 +29,29 @@ LOG = r"D:\gBox\pso-ds\supervisor.log"
 TMP = Path(r"C:\_tools\gBox\.tmp")
 
 
+SUPERVISOR_LOCK = Path(r"D:\gBox\pso-ds\supervisor.lock")
+
+
+def claim_lock():
+    import os
+    """True when this process owns the supervisor lock; exits when another live supervisor holds it."""
+    try:
+        if SUPERVISOR_LOCK.exists():
+            owner = SUPERVISOR_LOCK.read_text(encoding="utf-8").strip()
+            if owner.isdigit() and int(owner) != os.getpid():
+                # is that process still alive?
+                import ctypes
+                handle = ctypes.windll.kernel32.OpenProcess(0x1000, False, int(owner))
+                if handle:
+                    ctypes.windll.kernel32.CloseHandle(handle)
+                    print(f"supervisor {owner} is already running - this one exits", flush=True)
+                    return False
+        SUPERVISOR_LOCK.write_text(str(os.getpid()), encoding="utf-8")
+        return True
+    except Exception:                                            # noqa: BLE001
+        return True
+
+
 def log(line):
     text = f"{time.strftime('%H:%M:%S')} {line}"
     print(text, flush=True)
@@ -96,4 +119,7 @@ def main():
 
 
 if __name__ == "__main__":
+    if not claim_lock():
+        raise SystemExit(0)
+
     main()
