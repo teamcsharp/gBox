@@ -1528,6 +1528,14 @@ HUNT_RUN_MM = 15000.0
 # A boss is anything the shared doctrine calls one (gbox.mercs.core.doctrine.BOSS_HP_MIN = 3000, matching
 # "dispatch bosses on sight"): it can end the round, so unlike a heavy it is closed on and destroyed, not kept away.
 BOSS_HP_MIN = 3000.0
+# 3000 stands, and the conflict it creates is recorded rather than "fixed" by moving the number. The chainsaw Ganado
+# reads hp_max 3500 (this file, ~2009), so it is on the BOSS side here and the boss exception closes on it - while the
+# heavy rule further down names "the chainsaw Ganados" among the heavies that kill from full life in one blow and are
+# shot from beyond HEAVY_KEEP_MM. Measured 2026-11-12: RE4's deaths report max_hit_dmg = 1860, the whole health bar in
+# one hit, at 8-23 kills a round, and the operator had already named it ("that's why he keeps getting defeated by the
+# chainsaw guy"). Raising this to 4000 was tried and REVERTED: test_a_boss_is_closed_on_and_a_plain_heavy_is_not uses
+# hp_max 3500 as its boss, so the number encodes the operator's "destroy bosses on sight" doctrine. Which rule should own
+# a 3500-hp one-shot heavy is the operator's call, not a constant to move quietly.
 # (operator 2026-11-11 19:20: "why is the bot just letting these enemies walk up on him? He needs to be using magnums
 #  and dispatching these foes as quickly as possible" - the 12 m blind gate held the gun until the Ganado was on him.
 #  The gate was written before the line-of-sight gate was wired; with the nav/obstacle data the bot may fire to 35 m.)
