@@ -1829,11 +1829,13 @@ THROW_ITEMS = {"hand": 0x01, "fire": 0x02, "flash": 0x0E}     # re4_weapons.NAME
 # always have the ability to use a first aid spray and heal themselves if they need to in the game ... I don't want them
 # bringing up the item screen. I want them able to just instantly just change their weapon by flipping a flag and
 # changing it to the first aid spray and using it in the game in order to survive."
-# The freeze that turned this off was a NAME COLLISION, not the swap: the state was stored as self.__dict__["_heal"],
-# which shadowed the _heal method itself, so the second tick raised TypeError('dict' object is not callable) and the
-# tick never completed - the round's timer stuck at 126.06 with doing=heal for five minutes while frames kept arriving.
-# The state is _heal_state now, and HEAL_BLOCK_S bounds any failed swap so the fight always resumes.
-HEAL_ON = True
+# The heal's route is blocked on this build, and only on this: HAND_REQUEST resolves WEAPON rows (that is how a grenade
+# goes to his hand) and the First Aid Spray is an ITEM - the swap answers "ValueError: no weapon row for First Aid
+# Spray" (live 2026-11-12, 4 aborts in one round). So it can never succeed until the mods can put an item row in his
+# hand. The NAME COLLISION that froze a round is fixed either way (the state is _heal_state, so it can no longer shadow
+# the _heal method), and the abort is clean and bounded by HEAL_BLOCK_S. Off until the item row exists, so a doomed
+# swap does not spend its hand/back phases out of the fight every 8 s.
+HEAL_ON = False
 HEAL_ITEM = 0x05                        # re4_weapons.NAMES: "First Aid Spray"
 HEAL_BELOW, HEAL_HAND_S, HEAL_USE_S, HEAL_SETTLE_S = 0.55, 0.7, 0.15, 0.3
 # A FAILED swap must not become the round (live 2026-11-12, Waterworld: doing=heal "the first aid spray to hand (548 of

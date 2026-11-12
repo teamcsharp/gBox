@@ -33,9 +33,16 @@ def hurt_bot(monkeypatch, hp=400, hp_max=1000):
     return bot(), s
 
 
+def test_the_heal_is_off_until_the_mods_can_swap_an_item_row():
+    """HAND_REQUEST resolves WEAPON rows; the spray is an ITEM, so the swap answers "no weapon row for First Aid
+    Spray" (live: 4 aborts in one round) and the heal can never succeed on this build."""
+    assert D.HEAL_ON is False, "see the comment on HEAL_ON: the item-row swap does not exist yet"
+
+
 def test_the_state_key_does_not_shadow_the_method():
-    """The freeze: state under self.__dict__["_heal"] shadowed the _heal method, so the second tick raised
-    TypeError('dict' object is not callable) and the round stopped advancing entirely."""
+    """The freeze itself: the state lived under self.__dict__["_heal"], which shadowed the _heal METHOD, so the second
+    tick raised TypeError('dict' object is not callable) and the round stopped advancing entirely (timer stuck at
+    126.06 for five minutes with frames still arriving)."""
     assert callable(D.Bot._heal)
     b = D.Bot(stats={}, director=False)
     b.__dict__["_heal_state"] = None
