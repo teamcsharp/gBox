@@ -1553,6 +1553,8 @@ CMD_SAYS = {"fight": " - no wait: runs at the nearest Ganado, fires at any in ra
             "flashbang": ": no native flash on RE4 Switch yet - fighting on"}
 KILL_PACE_S = 3.0                        # doctrine.KILL_PACE_S: from this long after a kill the next one is owed
 COMBO_WINDOW_S = 5.0                     # doctrine.COMBO_MAX_S: a kill later than this after the last one breaks the combo
+# Where the Ganados were seen, so "go and find the enemies" survives an empty snapshot (the operator, 2026-11-12).
+SIGHT_MEMORY_N, SIGHT_MEMORY_S = 24, 45.0
 # 0.05 (was 0.25): the operator, 2026-11-12: "be able to fire their gun 20 times faster and repeatedly. Every gun
 # should fire like a machine gun with rapid fire." The trigger was tapped four times a second (0.25 s between taps),
 # which no mod can raise - fire_rate speeds the weapon's own animation, not the bot's press. 0.05 s is twenty trigger
@@ -2646,6 +2648,7 @@ class Bot:
     def _fight(self, p, snap, now) -> dict:
         # Step off an own hazard first (no mine standing), even before facing the target.
         live = self._live(p, snap.get("enemies") or [])
+        seen = self._remember(live, now)                 # where they were, for when none are in the snapshot
         self._gate = None                                # (this tick's fire gate: _may_fire sets it when it runs)
         if self._near_own_hazard(p, snap):
             self.stats["backoffs"] += 1
@@ -3258,6 +3261,22 @@ class Bot:
         keys = {"lup"} | (self._turn(err) if abs(err) > self.TURN_TOL else set())
         return keys | ({RUN_BTN} if run else set()), "the map"
 
+    def _remember(self, live, now) -> list:
+        """Keep where the Ganados were seen (the freshest SIGHT_MEMORY_N, for SIGHT_MEMORY_S), so a round is not lost to
+        an empty snapshot.
+
+        The operator, 2026-11-12: "the bot survived, but they lost because they didn't go and find the enemies of the
+        level to go fight them" and "make sure the bot understands and knows where enemies are so he can go and locate
+        the threats". _locate could only walk to a Ganado present in THIS snapshot; with none present it swept blindly,
+        which is the "just running around in the castle" he saw. Remembered positions give it somewhere to go.
+        """
+        mem = self.__dict__.setdefault("_seen", [])
+        if live:
+            mem.extend((float(t[2]["pos"][0]), float(t[2]["pos"][1]), float(t[2]["pos"][2]), now) for t in live
+                       if t[2].get("pos"))
+            del mem[:-SIGHT_MEMORY_N]
+        return [m for m in mem if now - m[3] <= SIGHT_MEMORY_S]
+
     def _locate(self, p, live, now, cmd=None, snap=None) -> dict:
         """Nobody in range: the nearest Ganado by the map, walked to (run past RUN_CM); nobody known: the sweep."""
         if live:
@@ -3268,6 +3287,18 @@ class Bot:
             run = dist > RUN_CM or self.combo_owed(now) is not None or self.__dict__.get("_cmd") in CMD_RUN
             keys, how = self._approach(p, e["pos"], err, snap or {}, run)
             self.why = f"locating: the nearest Ganado {dist / 1000:.0f} m off by {how}" + (f" ({cmd})" if cmd else "")
+            return {"hold": keys}
+        # None in this snapshot: go back to where they were last seen instead of sweeping blind (the operator's "they
+        # lost because they didn't go and find the enemies of the level to go fight them").
+        mem = self.__dict__.get("_seen") or []
+        if mem and isinstance(p, dict) and p.get("pos"):
+            x, y, z, _at = mem[-1]
+            err = wrap(heading(x - p["pos"][0], z - p["pos"][2]) - (p.get("rot") or 0.0))
+            keys, how = self._approach(p, (x, y, z), err, snap or {}, True)
+            self.stats["locate_memory"] = self.stats.get("locate_memory", 0) + 1
+            self.doing = "locate"
+            self.why = (f"locating: back to where they were seen, "
+                        f"{self._flat(p['pos'], (x, y, z)) / 1000:.0f} m by {how}")
             return {"hold": keys}
         if self._sweep_at is None or now - self._sweep_at >= SWEEP_S:
             self._sweep_at, self._sweep_dir = now, -self._sweep_dir

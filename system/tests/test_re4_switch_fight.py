@@ -585,3 +585,16 @@ def test_walled_in_he_steps_forward_instead_of_standing():
     act = b.tick(s, now=D.STAND_MAX_S + 0.2)
     assert "lup" in (act.get("hold") or ()), "walled in is still a step, not standing"
     assert b.stats.get("steps_walled_in")
+
+
+def test_with_nobody_in_the_snapshot_he_returns_to_where_they_were_seen():
+    """The operator, 2026-11-12: "the bot survived, but they lost because they didn't go and find the enemies of the
+    level to go fight them." _locate could only walk to a Ganado present in THIS snapshot; with none present it swept
+    blindly, which is the "just running around in the castle" he saw."""
+    b = bot()
+    b.tick(snap([((0.0, 0.0, 2000.0), 400)]), now=1.0)          # one seen 20 m out
+    assert b._seen, "the sight is remembered"
+    act = b.tick(snap([]), now=1.6)                              # the snapshot is empty
+    assert b.stats.get("locate_memory") == 1, "he goes back to where they were, not a blind sweep"
+    assert b.doing == "locate" and "where they were seen" in b.why
+    assert "lup" in (act.get("hold") or ())
