@@ -1608,6 +1608,11 @@ FROZEN = True
 # "no clear shot: to the spot 0.9 m on where it opens" (74 shots, 24 hits, 0 kills, round after round). It now gives the
 # sight half the time and the flank a third of it before firing at whatever is closest.
 SIGHT_HOLD_S, FLANK_S = 0.3, 0.5
+# FLANK_GIVE_UP_S (live 2026-11-12): the sight gate could hold a shot, wait SIGHT_HOLD_S and flank FLANK_S for ever on a
+# Ganado whose line never opens - the operator's frame showed the bot pressed into a Ganado at 01'56" with 0 kills, and the
+# round read doing=flank. After this much flanking at one target the gate is over and he shoots it: a shot into partial
+# cover beats standing in the open walking around a Ganado, which is what the whole round became.
+FLANK_GIVE_UP_S = 1.5
 # The flank's end (live 2026-11-10, Castle r402: 22.6 s of 60 flanking, "no clear shot: round it by the mesh walker"
 # the commonest reason - the whole route walked to a Ganado in the doorway when one step showed him). FLANK_LOS: a
 # flank ends the tick the shot is open from where he stands; until then it walks to the nearest point along the mesh's
@@ -2117,7 +2122,8 @@ class Bot:
                                  or self._room_map(snap) is not None):
             reach = ENGAGE_RANGE_LOS_CM
         gate = ("controls" if not CONTROLS_READY else "range" if dist > reach
-                else "sight" if not (dist <= FIRE_FIRST_CLOSE_MM or self._line_of_sight_ok(p, e, snap))
+                else "sight" if not (dist <= FIRE_FIRST_CLOSE_MM or self._line_of_sight_ok(p, e, snap)
+                                     or self._sight_given_up(e))
                 else "hazard" if self._near_own_hazard(p, snap)
                 else None)
         self._gate = gate
@@ -2978,7 +2984,17 @@ class Bot:
         self._flank = {"key": key, "until": now + FLANK_S}
         self._sight_hold = None
         self.stats["flanks"] = self.stats.get("flanks", 0) + 1
+        spent = self.__dict__.setdefault("_flank_spent", {})
+        spent[key] = spent.get(key, 0.0) + FLANK_S      # (the give-up budget, FLANK_GIVE_UP_S)
         return self._flank_step(p, e, err, snap, now)
+
+    def _sight_given_up(self, e) -> bool:
+        """FLANK_GIVE_UP_S: this target has had a flank budget's worth of walking - the sight gate no longer blocks it."""
+        spent = self.__dict__.get("_flank_spent") or {}
+        if spent.get(e.get("ptr"), 0.0) < FLANK_GIVE_UP_S:
+            return False
+        self.stats["sight_given_up"] = self.stats.get("sight_given_up", 0) + 1
+        return True
 
     def _flank_step(self, p, e, err, snap, now) -> dict | None:
         """One tick of a flank (no clear shot at e). FLANK_LOS: over as soon as the shot is open from where he stands
