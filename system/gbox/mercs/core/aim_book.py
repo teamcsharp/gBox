@@ -86,11 +86,8 @@ PU_MAX, PV_MIN, PV_MAX = 0.5, -0.6, 0.9
 TOL_STEP, TOL_MIN, TOL_MAX = 0.04, 0.35, 1.0
 GATE_V = 0.8                    # the gate's ellipse: tol of his radius across, GATE_V x tol of his half span up / down
 # the lead (seconds)
-LEAD_STEP, LEAD_MAX = 0.01, 0.12
-LEAD_PRIOR_S = 0.04
-#: LEAD_MAX 0.12 (not 0.30): 0.30 s of lead at the 80 cm/s mover threshold is 24 cm, more than a man's half width, so
-#: the aim point left the torso and the shot landed past its edge while the aim looked converged - live 2026-11-11
-#: 23:29: d_yaw +0.3 deg, miss_mm 286, d (-203,64,-190) against a 300 mm fire half-width.
+LEAD_STEP, LEAD_MAX = 0.01, 0.30
+LEAD_PRIOR_S = 0.08
 LEAD_BEHIND, LEAD_AHEAD = 0.3, 0.6     # the line's u along his motion: under this behind (lead more), over this ahead
 # the cross-title prior
 PRIOR_N = {"bias": 4.0, "point": 12.0, "tol": 12.0, "lead": 6.0}

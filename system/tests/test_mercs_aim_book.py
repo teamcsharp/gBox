@@ -131,7 +131,7 @@ def test_a_mover_missed_behind_teaches_more_lead_and_ahead_less():
     c = A.new_cell()
     for _ in range(10):
         A.learn_cell(c, {"outcome": "miss", "contact": True, "uv": (-0.8, 0.0), "vlat": 200.0, "lead_s": 0.08}, 0.0)
-    assert c["lead_s"] == pytest.approx(A.LEAD_MAX, abs=1e-6)     # clamped: 10 x +0.01 from 0.08 would pass 0.12
+    assert c["lead_s"] == pytest.approx(0.18, abs=1e-6)
     for _ in range(5):
         A.learn_cell(c, {"outcome": "miss", "contact": True, "uv": (0.9, 0.0), "vlat": 200.0}, 0.0)
     assert c["lead_s"] == pytest.approx(0.13, abs=1e-6)
