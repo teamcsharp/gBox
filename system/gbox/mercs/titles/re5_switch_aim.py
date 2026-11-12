@@ -441,6 +441,14 @@ def apply(bot, snap, act, now):
         bot.stats['target_feedback_point_blank'] = bot.stats.get('target_feedback_point_blank', 0) + 1
     if not on:
         bot._feedback_contact = None
+        # WHY the trigger was withheld. A live RE5 round showed target_feedback_fire_blocks climbing to 72 with shots 0
+        # and t_fire 0 (2026-11-12): the gate requires a ray-verified body contact and never gets one, so the bot aims
+        # forever and fires nothing. The components below separate the two possible causes - a laser/ray that is not up
+        # (a reading problem, like RE4's laser_gate) from an aim that lands off the body (a bot problem).
+        bot.stats['target_feedback_block_why'] = (
+            f"ray={valid_ray} up={bool(laser.get('up'))} short={short} motion={p.get('motion')} "
+            f"kind={(contact or {}).get('kind')} d={d / 100:.1f}m "
+            f"yaw={math.degrees(yaw_error):+.1f} pitch={math.degrees(pitch_error):+.1f}")
         if 'zr' in keys:
             bot.stats['target_feedback_fire_blocks'] = bot.stats.get('target_feedback_fire_blocks', 0) + 1
         keys.discard('zr')
