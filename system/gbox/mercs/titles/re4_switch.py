@@ -2434,6 +2434,15 @@ class Bot:
         st = d.get("_mine_ring")
         if st is None:
             last = self.stats.get("mine_ring_last_at")
+            forced = self.stats.get("mine_ring_force")
+            forced_now = False
+            if isinstance(forced, (int, float)) and (not isinstance(last, (int, float)) or forced > last):
+                # The PiP's ring button (op grenade_ring kind "mine") hands the request to this tick through the stats:
+                # the sweep starts now, whatever the 90 s clock says, and the force marker is consumed once. A marker
+                # older than the last ring is stale and never fires a second ring.
+                self.stats.pop("mine_ring_force", None)
+                forced_now = True
+                last = self.stats["mine_ring_last_at"] = now
             if not isinstance(last, (int, float)):
                 # The first tick of a run: the process's own clock decides (a relaunch every round must not restart
                 # the 1.5 minutes), and with none yet the clock arms here - never a ring on the opening frame.
@@ -2442,7 +2451,7 @@ class Bot:
                     MINE_RING_CLOCK["at"] = self.stats["mine_ring_last_at"] = now
                     return None
                 last = self.stats["mine_ring_last_at"] = known
-            due = now - last >= MINE_RING_EVERY_S
+            due = forced_now or (isinstance(last, (int, float)) and now - last >= MINE_RING_EVERY_S)
             early = isinstance(last, (int, float)) and now - last >= MINE_RING_DEFEND_S
             defend = early and any(
                 isinstance(e, dict) and e.get("pos") and (e.get("chainsaw") is True or

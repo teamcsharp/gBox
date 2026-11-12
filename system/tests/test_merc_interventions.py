@@ -248,14 +248,17 @@ def test_status_names_the_grenade_kinds_before_a_worker_has_claimed(tmp_path):
         out=client.get('/api/sessions/sid/interventions').json()
     rows={r['kind']:r for r in out['options']['grenade_kinds']}
     # every kind the ring can be asked for, cross-title (the operator 2026-11-12: any sort of launcher shell or
-    # grenade); RE4 builds no launcher/shell ring and its mine thrower ring is a probe, so all of them say why
+    # grenade); RE4 builds no launcher/shell ring, its flash/hand harness has no live receipt, and its mine-thrower
+    # ring is served by the bot itself - which is the one kind a controller-less session can still offer.
     assert set(rows)=={'flash','hand','incendiary','launcher','shell1302','shell1303','shell1304','mine'}
-    assert all(r['available'] is False for r in rows.values())
+    assert all(r['available'] is False for k, r in rows.items() if k != 'mine')
+    assert rows['mine']['available'] is True and rows['mine']['source'] == 'bot'
     assert 'built on the RE4 Switch native harness' in rows['flash']['reason']
     assert 'hand-grenade ring is built' in rows['hand']['reason']
     assert 'does not offer' in rows['incendiary']['reason']
     assert 'no grenade launcher' in rows['launcher']['reason']
-    assert 'probe' in rows['mine']['reason']
+    # the worker has not claimed yet, so `available` (a FRESH worker report) is False - but the published rows already
+    # name the one RE4 ring that does not need the harness, so the PiP's chooser can offer it as soon as a round is up
     assert out['available'] is False
     store.db.close()
 

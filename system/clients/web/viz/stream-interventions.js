@@ -105,6 +105,9 @@
       if (row.state === 'confirmed') {
         if (ammo) return typeof row.result?.enabled==='boolean' ? `Infinite ammo ${row.result.enabled?'on':'off'} confirmed.` : 'Infinite ammo change reported; waiting for live state.';
         if (weapon) return `${row.result?.weapon || 'Primary weapon'} equipped. Held as primary for three minutes.`;
+        // A ring the title serves through its own bot (RE4's mine thrower: the native harness cannot carry a ring on
+        // that build) is not detonated at the click - say what was actually done instead of "0 grenades".
+        if (ring && row.result?.scheduled) return row.result.reason || `${ringKindLabel(row.result?.kind)} ring queued to the bot.`;
         if (ring) return `${ringKindLabel(row.result?.kind)} ring detonated (${row.result?.detonated ?? row.result?.requested ?? ''} grenades).`;
         return 'Flashbang detonated.';
       }

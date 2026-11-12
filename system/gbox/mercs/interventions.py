@@ -531,6 +531,19 @@ def _worker_loop(sid, server, headers, ad, stats_of, alive, event, game=None):
                                             row['epoch'] == context(full=False)['epoch']
                                     result = ctl.set_infinite_ammo(row['args']['enabled'], expected=expected, allowed=allowed_ammo)
                                     catalogue.clear()  # next published status must be read after this write
+                                elif row['op'] == 'grenade_ring' and row['args'].get('kind') == 'mine' \
+                                        and 're4_switch_native' in type(ctl).__module__:
+                                    # RE4's native harness cannot carry a ring on this build (it attaches, but the
+                                    # dispatcher the clone redirects is never called - live selftest 2026-11-12: ticks 0).
+                                    # The mine-thrower ring is the bot's own: hand the click to its next tick
+                                    # (re4_switch.Bot._mine_ring_step reads the force marker) and receipt that truth.
+                                    if stats is None:
+                                        raise N.Unavailable('autoplay state is unavailable')
+                                    stats['mine_ring_force'] = time.time()
+                                    result = {'state': 'confirmed', 'verified': False, 'op': 'grenade_ring',
+                                              'kind': 'mine', 'requested': 10, 'detonated': 0, 'scheduled': True,
+                                              'reason': "queued to the bot's mine-thrower ring: it sweeps ten darts "
+                                                        "round him (mine_ring_shots), not the native harness"}
                                 elif row['op'] == 'grenade_ring':
                                     result = ctl.grenade_ring(row['args'].get('kind', 'flash'),
                                                               allow_unverified=row['args'].get('allow_unverified') is True)

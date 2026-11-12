@@ -86,8 +86,7 @@ TITLES = {
                              "floor) but has no live receipt yet"),
          "launcher": Kind(False, "RE4 has no grenade launcher: its launcher-style ring is the mine thrower, offered "
                                  "as the Mine kind"),
-         "mine": Kind(False, "the mine thrower's placed round is the class table's fourth spawn (0x2E5050) - a "
-                             "probe: no live mine-ring receipt yet")},
+         "mine": Kind(True, "queued to the bot's mine-thrower ring: it sweeps ten darts round him", "bot")},
         controller="re4_switch_native",
     ),
     "re5_switch": _title(
@@ -222,7 +221,7 @@ def rows(game=None, controller=None, ready_error: str = "") -> list | None:
     failed = False
     if title.ring:
         for kind, spec in title.kinds.items():
-            offered[kind] = Kind(spec.available, spec.reason, "title")
+            offered[kind] = Kind(spec.available, spec.reason, spec.source)
         reported, failed = _reported(controller)
         # A controller that attaches its native harness ON DEMAND (re4_switch_native.Controller.ensure_attached) is not
         # "unbuilt" because a status read has not attached it yet: the click itself attaches and fires. Before this the
@@ -231,6 +230,11 @@ def rows(game=None, controller=None, ready_error: str = "") -> list | None:
         # Evil 4"). Only that transient reason is promoted; a real refusal keeps its reason.
         on_demand = callable(getattr(controller, "ensure_attached", None))
         for row in reported:
+            existing = title.kinds.get(row["kind"])
+            if existing is not None and existing.source == "bot":
+                # Served by the bot's own ring, not this controller: the native harness has no working hook on RE4, but
+                # the mine-thrower ring is real and the PiP's click is handed to the bot (op grenade_ring kind mine).
+                continue
             available, reason = row.get("available") is True, str(row.get("reason") or "")[:300]
             title_spec = title.kinds.get(row["kind"])
             built = bool(title_spec is not None and "is built" in (title_spec.reason or ""))
@@ -245,6 +249,13 @@ def rows(game=None, controller=None, ready_error: str = "") -> list | None:
             out.append({"kind": kind, "available": False, "reason": reason, "source": "title"})
             continue
         available, reason = spec.available, spec.reason
+        if available and spec.source == "bot":
+            # The bot's own ring: it needs no native controller, and a live round is still required (ready_error).
+            if ready_error:
+                available, reason = False, ready_error
+            out.append({"kind": kind, "available": available, "reason": "" if available else reason,
+                        "source": spec.source})
+            continue
         if available and controller is None:
             available, reason = False, CONTROLLER_ABSENT.format(title=title.name)
         if available and failed:
