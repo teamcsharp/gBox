@@ -12,6 +12,23 @@ import math
 import random
 
 TITLES = {"01002A000CD48000": "gbox.mercs.titles.re6_switch"}
+#: Why the other playable editions have no remote-mine lane yet (operator 2026-11-11 18:30: the same features across
+#: titles; the honest per-title report is the mod sidebar's source, the same shape as grenade_status).
+UNSUPPORTED = {
+    "010018100CD46000": ("RE5 Switch", "the proximity bomb's uWp0a class DTI is not derived yet (the RE5 image is not "
+                                      "on the control plane), so no native free drop is claimed"),
+    "010099A00BC1E000": ("RE4 Switch", "no mine system is built on the RE4 native harness yet (its blasts are the "
+                                      "flash and hand grenades)"),
+}
+
+
+def status(game_id: str | None = None) -> list:
+    """The remote-mine lane per title for the mod sidebar: the RE6 native ring/detonate is verified; the other
+    editions say why they have none yet."""
+    rows = [{"game_id": g, "title": t, "available": True, "reason": ""} for g, t in TITLES.items()]
+    for g, (t, why) in UNSUPPORTED.items():
+        rows.append({"game_id": g, "title": t, "available": False, "reason": why})
+    return [r for r in rows if game_id is None or r["game_id"] == game_id]
 #: Operator 2026-11-11 18:02: "Whenever the bot deploys a flashbang in Resident Evil Six, also have them send out a
 #: ring of remote mines in the area up to 15, and then have those be detonated ... to spread out the enemies and get
 #: rid of being surrounded." A flash stamped this recently (stats["ring_flash_at"]) earns the combo ring.

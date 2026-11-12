@@ -153,3 +153,13 @@ def test_a_flashbang_earns_the_fifteen_mine_ring_combo(monkeypatch):
     stale = stats(remote_mines={"drop_jitter_s": 0}, ring_flash_at=50.0)
     assert step(snap(), stale, 100.3, lambda keys: True)["op"] != "bomb_ring" or "flash combo" not in str(
         step(snap(), stale, 100.3, lambda keys: True))
+
+
+def test_the_mine_lane_reports_every_editions_availability():
+    """Operator 2026-11-11 18:30: the same features across titles, honestly. The RE6 lane is verified; the RE5/RE4
+    editions name why they have none yet (the uWp0a DTI / the RE4 mine system)."""
+    rows = {r["game_id"]: r for r in RM.status()}
+    assert rows["01002A000CD48000"]["available"] is True and not rows["01002A000CD48000"]["reason"]
+    assert rows["010018100CD46000"]["available"] is False and "uWp0a" in rows["010018100CD46000"]["reason"]
+    assert rows["010099A00BC1E000"]["available"] is False and "mine system" in rows["010099A00BC1E000"]["reason"]
+    assert [r["game_id"] for r in RM.status("01002A000CD48000")] == ["01002A000CD48000"]
