@@ -6302,6 +6302,19 @@ class Bot:
         snap = primary_weapon.decision_snapshot(snap)
         snap = without_crows(snap, self.stats)               # the crows are no candidates while a Majini lives
         self.doing, self.why, self._now = "none", "", now
+        # TEMPORARY DIAGNOSTIC (operator session 2026-11-12): RE5 fires nothing while its aim sits 40+ degrees off, and
+        # three attempts to publish the reason through the bot's stats did not reach telemetry. The tick always runs, so a
+        # once-a-second journal line reports the aim state directly - read with
+        #   journalctl -u gbox.service | grep re5dbg
+        # and removed once the cause is named.
+        if now - getattr(self, "_dbg_at", 0.0) >= 1.0:
+            self._dbg_at = now
+            try:
+                print(f"[re5dbg] doing={self.doing} wm={self._wm_active} "
+                      f"aim={None if self.aim_since is None else round(now - self.aim_since, 2)} "
+                      f"tgt={self.target} ctx={str(self.__dict__.get('_aimctx'))[:160]}", flush=True)
+            except Exception:                                # noqa: BLE001 - a diagnostic must never break the tick
+                pass
         held = next((s for s in snap.get("inventory") or () if s.get("hand")), None)
         self._item = held.get("item") if held else None       # the weapon in hand (K's plans are per weapon)
         self._wm_active = False                              # (Bot._mastery sets it when its controller runs)
