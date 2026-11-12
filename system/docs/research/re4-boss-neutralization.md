@@ -85,3 +85,36 @@ back. `boss_picks 0` in every round names the first cause exactly.
    random weapon was not one.
 3. The defensive ring: `ring_decision` "DEFEND: a chainsaw boss ..." and `ring_defends >= 1` with
    `ring_kind_fired` = shell1304 on RE6, flash on RE4/RE5, and the boss stunned (RE5/RE6) or staggered (RE4).
+
+## Live receipts (after one gbox.service restart, 2026-11-12 16:33 and 16:45 CST)
+
+Both changes are native-module code (`hot_reload.NOT_BOT`), so the service was restarted twice; the second restart
+also loaded main's `hot_reload.py` (the share carried an older edit that no deploy would overwrite, which is why
+`gbox.re4switch_bot` could not reload in place). The bot-reload route now accepts it ("loads fresh at first use").
+
+**RE4 boss lock** (session `f418bcdd28f748ef-6546ad1414b148e5`, round 1, Village):
+
+    boss_engagements 1, boss_target_key salvador, boss_target_hp_max 6500, boss_chainsaw true,
+    boss_on_screen 1, boss_distance_cm 1275.9, boss_locked_s 6.6, boss_picks 0 (the band had not needed to fire yet)
+
+A 6500-health chainsaw boss 12.8 m out is named and locked - the operator's "knows a boss has appeared on screen".
+
+**RE6 ring rule armed and firing on schedule** (session `feb0d0f84514404c-4faa7ec207ab407a`, round 1):
+
+    ring_armed true, ring_prof_map 01002A000CD48000, ring_near 24, rings_attempted 1, ring_kind_fired launcher
+    ring_last_reason "periodic: one ring at least every 90 s with a group on him: 2 within 800 cm"
+    ring_error "Unavailable: the launcher is not in this inventory yet: the shell ring retries next tick"
+
+The 90-second launcher ring fired and the honest refusal is the loadout (the launcher is not in this round's
+inventory) - that is the next fix, not the rule.
+
+**A ring click through the status bar's API reached the game** (same session, op grenade_ring kind flash):
+
+    {"state": "uncertain", "kind": "flash", "requested": 10, "detonated": 1, "radius_cm": 600.0,
+     "hp_before": 788, "hp_after": 788, "self_damage": 0,
+     "reason": "native explosion transition not confirmed"}
+
+The chain is proven end to end (queue -> worker -> native spawn -> receipt, no self-damage); RE6's flash explosion
+confirmation stopped the ring after one grenade, which is the native flakiness the next pass has to close. The
+status now advertises all eight kinds (`flash` available on RE6) and a controller that attaches on demand is offered
+rather than refused, so the PiP's ring button is no longer greyed out on RE4.
