@@ -168,21 +168,26 @@ def _owner_pid(hwnd):
 
 
 def send(events, attempts=2):
-    """Deliver keys to the window that actually carries them into the game.
+    """Deliver input through the plane's send_input, which uses the virtual XInput pad when one exists.
 
-    gBox runs the emulator headless and forwards the keyboard itself, so the target is the gBox window's process, found through `app_window()` - not
-    the emulator pid, whose visible window (if any) is not the render surface.
+    The keyboard branch (`win_send_keys`) is only reached by the plane when no working pad exists, and that is the branch whose presses are silently
+    dropped on this machine. Going through the RPC means the bot uses whichever branch the plane has working, and needs no focus either way.
     """
-    hwnd = app_window()
-    if not hwnd:
+    import session as S
+    rows = [{"key": str(event.get("key")), "down": bool(event.get("down"))} for event in events
+            if event.get("key")]
+    if not rows:
         return False
-    target = _owner_pid(hwnd)
-    for _ in range(attempts):
+    for attempt in range(attempts):
         try:
-            win_send_keys(target, events, polite=False)
+            S.rpc("send_input", {"events": rows}, timeout=30)
             return True
-        except RuntimeError as exc:
-            if "must be active" not in str(exc) and "isn't open" not in str(exc):
+        except Exception as exc:                                  # noqa: BLE001
+            message = str(exc)
+            if "must be active" in message or "isn't open" in message:
+                time.sleep(0.15)
+                continue
+            if attempt == attempts - 1:
                 raise
             time.sleep(0.15)
     return False

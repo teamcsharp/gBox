@@ -15,13 +15,15 @@ import pso_operator2 as OP                                         # noqa: E402
 
 
 def allowed():
-    """True only when the operator is idle AND the game window has focus (so keys will actually land)."""
+    """True while the operator is not on the pad.
+
+    The focus test that used to be here applied to the keyboard path, whose presses only land while the game window owns the foreground. Input now goes
+    through the plane's send_input, which uses the focus-independent virtual XInput pad when one exists, so focus no longer decides whether the bot can
+    act - only whether the operator currently has the controls.
+    """
     if OP.operator_active():
         return False
-    try:
-        return bool(G.game_has_focus())
-    except Exception:
-        return True
+    return True
 
 
 def hold(key, seconds, log=None, wait_for_operator=False, timeout=180.0):
