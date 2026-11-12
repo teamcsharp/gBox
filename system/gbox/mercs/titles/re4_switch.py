@@ -1615,7 +1615,10 @@ PACK_KEEP_S, PACK_HURT_S = 1.5, 2.0
 SIGHT_LOG = Path(__file__).resolve().parents[3] / "gbox-data" / "mercs" / "re4-sight-blocks.jsonl"
 SIGHT_LOG_EVERY_S = 1.0
 WALK_LOG = Path(__file__).resolve().parents[3] / "gbox-data" / "mercs" / "re4-walk-presses.jsonl"
-FROZEN_MM, FROZEN_RAD, FROZEN_TAP_S, FROZEN_KEY = 30.0, 0.01, 0.2, "a"
+# FROZEN_TAP_S 0.06 (was 0.2): 0.2 s is five taps a second, and live 2026-11-12 the bot died 7 times in 16 rounds in
+# doing=grabbed with 36 straight hits and 0 kills - the grab's mash was too slow to break the hold, so it never got a
+# shot away. A mash wants every frame it can get; 0.06 s is the engine's practical floor for a tap and 16 a second.
+FROZEN_MM, FROZEN_RAD, FROZEN_TAP_S, FROZEN_KEY = 30.0, 0.01, 0.06, "a"
 FROZEN_FIRE_S, FROZEN_FIRE_SHOTS = 5.0, 8   # firing this long / this many shots, unmoved and without a hit: not in control
 TURN_LEARN, TURN_LEARN_N = True, 16
 MELEE_MM, MELEE_REACH_MM, MELEE_CLEAR_MM = 2500.0, 1400.0, 2000.0
