@@ -6302,19 +6302,6 @@ class Bot:
         snap = primary_weapon.decision_snapshot(snap)
         snap = without_crows(snap, self.stats)               # the crows are no candidates while a Majini lives
         self.doing, self.why, self._now = "none", "", now
-        # TEMPORARY DIAGNOSTIC (operator session 2026-11-12): RE5 fires nothing while its aim sits 40+ degrees off, and
-        # three attempts to publish the reason through the bot's stats did not reach telemetry. The tick always runs, so a
-        # once-a-second journal line reports the aim state directly - read with
-        #   journalctl -u gbox.service | grep re5dbg
-        # and removed once the cause is named.
-        if now - getattr(self, "_dbg_at", 0.0) >= 1.0:
-            self._dbg_at = now
-            try:
-                print(f"[re5dbg] doing={self.doing} wm={self._wm_active} "
-                      f"aim={None if self.aim_since is None else round(now - self.aim_since, 2)} "
-                      f"tgt={self.target} ctx={str(self.__dict__.get('_aimctx'))[:160]}", flush=True)
-            except Exception:                                # noqa: BLE001 - a diagnostic must never break the tick
-                pass
         held = next((s for s in snap.get("inventory") or () if s.get("hand")), None)
         self._item = held.get("item") if held else None       # the weapon in hand (K's plans are per weapon)
         self._wm_active = False                              # (Bot._mastery sets it when its controller runs)
@@ -6327,6 +6314,19 @@ class Bot:
                                    and spec.family in re5_target_feedback.GUN_FAMILIES)
         self._sm = self._room_map(snap)                  # the stage's real map this tick (ROOM_MAP), else None
         act = self._tick(snap, now)
+        # TEMPORARY DIAGNOSTIC (operator session 2026-11-12): RE5 fires nothing while its aim sits 40+ degrees off, and
+        # three attempts to publish the reason through the bot's stats did not reach telemetry. Read with
+        #   journalctl -u gbox.service | grep re5dbg
+        # Placed AFTER _tick on purpose: printed before it, every line reads doing=none because the tick resets that
+        # field before deciding (the first version did exactly that and reported an idle bot that was not idle).
+        if now - getattr(self, "_dbg_at", 0.0) >= 1.0:
+            self._dbg_at = now
+            try:
+                print(f"[re5dbg] doing={self.doing} act={sorted(act.get('hold') or ())} wm={self._wm_active} "
+                      f"aim={None if self.aim_since is None else round(now - self.aim_since, 2)} "
+                      f"tgt={self.target} ctx={str(self.__dict__.get('_aimctx'))[:160]}", flush=True)
+            except Exception:                                # noqa: BLE001 - a diagnostic must never break the tick
+                pass
         act = self._respond(snap, act, now)              # under threat: a flash, a mine or fire - never nothing
         self._flash_self_tick(snap, now)                 # his own motion after a flash (flash_self_*: measured)
         act = self._flash_window(snap, act, now)         # the flash's seconds used: mine, grenade, step, fire
