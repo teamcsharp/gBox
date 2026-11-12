@@ -536,7 +536,11 @@ def _keep_arrows(ad, base: int, st: dict) -> int:
             key = str(it["addr"])
             top = min(W.ARROWS_MAX, max(tops.get(key, 0), it["count"]))
             tops[key] = top
-            if 0 < it["count"] < top:
+            # `0 < it["count"] < top` never refilled a stack that had run out, so once the arrows reached 0 the bow was
+            # dry for the rest of the round - and at BOW_MOTION_X 40 arrows a second a 30-arrow stack empties in under a
+            # second. The top is remembered from an earlier read, so 0 refills to it (live 2026-11-12, the operator's
+            # "rain arrows at enemies defending themselves effortlessly").
+            if it["count"] < top:
                 ad.write_memory(it["addr"] + 2, struct.pack("<H", top))
                 n += struct.unpack("<H", rd(it["addr"] + 2, 2))[0] == top
         return n
