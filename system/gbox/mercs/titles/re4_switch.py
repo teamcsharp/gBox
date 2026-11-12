@@ -1495,6 +1495,8 @@ CMD_SAYS = {"fight": " - no wait: runs at the nearest Ganado, fires at any in ra
 KILL_PACE_S = 3.0                        # doctrine.KILL_PACE_S: from this long after a kill the next one is owed
 COMBO_WINDOW_S = 5.0                     # doctrine.COMBO_MAX_S: a kill later than this after the last one breaks the combo
 FIRE_GAP_S = 0.25                        # between trigger taps (a tap is down + up: the engine never holds the trigger)
+BOW_FIRE_GAP_S = 0.02                    # the bow's fast trigger gap: an arrow per couple of frames, not a rifle gap
+# (the operator 2026-11-11 21:33: "If the bot isn't rapid firing on these threats, then they will be destroyed.")
 # The shot's tolerance is the angle a Ganado's body covers at his distance (live 2026-11-10 22:07: 11 hits from 166
 # shots with a flat 7-degree tolerance - 1.5 m off at 12 m): atan(FIRE_HALF_WIDTH_MM / distance), never under
 # FIRE_TOL_MIN; inside AIM_NUDGE of it the right stick is tapped (a frame of turn) rather than held.
@@ -2330,6 +2332,14 @@ class Bot:
             self.stats["aim_ram_error"] = f"{type(exc).__name__}: {exc}"[:160]
             return None
 
+    def _bow_in_hand(self, snap) -> bool:
+        """The gun in hand is the bow (the fast-fire class family): arrows discharge on the bow's own fast path."""
+        try:
+            from . import re4_weapons as _w
+            return snap.get("weapon_class") in _w.MOTION_RATE_CLASSES
+        except Exception:                                    # noqa: BLE001 - a read miss keeps the rifle path
+            return False
+
     def _turn(self, err: float) -> set:
         # an error > 0 turns LEFT with TURN_SIGN 1: the GameCube RE4 / RE5 convention (the Switch world is the
         # GameCube's data - re4_switch_nav), the one re4_walk uses; _learn_turn checks it on every turn tick.
@@ -2608,8 +2618,13 @@ class Bot:
                 if UNIVERSAL_CORE and self._aim_since is not None:
                     self._aim_stick().observe(now, p.get("rot"), 1 if aim_err > 0 else -1)   # does this stick move it?
                 return {"hold": {AIM_BTN} | self._aim_turn(aim_err)}   # the gun up, the right stick turns the aim
-            ready = self._aim_since is not None and now - self._aim_since >= AIM_READY_S
-            if not ready or now - self._last_fire < FIRE_GAP_S:
+            # The bow fires on its own fast path (the operator 2026-11-11 21:32: "the bot was raising their bow and
+            # arrow ... but because they weren't discharging arrows, the threats ... choked them to death"; 21:33:
+            # "If the bot isn't rapid firing on these threats, then they will be destroyed"): the bow needs no rifle
+            # raise wait and no 0.25 s trigger gap - the arrow discharges as soon as the raise settles.
+            bow = self._bow_in_hand(snap)
+            ready = bow or (self._aim_since is not None and now - self._aim_since >= AIM_READY_S)
+            if not ready or now - self._last_fire < (BOW_FIRE_GAP_S if bow else FIRE_GAP_S):
                 self.doing = "aim"
                 return {"hold": {AIM_BTN}}
             if AIM_BOOK:                                     # the shot's record: his facing (+ the waist) as the line
