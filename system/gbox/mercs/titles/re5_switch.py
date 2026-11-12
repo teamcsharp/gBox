@@ -6324,7 +6324,8 @@ class Bot:
             try:
                 print(f"[re5dbg] doing={self.doing} act={sorted(act.get('hold') or ())} wm={self._wm_active} "
                       f"aim={None if self.aim_since is None else round(now - self.aim_since, 2)} "
-                      f"tgt={self.target} ctx={str(self.__dict__.get('_aimctx'))[:160]}", flush=True)
+                      f"tgt={self.target} blk={str(self.stats.get('target_feedback_block_why'))[:120]} "
+                      f"ctx={str(self.__dict__.get('_aimctx'))[:150]}", flush=True)
             except Exception:                                # noqa: BLE001 - a diagnostic must never break the tick
                 pass
         act = self._respond(snap, act, now)              # under threat: a flash, a mine or fire - never nothing
