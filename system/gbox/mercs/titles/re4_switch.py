@@ -1807,9 +1807,14 @@ FIRE_CLOSE_MM = 3000.0                   # no deliberate scatter on a body insid
                                          # misses - the magnum's scatter off a body at arm's length was most of them)
 FIRE_CAP_HZ = 10.0                       # static: FR 3.0 frames at 30 Hz (the shot gate's floor), not counted live
 FIRE_DEFAULT_FAMILY = None
-CLASS_FAMILY = {0x01: None, 0x02: None, 0x03: None, 0x04: None, 0x11: None,   # handguns: no scatter
+CLASS_FAMILY = {0x01: "shotgun", 0x02: None, 0x03: None, 0x04: None, 0x11: None,   # class 0x01 is the Riot Gun
+                                                 # (items 0x21/0x40, re4_weapons.CLASS_OF); the handgun classes 0x02 /
+                                                 # 0x03 / 0x11 carry no scatter. 0x21 sat here as a "shotgun" - an ITEM
+                                                 # id in a class-keyed table - so class 0x01 resolved to None and the
+                                                 # Riot Gun fired with no fire-pattern family (live 2026-11-11 23:23:
+                                                 # weapon 33, 9 shots, 0 hits).
                 0x05: "magnum", 0x06: "magnum", 0x0F: "magnum",      # Broken Butterfly, Killer7, Handcannon
-                0x07: "shotgun", 0x08: "shotgun", 0x21: "shotgun",   # Shotgun, Striker, Riot Gun
+                0x07: "shotgun", 0x08: "shotgun",                    # Shotgun, Striker
                 0x09: "rifle", 0x0A: "rifle",
                 0x0B: None, 0x0C: None, 0x0D: None, 0x0E: None, 0x10: None, 0x1C: None, 0x2E: None}   # automatics,
                                          # launchers, the knife, the bow, the P.R.L.: no pattern
