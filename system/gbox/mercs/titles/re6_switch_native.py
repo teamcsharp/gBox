@@ -694,11 +694,12 @@ class Controller:
                 # is not loaded for this character").
                 guns = R.inventory_guns(self, self.player) or {}
                 if LAUNCHER_ITEM not in guns:
-                    stats_note = "the launcher is not in this loadout: the flash ring answers"
-                    kind = "flash"
-                    spec = CLASSES.class_for(kind)
-                else:
-                    stats_note = None
+                    # The inventory is built when the character select is left; a ring that comes due before it has
+                    # settled must RETRY, not substitute: the flash substitution held for the whole round (live
+                    # 2026-11-11 23:59: ring kind=flash, rings=1/1, while the spread puts 0x112 in every loadout). A
+                    # not-ready report leaves the kind and lets the next tick try the shell again.
+                    raise Unavailable("the launcher is not in this inventory yet: the shell ring retries next tick")
+                stats_note = None
             elif spec.item not in R.inventory_items(self, self.player):
                 raise Unavailable(f"{kind} resources are not loaded for this character")
             hp_before = struct.unpack("<h", self.rd(self.player + R.P_HP, 2))[0]
