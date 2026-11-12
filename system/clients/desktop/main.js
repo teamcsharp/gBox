@@ -844,6 +844,11 @@ app.on("web-contents-created", (_e, wc) => wc.on("before-input-event", (ev, inpu
   }
   else if (input.key === "Escape" && win.isFullScreen()) { win.setFullScreen(false); win.webContents.send("fullscreen", false); ev.preventDefault(); }
   else if (toggle) { win.webContents.send("hotkey", "fullscreen"); ev.preventDefault(); }   // the page's view mode follows
+  // Ctrl+R: the same path as F5 - update this checkout, then reload ignoring the cache - so a new game-mods.js or page is really picked up
+  // (operator 2026-11-11: "make it where ctrl + R fixes and reloads the latest version of the app").
+  else if (input.control && !input.alt && String(input.key).toLowerCase() === "r") {
+    win.webContents.send("hotkey", "client-refresh"); ev.preventDefault(); return;
+  }
   else if (input.key === "F2" && (input.shift || input.control) && !input.alt) { win.webContents.send("hotkey", input.shift ? "slot+" : "slot-"); ev.preventDefault(); }
   else if (GAME_KEYS[input.key] && !input.control && !input.alt && !input.shift) { win.webContents.send("hotkey", GAME_KEYS[input.key]); ev.preventDefault(); }
 }));
