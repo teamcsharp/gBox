@@ -1442,7 +1442,12 @@ class RE4Switch(Driver):
 # historical _CM suffix; their values are the same distances in the game's mm (x MM_PER_CM). Before this the fight
 # took every Ganado for 10x farther than he was: live it never fired (0 shots over 8 rounds) and walked into them.
 MM_PER_CM = 10.0
-ENGAGE_RANGE_CM = 1200.0 * MM_PER_CM                 # do not blind-fire past ~12 m before the line-of-sight gate is wired (tune live)
+ENGAGE_RANGE_CM = 1200.0 * MM_PER_CM                 # the blind range: no LOS data, fire no further than ~12 m
+ENGAGE_RANGE_LOS_CM = 3500.0 * MM_PER_CM             # with the LASER/nav LOS gate wired, shoot on sight to ~35 m
+# (operator 2026-11-11 19:20: "why is the bot just letting these enemies walk up on him? He needs to be using magnums
+#  and dispatching these foes as quickly as possible" - the 12 m blind gate held the gun until the Ganado was on him.
+#  The gate was written before the line-of-sight gate was wired; with the nav/obstacle data the bot may fire to 35 m.)
+FIRE_FIRST_CLOSE_MM = 900.0                          # inside this ring a body in the line is the target: fire anyway
 MINE_CLEAR_CM = 250.0 * MM_PER_CM                    # keep at least this far from an own hazard (parity with re5_switch_mines)
 
 # The fight (gbox.mercs.core.doctrine: never idle, shoot on sight, the combo every 2-5 s, crowds, locate by the map).
@@ -1912,10 +1917,18 @@ class Bot:
 
     def _shootable(self, p, snap, near=None) -> bool:
         """A Ganado on him now (within FIRE_FIRST_MM) with a clear shot line from where he stands: the fight can answer
-        it without walking (FIRE_FIRST)."""
+        it without walking (FIRE_FIRST). The clear-line test reaches ENGAGE_RANGE_LOS_CM when the nav/obstacle data is
+        there to prove it; inside FIRE_FIRST_CLOSE_MM the body itself is the target and the strict line test stands
+        down (a Ganado that closed inside 9 m is answered, never watched - operator 2026-11-11 19:20)."""
         near = self._close_threats(p, snap) if near is None else near
         try:
-            return any(t[0] <= ENGAGE_RANGE_CM and self._line_of_sight_ok(p, t[2], snap) for t in near)
+            reach = ENGAGE_RANGE_LOS_CM if (snap.get("nav") or snap.get("obstacles")) else ENGAGE_RANGE_CM
+            for t in near:
+                if t[0] > reach:
+                    continue
+                if t[0] <= FIRE_FIRST_CLOSE_MM or self._line_of_sight_ok(p, t[2], snap):
+                    return True
+            return False
         except Exception:                                # noqa: BLE001 - no geometry: the range limit does the gating
             return False
 
