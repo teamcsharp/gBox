@@ -1547,7 +1547,13 @@ AIM_READY_S = 0.25                       # the gun up this long before the first
 RUN_BTN = "b"                            # held with the stick up: a run (the manual: B + left stick up)
 RUN_CM = 800.0 * MM_PER_CM                           # locating a Ganado farther than this: run, not walk
 QUICK_TURN = ("ldown", RUN_BTN)          # the 180 turn (the manual: B + left stick down), the escape from a crowd
-RELOAD_SHOTS = 8                         # shots since the last reload: reload (ZL + B) at the next quiet moment (no
+# How far behind him a target has to be before the fight uses the quick turn instead of the stick (2.2 rad ~ 126 deg):
+# less than that and the stick turn is quicker than a 180 plus a correction.
+QUICK_TURN_RAD = 2.2
+RELOAD_SHOTS = 1_000_000                 # never: infinite ammo, so a reload is pure lost firing time (the operator,
+                                         # 2026-11-12: "no reload and infinite ammo. I want him just unloading on these
+                                         # people"). Was 8 - the bot stopped to reload every eight shots at the first
+                                         # quiet moment, which is exactly the "slow and deliberate" he described.
                                          # ammo read yet; a reload on a full magazine costs a moment and nothing else)
 RELOAD_CLEAR_CM = 350.0 * MM_PER_CM                  # ... quiet = nobody this near (doctrine IMPEDE_M)
 CROWD_N, CROWD_CM = 4, 600.0 * MM_PER_CM             # a mob (doctrine CROWD_N / CROWD_M)
@@ -2857,6 +2863,15 @@ class Bot:
                 self.stats["turns"] += 1
                 self._learn_turn(self.target, err, now)
                 self.doing = "turn"
+                # THE QUICK TURN for anything well behind him. QUICK_TURN existed but was only ever used by the escape
+                # runs, so in a fight the bot always ground the slow stick turn around - which is exactly when the
+                # operator never sees a 180 ("There's a maneuver in Resident Evil called the quick turn ... and I never
+                # see him doing it. And that's why he keeps getting defeated by the chainsaw guy"). A chainsaw closing
+                # from behind needs the turn in one press, not half a second of stick.
+                if abs(err) >= QUICK_TURN_RAD:
+                    self.stats["quick_turns"] = self.stats.get("quick_turns", 0) + 1
+                    self.doing, self.why = "turn", f"the quick turn: {math.degrees(abs(err)):.0f} deg behind him"
+                    return {"hold": set(QUICK_TURN)}
                 return {"hold": self._turn(err)}
             if not self._may_fire(p, e, dist, snap):
                 self.stats["holds"] += 1

@@ -225,15 +225,9 @@ def _keep_life(ad, snap) -> int:
         # The deficit BEFORE it is written away is the only honest measure of the blow: the heal runs on every snapshot,
         # so it restores within the same tick and the driver's per-tick health sample never sees the lower value (live
         # 2026-11-12: 4 heals in a round, health sampled at full every time, hit_events 0). A driver-side counter can
-        # never see this damage - it has to be read here, where it still exists.
-        st = _state(ad)
-        st["last_heal_from"] = now
-        st["max_deficit"] = max(int(st.get("max_deficit") or 0), top - now)
-        # The LAST blow, as text: the driver's publish loop SUMS numeric mod values, so a numeric deficit was added
-        # tick after tick and read as a meaningless total (live: max_deficit 7680 against a 1860 bar). A string is
-        # passed through unchanged, which is what a measurement needs.
-        st["last_blow"] = f"{top - now} of {top}"
-        LAST_HEAL.update(at=time.time(), frm=now, top=top)
+        # never see this damage - it has to be read here, where it still exists. Kept in LAST_HEAL rather than the mods
+        # state: _state() inside this path hung the suite, and a measurement is not worth a lock.
+        LAST_HEAL.update(at=time.time(), frm=now, top=top, deficit=top - now)
         ad.write_memory(addr, struct.pack("<H", top))
         return 1 if struct.unpack("<H", bytes(ad.read_memory(addr, 2)))[0] == top else 0
     except (ValueError, OSError, RuntimeError, struct.error):
@@ -1285,7 +1279,10 @@ def maintain(ad, snap: dict | None = None) -> dict:
                 if n:
                     st["heals"] = st.get("heals", 0) + n
                     out["heals"] = n
-                    out["blow"] = st.get("last_blow")
+                    # The blow as text: the publish loop sums numeric mod values, so it must not be a number (live:
+                    # max_deficit read 7680 against a 1860 bar after accumulating tick after tick).
+                    if LAST_HEAL.get("deficit") is not None:
+                        out["blow"] = f"{LAST_HEAL['deficit']} of {LAST_HEAL.get('top')}"
         if (st.get("weapon_power", 1.0) != 1.0 or st.get("max_level")) and st.get("fp_applied_boot") != boot:
             out["power_rows"] = _apply_power(ad, snap["module_base"], st)   # once a boot (the table is static data)
             st["fp_applied_boot"] = boot
