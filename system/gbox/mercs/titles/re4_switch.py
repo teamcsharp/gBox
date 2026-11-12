@@ -940,6 +940,11 @@ def snapshot(m, now: float | None = None, search: bool = True) -> dict:
                 # 0x52 / class 0x1C; live 2026-11-11 the bow was raised without discharging (the operator's "rain of
                 # arrows"), which is what a misread class byte does: bow=False, the rifle gap and the 0.25 s wait.
                 snap["equipped_id"] = struct.unpack("<H", bytes(m.rd(base + _w.ITEM_MGR + _w.M_EQUIPPED_ID, 2)))[0]
+                # The item id is the second witness for the class: when the game object's class byte is unreadable
+                # (live 2026-11-12: a whole RE6-era round with weapon= empty and hits collapsing to 10%), the fire
+                # pattern's family and the aim book get nothing. CLASS_OF maps the equipped item to its class.
+                if snap.get("weapon_class") is None and snap.get("equipped_id") in _w.CLASS_OF:
+                    snap["weapon_class"] = _w.CLASS_OF[snap["equipped_id"]]
             except (ValueError, OSError, TypeError, IndexError, AttributeError):
                 pass
         if 0 <= game["kills"] <= MERC_KILLS_MAX:
