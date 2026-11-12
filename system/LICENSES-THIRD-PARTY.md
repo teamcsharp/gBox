@@ -130,3 +130,30 @@ https://github.com/morluto/rea npm distribution. The upstream license is preserv
 in `docs/REA-LICENSE`. The pinned runtime and its transitive dependencies install
 locally into each worker runtime; none of their binaries are vendored. See
 `docs/rea.md` for provenance, installation, capability limits and verification.
+
+## NUP container format (`gbox/nup.py`, `gbox/nup_models.py`, `gbox/switch_nup.py`)
+
+The Switch 1/2 `.nup` reader and extractor are a port of the MIT-licensed
+[SPIN0ZAi/nup-extractor](https://github.com/SPIN0ZAi/nup-extractor): its `docs/SPEC.md` is the format authority and its
+`legacy_python/nup/` reader (`read.py`, `format.py`, `access.py`, `verify.py`, `meta.py`) is the behaviour ported into
+`system/gbox/nup.py` (validation order, TOC hash before trust, tree rules, meta TLV/localized decoding, extraction modes).
+The port is gBox's own Python (no upstream file is copied verbatim; the reference's Windows GUI `.exe` is not used),
+runs on Linux and Windows, and is covered by `system/tests/test_nup.py`. Attribution and the format summary are in
+`docs/nup.md`; the MIT licence of the upstream project applies to the format documentation and reference reader.
+
+`system/tests/fixtures/sample_game.nup` is the upstream project's sample container, redistributed under that MIT licence
+for tests only (no game content). See `system/tests/fixtures/README.md`.
+
+## Switch 2 runtimes (`gbox/switch2.py`, `Switch2Adapter`)
+
+Not bundled. gBox downloads or points at the operator's own install on a Windows x86_64 worker and runs it as a separate
+process. No game file, key file, firmware or emulator binary is committed to this repository.
+
+| Component | Use | License | Source (exact) |
+|---|---|---|---|
+| Fritchii v5.8.4 (Frizti), a Lichii fork tuned for Ocarina of Time | `switch2_engine = "fritchii"` (default Switch 2 emulator): `lichii.exe -g <nup/nsp>`; pinned release, SHA-256 `8fbe37d69665e8264bf9e92fe40846961923cff29dc165f8fdafe193605d10da` | GPL-3.0 | `github.com/Frizti/Fritchii` release `fritchii-v5.8.4`, asset `Fritchii-v5.8.4-Windows-x64.zip` |
+| Lichii (zortos293) | `switch2_engine = "lichii"`: the operator's own build, e.g. the share's `Custom Version of Lichi for OoT.zip` | GPL-3.0 | `github.com/zortos293/Lichii` |
+| Hookshot v2.1.0 (NotRexed), native OoT Switch 2 recompilation | `switch2_engine = "hookshot"`: `--cli --prepare --game <nup>` builds, `--play <game>` runs; its local control bridge (`HOS_CONTROL`) is the live-memory hook surface | GPL-3.0 | `github.com/NotRexed/Hookshot` release `v2.1.0`, `Hookshot-v2.1.0-Windows-x64.zip` / `Hookshot-2.1.0-x86_64.AppImage` |
+
+Keys (`prod.keys`, `title.keys`), firmware ZIPs and the titles themselves stay in the operator's library; gBox copies
+keys into the emulator's portable `user/keys` and never reads or redistributes them elsewhere.

@@ -146,8 +146,9 @@ def local_emulators(cfg) -> list[Emu]:
 
 
 def title_id_for(rom=None, serial=None) -> str | None:
-    """The base title id LayeredFS keys on: the catalog serial when it is one, else the NSP's (ticket, cnmt.xml or a
-    [TITLEID] tag in the file name). An update's id maps to its base: Eden gives updates no load root."""
+    """The base title id LayeredFS keys on: the catalog serial when it is one, else the container's (a `.nup`'s own
+    package record, a materialised NUP folder's marker, or an NSP's ticket/cnmt.xml/[TITLEID] tag). An update's id maps
+    to its base: Eden gives updates no load root."""
     from . import switch_nsp
     tid = str(serial or "").strip().removeprefix("0x").removeprefix("0X").upper()
     if not TID.fullmatch(tid):
@@ -1175,12 +1176,15 @@ def _recorded(meta: dict) -> list[dict]:
 
 
 def base_romfs(cfg, title_id: str | None) -> Path | None:
-    """An extracted RomFS of the title on this node: Eden's own Dump RomFS (<data>/dump/<TID>/romfs)."""
+    """An extracted RomFS of the title on this node: Eden's own Dump RomFS (<data>/dump/<TID>/romfs), else the romfs of
+    a title materialised from a `.nup` (switch_nup.register_romfs; the library's Extract action records it)."""
     if not title_id:
         return None
-    from . import provision
+    from . import provision, switch_nup
     d = provision.switch_linux_dir(cfg) / "dump" / title_id.upper() / "romfs"
-    return d if d.is_dir() else None
+    if d.is_dir():
+        return d
+    return switch_nup.romfs_for(cfg, title_id)
 
 
 def _same_file(a: Path, b: Path) -> bool:

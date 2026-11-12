@@ -347,6 +347,33 @@
     play: st => `<div class="gmb"><button class="act pri" data-go="">▶ Play</button>${st.worker ? '<button class="act" data-go="linux">Play on Spark</button>' : ""}
       <button class="act" data-go="plain" title="Ignore the boot setup this once">Play original</button>
       ${botDemoButtons(st)}</div>`,
+    // A .nup archive cannot boot; its base package becomes a deconstructed title folder (exefs/ + romfs/). The same
+    // section pulls the title's model sources (RE Engine PAK / MT Framework ARC) into the game folder for the model
+    // pipeline, which is how a Switch dump becomes a donor for swaps (gbox.nup_models, switch_nup job).
+    nup: st => {
+      const c = st.entry || (st.card && (st.card.format || st.card.launch) ? st.card : null);
+      if (!c) return "";
+      const archive = c.format === "nup";
+      const folder = c.format === "nup_folder" || !!(c.launch && c.launch.nup_folder);
+      if (!archive && !folder) return "";
+      const src = (Array.isArray(c.source_paths) && c.source_paths[0]) || (c.launch && c.launch.path) || "";
+      const title = (c.launch && c.launch.nup_title) || c.title || "the title";
+      const tid = c.serial || (c.launch && c.launch.title_id) || "";
+      const dir = src.replace(/[\\/][^\\/]*$/, "");
+      const safe = String(title).replace(/[\\/:*?"<>|]/g, "_").slice(0, 80);
+      const def = folder ? src : (dir ? `${dir}/${safe}${tid ? ` [${tid}]` : ""}` : "");
+      const detail = folder
+        ? `${ESC(title)} · ${ESC(tid)} · extracted title folder`
+        : `${ESC(title)} · ${ESC(tid)} · ${(c.launch && c.launch.nup_packages) || 0} package(s) · ${ESC((c.launch && c.launch.nup_kind) || "")}${c.launch && c.launch.nup_display_version ? " · v" + ESC(c.launch.nup_display_version) : ""}`;
+      return `<div class="gms"><b>Switch NUP</b><div class="mut" style="font-size:11px">${detail}</div>
+        <label style="display:block;margin-top:5px">Game folder <input id="gmnupout" type="text" spellcheck="false" style="width:100%" value="${ESC(def)}"></label>
+        <div style="display:flex;gap:5px;flex-wrap:wrap;margin-top:5px">
+          ${archive ? '<button class="act pri" type="button" data-nup="materialize">Extract title here</button>' : ""}
+          <button class="act" type="button" data-nup="models">Extract models</button>
+          ${archive ? '<button class="act" type="button" data-nup="verify">Verify container</button>' : ""}
+        </div>
+        <div id="gmnupstatus" class="mut" style="font-size:11px;margin-top:5px">${archive ? "Extract writes a bootable exefs/ + romfs/ folder with its updates applied; Models pulls the RE Engine PAK / MT Framework ARC containers into models_src." : "Models pulls this extracted title's model containers into models_src."}</div></div>`;
+    },
   };
   // "🤖 Bot demo on <PC>" for every online PC, the one you are on included (viz/bot-demo.js; io.pcs() gives the PCs).
   // Without the list (a host that passes none): the Spark, as before ("autoplay" = node linux with autoplay on).
@@ -355,9 +382,9 @@
     if (!list || !list.length) return `<button class="act" data-go="autoplay" title="The Spark plays this game by itself (your style, its hacks, straight into gameplay) and streams it here">🤖 Bot demo on the Spark</button>`;
     return list.map(p => `<button class="act" data-go="bot:${ESC(p.name)}" title="${ESC(p.name)} plays this game by itself from boot (its playbook, your style, straight into gameplay)${p.here ? "; on this PC the bot waits while you type" : ""}">${ESC(p.label || "🤖 Bot demo on " + p.name)}</button>`).join("");
   }
-  const ORDER = ["head", "actions", "chars", "mods", "special", "collect", "slot", "play"];
-  const LABEL = { head: "The title", actions: "Models / cover / cast", chars: "Play as", mods: "Boot with a mod", special: "Special builds",
-                  collect: "Model collection", slot: "Start from", play: "Play" };
+  const ORDER = ["head", "actions", "nup", "chars", "mods", "special", "collect", "slot", "play"];
+  const LABEL = { head: "The title", actions: "Models / cover / cast", nup: "Switch NUP", chars: "Play as", mods: "Boot with a mod",
+                  special: "Special builds", collect: "Model collection", slot: "Start from", play: "Play" };
   // one section; a builder that throws becomes a line saying so, never a menu that doesn't open
   function section(name, st, d) {
     let body;
@@ -376,13 +403,13 @@
 
   // ---- the controller: io = { el, api, img, worker, boot:{get,set}, keep:{get,set}, badge, place, refit, models, cover,
   //      cast, play, sleep } ----
-  function open(io, { gid, title = "", card = null, x = 0, y = 0 }) {
+  function open(io, { gid, title = "", card = null, entry = null, x = 0, y = 0 }) {
     const el = io.el;
     const gen = el._gmGen = (el._gmGen || 0) + 1;            // a newer right-click owns the menu: older answers are dropped
     const current = () => el._gmGen === gen;
     const read = (f, fb) => { try { return f(); } catch { return fb; } };
     const cachedMods = cache.mods.get(gid);
-    const st = { gid, title, worker: io.worker || "", img: io.img, pcs: read(() => io.pcs ? io.pcs() : null, null),
+    const st = { gid, title, card: card || null, entry: entry || null, worker: io.worker || "", img: io.img, pcs: read(() => io.pcs ? io.pcs() : null, null),
                  boot: read(() => io.boot.get(gid), { disc: "", slot: "", character: "" }),
                  kept: read(() => io.keep.get(gid), []), chars: cache.chars, charsErr: null, mods: cachedMods?.list || null, modsErr: null,
                  special: cache.special.get(gid)?.list || null, specialErr: null, specialOpen: specialOpenGet(io), sbOpts: null, sbBusy: false, sbStatus: "",
@@ -470,6 +497,45 @@
       if (again) {
         if (again.dataset.gmRetry === "chars") { st.charsErr = null; paint(["chars"]); fetchChars(true); }
         else { st.modsErr = null; paint(["mods"]); fetchMods(true); }
+        return;
+      }
+      const nupBtn = at("[data-nup]");
+      if (nupBtn) {
+        const c = st.entry || (st.card && (st.card.format || st.card.launch) ? st.card : null) || {};
+        const src = (Array.isArray(c.source_paths) && c.source_paths[0]) || (c.launch && c.launch.path) || "";
+        const outEl = el.querySelector("#gmnupout"), status = el.querySelector("#gmnupstatus");
+        const out = outEl ? outEl.value.trim() : "";
+        const op = nupBtn.dataset.nup;
+        const set = text => { if (status) status.textContent = text; };
+        if (!src) { set("✗ This library row has no source path."); return; }
+        if (op !== "verify" && !out) { set("✗ Choose the game folder first."); return; }
+        nupBtn.disabled = true;
+        try {
+          set(op === "verify" ? "Verifying the container (every file hash)…" : `Queueing ${op}…`);
+          let j = await io.api("/api/jobs", { tool: "switch_nup", input: { op, nup: src, out, deep: op === "verify" } });
+          const wait = io.sleep || (ms => new Promise(z => setTimeout(z, ms)));
+          while (j && ["queued", "running"].includes(j.state)) {
+            await wait(1500); j = await io.api("/api/jobs/" + j.id); if (j.progress && j.progress.msg) set(j.progress.msg);
+          }
+          if (!j || j.state !== "succeeded") throw new Error((j && j.error) || (j && j.state) || "no job");
+          const r = (j.output && j.output.result) || {};
+          if (op === "verify") {
+            set(r.ok ? `✓ Container OK (${r.files} files, ${r.packages} packages)` :
+                       `✗ ${r.problems_total} problem(s): ${(r.problems || [])[0] || ""}`);
+          } else if (op === "materialize") {
+            set(`✓ Extracted ${r.files} files → ${r.folder}`);
+            if (c.library) {                                  // the new title folder must become its own library row
+              try {
+                await io.api("/api/jobs", { tool: "scan_library", input: { libraries: [c.library] } });
+                set(`✓ ${r.folder} extracted; the library is rescanning.`);
+              } catch (err) { set(`✓ ${r.folder} extracted. Rescan the library to see it (${String(err.message || err).slice(0, 80)}).`); }
+            }
+          } else {
+            const n = r.counts || {};
+            set(`✓ ${n.containers || 0} container(s), ${n.models || 0} model file(s) → ${r.manifest || r.out}. ${(r.next || [])[0] || ""}`);
+          }
+        } catch (err) { set("✗ " + String(err && err.message || err).slice(0, 200)); }
+        finally { nupBtn.disabled = false; }
         return;
       }
       const collect = at("#gmcollect");

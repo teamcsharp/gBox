@@ -236,3 +236,26 @@ test('"Bot demo on <PC>" for every online PC in the Play section, this one first
   assert.match(page, /pcs: \(\) => botDemoPCs\(\)/);
   assert.match(page, /function botDemoLaunch\(gid, pc\) \{ return play\(gid, pc, false, undefined, \{ autoplay: true \}\); \}/);
 });
+
+test('a .nup library row gets Extract/Models/Verify; the extracted folder only Models; other games none', () => {
+  const archive = { game_id: GID, title: 'RE4 Remake', format: 'nup', serial: '0400E88025B1A000',
+    source_paths: ['D:/switch/RE4 Remake.nup'], library: 'quickswap-switch2',
+    launch: { nup: true, nup_title: 'Resident Evil 4', nup_kind: 'base', nup_packages: 2 } };
+  const { io } = fakeIo(answer);
+  GM.open(io, { gid: GID, title: 'RE4 Remake', entry: archive });
+  assert.match(io.el.html, /data-nup="materialize"/);
+  assert.match(io.el.html, /data-nup="models"/);
+  assert.match(io.el.html, /data-nup="verify"/);
+  assert.ok(io.el.html.includes('D:/switch/Resident Evil 4 [0400E88025B1A000]'), 'the sibling folder is the default');
+  GM._reset();
+  const folder = { game_id: GID, title: 'RE4 Remake', format: 'nup_folder', serial: '0400E88025B1A000',
+    source_paths: ['D:/switch/Resident Evil 4'], launch: { nup_folder: true } };
+  const { io: io2 } = fakeIo(answer);
+  GM.open(io2, { gid: GID, title: 'RE4 Remake', entry: folder });
+  assert.match(io2.el.html, /data-nup="models"/);
+  assert.ok(!io2.el.html.includes('data-nup="materialize"'), 'an extracted folder needs no extraction');
+  GM._reset();
+  const { io: io3 } = fakeIo(answer);
+  GM.open(io3, { gid: GID, title: 'Zelda', entry: { game_id: GID, title: 'Zelda', format: 'iso' } });
+  assert.ok(!io3.el.html.includes('data-nup='), 'an ordinary game has no Switch NUP section');
+});

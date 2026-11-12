@@ -57,7 +57,7 @@ WINDOWS = sys.platform == 'win32'
 user32 = ctypes.windll.user32 if WINDOWS else None
 # Keys by the names the Linux viewer reports; Windows reads the same keys as virtual-key codes.
 VK = {'space': 0x20, 'enter': 0x0D, 'backspace': 0x08, 'tab': 0x09, 'shift': 0x10, 'home': 0x24,
-      'left': 0x25, 'up': 0x26, 'right': 0x27, 'down': 0x28, **{c: ord(c.upper()) for c in 'wasdzxmeqrftc'}}
+      'left': 0x25, 'up': 0x26, 'right': 0x27, 'down': 0x28, **{c: ord(c.upper()) for c in 'wasdzxmeqrftcg'}}
 
 
 class XINPUT_GAMEPAD(ctypes.Structure):
@@ -120,6 +120,71 @@ def gamepad():
     return left, right
 
 
+class RECT(ctypes.Structure):
+    _fields_ = [('left', ctypes.c_long), ('top', ctypes.c_long), ('right', ctypes.c_long), ('bottom', ctypes.c_long)]
+
+
+class POINT(ctypes.Structure):
+    _fields_ = [('x', ctypes.c_long), ('y', ctypes.c_long)]
+
+
+def _refract_window():
+    """The game's window handle, found by class (FindWindowW through ctypes proved unreliable here)."""
+    found = []
+    proc = ctypes.WINFUNCTYPE(ctypes.c_bool, ctypes.c_void_p, ctypes.c_void_p)
+    buffer = ctypes.create_unicode_buffer(128)
+
+    def callback(hwnd, _):
+        user32.GetClassNameW(hwnd, buffer, 128)
+        if buffer.value == 'RefractNativeWindow':
+            found.append(hwnd)
+            return False
+        return True
+    user32.EnumWindows(proc(callback), None)
+    return found[0] if found else None
+
+
+_MOUSE_LOG = {'at': 0.0, 'state': None}
+
+
+def mouse_pointer(half_angle=40.0):
+    """gBox: cursor aims the right hand; left button clicks; Ctrl is the accelerator.
+
+    Normally the cursor must be over the game window. Holding Ctrl removes that requirement and
+    doubles the gain, so the pointer can be driven from anywhere on the desktop without mousing
+    back into the application first.
+    """
+    if not WINDOWS:
+        return False, 0.0, 0.0, False
+    hwnd = _refract_window()
+    if not hwnd:
+        return False, 0.0, 0.0, False
+    rect = RECT()
+    if not user32.GetWindowRect(hwnd, ctypes.byref(rect)):
+        return False, 0.0, 0.0, False
+    point = POINT()
+    if not user32.GetCursorPos(ctypes.byref(point)):
+        return False, 0.0, 0.0, False
+    width, height = rect.right - rect.left, rect.bottom - rect.top
+    if width <= 0 or height <= 0:
+        return False, 0.0, 0.0, False
+    inside = rect.left <= point.x < rect.right and rect.top <= point.y < rect.bottom
+    ctrl = bool(user32.GetAsyncKeyState(0x11) & 0x8000)          # VK_CONTROL: accelerator
+    if not inside and not ctrl:
+        return False, 0.0, 0.0, False
+    dx = max(-1.5, min(1.5, (point.x - (rect.left + width / 2)) / (width / 2)))
+    dy = max(-1.5, min(1.5, (point.y - (rect.top + height / 2)) / (height / 2)))
+    gain = 2.0 if ctrl else 1.0
+    click = bool(user32.GetAsyncKeyState(0x01) & 0x8000)
+    now = time.monotonic()
+    state = (inside, ctrl, point.x, point.y)
+    if state != _MOUSE_LOG['state'] and now - _MOUSE_LOG['at'] > 1.0:
+        _MOUSE_LOG.update(at=now, state=state)
+        print(f'mouse inside={inside} ctrl={ctrl} at={point.x},{point.y} aim=({-dx * half_angle * gain:.1f},'
+              f'{-dy * half_angle * gain:.1f})', flush=True)
+    return True, -dx * half_angle * gain, -dy * half_angle * gain, click
+
+
 def key_reader(focus, scripted):
     """down(name) for this pose: the keys the Linux viewer reports, and on Windows the keyboard while the viewer has focus."""
     held = scripted.keys()
@@ -171,6 +236,11 @@ class Scripted:
         self.mouse_trigger = self.mouse_grip = 0.0
         self.tpose_until = self.center_until = 0.0
         self.held, self.held_at = frozenset(), 0.0  # Keys held in the Linux viewer, and when it last said so.
+        # gBox: per-hand aim, independent of the head, so each arm can be pointed with its own stick.
+        self.hand_yaw = [0.0, 0.0]      # degrees, + turns left (same convention as the view yaw)
+        self.hand_pitch = [0.0, 0.0]    # degrees, + looks up
+        self.arms_mode = False
+        self.hand_pos = [[0.0, 0.0, 0.0], [0.0, 0.0, 0.0]]  # metres, added to the default hand offset
         sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         sock.bind(('127.0.0.1', port))
         threading.Thread(target=self.listen, args=(sock,), daemon=True).start()
@@ -193,6 +263,62 @@ class Scripted:
             if words[:1] == ['keys']:
                 with self.lock:
                     self.held, self.held_at = frozenset(w for w in words[1:] if w in VK), time.monotonic()
+                continue
+            if words[:1] == ['reach'] and len(words) == 2:
+                try:
+                    value = float(words[1])
+                except ValueError:
+                    continue
+                print(f'command {" ".join(words)}', flush=True)
+                with self.lock:
+                    self.reach = max(MIN_REACH, min(MAX_REACH, value))
+                continue
+            if words[:1] == ['handpos'] and len(words) == 5:
+                try:
+                    index = ('left', 'right').index(words[1])
+                    px, py, pz = (float(w) for w in words[2:5])
+                except (ValueError, IndexError):
+                    continue
+                print(f'command {" ".join(words)}', flush=True)
+                with self.lock:
+                    self.hand_pos[index] = [px, py, pz]
+                continue
+            if words[:1] == ['arm'] and len(words) == 4:
+                try:
+                    index = ('left', 'right').index(words[1])
+                    yaw, pitch = float(words[2]), float(words[3])
+                except (ValueError, IndexError):
+                    print(f'bad command {words}', flush=True)
+                    continue
+                print(f'command {" ".join(words)}', flush=True)
+                with self.lock:
+                    self.hand_yaw[index] = max(-80.0, min(80.0, yaw))
+                    self.hand_pitch[index] = max(-80.0, min(80.0, pitch))
+                continue
+            if words[:1] == ['armrel'] and len(words) == 4:
+                try:
+                    index = ('left', 'right').index(words[1])
+                    dyaw, dpitch = float(words[2]), float(words[3])
+                except (ValueError, IndexError):
+                    continue
+                with self.lock:
+                    self.hand_yaw[index] = max(-80.0, min(80.0, self.hand_yaw[index] + dyaw))
+                    self.hand_pitch[index] = max(-80.0, min(80.0, self.hand_pitch[index] + dpitch))
+                continue
+            if words[:1] == ['arms'] and len(words) == 2:
+                print(f'command {" ".join(words)}', flush=True)
+                with self.lock:
+                    self.arms_mode = words[1].lower() in ('on', '1', 'true')
+                continue
+            if words[:1] == ['click'] and len(words) in (2, 3):
+                try:
+                    index = ('left', 'right').index(words[1])
+                    seconds = float(words[2]) if len(words) == 3 else 0.2
+                except (ValueError, IndexError):
+                    continue
+                print(f'command {" ".join(words)}', flush=True)
+                with self.lock:
+                    self.events.append((time.monotonic() + seconds, index, 'trigger', 1.0))
                 continue
             if words[:1] in (['tpose'], ['center']) and len(words) == 2:
                 try:
@@ -251,6 +377,39 @@ class Scripted:
         with self.lock:
             return time.monotonic() < self.center_until
 
+    # gBox: per-hand aim, so each arm can be pointed with its own stick (or scripted independently).
+    def arm_aim(self):
+        with self.lock:
+            return ((self.hand_yaw[0], self.hand_pitch[0]), (self.hand_yaw[1], self.hand_pitch[1]))
+
+    def arms(self):
+        with self.lock:
+            return self.arms_mode
+
+    def toggle_arms(self):
+        with self.lock:
+            self.arms_mode = not self.arms_mode
+            return self.arms_mode
+
+    def nudge_arm(self, index, dyaw, dpitch):
+        with self.lock:
+            self.hand_yaw[index] = max(-80.0, min(80.0, self.hand_yaw[index] + dyaw))
+            self.hand_pitch[index] = max(-80.0, min(80.0, self.hand_pitch[index] + dpitch))
+
+    def set_arm(self, index, yaw, pitch):
+        with self.lock:
+            self.hand_yaw[index] = max(-80.0, min(80.0, yaw))
+            self.hand_pitch[index] = max(-80.0, min(80.0, pitch))
+
+    def hand_positions(self):
+        with self.lock:
+            return [tuple(p) for p in self.hand_pos]
+
+    def click(self, index, seconds=0.15):
+        """One press of that hand's trigger (the viewer's own 'click trigger' convention for UI)."""
+        with self.lock:
+            self.events.append((time.monotonic() + seconds, index, 'trigger', 1.0))
+
 
 def rotate(q, v):
     """Rotate vector v by unit quaternion q (x, y, z, w)."""
@@ -268,8 +427,19 @@ def look_rotation(yaw_deg, pitch_deg):
     return (cy * sp, sy * cp, -sy * sp, cy * cp)
 
 
+def qmul(a, b):
+    """Quaternion product a*b (apply b first, then a), both (x, y, z, w)."""
+    ax, ay, az, aw = a
+    bx, by, bz, bw = b
+    return (aw * bx + ax * bw + ay * bz - az * by,
+            aw * by - ax * bz + ay * bw + az * bx,
+            aw * bz + ax * by - ay * bx + az * bw,
+            aw * bw - ax * bx - ay * by - az * bz)
+
+
 def record(sequence, t, hands, yaw=0.0, pitch=0.0, reach=DEFAULT_REACH, offset=(0.0, 0.0), eye_size=(1024, 1024),
-           refresh_rate=90.0, tpose=False, center=False):
+           refresh_rate=90.0, tpose=False, center=False, hand_aim=((0.0, 0.0), (0.0, 0.0)),
+           hand_pos=((0.0, 0.0, 0.0), (0.0, 0.0, 0.0))):
     head_pos = (offset[0] + math.sin(t) * 0.02, 1.65, offset[1] - 0.05)
     rotation = look_rotation(yaw, 0.0 if tpose else pitch)  # T-pose: look straight ahead.
     head = (*head_pos, *rotation)
@@ -282,9 +452,13 @@ def record(sequence, t, hands, yaw=0.0, pitch=0.0, reach=DEFAULT_REACH, offset=(
             return (head_pos[0] + dx, head_pos[1] + dy, head_pos[2] + dz, *rotation)
         # Hands are fixed in the camera's frame (they turn and tilt with it), `reach` meters
         # in front, and aim where the camera looks. `center` puts the right one on the view axis.
-        local = (0.0, 0.0, -reach) if center and side > 0 else (0.22 * side, -0.28 + bob, -reach)
+        px, py, pz = hand_pos[0 if side < 0 else 1]
+        local = ((0.0, 0.0, -reach) if center and side > 0
+                 else (0.22 * side + px, -0.28 + bob + py, -reach + pz))
         dx, dy, dz = rotate(rotation, local)
-        return (head_pos[0] + dx, head_pos[1] + dy, head_pos[2] + dz, *rotation)
+        aim_yaw, aim_pitch = hand_aim[0 if side < 0 else 1]
+        hand_rot = qmul(rotation, look_rotation(aim_yaw, 0.0 if tpose else aim_pitch))
+        return (head_pos[0] + dx, head_pos[1] + dy, head_pos[2] + dz, *hand_rot)
 
     left_pose = hand_pose(-1, math.sin(t * 2) * 0.02)
     right_pose = hand_pose(1, math.cos(t * 2) * 0.02)
@@ -331,6 +505,7 @@ def main():
         sequence, previous = 0, None
         position = [0.0, 0.0]  # Walked offset on the floor (x, z), meters.
         last = time.monotonic()
+        mouse_down = g_prev = False
         while True:
             client, _ = server.accept()
             client.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
@@ -348,6 +523,22 @@ def main():
                         previous = summary
                     now = time.monotonic()
                     dt, last = min(now - last, 0.1), now
+                    # gBox arms mode: each stick aims its own hand; L2/R2 still press that hand's trigger.
+                    if scripted.arms():
+                        rate = 110.0
+                        scripted.nudge_arm(0, hands[0].x * rate * dt, -hands[0].y * rate * dt)
+                        scripted.nudge_arm(1, hands[1].x * rate * dt, -hands[1].y * rate * dt)
+                        hands[0].x = hands[0].y = hands[1].x = hands[1].y = 0.0
+                    # gBox mouse: cursor over the game window points the right hand; left click = A.
+                    inside, mouse_yaw, mouse_pitch, mouse_click = mouse_pointer()
+                    if inside:
+                        scripted.set_arm(1, mouse_yaw, mouse_pitch)
+                        if mouse_click and not mouse_down:
+                            scripted.click(1)
+                    mouse_down = mouse_click
+                    if down('g') and not g_prev:
+                        print(f'arms mode {"on" if scripted.toggle_arms() else "off"}', flush=True)
+                    g_prev = down('g')
                     yaw, pitch, reach = scripted.view()
                     strafe, forward, fast, reset, tpose_key, center_key = walk_keys(down)
                     tpose = tpose_key or scripted.tpose()
@@ -361,7 +552,8 @@ def main():
                         position[0] += (strafe * math.cos(r) - forward * math.sin(r)) * step
                         position[1] += (-strafe * math.sin(r) - forward * math.cos(r)) * step
                     client.sendall(record(sequence, sequence / 90.0, hands, yaw, pitch, reach, position,
-                                                (args.eye_width, args.eye_height), args.refresh_rate, tpose, center))
+                                                (args.eye_width, args.eye_height), args.refresh_rate, tpose, center,
+                                                scripted.arm_aim(), scripted.hand_positions()))
                     sequence += 1
                     time.sleep(1.0 / args.refresh_rate)
             except OSError as error:

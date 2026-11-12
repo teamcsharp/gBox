@@ -58,12 +58,13 @@ def bind_device(ini: str, slot: int | None) -> str:
 
 
 def bind_note(ini: str, slot: int | None, *, created: bool = False) -> str:
-    """The INI plus a one-line comment saying why the device was chosen (visible in the file, not just in a log)."""
-    if slot is None:
-        return ini
-    why = ("gBox's virtual pad" if created else "the pad that reports input; slot 0 was idle/dead")
-    comment = f"# gBox: Player 1 bound to XInput slot {slot} ({why})\n"
-    return comment + bind_device(ini, slot)
+    """Leave the INI as it is: the template already binds port 1 to the bot's virtual pad.
+
+    Previously this rewrote GCPad1 to the lowest live XInput slot, which on this machine is one of the operator's controllers - so the bot's pad was never
+    read. The launch template names the bot's slot explicitly, and Dolphin resolves it as soon as the pad exists.
+    """
+    return ini
+
 
 def probe_pads() -> dict:
     """{slot: (buttons, lx, ly, rx, ry, lt, rt)} for every XInput slot that reports on this PC now.

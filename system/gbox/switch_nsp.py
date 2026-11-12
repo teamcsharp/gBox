@@ -419,8 +419,14 @@ def _title_id_from_cnmt(path: Path) -> str | None:
 
 def title_id(path: str | Path, names: list[str] | None = None) -> str | None:
     """Title id (16 upper-case hex digits) of an NSP: from its ticket, else a cnmt.xml member, else a [TITLEID] tag in
-    the file name. None when none of them says; never a guess. `names`: pfs0_names(path) when the caller has it."""
+    the file name. None when none of them says; never a guess. `names`: pfs0_names(path) when the caller has it.
+
+    A `.nup` archive or a materialised NUP folder is delegated to gbox.switch_nup (its own metadata is authoritative).
+    """
     path = Path(path)
+    if path.suffix.lower() == ".nup" or path.is_dir():
+        from . import switch_nup
+        return switch_nup.title_id_for(path)
     if names is None:
         try:
             names = pfs0_names(path)
@@ -496,7 +502,13 @@ def describe(path: str | Path) -> dict:
 def launchable(path: str | Path) -> tuple[bool, str]:
     """(True, "") for a game NSP; (False, why) for a title update, which is content for a base game, not something an
     emulator boots: on Linux, Eden applies an update kept in the base game's folder (companions(), Eden's external
-    content folders). An unreadable file passes here and fails in the emulator with the emulator's own message."""
+    content folders). An unreadable file passes here and fails in the emulator with the emulator's own message.
+
+    A `.nup` archive and a materialised NUP folder are answered by gbox.switch_nup."""
+    p = Path(path)
+    if p.suffix.lower() == ".nup" or p.is_dir():
+        from . import switch_nup
+        return switch_nup.launchable(p)
     info = describe(path)
     if info["is_update"]:
         return False, (f"{Path(path).name} is a title update (v{info['version'] or '?'}) for base title "
@@ -510,7 +522,9 @@ def catalog_fields(path: str | Path) -> tuple[str | None, dict]:
     info = describe(path)
     if not info["title_id"]:
         return None, {}
-    extra = {"title_id": info["title_id"]}
+    extra = {"title_id": info["title_id"],
+             # Switch 2 programs use the 04... id range; the launch routes to gbox.switch2 on that signal alone.
+             "switch_generation": 2 if info["title_id"].upper().startswith("04") else 1}
     if info["is_update"]:
         extra |= {"title_update": True, "base_title_id": info["base_title_id"], "version": info["version"]}
     return info["title_id"], extra

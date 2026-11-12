@@ -4222,6 +4222,11 @@ def create_app(config: Config) -> FastAPI:
             from . import systems                          # the platform rule wins over a core stored at scan time
             has_core = e.get("core") and (e.get("platform") == "arcade" or systems.core_for(e.get("platform", ""))[0])
             req.require_os = "linux" if has_core else "windows"
+        if req.require_os and not any(w.get("online") and w.get("os") == req.require_os for w in workers()):
+            # No worker of the chosen OS is online: requiring it queues the launch forever (PSO asks for "linux"
+            # because its kind is "attract" and it has a core, while the only worker here is Windows). An operator's
+            # own Play escaped this through the resolution below; an agent launch did not, and hung silently.
+            req.require_os = None
         if not req.require_worker and actor == "operator":
             # #2386: the operator's own Play that names no PC boots on the PC it was asked from, never on another one.
             from .job_routing import requester_worker

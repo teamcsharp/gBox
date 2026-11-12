@@ -855,19 +855,23 @@ def switch_firmware_source(cfg: Config) -> Path | None:
     return None
 
 
-def switch_install_firmware(src: Path | None, registered_dir: Path) -> list[str]:
+def switch_install_firmware(src: Path | None, registered_dir: Path, expected: int | None = None) -> list[str]:
     """Restore the firmware NCAs into the emulator's nand/system/Contents/registered from the firmware ZIP when they are
     missing or incomplete (e.g. after a git clean -x of gbox-data). Marker-gated: a launch with the full set already
     present and the .firmware.from marker matching the source ZIP does no work and never opens the archive. The share
-    stays untouched (read-only CIFS). Returns the NCAs written (empty when nothing changed)."""
+    stays untouched (read-only CIFS). Returns the NCAs written (empty when nothing changed).
+
+    `expected`: the NCA count the ZIP holds (a Switch 2 firmware has a different count from the pinned 17.0.0 one);
+    None keeps SWITCH_FIRMWARE_NCA_COUNT for the existing Switch 1 callers."""
     if src is None:
         return []
     import zipfile
+    expected = SWITCH_FIRMWARE_NCA_COUNT if expected is None else int(expected)
     marker = registered_dir / ".firmware.from"
-    stamp = f"{src.name} {src.stat().st_size} {int(src.stat().st_mtime)} {SWITCH_FIRMWARE_NCA_COUNT}"
+    stamp = f"{src.name} {src.stat().st_size} {int(src.stat().st_mtime)} {expected}"
     present = len(list(registered_dir.glob("*.nca"))) if registered_dir.is_dir() else 0
     try:
-        if present >= SWITCH_FIRMWARE_NCA_COUNT and marker.is_file() and marker.read_text() == stamp:
+        if present >= expected and marker.is_file() and marker.read_text() == stamp:
             return []
     except OSError:
         pass
