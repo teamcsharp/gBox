@@ -449,6 +449,15 @@ def apply(bot, snap, act, now):
             f"ray={valid_ray} up={bool(laser.get('up'))} short={short} motion={p.get('motion')} "
             f"kind={(contact or {}).get('kind')} d={d / 100:.1f}m "
             f"yaw={math.degrees(yaw_error):+.1f} pitch={math.degrees(pitch_error):+.1f}")
+        # The yaw error's recent history and how often its sign flips: a bot that ALTERNATES is oscillating (turning
+        # past the target each pass), a bot whose error holds one sign has a wrong reference or a turn that never moves
+        # the body. Live 2026-11-12 the errors read +67.9, -30.0, +38.1, +84.8, -48.8 - mixed signs - and those two causes
+        # need opposite fixes, so this decides it rather than another guess.
+        hist = bot.stats.setdefault('yaw_hist', [])
+        hist.append(round(math.degrees(yaw_error)))
+        del hist[:-12]
+        if len(hist) > 1 and (hist[-1] > 0) != (hist[-2] > 0):
+            bot.stats['yaw_flips'] = bot.stats.get('yaw_flips', 0) + 1
         if 'zr' in keys:
             bot.stats['target_feedback_fire_blocks'] = bot.stats.get('target_feedback_fire_blocks', 0) + 1
         keys.discard('zr')
