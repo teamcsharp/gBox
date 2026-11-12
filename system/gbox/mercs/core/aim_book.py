@@ -76,6 +76,9 @@ BIAS_SIG = 2.5                  # the window's median must stand this many stand
 BIAS_ETA, BIAS_DECAY_ETA = 0.35, 0.12
 BIAS_STEP = math.radians(1.0)   # at most this much a shot
 BIAS_MAX = math.radians(10.0)
+#: A bias pinned at BIAS_MAX whose recent window has at most this many hits is not being confirmed - it probes back
+#: to neutral (RE4's close cell `:1000` live 2026-11-11: 386 shots, 58 hits, 2 in its last 16, the yaw at +9 deg).
+BIAS_PROBE_HITS = 2
 MISS_WEIGHT = 2                 # a miss counts this many times in the window ("every miss adjusts it")
 # the body point (shares of his radius / half span)
 PT_ETA_HIT, PT_ETA_MISS, PT_MISS_MIN = 0.12, 0.06, 0.15
@@ -256,7 +259,8 @@ def learn_cell(c: dict, shot: dict, now: float) -> list:
         # misses, 0 hits, the yaw at -10 deg): probe it back to neutral so the point/tol/lead terms can take the
         # correction instead of one saturated term no hit ever confirms.
         recent = c.get("recent") or ""
-        if recent and "H" not in recent[-BIAS_WINDOW:] and pinned:
+        window = recent[-BIAS_WINDOW:]
+        if window and window.count("H") <= BIAS_PROBE_HITS and pinned:
             c["bias"] = [0.0, 0.0]
             c["bias_probes"] = int(c.get("bias_probes", 0)) + 1
             changes.append("bias probe: pinned at the cap with no hit in the window, reset to neutral")
