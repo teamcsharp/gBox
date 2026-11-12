@@ -350,8 +350,30 @@ def press_switches():
     return True
 
 
+def boot(limit=120):
+    """Press START/A until a character exists. Returns True when the game is in the field."""
+    if player() is not None:
+        return True
+    log("no character yet - pressing through the title")
+    for attempt in range(limit):
+        pso_input.hold("start", 0.25)
+        time.sleep(0.9)
+        pso_input.hold("a", 0.25)
+        time.sleep(0.7)
+        if player() is not None:
+            log(f"character appeared after {attempt + 1} rounds of start+A")
+            return True
+        if attempt % 10 == 9:
+            log(f"  still no character after {attempt + 1} attempts")
+    log("gave up waiting for a character")
+    return False
+
+
 def main(seconds=3600.0):
     log("=== room-to-room play")
+    if not boot():
+        log("no character to play - stopping")
+        return
     state = state_load()
     current_floor = None
     target_room = None
