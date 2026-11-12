@@ -182,7 +182,8 @@
   }
   function mount(root, io) {
     let stopped = false, entries = [], preview = null, busy = false;
-    root.innerHTML = '<p class="pip-stream-empty" role="status">Loading streams…</p>';
+    // Draw the panel at once so the menu is usable immediately; refresh() fills the carousel when the data lands.
+    root.innerHTML = html([], io.current ? io.current() : '', io.title, !!io.broadcast);
     const valid = () => !stopped && io.valid?.() !== false;
     // The last five launched games, as squares you can click to launch again.
     const initials = title => String(title || '')
@@ -369,6 +370,7 @@
           catch { /* fall back to what we have */ }
         }
         const label = String(game.title || game.game_id);
+        try { globalThis.gboxRememberGame?.(game); } catch {}
         dismissAdd();
         if (valid()) message('Starting ' + label + '…');
         try {
