@@ -59,6 +59,10 @@ DEFAULT = {'enabled': False, 'titles': ['re4', 're5', 're6'], 'rounds_per_title'
            # the same title into the next draw every N rounds (each one a cold boot); donor_pool: {title: [build, ...]}
            # = only these builds (still fit-gated), {} = every audited build of the title
            'donor_rotation': 'pool', 'donor_rounds': 0, 'donor_pool': {},
+           # {title: {franchise: weight}} - which franchises' characters come up more often. It MUST live here as well
+           # as in normalize: a settings body that carries it back is refused as unknown otherwise, which is exactly
+           # how it broke 107 tests for a minute after the first commit.
+           'cast_weights': {},
            'coop_ratio': 'off'}
 SKIN_SWAPS = ('off', 'random')
 DONOR_ROTATIONS = ('off', 'pool', 'fresh')       # gbox.donor_rotation.MODES
