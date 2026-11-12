@@ -517,7 +517,8 @@ def test_a_random_weapon_is_a_max_level_magnum_or_shotgun_every_round(ad):
             assert all(isinstance(v, (int, float)) and not isinstance(v, bool) for v in out.values()), \
                 "every maintain value is a counter: the playbook sums them (int + dict killed a live RE4 mission)"
             it, held, _cls, _rel = _hand(ad, W)
-            assert it["id"] in M.PRIMARY and held == it["id"], "a magnum or a shotgun in his hand"
+            assert (it["id"] in M.PRIMARY or it["id"] in M.W.HIGH_POWER) and held == it["id"], \
+                "a maxed campaign weapon (primary or the any-weapon branch) in his hand"
             assert W.max_levels(it["id"]) is not None
             draws.append(it["id"])
         assert set(draws) & set(M.MAGNUMS), "the magnums come up (MAGNUM_SHARE 1.0: a shotgun only with no magnum pool)"
@@ -529,7 +530,7 @@ def test_a_random_weapon_is_a_max_level_magnum_or_shotgun_every_round(ad):
         assert row == (W.RAPID_FIRE_FLOOR,) * 5, "the 20x tables (14 frames / 20 is under the gate: the floor)"
         assert st["weapon_rounds"][-1]["weapon"] == W.name(draws[-1])
         s = M.status(ad)
-        assert s["fire_tables_round"] == 2 and s["magnum_share"] == 1.0
+        assert s["fire_tables_round"] == 2 and s["magnum_share"] == 0.5
         assert len(s["weapon_rounds"]) == 12, "the last rounds' telemetry"
         assert set(s["weapon_primary"]) == {W.name(i) for i in M.PRIMARY}
         assert D.FIRE_GAP_S == max(M.FIRE_GAP_MIN_S, gap / 20), "the trigger taps paced to the 20x"

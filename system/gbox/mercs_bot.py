@@ -512,6 +512,12 @@ def apply_ops(ad, ops, prof: dict | None = None, stats: dict | None = None) -> l
     elif (prof or {}).get("map_id") == "01002A000CD48000":   # RE6 on Switch (Citron)
         from .mercs.titles import re6_switch_mods as RM
         make = RM.RE6Switch
+    elif (prof or {}).get("map_id") == "010099A00BC1E000":   # RE4 on Switch (Citron)
+        # The Switch build needs its own mods tool: the GameCube re_mods_tool below reads/writes GameCube addresses and
+        # never applies the Switch round_ops (merc_loadout's spread, the randomized campaign weapon). 2026-11-11: RE4
+        # Switch rounds fell into the GameCube branch, so its round_ops were silently skipped.
+        from .mercs.titles import re4_switch_mods as RM
+        make = getattr(RM, "RE4Switch", None) or RM.Mem
     else:
         from . import re_mods_tool as RM
         make = RM.RE4
