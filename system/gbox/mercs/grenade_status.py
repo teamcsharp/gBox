@@ -66,7 +66,7 @@ def _title(name, ids, kinds=None, reason="", controller=""):
 TITLES = {
     "re4_gc": _title(
         "RE4 GameCube", ("78ab9efa2e310db4", "G4BE08", "G4BE07", "G4BE"),
-        {"flash": Kind(True), "hand": Kind(True)},
+        {"flash": Kind(True), "hand": Kind(True), "launcher": Kind(True)},
         controller="re4_gc_native",
     ),
     "re4_switch": _title(
@@ -77,7 +77,9 @@ TITLES = {
         {"flash": Kind(False, "a flash is built on the RE4 Switch native harness (main+0x2E4E50 via one vtable "
                               "store) but has no live receipt yet"),
          "hand": Kind(False, "a hand-grenade ring is built on the RE4 Switch native harness (main+0x2E48B0, 7000 mm "
-                             "floor) but has no live receipt yet")},
+                             "floor) but has no live receipt yet"),
+         "launcher": Kind(False, "the launcher fires this title's own grenades; the flash round has no live receipt "
+                                 "on the RE4 Switch native harness yet")},
         controller="re4_switch_native",
     ),
     "re5_switch": _title(
@@ -86,7 +88,8 @@ TITLES = {
          "hand": Kind(False, "a hand-grenade ring is not yet verified on this build (its projectile class and "
                              "explosion are unconfirmed)"),
          "incendiary": Kind(False, "an incendiary-grenade ring is not yet verified on this build (its projectile "
-                                   "class and explosion are unconfirmed)")},
+                                   "class and explosion are unconfirmed)"),
+         "launcher": Kind(True)},
         controller="re5_switch_native",
     ),
     "re5_ps3": _title(
@@ -99,7 +102,9 @@ TITLES = {
          "hand": Kind(False, "a hand-grenade ring is not yet verified on this build (its item class/DTI is "
                              "unconfirmed)"),
          "incendiary": Kind(False, "an incendiary-grenade ring is not yet verified on this build (its item "
-                                   "class/DTI is unconfirmed)")},
+                                   "class/DTI is unconfirmed)"),
+         "launcher": Kind(False, "the 360 launcher ring spawns the launcher's shell rounds (uWp1302/1303/1304) "
+                                 "through the parameterised class image; awaiting the first live ring receipt")},
         controller="re6_switch_native",
     ),
     "re6_ps3": _title(
