@@ -144,9 +144,33 @@ def approach(pad, point, target, tolerance=3.0, seconds=0.35):
     return math.dist((after[0], after[2]), (target[0], target[1]))
 
 
+def boot(pad, limit=120):
+    """Press through the title and menus until a character exists. Returns True when one does."""
+    me = player()
+    if me is not None:
+        return True
+    log("no character yet - pressing through the title and menus")
+    for attempt in range(limit):
+        pad.press("start", 0.2)
+        time.sleep(1.0)
+        pad.press("a", 0.25)
+        time.sleep(0.8)
+        me = player()
+        if me is not None:
+            log(f"character appeared after {attempt + 1} rounds of start+A")
+            return True
+        if attempt % 10 == 9:
+            log(f"  still no character after {attempt + 1} attempts")
+    log("gave up waiting for a character")
+    return False
+
+
 def main(seconds=3600.0):
     log("=== pad-driven play")
     pad = vpad.Pad()
+    if not boot(pad):
+        log("no character to play - stopping")
+        return 2
     log("calibrating the stick against the character")
     table = pad.calibrate(read_pos)
     for name, move in table.items():
