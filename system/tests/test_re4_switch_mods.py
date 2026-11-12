@@ -520,7 +520,7 @@ def test_a_random_weapon_is_a_max_level_magnum_or_shotgun_every_round(ad):
             assert it["id"] in M.PRIMARY and held == it["id"], "a magnum or a shotgun in his hand"
             assert W.max_levels(it["id"]) is not None
             draws.append(it["id"])
-        assert set(draws) & set(M.MAGNUMS) and set(draws) & set(M.SHOTGUNS), "both families come up"
+        assert set(draws) & set(M.MAGNUMS), "the magnums come up (MAGNUM_SHARE 1.0: a shotgun only with no magnum pool)"
         assert len(draws) == 40, "PRIMARY_SHARE 1.0: every draw a magnum or a shotgun"
         assert len(draws) == 40 and st["weapon_rounds"][-1]["round"] == 40, "every round, not four a session"
         assert st["rf_tables_round"] == 2 and st["rf_applied_round"] == 40, "the tables with the last round's gun"
