@@ -1117,13 +1117,53 @@ class Screensaver:
 
     def _tend_warm(self, w, running, now):
         from . import mercmode
-        if not self.store.get(mercmode.WARM, w['name']):
-            return
         cfg = mercmode.settings(self.store, w['name'])
         if not self._warm_capable(w, cfg):
             self._warm_release(w, running, now, 'MercMode warm pool off on this PC')
-        else:
+            return
+        note = self._preload_start(w, cfg, now)
+        if note:
+            self.notes[w['name']] = note
+        if self.store.get(mercmode.WARM, w['name']):
             self._warm(w, running, now)
+
+    def _preload_start(self, w, merc_cfg, now):
+        """Launch the NEXT title on the OTHER emulator while this run plays (the operator's "the next title is being
+        prepared in advance before the previous title is even closed", 2026-11-11 19:56). The launch carries args.warm,
+        so the boot observer attaches; _warm pauses it at its menu and prepares its round, and _resume_warm then swaps
+        to it with no load screen. A same-emulator NEXT is not preloaded (the -6 abort): only another kind can co-exist
+        beside the playing title."""
+        from .server import JobRequest
+        from . import mercmode
+        run = self.store.get(STATE, w['name']) or {}
+        if not run or not run.get('mercmode') or (run.get('phase') or '') not in ('playing', 'launching'):
+            return None
+        ahead = self.store.get(mercmode.NEXT, w['name']) or {}
+        title = ahead.get('title')
+        if not title:
+            return None
+        playing = (run.get('mercmode') or {}).get('title')
+        kind = self._switch_slot(title, merc_cfg)
+        if not kind or (playing and self._switch_slot(playing, merc_cfg) == kind):
+            return None                                          # the same emulator holds the other title
+        if title in (mercmode.warm_pool(self.store, w['name']) or {}):
+            return None                                          # already warm/preloading
+        if mercmode.memory_reason(w, now):
+            return None
+        row = next((r for r in mercmode.inventory(self.store, w, merc_cfg)
+                    if r.get('playable') and r.get('title') == title), None)
+        game = self.store.catalog_get(row['game_id']) if row else None
+        if not game:
+            return None
+        job = self.submit(JobRequest(tool='launch_game',
+                                     input={'game': game, 'jump': True, 'memory_cards': 'operator',
+                                            'args': {'warm': True}},
+                                     agent_use=True, low_priority=True, require_worker=w['id']), actor=ACTOR,
+                          origin={'via': 'MercMode warm preload', 'worker': w['name'], 'title': title})
+        mercmode.keep_warm(self.store, w['name'], title,
+                           {'title': title, 'game_id': row['game_id'], 'job': _jid(job), 'at': now,
+                            'state': 'prelaunch', 'session_id': None, 'worker_id': w['id']})
+        return f"preloading {title} on {kind} while {playing} plays"
 
     def _resume_warm(self, w, pick, merc_cfg, now):
         """Switch to a title kept warm (parked after its last turn) or preloaded while the previous title played - at
