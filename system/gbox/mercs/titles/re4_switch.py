@@ -1493,6 +1493,9 @@ ENGAGE_RANGE_LOS_CM = 3500.0 * MM_PER_CM             # with the LASER/nav LOS ga
 # side of the map shooting at her"). 15 m keeps the 10 m shot and closes everything past it, and it is what makes the
 # run-to-the-mesh-route case (a Ganado 30 m out behind a wall) a run instead of a raised gun.
 HUNT_RUN_MM = 15000.0
+# A boss is anything the shared doctrine calls one (gbox.mercs.core.doctrine.BOSS_HP_MIN = 3000, matching
+# "dispatch bosses on sight"): it can end the round, so unlike a heavy it is closed on and destroyed, not kept away.
+BOSS_HP_MIN = 3000.0
 # (operator 2026-11-11 19:20: "why is the bot just letting these enemies walk up on him? He needs to be using magnums
 #  and dispatching these foes as quickly as possible" - the 12 m blind gate held the gun until the Ganado was on him.
 #  The gate was written before the line-of-sight gate was wired; with the nav/obstacle data the bot may fire to 35 m.)
@@ -2709,7 +2712,13 @@ class Bot:
             # from full life in one blow, and the rule for one is that it is "shot from beyond" HEAVY_KEEP_MM - running
             # at it would carry him inside the range fire_first then answers the gun from, which is how he died on Base
             # (hp 1860 -> 0 in two hits). A heavy past HUNT_RUN_MM falls through and is shot from here instead.
-            if dist > HUNT_RUN_MM and (e.get("hp_max") or 0) < HEAVY_HP:
+            # ...BUT a BOSS is the exception, and it is the opposite rule (the operator, 2026-11-12: "if they see a
+            # boss, they need to basically destroy them on sight ... any boss characters that show up ... the bot needs
+            # to deal with them ASAP, they cannot be allowed to exist and remain"). A boss can end the round outright,
+            # so it is CLOSED ON and killed rather than shot at from a range the pad cannot land - doctrine.BOSS_HP_MIN
+            # is the same 3000 the shared boss rule uses ("dispatch bosses on sight").
+            boss = bool(e.get("boss")) or (e.get("hp_max") or 0) >= BOSS_HP_MIN
+            if dist > HUNT_RUN_MM and (boss or (e.get("hp_max") or 0) < HEAVY_HP):
                 self.target = e.get("ptr")
                 self.stats["hunts"] = self.stats.get("hunts", 0) + 1
                 self.doing, self.why = "hunt", f"{dist / (100.0 * MM_PER_CM):.0f} m off: running at him"

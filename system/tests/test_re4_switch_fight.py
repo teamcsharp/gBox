@@ -598,3 +598,21 @@ def test_with_nobody_in_the_snapshot_he_returns_to_where_they_were_seen():
     assert b.stats.get("locate_memory") == 1, "he goes back to where they were, not a blind sweep"
     assert b.doing == "locate" and "where they were seen" in b.why
     assert "lup" in (act.get("hold") or ())
+
+
+def test_a_boss_is_closed_on_and_a_plain_heavy_is_not():
+    """The operator, 2026-11-12: "if they see a boss, they need to basically destroy them on sight ... any boss
+    characters that show up ... the bot needs to deal with them ASAP, they cannot be allowed to exist and remain." A
+    boss can end the round, so it is hunted and destroyed; a plain heavy (HEAVY_HP .. BOSS_HP_MIN) is still shot from
+    where he stands, because one inside HEAVY_KEEP_MM kills from full life in a blow."""
+    route = [mm(q) for q in ((0.0, 0.0, 0.0), (0.0, 0.0, 3000.0))]
+    boss = snap([((0.0, 0.0, 2000.0), 3500)], nav=Mesh(waypoints=route))
+    boss["enemies"][0]["hp_max"] = 3500
+    b = bot()
+    b.tick(boss, now=1.0)
+    assert b.doing == "hunt" and b.stats.get("hunts") == 1, "a boss 20 m out is closed on"
+    heavy = snap([((0.0, 0.0, 2000.0), 2500)], nav=Mesh(waypoints=route))
+    heavy["enemies"][0]["hp_max"] = 2500
+    b2 = bot()
+    b2.tick(heavy, now=1.0)
+    assert b2.doing != "hunt" and not b2.stats.get("hunts"), "a plain heavy is not charged"
