@@ -211,8 +211,8 @@
           .sort((a, b) => Number(b.started || 0) - Number(a.started || 0))) {
           const id = String(row.game_id);
           if (seen.has(id)) continue;
-          const entry = byId.get(id);
-          if (!entry || /mercenar/i.test(String(entry.title || entry.alt_title || ''))) continue;
+          const entry = byId.get(id) || { game_id: id, title: row.title || id };
+          if (/mercenar/i.test(String(entry.title || entry.alt_title || row.title || ''))) continue;
           seen.add(id);
           games.push(entry);
           if (games.length >= 5) break;
@@ -235,7 +235,7 @@
           message('Starting ' + String(game.title || game.game_id) + '…');
           const go = typeof io.launch === 'function'
             ? io.launch(game)
-            : io.api('/api/jobs', { tool: '@launch', input: { game } });
+            : io.api('/api/jobs', { tool: 'launch_game', input: { game } });
           Promise.resolve(go).catch(error => message('Could not start it: ' + String(error?.message || error)));
         });
       });
@@ -305,8 +305,8 @@
           const id = String(row.game_id);
           if (seen.has(id)) continue;
           seen.add(id);
-          const entry = byId.get(id);
-          if (entry && !/mercenar/i.test(String(entry.title || entry.alt_title || ''))) recent.push(entry);
+          const entry = byId.get(id) || { game_id: id, title: row.title || id };
+          if (!/mercenar/i.test(String(entry.title || entry.alt_title || row.title || ''))) recent.push(entry);
         }
         console.log('pip add: sessions', (sessions || []).length, 'catalog', catalog.length, 'recent', recent.length,
           'owned', (sessions || []).filter(item => item && (item.agent_owned === false || item.agent_owned === 'false')).length);
@@ -363,12 +363,17 @@
       };
       const start = async game => {
         if (!game) return;
+        // A session-derived tile carries only id and title; /api/catalog/<id> gives the entry launch_game needs.
+        if (!game.launch && io.api) {
+          try { const full = await io.api('/api/catalog/' + encodeURIComponent(String(game.game_id))); if (full && (full.game_id || full.id)) game = full; }
+          catch { /* fall back to what we have */ }
+        }
         const label = String(game.title || game.game_id);
         dismissAdd();
         if (valid()) message('Starting ' + label + '…');
         try {
           if (typeof io.launch === 'function') { await io.launch(game); }
-          else { await call('/api/jobs', { tool: '@launch', input: { game } }); }
+          else { await call('/api/jobs', { tool: 'launch_game', input: { game } }); }
         } catch (error) {
           console.log('pip add: launch failed', String(error && error.message || error));
           if (valid()) message('Could not start it: ' + String(error?.message || error));
