@@ -167,7 +167,8 @@
     });
   }
   function html(entries, sid, title = row => row.title || row.game_title || row.game_id || 'Game', broadcast = false) {
-    return '<div class="pip-stream-heading"><strong>Streams</strong><span>View another instance</span>' +
+    return '<div class="pip-stream-recent" data-stream-recent aria-label="Recently launched games"></div>' +
+      '<div class="pip-stream-heading"><strong>Streams</strong><span>View another instance</span>' +
       (broadcast ? '<button type="button" data-stream-broadcast="auto" title="Let the broadcast follow the active game again">Broadcast: Auto</button>' : '') + '</div>' +
       '<div class="pip-stream-carousel"><button type="button" data-stream-step="-1" aria-label="Previous stream" title="Previous stream">‹</button>' +
       '<div class="pip-stream-cards" role="group" aria-label="Running game streams">' + (entries.length ? entries.map(({row,status:state}) =>
@@ -183,6 +184,63 @@
     let stopped = false, entries = [], preview = null, busy = false;
     root.innerHTML = '<p class="pip-stream-empty" role="status">Loading streams…</p>';
     const valid = () => !stopped && io.valid?.() !== false;
+    // The last five launched games, as squares you can click to launch again.
+    const initials = title => String(title || '')
+      .replace(/\([^)]*\)/g, '')
+      .split(/[\s:—-]+/).filter(Boolean).slice(0, 2).map(word => word[0]).join('').toUpperCase() || '?';
+    const tint = id => {
+      let hash = 0;
+      for (const char of String(id || '')) hash = (hash * 31 + char.charCodeAt(0)) % 360;
+      return `hsl(${hash} 34% 26%)`;
+    };
+    async function recentStrip() {
+      const host = root.querySelector('[data-stream-recent]');
+      if (!host) return;
+      let games = [];
+      try {
+        const [sessionAnswer, catalogAnswer] = await Promise.all([
+          io.api ? io.api('/api/sessions') : null,
+          io.api ? io.api('/api/catalog') : null,
+        ]);
+        const sessions = Array.isArray(sessionAnswer) ? sessionAnswer : (sessionAnswer?.items || []);
+        const catalog = (Array.isArray(catalogAnswer) ? catalogAnswer
+          : (catalogAnswer?.items || catalogAnswer?.games || [])).filter(game => game && (game.game_id || game.id));
+        const byId = new Map(catalog.map(game => [String(game.game_id || game.id), game]));
+        const seen = new Set();
+        for (const row of (sessions || []).filter(item => item && (item.agent_owned === false || item.agent_owned === 'false') && item.game_id)
+          .sort((a, b) => Number(b.started || 0) - Number(a.started || 0))) {
+          const id = String(row.game_id);
+          if (seen.has(id)) continue;
+          const entry = byId.get(id);
+          if (!entry || /mercenar/i.test(String(entry.title || entry.alt_title || ''))) continue;
+          seen.add(id);
+          games.push(entry);
+          if (games.length >= 5) break;
+        }
+      } catch { games = []; }
+      if (!valid()) return;
+      if (!games.length) { host.style.display = 'none'; return; }
+      host.style.cssText = 'display:flex;gap:6px;overflow-x:auto;padding:2px 2px 8px;scrollbar-width:thin';
+      host.innerHTML = games.map((game, index) => {
+        const title = String(game.title || game.alt_title || game.game_id);
+        return '<button type="button" data-recent-tile="' + index + '" title="Launch ' + esc(title) + '" ' +
+          'style="flex:none;width:64px;height:64px;border-radius:6px;border:1px solid #3a4152;cursor:pointer;' +
+          'background:' + tint(game.game_id) + ';color:#e6edf3;font:600 18px system-ui;display:flex;' +
+          'align-items:center;justify-content:center;letter-spacing:.5px">' + esc(initials(title)) + '</button>';
+      }).join('');
+      host.querySelectorAll('[data-recent-tile]').forEach(buttonEl => {
+        buttonEl.addEventListener('click', () => {
+          const game = games[Number(buttonEl.dataset.recentTile)];
+          if (!game) return;
+          message('Starting ' + String(game.title || game.game_id) + '…');
+          const go = typeof io.launch === 'function'
+            ? io.launch(game)
+            : io.api('/api/jobs', { tool: '@launch', input: { game } });
+          Promise.resolve(go).catch(error => message('Could not start it: ' + String(error?.message || error)));
+        });
+      });
+      console.log('pip recent: drew', games.length);
+    }
     const message = value => { if (valid()) root.querySelector('.pip-stream-status').textContent = value; };
     // Right-click a stream entry to close that game. The stop itself is the operator's own action,
     // provided by the host as io.close(sid, row) (it confirms, then stops the session); this component
@@ -466,6 +524,7 @@
     }
     root.addEventListener('click', click);
     root.addEventListener('contextmenu', contextMenu);
+    recentStrip().catch(() => {});
     const ready = refresh();
     return {ready, stop() { stopped = true; preview?.stop(); dismissMenu(); root.removeEventListener('click',click);
       root.removeEventListener('contextmenu',contextMenu);
