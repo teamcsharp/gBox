@@ -285,6 +285,10 @@ class Boot:
                         self.stats["select_pick"] = (f"{pick.get('state')}:{pick.get('stage')}:"
                                                      f"{pick.get('character')}")
                     self.stats["select_title"] = getattr(control, "title", "")
+                    if isinstance(scr.get("cursor"), int):
+                        self.stats["select_cursor"] = scr["cursor"]
+                    if isinstance(scr.get("target"), int):
+                        self.stats["select_target"] = scr["target"]
             except Exception:                                # noqa: BLE001 - a diagnostics line never costs the boot
                 pass
         if scr.get("where") == self.jump_at and not self.at_jump and self.round_hooks is not None:
