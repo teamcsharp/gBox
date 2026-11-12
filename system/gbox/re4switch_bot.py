@@ -74,8 +74,11 @@ STATE_LOG_EVERY_S = 5.0                 # one row per (RAM phase, frame screen) 
 ROUND_END_TICKS = 3                     # the game's state reads no round this many ticks in a row: the round is over
 FIGHT_TICK_S = 0.05                     # the RAM fight's loop
 BOW_CLASS = 0x1C                        # Krauser's bow (re4_weapons.MOTION_RATE_CLASSES)
-BOW_FIGHT_TICK_S = 0.025                # the bow's loop: 40 taps a second ("rapid firing arrows at 40 times a second")
-BOW_TAP_HOLD_S = 0.05                   # the bow's trigger is held through its draw: a down+up in one batch is a
+# The bow's loop: the operator asked for 20x (2026-11-10 #9508, and again 2026-11-11: "have the bow able to fire at
+# 20x speed ... rain arrows"). It was 0.025 - only 2x the rifle's 0.05, which is why 20x never appeared however the
+# trigger was tuned. 0.05 / 20 = 0.0025: one decision every 2.5 ms, twenty times the gun's loop.
+BOW_FIGHT_TICK_S = 0.0025
+BOW_TAP_HOLD_S = 0.02                   # the bow's trigger is held through its draw: a down+up in one batch is a
                                         # zero-length press the game never fires (the operator 2026-11-11: "the bot
                                         # never fires the arrows in RE4") - the guns fire on the press edge, the bow
                                         # needs the hold

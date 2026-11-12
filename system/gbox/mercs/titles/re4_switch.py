@@ -1518,7 +1518,8 @@ CMD_SAYS = {"fight": " - no wait: runs at the nearest Ganado, fires at any in ra
 KILL_PACE_S = 3.0                        # doctrine.KILL_PACE_S: from this long after a kill the next one is owed
 COMBO_WINDOW_S = 5.0                     # doctrine.COMBO_MAX_S: a kill later than this after the last one breaks the combo
 FIRE_GAP_S = 0.25                        # between trigger taps (a tap is down + up: the engine never holds the trigger)
-BOW_FIRE_GAP_S = 0.02                    # the bow's fast trigger gap: an arrow per couple of frames, not a rifle gap
+BOW_FIRE_GAP_S = 0.0025                  # the bow's fast trigger gap: the operator's 20x (0.05 / 20). It was 0.02 -
+                                         # 50 a second, which is the rifle's class of gap, not a rain of arrows.
 # (the operator 2026-11-11 21:33: "If the bot isn't rapid firing on these threats, then they will be destroyed.")
 # The shot's tolerance is the angle a Ganado's body covers at his distance (live 2026-11-10 22:07: 11 hits from 166
 # shots with a flat 7-degree tolerance - 1.5 m off at 12 m): atan(FIRE_HALF_WIDTH_MM / distance), never under
