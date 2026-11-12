@@ -200,3 +200,16 @@ def test_the_drivers_bow_decision_has_two_witnesses():
     assert B.is_bow(None) is False
     assert B.FIGHT_TICK_S / B.BOW_FIGHT_TICK_S == 20.0                       # the fast loop is 20x the gun's
     assert B.BOW_TAP_HOLD_S > 0                                             # the press the game fires on
+
+def test_the_item_alone_buys_the_bows_forty_x_when_the_class_byte_misreads():
+    """The operator's "the bow isn't 20x": the class byte is one read and can name a gun while Krauser's bow (item
+    0x52) is in his hand, which leaves the 40x motion rate off and the arrows at the game's own pace. The item id is
+    the second witness (_motion_rate), and it has to buy the write on its own."""
+    ad = world()
+    st = {"fire_rate": 1.0}
+    s = snap(0x05)                      # a magnum's class byte: on the class alone the bow is missed
+    s["equipped_id"] = W.BOW_ITEM
+    assert M._motion_rate(ad, s, st) == 2
+    assert f32(ad, PLAYER + W.P_MOTION_SPEED) == 40.0
+    assert f32(ad, OBJ + W.OBJ_MOTION_SPEED) == 40.0
+    assert st["motion_rate"]["kind"] == "bow" and st["motion_rate"]["speed"] == 40.0
