@@ -50,9 +50,9 @@ DEFAULTS = {
     "kind": "launcher",
     "count": 10,
     "radius_cm": 600.0,
-    "inner_cm": 150.0,
+    "inner_cm": 305.0,             # 10 ft: the operator 2026-11-12, "eject them like 10 feet from the player"
     "ripple_ms": 40.0,
-    "min_safe_cm": 250.0,          # never closer than this, whatever the blast book says
+    "min_safe_cm": 305.0,          # never closer than 10 ft, whatever the blast book says
     "margin_cm": 250.0,            # extra clearance past the learned safe distance
     "max_radius_cm": 2500.0,       # the native ring's own ceiling
     "not_thinning_s": 8.0,         # pressure this long counts as a crowd that is not thinning

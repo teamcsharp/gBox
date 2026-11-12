@@ -149,7 +149,7 @@
       return out;
     }
     return {flash:sid=>send(sid,'flash_now'), equipPrimary:(sid,item)=>send(sid,'equip_primary',{item}),
-      grenadeRing:(sid,kind)=>send(sid,'grenade_ring',{kind:kind||'flash'}),
+      grenadeRing:(sid,kind,extra)=>send(sid,'grenade_ring',{kind:kind||'flash',...(extra||{})}),
       setInfiniteAmmo:(sid,enabled)=>{if(typeof enabled!=='boolean')return Promise.reject(Error('Infinite ammo needs an explicit on/off value.'));return send(sid,'set_infinite_ammo',{enabled});},
       poll, dispose() { dead=true; if(timer)cancel(timer); pending.clear(); }};
   }
@@ -186,8 +186,11 @@
       const row=Array.isArray(rows)?rows.find(r=>r?.kind===base.kind):null;
       if(row){
         const available=live&&caps&&row.available===true;
-        return {...base,available,reason:available?'':(row.reason||(!live?workerReason:
-          'The native grenade ring is not ready for this session.'))};
+        // A probe: built on the title's native path but with no live receipt yet. It stays selectable and its click
+        // carries allow_unverified, so the operator can actually use every shell/grenade type they asked for.
+        const probe=row.source==='probe';
+        return {...base,available,probe,label:probe?`${base.label} (probe)`:base.label,
+          reason:available?'':(row.reason||(!live?workerReason:'The native grenade ring is not ready for this session.'))};
       }
       if(!Array.isArray(rows)){                       // an older worker: no per-kind rows, flash only
         const available=live&&caps&&base.available===true;
@@ -201,7 +204,8 @@
     for(const row of (Array.isArray(rows)?rows:[])){
       if(!row?.kind||out.some(k=>k.kind===row.kind))continue;
       const available=live&&caps&&row.available===true;
-      out.push({kind:row.kind,label:kindLabel(row.kind),available,
+      const probe=row.source==='probe';
+      out.push({kind:row.kind,label:probe?`${kindLabel(row.kind)} (probe)`:kindLabel(row.kind),available,probe,
         reason:available?'':(row.reason||workerReason)});
     }
     return out;
@@ -254,7 +258,7 @@
         if(!rows||session!==selected()||!active())return;
         const row=rows.find(row=>row.kind===k);
         if(!row?.available)throw Error(row?.reason||'This grenade type is not available.');
-        return ring(session,k);
+        return ring(session,k,row.probe?{allow_unverified:true}:{});
       }).then(out=>{
         if(seq===sequence && session===selected() && out?.request)
           receipt(out.request.reason||'',{...out.request,sid:session});

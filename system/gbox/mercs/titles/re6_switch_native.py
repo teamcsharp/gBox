@@ -79,7 +79,7 @@ LAUNCHER_ITEM = 0x112
 # Radii in RE6 world units (centimetres, as everywhere in the bot). A flash takes no health, and the ring is still
 # placed outward so the same geometry is safe for an explosive kind once one is verified.
 RING_RADIUS_DEFAULT_CM, RING_RADIUS_MIN_CM, RING_RADIUS_MAX_CM = 600.0, 250.0, 2500.0
-RING_INNER_DEFAULT_CM, RING_SELF_CLEAR_CM = 150.0, 250.0
+RING_INNER_DEFAULT_CM, RING_SELF_CLEAR_CM = 305.0, 305.0   # 10 ft: never blast at his own feet (operator 2026-11-12)
 # The smallest radius an *explosive* kind (hand, incendiary) may be ringed at: the flash's 250 cm floor is inside a
 # grenade's blast. The scatter's learned reach default is 500-600 cm; the ring stays conservative and reports the clamp.
 RING_EXPLOSIVE_CLEAR_CM = 600.0
@@ -675,7 +675,7 @@ class Controller:
         radius_cm = d["radius_cm"] if radius_cm is None else float(radius_cm)
         radius_cm = max(floor_cm, min(radius_cm, RING_RADIUS_MAX_CM))
         inner_cm = d["inner_cm"] if inner_cm is None else float(inner_cm)
-        inner_cm = max(floor_cm if kind != "flash" else 0.0, min(inner_cm, radius_cm))
+        inner_cm = max(floor_cm, min(inner_cm, radius_cm))
         ripple_ms = d["ripple_ms"] if ripple_ms is None else float(ripple_ms)
         ripple_ms = max(0.0, min(ripple_ms, RING_RIPPLE_MS_MAX))
         expand = d["expand"] if expand is None else bool(expand)

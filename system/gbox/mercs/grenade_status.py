@@ -110,14 +110,18 @@ TITLES = {
                              "unconfirmed)"),
          "incendiary": Kind(False, "an incendiary-grenade ring is not yet verified on this build (its item "
                                    "class/DTI is unconfirmed)"),
-         "launcher": Kind(False, "the 360 launcher ring spawns the launcher's shell rounds (uWp1302/1303/1304) "
-                                 "through the parameterised class image; awaiting the first live ring receipt"),
-         "shell1302": Kind(False, "the launcher's Explosive round (uWp1302) is a probe through the parameterised "
-                                  "class spawn; awaiting the first live shell-ring receipt"),
-         "shell1303": Kind(False, "the launcher's Acid round (uWp1303) is a probe through the parameterised class "
-                                  "spawn; awaiting the first live shell-ring receipt"),
-         "shell1304": Kind(False, "the launcher's Nitrogen round (uWp1304, the freeze) is a probe through the "
-                                  "parameterised class spawn; awaiting the first live shell-ring receipt")},
+         # The operator 2026-11-12: "i cant even use them in the game" - every kind the title's native path implements
+         # (the launcher and its three shells) is OFFERED as a probe instead of greyed out: the PiP sends
+         # allow_unverified with the click, the controller runs its own probe, and the receipt says what happened.
+         # "Probe" is the honest word for a path that is built but has no live receipt yet.
+         "launcher": Kind(True, "probe: the 360 launcher ring spawns the launcher's shell rounds (uWp1302/1303/1304) "
+                                 "through the parameterised class image; no live ring receipt yet", "probe"),
+         "shell1302": Kind(True, "probe: the launcher's Explosive round (uWp1302) through the parameterised class "
+                                  "spawn; no live ring receipt yet", "probe"),
+         "shell1303": Kind(True, "probe: the launcher's Acid round (uWp1303) through the parameterised class spawn; "
+                                  "no live ring receipt yet", "probe"),
+         "shell1304": Kind(True, "probe: the launcher's Nitrogen round (uWp1304, the freeze) through the "
+                                  "parameterised class spawn; no live ring receipt yet", "probe")},
         controller="re6_switch_native",
     ),
     "re6_ps3": _title(
@@ -236,6 +240,11 @@ def rows(game=None, controller=None, ready_error: str = "") -> list | None:
                 # the mine-thrower ring is real and the PiP's click is handed to the bot (op grenade_ring kind mine).
                 continue
             available, reason = row.get("available") is True, str(row.get("reason") or "")[:300]
+            if existing is not None and existing.source == "probe" and not available:
+                # A probe kind stays OFFERED while the controller has no live receipt: the click carries
+                # allow_unverified and runs the controller's own probe. A verified row from the controller wins.
+                offered[row["kind"]] = Kind(True, existing.reason, "probe")
+                continue
             title_spec = title.kinds.get(row["kind"])
             built = bool(title_spec is not None and "is built" in (title_spec.reason or ""))
             if not available and on_demand and ATTACH_ON_DEMAND in reason and built:
@@ -284,7 +293,13 @@ def summary(game=None, controller=None, ready_error: str = "") -> dict:
     if rows_ is None:
         return {}
     working = [r["kind"] for r in rows_ if r["available"]]
+    # "verified" stays exactly that: a kind with a live receipt behind it. A probe (offered with allow_unverified) and
+    # a bot-served ring (RE4's mine thrower) are working but not verified, so they are named separately instead of
+    # inflating the verified list - the operator's button line must not claim a probe is proven.
+    verified = [r["kind"] for r in rows_ if r["available"] and r["source"] in ("native", "title")]
+    probes = [r["kind"] for r in rows_ if r["available"] and r["source"] == "probe"]
+    from_bot = [r["kind"] for r in rows_ if r["available"] and r["source"] == "bot"]
     blocked = next((r["reason"] for r in rows_ if not r["available"] and r["reason"]), "")
     return {"title": title_name(key), "key": key, "available": bool(working), "kinds": rows_,
             "reason": "" if working else (ready_error or blocked or "no grenade kind is available here"),
-            "verified": working}
+            "verified": verified, "probes": probes, "bot_served": from_bot}

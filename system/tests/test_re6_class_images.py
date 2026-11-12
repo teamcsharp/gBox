@@ -354,5 +354,5 @@ def test_the_flash_ring_keeps_its_verified_near_floor():
     ctl = class_controller()
     result = ctl.grenade_ring("flash", count=3, radius_cm=250.0, inner_cm=100.0)
     assert result["state"] == "confirmed"
-    assert result["radius_cm"] == 250.0 and result["inner_cm"] == 100.0
+    assert result["radius_cm"] == 305.0 and result["inner_cm"] == 305.0, "the ring never starts inside 10 ft"
     assert min(_distances(ctl, (1000.0, 800.0, -2000.0))) >= 100.0

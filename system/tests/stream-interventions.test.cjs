@@ -145,6 +145,25 @@ test('stale ammo reports never present a cached boolean as live or admit a new c
   assert.equal(v.disabled,true);assert.match(v.reason,/not current/);
 });
 
+test('a probe kind is offered, labelled and sent with allow_unverified',async()=>{
+  // The operator 2026-11-12: "i cant even use them in the game" - a kind built on the title's native path but without a
+  // live receipt must be selectable and its click must carry allow_unverified, or the launcher shells can never be tried.
+  const report={available:true,capabilities:['grenade_ring'],options:{grenade_kinds:[
+    {kind:'flash',available:true,reason:''},
+    {kind:'launcher',available:true,reason:'probe: the 360 launcher ring',source:'probe'}]}};
+  const rows=ringKindOptions(report);
+  const launcher=rows.find(r=>r.kind==='launcher');
+  assert.equal(launcher.available,true);
+  assert.equal(launcher.probe,true);
+  assert.match(launcher.label,/probe/);
+  assert.equal(rows.find(r=>r.kind==='flash').probe,false);
+  const posts=[];const c=create({uuid:()=> 'probe-id',schedule:()=>1,cancel:()=>{},api:async(path,body)=>{
+    if(body){posts.push(body);return {request:{id:body.request_id,state:'queued'}};}return {requests:[]};}});
+  await c.grenadeRing('sess','launcher',{allow_unverified:true});
+  assert.deepEqual(posts[0].args,{kind:'launcher',allow_unverified:true});
+  c.dispose();
+});
+
 test('ring types follow optional verified native choices and retain flash-only old-worker defaults',()=>{
   const base=[true,false,false,false,false,false,false,false];
   const old={available:true,capabilities:['grenade_ring'],options:{}};
