@@ -14,9 +14,12 @@ from gbox.mercs.titles import re4_switch as D
 
 @pytest.fixture(autouse=True)
 def _no_weapon_ask_leak():
-    """The mine ring's weapon request is a module-level ask: never let one test's ring arm the next test's hand."""
+    """The mine ring's weapon request and its process clock are module state: isolate every test from them."""
+    D.WEAPON_ASK.clear()
+    D.MINE_RING_CLOCK["at"] = None
     yield
     D.WEAPON_ASK.clear()
+    D.MINE_RING_CLOCK["at"] = None
 
 
 def mm(p):
@@ -245,3 +248,14 @@ def test_the_ring_waits_the_ninety_seconds_between_sweeps():
     assert b.stats["mine_ring_starts"] == 1
     b.tick(s, now=first + D.MINE_RING_EVERY_S + 0.5)                    # the 1.5 minutes are up: a new sweep
     assert b.stats["mine_ring_starts"] == 2
+
+
+def test_the_ring_clock_survives_a_fresh_run():
+    """MercMode relaunches the title every round: the 90 s clock must follow the process, not the run."""
+    D.MINE_RING_CLOCK["at"] = 100.0
+    b = bot()                                                           # a fresh run: its stats know nothing yet
+    s = _ring_snap([((0.0, 0.0, 800.0), 400, 400)])
+    b.tick(s, now=150.0)                                                # 50 s after the last ring: no ring
+    assert b.stats.get("mine_ring_starts", 0) == 0
+    b.tick(s, now=191.0)                                                # 91 s: due
+    assert b.stats["mine_ring_starts"] == 1

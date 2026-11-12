@@ -1724,6 +1724,11 @@ MINE_RING_SHOT_S = 0.5            # one dart this often (the throw's own animati
 MINE_RING_WINDOW_S = 20.0         # the whole sweep's budget: an unarmed ring ends here and the next waits 90 s
 MINE_RING_ARM_S = 4.0             # wait this long for the in-hand swap, then give up this ring
 MINE_RING_TOL = 0.22              # rad: fire a dart within this bearing of its heading
+#: The last ring's wall time, kept in the PROCESS: MercMode relaunches the title every round for a fresh donor build, so
+#: a per-run clock would restart at every relaunch and the operator's "every 1.5 minutes" would slip to every match.
+#: The bot reads this when its own stats are fresh, so the cadence holds across rounds and relaunches (the panel still
+#: shows the per-run mine_ring_last_at).
+MINE_RING_CLOCK: dict = {"at": None}
 #: The bosses whose attack is a one-blow kill (a chainsaw: Dr. Salvador, the Bella Sisters, Super Salvador). A boss
 #: with one of these keys approaches -> the defensive ring (grenade_ring.defend: the Nitrous round where the title has
 #: it, the flash - the stun every RE title has - on RE4/RE5).
@@ -2411,6 +2416,7 @@ class Bot:
         self.__dict__.pop("_mine_ring", None)
         self.stats["mine_ring_last_at"] = now
         self.stats["mine_ring_decision"] = reason
+        MINE_RING_CLOCK["at"] = now                       # the cadence survives a relaunch (see MINE_RING_CLOCK)
         if WEAPON_ASK.get("why") == "mine ring":
             WEAPON_ASK.clear()
 
@@ -2429,11 +2435,13 @@ class Bot:
         if st is None:
             last = self.stats.get("mine_ring_last_at")
             if not isinstance(last, (int, float)):
-                # The first tick arms the 90 s clock instead of firing at the round's start: the operator's cadence is
-                # "every 1.5 minutes during the match", not a ring on the opening frame (and a bot whose stats are fresh
-                # must not hijack its own opening fight).
-                self.stats["mine_ring_last_at"] = now
-                return None
+                # The first tick of a run: the process's own clock decides (a relaunch every round must not restart
+                # the 1.5 minutes), and with none yet the clock arms here - never a ring on the opening frame.
+                known = MINE_RING_CLOCK.get("at")
+                if not isinstance(known, (int, float)):
+                    MINE_RING_CLOCK["at"] = self.stats["mine_ring_last_at"] = now
+                    return None
+                last = self.stats["mine_ring_last_at"] = known
             due = now - last >= MINE_RING_EVERY_S
             early = isinstance(last, (int, float)) and now - last >= MINE_RING_DEFEND_S
             defend = early and any(
