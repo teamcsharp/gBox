@@ -90,6 +90,59 @@ def is_bow(snap) -> bool:
     return s.get("weapon_class") == BOW_CLASS or s.get("equipped_id") == BOW_ITEM
 
 
+def bonus_goal(bot, snap, now) -> bool:
+    """Mark the nearest reachable TIME BONUS he has not been sent to yet, when he has no mark of his own.
+
+    The operator: "traversing the level, going after the objectives ... going for all of the time bonuses". Nothing had
+    to be built for the walking: re4_walk.attach already wraps Bot.tick and operator_goal_act routes a 'point' goal and
+    FIGHTS the ones on the way, and every stage json already carries the bonuses (r400 8, r402 9, r403 15, r404 15) with
+    the walkable `stand` approach. What was missing was anyone issuing the mark.
+
+    A row is marked once per round (the id is in bot._bonus_issued) so an unreachable one cannot pin him to it for the
+    whole round: if the point goal expires, the next tick takes the next nearest.
+    """
+    try:
+        goals = re4_walk.goals_of(bot)
+        terminal = getattr(re4_walk.map_goals, "TERMINAL", ())
+        if goals.goal is not None and goals.goal.get("state") not in terminal:
+            return False                                  # his own mark, or a bonus still on its way
+        nav = (snap or {}).get("nav")
+        pos = ((snap or {}).get("player") or {}).get("pos")
+        if nav is None or not pos:
+            return False
+        issued = bot.__dict__.setdefault("_bonus_issued", set())
+        best = None
+        for row in getattr(nav, "bonuses", ()) or ():
+            if row.get("reachable") is False:
+                continue
+            bid = f"bonus-{row.get('source') or '?'}"
+            if bid in issued:
+                continue
+            at = row.get("stand") or row.get("pos")
+            if not at or len(at) < 3:
+                continue
+            d = math.hypot(at[0] - pos[0], at[2] - pos[2])
+            if best is None or d < best[0]:
+                best = (d, row, bid, at)
+        if best is None:
+            return False
+        _d, row, bid, at = best
+        bot.receive_map_goal({"id": bid, "round": goals.round, "kind": "point", "entity_id": 0,
+                              "pos": [float(at[0]), float(at[1]), float(at[2])],
+                              "label": f"time bonus +{row.get('seconds') or '?'}s"})
+        issued.add(bid)
+        stats = getattr(bot, "stats", None)
+        if isinstance(stats, dict):
+            stats["bonus_goals"] = stats.get("bonus_goals", 0) + 1
+            stats["bonus_goal_m"] = round(_d / 1000.0, 1)
+        return True
+    except Exception as exc:                              # noqa: BLE001 - a mark never costs the fight
+        stats = getattr(bot, "stats", None)
+        if isinstance(stats, dict):
+            stats["bonus_error"] = f"{type(exc).__name__}: {exc}"[:120]
+        return False
+
+
 def walk_track(stats: dict, snap, now: float) -> None:
     """How he is MOVING, for the run reviewer: metres walked, net displacement, how straight the path is, and how long
     he has been still. The operator, live 2026-11-12: "they're just turning back and forth in place while stumbling
@@ -432,6 +485,7 @@ def play(ad, send, stopped, sleep=time.sleep, stats: dict | None = None, *, cloc
                     _report(rnd, snap, stats, clock(), round_boundary, keys)
             if bot is not None and snap is not None:
                 stats["fight"] = "ram"
+                bonus_goal(bot, snap, clock())            # the nearest time bonus as a point goal (BONUS_ROUTE)
                 keys.apply(bot.tick(snap, now=clock()),
                            tap_hold=BOW_TAP_HOLD_S if is_bow(snap) else 0.0)
                 re4_walk.publish(pub, snap, bot, stats["screen"])
@@ -600,6 +654,7 @@ def play(ad, send, stopped, sleep=time.sleep, stats: dict | None = None, *, cloc
                         re4_walk.publish(pub, snap, bot, "playing")
                         sleep(BOW_FIGHT_TICK_S if is_bow(snap) else FIGHT_TICK_S)
                         continue
+            bonus_goal(bot, snap, clock())                # the nearest time bonus as a point goal (BONUS_ROUTE)
             keys.apply(bot.tick(snap, now=clock()),
                        tap_hold=BOW_TAP_HOLD_S if is_bow(snap) else 0.0)
             re4_walk.publish(pub, snap, bot, "playing")
