@@ -1547,9 +1547,12 @@ AIM_READY_S = 0.25                       # the gun up this long before the first
 RUN_BTN = "b"                            # held with the stick up: a run (the manual: B + left stick up)
 RUN_CM = 800.0 * MM_PER_CM                           # locating a Ganado farther than this: run, not walk
 QUICK_TURN = ("ldown", RUN_BTN)          # the 180 turn (the manual: B + left stick down), the escape from a crowd
-# How far behind him a target has to be before the fight uses the quick turn instead of the stick (2.2 rad ~ 126 deg):
-# less than that and the stick turn is quicker than a 180 plus a correction.
-QUICK_TURN_RAD = 2.2
+# When the quick turn is used instead of the stick. It must be near BEHIND him, because the quick turn is a FIXED 180
+# degrees: triggered at 126 deg it leaves the target 54 deg off on the other side, so the next tick quick-turns again and
+# he spins. Measured live 2026-11-12 (my first threshold was 2.2 rad / 126 deg): qturn reached 93 in a round with ZERO
+# kills across four samples - the bot quick-turned 60 times in 45 s and never fired. 2.9 rad = 166 deg: only a target
+# effectively behind him takes the 180, where the turn actually lands on it.
+QUICK_TURN_RAD = 2.9
 RELOAD_SHOTS = 1_000_000                 # never: infinite ammo, so a reload is pure lost firing time (the operator,
                                          # 2026-11-12: "no reload and infinite ammo. I want him just unloading on these
                                          # people"). Was 8 - the bot stopped to reload every eight shots at the first
