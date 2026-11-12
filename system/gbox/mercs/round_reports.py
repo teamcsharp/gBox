@@ -61,7 +61,11 @@ METRICS = {
                # The size of the blows, which decides the fix: a single hit from full to zero is avoidance, three hits
                # are healing throughput. last_hit reads "1860->0" (live 2026-11-12: a 68-kill round died and the report
                # could not say which it was).
-               'last_hit', 'last_hit_dmg', 'max_hit_dmg', 'hit_events'),
+               'last_hit', 'last_hit_dmg', 'max_hit_dmg', 'hit_events',
+               # And the same thing measured where it still exists: the heal runs every snapshot, so the deficit it
+               # reads BEFORE writing health back is the only true blow size (a driver-side per-tick sample sees full
+               # health even on a round that healed four times). mods_max_deficit is the round's largest blow.
+               'mods_heal_from', 'mods_max_deficit'),
     'mines': ('mines_placed', 'mine_attempts', 'mine_detonations_observed', 'mine_retreats_completed',
               'mine_pickups_avoided'),
     'engagement': ('kills', 'attacks_seen', 'attacks_prevented', 'attacks_avoided', 'attacks_landed', 'evades',

@@ -217,6 +217,13 @@ def _keep_life(ad, snap) -> int:
         now = struct.unpack("<H", bytes(ad.read_memory(addr, 2)))[0]
         if now <= 0 or now >= top:
             return 0
+        # The deficit BEFORE it is written away is the only honest measure of the blow: the heal runs on every snapshot,
+        # so it restores within the same tick and the driver's per-tick health sample never sees the lower value (live
+        # 2026-11-12: 4 heals in a round, health sampled at full every time, hit_events 0). A driver-side counter can
+        # never see this damage - it has to be read here, where it still exists.
+        st = _state(ad)
+        st["last_heal_from"] = now
+        st["max_deficit"] = max(int(st.get("max_deficit") or 0), top - now)
         ad.write_memory(addr, struct.pack("<H", top))
         return 1 if struct.unpack("<H", bytes(ad.read_memory(addr, 2)))[0] == top else 0
     except (ValueError, OSError, RuntimeError, struct.error):
@@ -1268,6 +1275,8 @@ def maintain(ad, snap: dict | None = None) -> dict:
                 if n:
                     st["heals"] = st.get("heals", 0) + n
                     out["heals"] = n
+                    out["heal_from"] = st.get("last_heal_from")
+                    out["max_deficit"] = st.get("max_deficit")
         if (st.get("weapon_power", 1.0) != 1.0 or st.get("max_level")) and st.get("fp_applied_boot") != boot:
             out["power_rows"] = _apply_power(ad, snap["module_base"], st)   # once a boot (the table is static data)
             st["fp_applied_boot"] = boot
