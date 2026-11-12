@@ -971,6 +971,10 @@ def snapshot(m, now: float | None = None, search: bool = True) -> dict:
                     laser = laser_of(aim, player)
                     if laser is not None:
                         snap["laser"] = laser
+                        if not laser.get("up"):
+                            # The line is there but the gun's state is not one LASER_UP_STATS accepts, so `fresh` never
+                            # becomes true and every shot takes the fallback heading - the ~40% rounds (2026-11-11).
+                            snap["laser_gate"] = laser_gate(aim, player)
                     else:
                         # Why the laser was refused. Every steady aim request depends on it, and the ~40% rounds could
                         # not say whether the class byte, the ray's origin or its length was refusing (2026-11-11).
