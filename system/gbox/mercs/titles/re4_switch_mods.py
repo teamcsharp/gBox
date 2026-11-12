@@ -610,7 +610,9 @@ SWAPPABLE = frozenset(W.MAX_LEVELS) | frozenset(lo["equips"] for lo in W.MERC_LO
 MAGNUMS = frozenset({0x29, 0x2A, 0x37})        # Broken Butterfly, Killer7, Handcannon
 SHOTGUNS = frozenset({0x2C, 0x2D, 0x94})       # Shotgun, Striker, Riot Gun
 PRIMARY = MAGNUMS | SHOTGUNS
-MAGNUM_SHARE = 0.8
+MAGNUM_SHARE = 1.0
+# operator 2026-11-11 19:20: "He needs to be using magnums and dispatching these foes as quickly as possible" - every
+# primary draw is a magnum now (the shotguns stay in the pool only when no magnum is available on the character).
 PRIMARY_SHARE = 1.0                            # operator 2026-11-11 15:59: no pistols in the draw - always a
                                                # magnum or a shotgun, both max level (the pistols upset the stream)
 

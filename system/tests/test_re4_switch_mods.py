@@ -499,9 +499,10 @@ def test_the_playbook_mods_panel_never_sums_a_record(monkeypatch, ad):
 def test_a_random_weapon_is_a_max_level_magnum_or_shotgun_every_round(ad):
     """The operator 2026-11-10: "the bot firing relentlessly with any weapon type magnum or shotgun with rapid fire";
     2026-11-11 15:59: "I'm seeing him still use pistols instead of shotguns and magnums. I want this character using
-    random weapons from the campaign maxed out." PRIMARY_SHARE is 1.0: every round a max-level magnum or shotgun in
-    his hand (a magnum MAGNUM_SHARE of those); the fire_rate tables written in the same round. A results -> playing
-    round is a new round too (only an intro used to count)."""
+    random weapons from the campaign maxed out."; 2026-11-11 19:20: "He needs to be using magnums and dispatching these
+    foes as quickly as possible." PRIMARY_SHARE is 1.0 (a primary every round) and MAGNUM_SHARE is 1.0 (the primary is
+    always a magnum - a shotgun only when the character has no magnum in the pool); the fire_rate tables written in the
+    same round. A results -> playing round is a new round too (only an intro used to count)."""
     W = _weapon_tables(ad)
     _armoury(ad)                                        # (the real weapon rows back over the fire-rate test's)
     st = M._state(ad)
@@ -528,7 +529,7 @@ def test_a_random_weapon_is_a_max_level_magnum_or_shotgun_every_round(ad):
         assert row == (W.RAPID_FIRE_FLOOR,) * 5, "the 20x tables (14 frames / 20 is under the gate: the floor)"
         assert st["weapon_rounds"][-1]["weapon"] == W.name(draws[-1])
         s = M.status(ad)
-        assert s["fire_tables_round"] == 2 and s["magnum_share"] == 0.8
+        assert s["fire_tables_round"] == 2 and s["magnum_share"] == 1.0
         assert len(s["weapon_rounds"]) == 12, "the last rounds' telemetry"
         assert set(s["weapon_primary"]) == {W.name(i) for i in M.PRIMARY}
         assert D.FIRE_GAP_S == max(M.FIRE_GAP_MIN_S, gap / 20), "the trigger taps paced to the 20x"
