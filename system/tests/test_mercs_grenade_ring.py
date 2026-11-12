@@ -123,6 +123,17 @@ class FakeRing:
         return {"state": self.state, "verified": self.state == "confirmed", "kind": kind,
                 "detonated": self.detonated, "requested": kw.get("count") or 10}
 
+    def launcher_kinds(self):
+        """The launcher rounds a Switch title offers (grenade_ring.launcher_rounds reads this first). The ring's default
+        kind is now "launcher", so the double has to answer it like a real controller does - in the report's own dict
+        shape ({"kind", "available"}), which is what launcher_rounds parses."""
+        return [{"kind": "shell1302", "available": True}, {"kind": "shell1303", "available": True},
+                {"kind": "shell1304", "available": True}]
+
+    def grenade_kinds(self):
+        return [{"kind": "hand", "available": True}, {"kind": "fire", "available": True},
+                {"kind": "flash", "available": True}]
+
 
 def test_fire_counts_deployed_rings_and_attributes_kills_in_its_window():
     ring, live = FakeRing(), stats(kills=10)
@@ -197,7 +208,7 @@ def test_a_group_earns_a_random_ring_at_least_every_ninety_seconds():
     when the crowd tests above do not, once the ninety seconds have passed since the last ring."""
     group = [enemy(100), enemy(160), enemy(220)]
     decision = GR.decide(snap(group), stats(), 100.0)
-    assert decision["fire"] is True and decision["kind"] == "random"
+    assert decision["fire"] is True and decision["kind"] == "launcher"
     assert "periodic" in decision["reason"] and decision["flash_ok"] is True
     assert decision["near"] == 3
     # inside the ninety seconds it does not fire on its own
@@ -298,6 +309,9 @@ def test_the_launcher_ring_uses_each_titles_own_rounds():
                     {"kind": "shell1303", "available": False}]
 
     class Re5(FakeRing):
+        def launcher_kinds(self):
+            raise NotImplementedError("RE5's launcher fires its grenades, it reports no shells")
+
         def grenade_kinds(self):
             return [{"kind": "flash", "available": True}]
 

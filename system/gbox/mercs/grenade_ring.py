@@ -40,7 +40,11 @@ DEFAULTS = {
     # threat"; inside near_cm alone the ring never went out)
     "danger_cm": 800.0,
     "cooldown_s": 20.0,            # at most one ring this often
-    "kind": "flash",               # flash is the verified kind on every title that has the ring
+    # The operator 2026-11-11: "a 360 grenade launcher blast ... every minute and a half". This DEFAULTS entry is what
+    # decide() puts in the decision, so while it read "flash" the periodic ring fired a flash/random throw instead of
+    # the launcher the operator asked for (live 2026-11-11 23:34: ring_kind=random on RE5 with ring_armed true). A
+    # title can still override it with its own RING_KIND.
+    "kind": "launcher",
     "count": 10,
     "radius_cm": 600.0,
     "inner_cm": 150.0,
@@ -97,7 +101,7 @@ def policy(title_module=None, stats=None) -> dict:
         out["near_cm"] = max(50.0, min(float(out["near_cm"]), 2000.0))
         out["danger_cm"] = max(out["near_cm"], min(float(out["danger_cm"]), 2000.0))
         out["enabled"] = bool(out["enabled"])
-        out["kind"] = str(out["kind"] or "flash")
+        out["kind"] = str(out["kind"] or "launcher")
     except (TypeError, ValueError):
         out.update({k: DEFAULTS[k] for k in ("enabled", "min_enemies", "cooldown_s", "kind", "radius_cm",
                                              "near_cm", "danger_cm", "periodic_s", "periodic_min_enemies")})
@@ -357,7 +361,10 @@ def launcher_rounds(target) -> list:
     shell rounds) or its grenade kinds (RE5/RE4, whose launcher fires the same grenades). Operator 2026-11-11 18:30:
     "I want to use the same everything across titles ... the same 360 grenade launcher blasts"."""
     try:
-        rows = target.launcher_kinds() if hasattr(target, "launcher_kinds") else target.grenade_kinds()
+        try:
+            rows = target.launcher_kinds()
+        except (AttributeError, NotImplementedError):
+            rows = target.grenade_kinds()      # a title with no launcher of its own fires its grenades
     except Exception:                                    # noqa: BLE001 - a controller without the report offers none
         return []
     return [(str(r.get("kind")), bool(r.get("available"))) for r in rows or ()
@@ -367,7 +374,7 @@ def launcher_rounds(target) -> list:
 def fire(ad, decision: dict, stats: dict, now: float, *, ring=None) -> dict:
     """Run the native ring once and keep the stats. Never raises for a game-side refusal; reports it."""
     target = ring or controller(ad)
-    kind = decision.get("kind") or "flash"
+    kind = decision.get("kind") or "launcher"
     allow_unverified = False
     if str(kind).lower() == "launcher":
         # Operator 2026-11-11 18:12/18:30: the 360 launcher-shot ring, the same across titles. The rounds are the
