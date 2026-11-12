@@ -182,16 +182,28 @@ def ME_point():
 
 
 def ensure_focus():
-    """Raise the game window when it is not in front. Returns True when it has focus."""
+    """Restore and raise the app window, then confirm it really has focus.
+
+    Returns True only when `game_has_focus()` says so, because `raise_window()` alone reports success on a minimised window while focus never arrives.
+    """
     if G.game_has_focus():
         return True
     if OP.operator_active():
         return False
-    if G.raise_window():
-        time.sleep(0.2)
-        if G.game_has_focus():
-            log("  took the screen to play")
-            return True
+    try:
+        import ctypes
+        u = ctypes.windll.user32
+        hwnd = G.app_window()
+        if hwnd:
+            u.ShowWindow(hwnd, 9)                 # SW_RESTORE from minimised
+            u.SetForegroundWindow(hwnd)
+    except Exception:                                            # noqa: BLE001
+        pass
+    if not G.game_has_focus():
+        G.raise_window()                          # its own attach/focus path
+    if G.game_has_focus():
+        log("  held the window in front to play")
+        return True
     return False
 
 
@@ -231,7 +243,7 @@ def switches():
 
 
 def press_switches():
-    """Walk to the nearest switch and flip it. Returns True when it did something."""
+    """Walk to the nearest switch and flip it: step toward it (which turns the character), then press A."""
     found = switches()
     if not found:
         return False
@@ -245,10 +257,6 @@ def press_switches():
                 RUN.run_to(ME_point(), (waypoint[0], waypoint[1]), tolerance=5.0, budget=12.0)
                 if OP.operator_active():
                     return True
-        else:
-            RUN.run_to(ME_point(), (target["x"], target["z"]), tolerance=5.0, budget=15.0)
-        log(f"    walked to {math.dist((player()[0], player()[2]), (target['x'], target['z'])):.0f} units")
-    # step toward it (which turns the character toward it, so the reticle appears) and press A each time
     for attempt in range(8):
         me = player()
         if me is None:
