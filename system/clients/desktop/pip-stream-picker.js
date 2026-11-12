@@ -168,7 +168,6 @@
   }
   function html(entries, sid, title = row => row.title || row.game_title || row.game_id || 'Game', broadcast = false) {
     return '<div class="pip-stream-heading"><strong>Streams</strong><span>View another instance</span>' +
-      '<button type="button" data-stream-add title="Start a recent game into the PiP">+</button>' +
       (broadcast ? '<button type="button" data-stream-broadcast="auto" title="Let the broadcast follow the active game again">Broadcast: Auto</button>' : '') + '</div>' +
       '<div class="pip-stream-carousel"><button type="button" data-stream-step="-1" aria-label="Previous stream" title="Previous stream">‹</button>' +
       '<div class="pip-stream-cards" role="group" aria-label="Running game streams">' + (entries.length ? entries.map(({row,status:state}) =>
@@ -176,7 +175,7 @@
         `<span class="pip-stream-picture"><img alt="" data-stream-preview="${esc(row.session_id)}"><span data-stream-state>${esc(labels[state])}</span>${row.session_id === sid ? '<b class="pip-stream-selected">Watching</b>' : ''}</span>` +
         `<strong>${esc(name(row) || identity(row).workerId || 'Instance')}</strong><span>${esc(title(row))}</span></button>` +
         (broadcast ? `<button type="button" class="pip-stream-broadcast" data-stream-broadcast="${esc(row.session_id)}" ${state === 'ready' ? '' : 'disabled'} aria-label="Broadcast ${esc(title(row))} on ${esc(name(row))}">Broadcast</button>` : '') + '</div>').join('') :
-        '<p class="pip-stream-empty">No active streams. Waiting for a game to be ready.</p>') + '</div>' +
+        '<p class="pip-stream-empty">No active streams. Waiting for a game to be ready.</p>') + '<button type="button" class="pip-stream-card pip-stream-add-tile" data-stream-add title="Start a recent game into the PiP" aria-label="Add a game">' + '<span class="pip-stream-picture" style="display:flex;align-items:center;justify-content:center;font-size:34px;font-weight:300;line-height:1">+</span>' + '<strong>Add game</strong><span>Recent launches</span></button>' + '</div>' +
       '<button type="button" data-stream-step="1" aria-label="Next stream" title="Next stream">›</button></div>' +
       '<p class="pip-stream-status" role="status">Switching views keeps every game running.</p>';
   }
@@ -208,16 +207,41 @@
       addMenu.innerHTML = '<div style="padding:6px 8px;font-size:11px;color:#9aa3b4">Recently played</div>' +
         '<div style="padding:6px 8px;font-size:12px;color:#9aa3b4">Loading…</div>';
       document.body.appendChild(addMenu);
-      let games = [];
+      let games = [], previous = null;
       try {
-        const answer = await io.api ? await io.api('/api/catalog') : null;
-        const rows = Array.isArray(answer) ? answer : (answer?.items || answer?.games || answer?.entries || []);
-        games = (rows || []).filter(row => row && (row.game_id || row.id))
-          .sort((a, b) => Number(b.last_played || 0) - Number(a.last_played || 0))
-          .slice(0, 12);
-      } catch { games = []; }
+        const [sessionAnswer, catalogAnswer] = await Promise.all([
+          io.api ? io.api('/api/sessions') : null,
+          io.api ? io.api('/api/catalog') : null,
+        ]);
+        const sessions = Array.isArray(sessionAnswer) ? sessionAnswer : (sessionAnswer?.items || []);
+        const catalog = Array.isArray(catalogAnswer) ? catalogAnswer : (catalogAnswer?.items || catalogAnswer?.games || []);
+        const byId = new Map((catalog || []).filter(game => game && (game.game_id || game.id))
+          .map(game => [String(game.game_id || game.id), game]));
+        // What the operator launched themselves: sessions they own, not agent or Merc runs.
+        const mine = (sessions || []).filter(row => row && row.agent_owned === false && row.game_id)
+          .sort((a, b) => Number(b.started || 0) - Number(a.started || 0));
+        const seen = new Set();
+        for (const row of mine) {
+          const id = String(row.game_id);
+          if (seen.has(id)) continue;
+          seen.add(id);
+          const entry = byId.get(id);
+          if (!entry) continue;
+          // Never a Mercenaries title, whatever launched it.
+          if (/mercenar/i.test(String(entry.title || entry.alt_title || row.title || ''))) continue;
+          if (!previous) previous = entry;
+          games.push(entry);
+          if (games.length >= 12) break;
+        }
+      } catch { games = []; previous = null; }
       if (!addMenu) return;
-      addMenu.innerHTML = '<div style="padding:6px 8px;font-size:11px;color:#9aa3b4">Recently played</div>' +
+      const previousRow = previous
+        ? '<button type="button" role="menuitem" data-add-previous="" style="display:block;width:100%;text-align:left;padding:7px 8px;' +
+          'background:#22304a;border:1px solid #33456b;border-radius:5px;color:#e6edf3;font:inherit;cursor:pointer;margin-bottom:4px">' +
+          'Launch the previous game<span style="display:block;font-size:11px;color:#9aa3b4">' +
+          esc(previous.title || previous.game_id) + '</span></button>'
+        : '';
+      addMenu.innerHTML = '<div style="padding:6px 8px;font-size:11px;color:#9aa3b4">Your recent launches</div>' + previousRow +
         (games.length ? games.map((game, index) =>
           '<button type="button" role="menuitem" data-add-game="' + index + '" style="display:block;width:100%;text-align:left;padding:6px 8px;' +
           'background:transparent;border:0;border-radius:5px;color:#e6edf3;font:inherit;cursor:pointer">' +
@@ -225,6 +249,13 @@
           '<span style="display:block;font-size:11px;color:#9aa3b4">' + esc(game.platform || '') +
           (game.last_played ? ' · played' : '') + '</span></button>').join('')
           : '<div style="padding:6px 8px;font-size:12px;color:#9aa3b4">No games in the catalog</div>');
+      addMenu.querySelector('[data-add-previous]')?.addEventListener('click', async () => {
+        const game = previous;
+        dismissAdd();
+        if (!game) return;
+        try { await io.launch(game); if (valid()) message('Starting ' + (game.title || game.game_id) + '…'); }
+        catch (error) { if (valid()) message('Could not start it: ' + String(error?.message || error)); }
+      });
       addMenu.querySelectorAll('[data-add-game]').forEach(buttonEl => {
         buttonEl.addEventListener('click', async () => {
           const game = games[Number(buttonEl.dataset.addGame)];
