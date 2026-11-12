@@ -43,8 +43,14 @@ DEFAULTS = {
     "drop_jitter_s": 2.5,          # +/- so the drops land anywhere in the 5-10 s window ("randomly in the match")
     "count": 6,                    # six a ring: "dropping even more remote mines"
     "radius_cm": 200.0,
-    "rings_before_detonate": 4,    # "massive quantities ... then detonate": 24 bombs by default
-    "detonate_after_s": 75.0,      # or a forced detonation this long after the first ring of the set
+    # 1 and 20 (was 4 and 75): the operator, 2026-11-12: "the bot needs to be placing rings of remote bombs every
+    # minute and a half at least ... It is imperative they are always placing bombs and running around the level
+    # detonating them" and "make sure that they blow up all of the mines that they drop on the ground". Four rings
+    # before a detonation left up to 24 bombs lying - the live RE6 round measured mine_ring_bombs 63 with
+    # mine_bombs_since_detonate 12 and only 2 detonations - which is the "mines on the ground that do not go up" the
+    # operator saw. One ring, then a forced detonation 20 s after it, so what he drops is what goes up.
+    "rings_before_detonate": 1,
+    "detonate_after_s": 20.0,
     # Operator 2026-11-11 17:50: "detonating them as they get distance away from them" - the flag never goes while he
     # is inside a lying ring's blast; once he is detonate_safe_cm clear of every centre the set goes.
     "detonate_safe_cm": 350.0,

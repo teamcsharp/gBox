@@ -91,7 +91,7 @@ def test_the_rule_drops_a_ring_then_detonates_the_set_through_the_flag(monkeypat
     monkeypatch.setattr(N, "bomb_ring_now", ring_now)
     monkeypatch.setattr(N, "bomb_detonate_now", detonate_now)
     step = RM.control(None, {"map_id": TITLE})
-    live = stats(remote_mines={"drop_jitter_s": 0, "rings_before_detonate": 4})
+    live = stats(remote_mines={"drop_jitter_s": 0, "rings_before_detonate": 4, "detonate_after_s": 75})
     first = step(snap(), live, 100.0, lambda keys: True)
     assert first["fired"] is True and calls[0] == ("ring", 6, 200.0)
     assert live["mine_rings_dropped"] == 1 and live["mine_rings_since_detonate"] == 1
