@@ -618,7 +618,12 @@ SMOOTH_CLOSE = True      # up close the target is kept until it dies or leaves T
 def piece(flag: bool) -> bool:
     return bool(flag or SMOOTH)
 FLIP_S, DOT_SWITCH_TICKS = 1.5, 2
-UNAIM_HOLD_S, UNAIM_HARD, MIN_UP_S, RERAISE_FRAC = 0.25, math.radians(75), 0.5, 0.75
+UNAIM_HOLD_S, UNAIM_HARD, MIN_UP_S, RERAISE_FRAC = 0.25, math.radians(75), 1.2, 0.75
+# MIN_UP_S 0.5 -> 1.2. The laser reader's own docstring (laser() above) records the measurement: the sight reads ZERO
+# with the gun down, comes alive ~0.2 s after ZL goes down, and zero again ~50 ms after it is let go. Every RE5 weapon's
+# kill path needs the sight's dot (sweep: hit is not None, 3710), so a drop-and-re-raise inside that window is a window
+# with no shot in it - and live 2026-11-12 the journal's aim ages were 0.12 / 0.28 / 0.67 s, i.e. the gun was being let
+# go about as fast as the sight came up. 1.2 s makes "the gun is up" last long enough to contain a live sight and a shot.
 MOTION_COUNTERS = ("target_switches", "target_flips", "aim_reversals", "stick_onsets", "raises", "unaims")
 # His own level first (live 12:06: the camera pointed at the sky for 2 s, the aim pitched up at a Majini on a roof inside
 # the MAX_DY window, while ground Majini closed in and grabbed him): a Majini off his level costs LEVEL_COST x its
