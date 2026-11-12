@@ -160,16 +160,29 @@ def game_has_focus():
         return False
 
 
+def _owner_pid(hwnd):
+    """The process id that owns a window."""
+    pid = ctypes.wintypes.DWORD()
+    user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
+    return pid.value
+
+
 def send(events, attempts=2):
-    """Deliver keys only if the game already has focus. Never raises, never focuses, never types elsewhere."""
-    if not game_has_focus():
+    """Deliver keys to the window that actually carries them into the game.
+
+    gBox runs the emulator headless and forwards the keyboard itself, so the target is the gBox window's process, found through `app_window()` - not
+    the emulator pid, whose visible window (if any) is not the render surface.
+    """
+    hwnd = app_window()
+    if not hwnd:
         return False
+    target = _owner_pid(hwnd)
     for _ in range(attempts):
         try:
-            win_send_keys(_pid(), events, polite=False)
+            win_send_keys(target, events, polite=False)
             return True
         except RuntimeError as exc:
-            if "must be active" not in str(exc):
+            if "must be active" not in str(exc) and "isn't open" not in str(exc):
                 raise
             time.sleep(0.15)
     return False
