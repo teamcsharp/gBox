@@ -156,7 +156,11 @@ def test_kind_options_mark_only_flash_available():
     assert rows["flash"]["available"] is True and not rows["flash"]["reason"]
     assert rows["hand"]["available"] is False and rows["hand"]["reason"]
     assert rows["incendiary"]["available"] is False and rows["incendiary"]["reason"]
-    assert set(rows) == {"flash", "hand", "incendiary"}
+    # the launcher's shell rounds are implemented research kinds: listed, refused (no live receipt yet) and with their
+    # own reason - the launcher ring reaches them through allow_unverified only
+    assert set(rows) == {"flash", "hand", "incendiary", "shell1302", "shell1303", "shell1304"}
+    for kind in ("shell1302", "shell1303", "shell1304"):
+        assert rows[kind]["available"] is False and "launcher" in rows[kind]["reason"]
 
 
 def test_ring_needs_a_living_player_and_flash_resources(monkeypatch):
