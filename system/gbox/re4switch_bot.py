@@ -759,7 +759,11 @@ def _maintain_mods(ad, snap: dict, stats: dict) -> None:
     if isinstance(given, dict):
         stats["weapon_given"] = (f"{given.get('name') or given.get('id')} verified={given.get('verified')} "
                                  f"{given.get('reason') or ''}").strip()[:160]
-    for key in ("motion_rate_kind", "motion_rate_class", "motion_rate_routine", "aim_ram_writes", "aim_sway_zeroed"):
+    # heal_below proves the threshold heal's setting actually loaded (it was dropped twice: once by SAVED_KEYS, once by
+    # the cached state) and heals proves it acted - both were invisible, so a heal that never ran looked like a heal that
+    # ran and never triggered.
+    for key in ("motion_rate_kind", "motion_rate_class", "motion_rate_routine", "aim_ram_writes", "aim_sway_zeroed",
+                "heal_below", "heals"):
         if st.get(key) is not None:
             stats[key] = st[key]
     # Whether the bow's 40x motion write is ON, and why it was refused: the state keeps it under st["motion_rate"]
