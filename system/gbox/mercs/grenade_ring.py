@@ -310,7 +310,10 @@ def decide(snap: dict, stats: dict, now: float, policy_: dict | None = None, *, 
     # the operator 2026-11-11: at least one ring every two minutes while a group is on him, whatever the tests above
     # said; the kind is drawn from the controller's honestly available kinds ("random ammunition types")
     periodic = float(policy_.get("periodic_s") or 0.0)
-    if periodic > 0 and near >= int(policy_.get("periodic_min_enemies") or 2) and \
+    # One enemy is enough once the timer is due: the operator asked for the blast every 90 s "throughout the match", and
+    # a round that churns in under the guard/while only a straggler is near it used to skip the blast entirely (live
+    # 2026-11-11: RE4 cycling rounds 9-12 with no ring telemetry at all).
+    if periodic > 0 and near >= max(1, int(policy_.get("periodic_min_enemies") or 1)) and \
             (not isinstance(last, (int, float)) or now - last >= periodic):
         held = flash_held(snap, stats, policy_, title)
         # The kind stays the title's (RING_KIND, the launcher): this branch used to hardcode "random", so the 90 s ring
