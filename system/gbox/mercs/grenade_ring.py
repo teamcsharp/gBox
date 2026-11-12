@@ -225,7 +225,11 @@ def dangerous(enemy, title: str | None = None) -> bool:
 def observe(stats: dict, snap: dict, now: float, policy_: dict | None = None) -> dict:
     """Per-tick bookkeeping: the crowd history and the kills attributed to the last ring."""
     policy_ = policy_ or policy(stats=stats)
-    round_id = stats.get("round_evidence_id") or ""
+    # The per-round clock. round_evidence_id is the native round's identity when the driver publishes one (RE5/RE6);
+    # a driver that publishes none (RE4's snapshot has no such key) used to fall back to "", so ring_round_id never
+    # changed and ring_round_at was never set - the every-90-s periodic could never fire (live 2026-11-11 22:28: RE4's
+    # rounds 1 and 2 ran with an empty ring_round_at). Fall back to the round counter the engine always counts.
+    round_id = str(stats.get("round_evidence_id") or stats.get("rounds") or stats.get("round") or "round")
     if stats.get("ring_round_id") != round_id:
         stats["ring_round_id"] = round_id
         stats["ring_round_at"] = now
