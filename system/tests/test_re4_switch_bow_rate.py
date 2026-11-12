@@ -186,3 +186,17 @@ def test_the_rate_reports_the_live_class_and_routine_it_saw():
     st2 = {"fire_rate": 20.0}
     M._motion_rate(ad2, snap(0x05), st2)
     assert st2["motion_rate_class"] == 0x05 and st2["motion_rate_routine"] == [0, 6, 2, 1] and st2.get("motion_rate") is None
+
+def test_the_drivers_bow_decision_has_two_witnesses():
+    """The 20x loop is chosen by the DRIVER, and it used to read weapon_class alone (live 2026-11-12: the operator's
+    "the bow is supposed to be firing 20x" while the class byte did not read 0x1C, so the bow kept the gun's loop and
+    raised without discharging). Either witness - the class byte or the equipped item - must buy the fast loop."""
+    from gbox import re4switch_bot as B
+
+    assert B.is_bow({"weapon_class": B.BOW_CLASS}) is True                 # the class byte, Krauser's 0x1C
+    assert B.is_bow({"equipped_id": B.BOW_ITEM}) is True                   # ...and the item id on its own
+    assert B.is_bow({"weapon_class": None, "equipped_id": B.BOW_ITEM}) is True
+    assert B.is_bow({"weapon_class": 0x08, "equipped_id": 0x37}) is False   # a shotgun round is not the bow
+    assert B.is_bow(None) is False
+    assert B.FIGHT_TICK_S / B.BOW_FIGHT_TICK_S == 20.0                       # the fast loop is 20x the gun's
+    assert B.BOW_TAP_HOLD_S > 0                                             # the press the game fires on
