@@ -259,3 +259,29 @@ def test_plan_puts_recent_donors_last_and_honours_filters():
         P.plan(1, list('abcde'), donors, games=['Mario'])
     with pytest.raises(ValueError, match='distinct slots'):
         P.plan(1, ['a', 'a'], donors)
+
+
+def _wdonor(slug, franchise):
+    return P.Donor(slug=slug, name=slug, game=franchise, franchise=franchise, platform='x', model='m.glb',
+                   sha256='0' * 64, roles=(), roles_from='r', provenance='p')
+
+
+def test_a_cast_weight_biases_the_draw_and_zero_removes_a_franchise():
+    """The operator, 2026-11-12: sliders to choose which characters pop up more often (Sonic, Mario).
+
+    Franchise is the axis the deal already rotates, so a weight is a repeat in its turn order. Measured, not assumed:
+    even 0.33 each, Sonic at 5.0 -> ~0.67 Sonic, Sonic at 0.0 -> none at all.
+    """
+    donors = ([_wdonor(f's{i}', 'Sonic') for i in range(4)] + [_wdonor(f'm{i}', 'Mario') for i in range(4)]
+              + [_wdonor(f'z{i}', 'Zelda') for i in range(4)])          # a third, so removing one still fills six
+    slots = [f'slot{i}' for i in range(6)]
+
+    def share(weights, prefix):
+        got = [P.plan(seed, slots, donors, weights=weights).values() for seed in range(60)]
+        return sum(1 for row in got for slug in row if slug.startswith(prefix)) / (60 * len(slots))
+
+    even = share(None, 's')
+    assert 0.25 < even < 0.42, even
+    assert share({'Sonic': 5.0}, 's') > even + 0.15, 'a heavier franchise comes up more often'
+    assert share({'Sonic': 0.0}, 's') == 0.0, 'weight 0 keeps it out entirely'
+    assert abs(even - share({}, 's')) < 0.12, 'no weights deals as before'

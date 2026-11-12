@@ -434,7 +434,8 @@ def donors_of(report: dict) -> list[Donor]:
 
 
 def plan(seed, slots: list[str], donors: list[Donor], *, history: list | tuple = (), avoid_last: int = 3,
-         games: list[str] | None = None, exclude: set[str] | frozenset = frozenset()) -> dict[str, str]:
+         games: list[str] | None = None, exclude: set[str] | frozenset = frozenset(),
+         weights: dict | None = None) -> dict[str, str]:
     """{slot: donor slug} dealt from a seed: a donor at most once, recently used donors last, franchises in turn.
 
     `history` lists earlier overlays, oldest first, each a {slot: slug} mapping or a list of slugs; donors of the last
@@ -465,6 +466,17 @@ def plan(seed, slots: list[str], donors: list[Donor], *, history: list | tuple =
             if (slug in recent) == tier and slug not in chosen.values():
                 groups.setdefault(donor.franchise, []).append(slug)
         order = sorted(groups)
+        # WEIGHTS: a franchise the operator wants to see more often takes more places in the turn order, so the
+        # round-robin below reaches it sooner and more often. 0 removes it outright; 1 (the default) is the even share.
+        # The operator, 2026-11-12: "sliders that allows me to choose which characters pop up more often ... Sonic the
+        # Hedgehog characters, I want to see them more often ... Mario characters". Franchise is the axis the deal
+        # already rotates, so the slider is a repeat count here and nothing else has to change. Unknown names and a
+        # missing mapping are simply the even share, so an empty weights dict deals exactly as before.
+        if weights:
+            w = {str(k).strip().lower(): float(v) for k, v in weights.items()}
+            order = [f for f in order if w.get(str(f).strip().lower(), 1.0) > 0]
+            order = [f for f in order
+                     for _ in range(max(1, min(20, int(round(w.get(str(f).strip().lower(), 1.0))))))]
         rng.shuffle(order)
         for group in groups.values():
             rng.shuffle(group)
