@@ -313,7 +313,18 @@ class Controller(N.Controller):
             raise Unavailable("native call already pending")
         self.write(self.heap + 0x6C0, struct.pack("<9Q", self.base + off, *args, *([0] * (8 - len(args)))))
         self.publish_call(self.heap + 0x6A8)
-        self.wait(lambda: self.w(self.heap + 0x6A8) == 3, timeout)
+        try:
+            self.wait(lambda: self.w(self.heap + 0x6A8) == 3, timeout)
+        except Uncertain as exc:
+            # The RE5 ring's live failure (2026-11-11 18:47: "native completion uncertain") came through here without
+            # the mailbox state the RE6 call reports, so the next experiment was data-less. State 1 = the callback
+            # never ran, 2 = it ran and stalled; off names the request.
+            try:
+                state = self.w(self.heap + 0x6A8)
+            except (OSError, ValueError, struct.error):
+                state = None
+            raise Uncertain(f"native completion uncertain; request will not be replayed "
+                            f"(heap state {state!r}, off {off:#x})") from exc
         return self.q(self.heap + 0x6B8)
 
     def recover_completed_call(self):
