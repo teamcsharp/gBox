@@ -1320,6 +1320,10 @@ def status(ad, snap: dict | None = None) -> dict:
            "kill_time_added": round(st.get("kill_time_added", 0.0), 1), "capped_total": st.get("capped_total", 0),
            "clock_holds": st.get("clock_holds"),
            "unlimited_health": bool(st.get("unlimited_health")), "life_kept": st.get("life_kept", 0),
+           # heal_below is shown so the threshold heal can be verified from the live telemetry alone: a setting that
+           # never loaded cannot be distinguished from one that loaded and never triggered (live 2026-11-12: the heal
+           # was configured, dropped by SAVED_KEYS, and the only symptom was a health bar that kept falling).
+           "heal_below": st.get("heal_below"), "heals": st.get("heals", 0),
            "infinite_ammo": bool(st.get("infinite_ammo")), "fire_rate_x": st.get("fire_rate", 1.0),
            "random_weapon": bool(st.get("random_weapon")), "weapon_given": st.get("weapon_given"),
            "random_weapon_route": "in_hand" if _code_patch_refusal(ad) else "code_patch",
