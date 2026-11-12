@@ -190,7 +190,12 @@
     let menuEl = null;
     // Recently played games, for the + button: launch one into the PiP without leaving it.
     let addMenu = null;
-    function dismissAdd() { if (addMenu) { addMenu.remove(); addMenu = null; } }
+    function dismissAdd() {
+      if (addMenu) {
+        addMenu.remove(); addMenu = null;
+        try { window.gboxPipCover?.(false); } catch {}
+      }
+    }
     async function openAdd(event) {
       // No gate may return quietly: launching a game does not depend on which session this menu belongs to.
       const button = event.target.closest?.('[data-stream-add]');
@@ -213,6 +218,8 @@
         '<div data-add-list style="max-height:50vh;overflow:auto">' +
         '<div style="padding:8px;font-size:12px;color:#9aa3b4">Loading your games…</div></div>';
       document.body.appendChild(addMenu);
+      // The game is a GPU surface above the page: take it down while this panel is up.
+      try { window.gboxPipCover?.(true); } catch {}
       console.log('pip add: panel appended');
 
       const call = async (path, init) => {
@@ -243,7 +250,8 @@
           const entry = byId.get(id);
           if (entry && !/mercenar/i.test(String(entry.title || entry.alt_title || ''))) recent.push(entry);
         }
-        console.log('pip add: sessions', (sessions || []).length, 'catalog', catalog.length, 'recent', recent.length);
+        console.log('pip add: sessions', (sessions || []).length, 'catalog', catalog.length, 'recent', recent.length,
+          'owned', (sessions || []).filter(item => item && (item.agent_owned === false || item.agent_owned === 'false')).length);
       } catch (error) {
         console.log('pip add: read failed', String(error && error.message || error));
       }
