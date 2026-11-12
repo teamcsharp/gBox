@@ -660,7 +660,7 @@ class Screensaver:
             switch_cold = merc_pick and self._switch_slot(merc_pick['title'], merc_cfg)
             keep = [r['session_id'] for t, r in self._warm(w, self.store.running_sessions(), now).items()
                     if r.get('session_id') and r.get('state') != 'releasing'
-                    and not (switch_cold and self._switch_slot(t, merc_cfg))]
+                    and not (switch_cold and self._switch_slot(t, merc_cfg) == switch_cold)]
             if keep:
                 inp["keep_sessions"] = keep
         job = self.submit(JobRequest(tool="launch_game", input=inp, agent_use=True, low_priority=True,
@@ -897,33 +897,48 @@ class Screensaver:
         return mercmode.PREPARE_FEATURE in (w.get('features') or [])
 
     def _switch_slot(self, title, cfg):
-        """True when a MercMode title plays on the host's single shared Switch emulator (Citron/Eden). Only one such
-        title may be resident - playing or warm - at a time: a second emulator process aborts the boot (session exit
-        -6, observed on lilspark 2026-11-02), so RE5 and RE6 Switch never co-exist. A switch between two of them is
-        therefore cold (the resident one is stopped first), never a warm preload beside the one still running."""
+        """The Switch emulator this title needs (``"citron"`` or ``"eden"``; ``""`` for a non-Switch title). Two Switch
+        titles may be resident together only on DIFFERENT emulators: the -6 abort is one emulator's second instance
+        (RE4 runs on Citron, RE5/RE6 on Eden - adapters.SWITCH_CITRON_TITLES, the live 2026-11-11 pair installed on the
+        Spark). A same-kind switch is cold (the resident one stops first); a cross-kind switch may run both at once - the
+        operator's multiple-instances seamless rotation."""
         from . import mercmode
-        return bool(title) and mercmode.title_spec(title, cfg).get('platform') == 'switch'
+        try:
+            spec = mercmode.title_spec(title, cfg) if title else {}
+            if (spec or {}).get('platform') != 'switch':
+                return ''
+            from .adapters import switch_linux_kind
+            game = {'serial': spec.get('map_id'), 'platform': 'switch', 'title': spec.get('name')}
+            return switch_linux_kind(game, self.config) or 'switch'
+        except Exception:                                    # noqa: BLE001 - the conservative one-slot answer
+            return 'switch' if title else ''
 
     def _resident_switch_titles(self, w, cfg, playing_title=None, exclude=None):
-        """Switch-slot titles resident on this PC right now (the playing run's title and every warm-pool entry), minus
-        `exclude`. A non-empty set means a new Switch title must not be booted beside them."""
+        """Switch emulator kinds resident on this PC right now (the playing run's title and every warm-pool entry),
+        minus `exclude`. A kind in this set means a new Switch title of the SAME kind must not be booted beside it;
+        a different kind may (the 2026-11-11 Citron+Eden pair: RE4 beside RE5/RE6)."""
         from . import mercmode
         out = set()
-        if playing_title and playing_title != exclude and self._switch_slot(playing_title, cfg):
-            out.add(playing_title)
+        if playing_title and playing_title != exclude:
+            kind = self._switch_slot(playing_title, cfg)
+            if kind:
+                out.add(kind)
         for t in mercmode.warm_pool(self.store, w['name']):
-            if t != exclude and self._switch_slot(t, cfg):
-                out.add(t)
+            if t != exclude:
+                kind = self._switch_slot(t, cfg)
+                if kind:
+                    out.add(kind)
         return out
 
     def _release_other_switch(self, w, keep_title, now):
-        """Stop and drop every warm-pool Switch title except keep_title, so exactly one Citron/Eden process runs when
-        keep_title cold-launches (two of them abort with -6)."""
+        """Stop and drop every warm-pool Switch title on the SAME emulator as keep_title, so its cold launch has the
+        slot (two same-emulator processes abort with -6; a title on the OTHER emulator may stay warm)."""
         from . import mercmode
         cfg = mercmode.settings(self.store, w['name'])
+        keep_kind = self._switch_slot(keep_title, cfg)
         running = self.store.running_sessions()
         for title, row in list(self._warm(w, running, now).items()):
-            if title != keep_title and self._switch_slot(title, cfg):
+            if title != keep_title and keep_kind and self._switch_slot(title, cfg) == keep_kind:
                 if self._warm_owned(w, row, running):
                     self._warm_stop(w, row, f'one Switch emulator only: freeing it for {keep_title}')
                 mercmode.take_warm(self.store, w['name'], title)
@@ -1280,9 +1295,10 @@ class Screensaver:
             return self._finish(w,run,now,'adopted session ownership changed; game left untouched')
         nxt_title = (self.store.get(mercmode.NEXT, w['name']) or {}).get('title')
         if self._switch_slot(run['mercmode']['title'], cfg) and nxt_title != run['mercmode']['title'] \
-                and self._switch_slot(nxt_title, cfg):
-            # the next title needs the same single Citron/Eden emulator: this one cannot stay warm beside it (two
-            # processes abort with -6), so it is stopped to free the slot and the next one cold-launches alone
+                and self._switch_slot(nxt_title, cfg) == self._switch_slot(run['mercmode']['title'], cfg):
+            # the next title needs the SAME Switch emulator: this one cannot stay warm beside it (two processes abort
+            # with -6), so it is stopped to free the slot and the next one cold-launches alone. A next title on the
+            # OTHER emulator (RE4's Citron beside RE5/RE6's Eden) lets this one park warm - the seamless pair.
             return self._stop(w, run, now, why + f' (freeing the Switch emulator for {nxt_title})')
         if not self._warm_capable(w, cfg) or mercmode.memory_reason(w, now) or not owned:
             return self._stop(w, run, now, why)
