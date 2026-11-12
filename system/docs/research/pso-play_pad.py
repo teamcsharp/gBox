@@ -87,6 +87,40 @@ def entities():
     return sorted(foes, key=lambda row: row["distance"]), sorted(switches, key=lambda row: row["distance"])
 
 
+EXIT_WORDS = ("Portal", "Warp", "Exit", "Gate", "Teleport", "Vr", "Stair")
+
+
+def exits():
+    """Exit-like objects: the way out of the area, whatever the game calls it."""
+    me = player()
+    if me is None:
+        return []
+    raw = S.read_memory(TABLE, MAX_ENTRIES * 4)
+    out = []
+    for index in range(MAX_ENTRIES):
+        pointer = int.from_bytes(raw[index * 4:index * 4 + 4], "big")
+        if not (0x80000000 <= pointer < 0x81800000):
+            continue
+        try:
+            name_pointer = int.from_bytes(S.read_memory(pointer, 4), "big")
+            if not (0x80000000 <= name_pointer < 0x81800000):
+                continue
+            name = S.read_memory(name_pointer, 32).split(b"\x00")[0].decode("ascii", "replace")
+            if not name or not any(word in name for word in EXIT_WORDS):
+                continue
+            blob = S.read_memory(pointer, 0x340)
+            if len(blob) < 0x340:
+                continue
+            x, y, z = struct.unpack(">fff", blob[POS:POS + 12])
+        except Exception:                                        # noqa: BLE001
+            continue
+        if name.startswith("TObjPlayer"):
+            continue
+        out.append({"class": name, "x": x, "y": y, "z": z,
+                    "distance": math.dist((me[0], me[2]), (x, z))})
+    return sorted(out, key=lambda row: row["distance"])
+
+
 def rooms_for(current_floor):
     try:
         return json.loads((ROUTES / f"forest{current_floor}-rooms-mesh.json").read_text(encoding="utf-8")).get("rooms") or []
@@ -122,6 +156,8 @@ def main(seconds=3600.0):
         return 1
     started = time.time()
     target_room = None
+    start_floor = int.from_bytes(S.read_memory(0x805D5FC0, 4), "big")
+    log(f"starting on floor {start_floor}")
     while time.time() - started < seconds:
         if os.path.exists(r"D:\gBox\pso-ds\PAUSED") or OP.operator_active():
             time.sleep(0.6)
@@ -129,6 +165,25 @@ def main(seconds=3600.0):
         me = player()
         if me is None:
             time.sleep(1.0)
+            continue
+        here_floor = int.from_bytes(S.read_memory(0x805D5FC0, 4), "big")
+        if here_floor != start_floor:
+            log(f"AREA CLEARED: floor {start_floor} -> {here_floor}")
+            start_floor = here_floor
+        way_out = exits()
+        if way_out:
+            log(f"exit {way_out[0]['class']} at {way_out[0]['distance']:.0f} units")
+            for _ in range(30):
+                gap = approach(pad, me, (way_out[0]["x"], way_out[0]["z"]), tolerance=2.5, seconds=0.4)
+                pad.press("a", 0.3)
+                time.sleep(0.4)
+                now_floor = int.from_bytes(S.read_memory(0x805D5FC0, 4), "big")
+                if now_floor != start_floor:
+                    log(f"AREA CLEARED: floor {start_floor} -> {now_floor}")
+                    start_floor = now_floor
+                    break
+                if gap is not None and gap < 3:
+                    break
             continue
         foes, switches = entities()
         live = [switch for switch in switches if switch["state"] != 2]
