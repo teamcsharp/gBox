@@ -946,10 +946,12 @@ def snapshot(m, now: float | None = None, search: bool = True) -> dict:
                 if snap.get("weapon_class") is None and snap.get("equipped_id") in _w.CLASS_OF:
                     snap["weapon_class"] = _w.CLASS_OF[snap["equipped_id"]]
                 # An id neither table knows cannot be aimed at or modelled: live 2026-11-12 a round read weapon=33 with
-                # CLASS_OF[0x33] a KeyError, fired 19 shots and landed none. Name it in the stats instead of letting it
-                # look like an aim failure.
+                # CLASS_OF[0x33] a KeyError, fired 19 shots and landed none. Name it ON THE SNAP - this function has no
+                # stats to write to, and the NameError that came of trying was not in the except list below, so it
+                # escaped snapshot() and threw the WHOLE snapshot away on every tick with an unmapped class (live
+                # 2026-11-12: snapshot_error "NameError: name 'stats' is not defined" while kills sat at 0).
                 if snap.get("weapon_class") is not None and int(snap["weapon_class"]) not in CLASS_FAMILY:
-                    stats["weapon_unmapped"] = int(snap["weapon_class"])
+                    snap["weapon_unmapped"] = int(snap["weapon_class"])
             except (ValueError, OSError, TypeError, IndexError, AttributeError):
                 pass
         if 0 <= game["kills"] <= MERC_KILLS_MAX:

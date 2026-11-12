@@ -882,6 +882,8 @@ def _snapshot(m, stats: dict) -> dict | None:
         stats["snapshot_error"] = f"{type(exc).__name__}: {exc}"[:160]
         return None
     driver.watch_into(m, snap, stats)                        # the E3 .bss watch (the harness's mailbox evidence)
+    if snap.get("weapon_unmapped") is not None:              # (named on the snap: snapshot() has no stats to write)
+        stats["weapon_unmapped"] = snap["weapon_unmapped"]
     stats["timer"] = snap.get("timer")
     stats["clock_addr"] = hex(snap["clock_addr"]) if isinstance(snap.get("clock_addr"), int) else None
     stats["enemies_read"] = len(snap.get("enemies") or ())

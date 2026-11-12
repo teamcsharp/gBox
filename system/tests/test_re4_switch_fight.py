@@ -637,3 +637,12 @@ def test_the_backoff_does_not_chain_into_a_retreat_loop():
     b.__dict__["_hurt_at"] = 10.0
     b.__dict__["_backoff_block_until"] = 12.0                  # a backoff just happened
     assert b._hit_backoff(s["player"], live, s, 10.1) is None
+
+
+def test_the_snapshot_builder_never_references_stats():
+    """snapshot() is module level and has no stats to write to. A bare `stats[...]` there is a NameError, and NameError
+    was not in that block's except list, so it escaped snapshot() and threw the WHOLE snapshot away - on every tick with
+    an unmapped weapon class (live 2026-11-12: snapshot_error "NameError: name 'stats' is not defined", kills 0)."""
+    import inspect
+    src = inspect.getsource(D.snapshot)
+    assert "stats[" not in src, "snapshot() must name things on the snap, never in a stats dict it does not have"
