@@ -34,8 +34,9 @@ And the follow-ups that arrived during the work:
 | RE4: the ring runs every 1.5 minutes | **working** | `MINE_RING_EVERY_S = 90`; `MINE_RING_CLOCK` keeps the clock in the worker process so a MercMode relaunch between rounds does not restart it; 3 completed sweeps in one session |
 | RE4: the ring defends against a chainsaw boss | **working** | `_mine_ring_step` pulls the ring early (45 s min gap) when a `chainsaw`/boss enemy is within 10 m; the boss lock reports `boss_target_key salvador` |
 | All titles: the ring fires by itself every 90 s | **RE4 yes; RE5/RE6 rule yes, native blast no** | RE5/RE6 read `ring_armed true` and take the periodic decision; RE6's *launcher shell* ring stalls in the native call (`heap state 2, off 0x18f2bc0`), RE4's native harness never ticks (see Blockers) |
-| PiP status bar deploys a ring in any Merc match | **RE6 yes (partial ring); RE4 via the bot (needs one restart); RE5 flash live earlier** | a `grenade_ring flash` POST on RE6 reached the worker and spawned `detonated 1` (self_damage 0) before RE6's explosion confirmation stopped it; RE4's "Mine" kind now hands the click to the bot (`scheduled: true` receipt) — `interventions.py` needs a restart to load it |
-| Choose any shell / grenade type | **chooser complete; most native kinds unverified** | the PiP chooser, API and status carry all eight kinds (flash, hand, incendiary, launcher, explosive/acid/nitrogen shells, mine); the launcher shells are a probe, RE4's flash/hand attach but the harness is dead |
+| PiP status bar deploys a ring in any Merc match | **RE4 verified live; RE6 flash 10/10 confirmed; RE5 flash live earlier** | after the restart, the RE4 session's "Mine" button was posted through the API and the bot swept **ten darts with the Mine Thrower verified in hand** (`mine_ring_starts 1, mine_ring_shots 10, "ring complete: 10 darts"`); on RE6 a `grenade_ring flash` click produced `state confirmed, detonated 10`; the "Mine" click on RE4 is served by the bot (scheduled receipt), not the dead harness |
+| Choose any shell / grenade type | **chooser complete, every built kind selectable** | all eight kinds are offered; a kind built on the title's native path but without a live receipt is labelled "(probe)" and its click carries `allow_unverified` (the launcher and its three shells on RE6), so nothing is greyed out except what the title truly does not build |
+| The ring ejects at least 10 ft from him | **done** | `grenade_ring`'s default inner and safe floor are 305 cm, and both native controllers' `RING_INNER_DEFAULT_CM`/`RING_SELF_CLEAR_CM` are 305 with a hard floor (a caller cannot ask for a closer flash; explosive kinds keep their 600 cm floor) |
 | RE4: boss neutralized (magnum/shotgun, until dead) | **working, live** | `boss_kills 2`, `boss_released "killed"`, `boss_shots 59` on a 6500-health Salvador; `re4_switch_mods._boss_weapon` puts a magnum/shotgun in hand on sight |
 | Broadcast stays on MercMode, not PSO | **done** | `POST /api/broadcast/program {"session_id": <merc session>}` pins the program; the hub follows the rotation's relaunch to the next agent-owned session. The pin RESETS on a `gbox.service` restart (mode goes back to `auto`) — re-pin after any restart |
 
@@ -69,6 +70,7 @@ And the follow-ups that arrived during the work:
 | `09c8b685` | the 90 s clock lives in the worker process (`MINE_RING_CLOCK`) so a relaunch does not restart it |
 | `91d77af9` | the interventions status names all eight ring kinds |
 | `2dd6adc1` | PiP **Mine** button on RE4 → the bot's mine ring (`stats["mine_ring_force"]`), bot-served status row, honest scheduled receipt |
+| `d4cb129b` | the ring ejects ≥10 ft from him (305 cm inner + hard floor, radius raised with it) and every built kind is selectable as a "(probe)" that clicks with `allow_unverified` |
 
 Evidence doc: `system/docs/research/re4-boss-neutralization.md` (both rounds, live numbers, the selftest finding).
 
@@ -126,6 +128,10 @@ target_classs_own_width`, and `test_mercs_flash_window`'s minute test — verify
 
 ## The one-line state
 
-**RE4's 360 ring is real and running every 90 s in live matches (mine thrower, 10 darts, boss-killing) and the PiP can
-deploy it after one restart; RE6's launcher-shell ring and RE5's native ring still stop in the native layer, and the
-character/Sonic rotation is diagnosed but not built.** The goal is left **active** for the next owner.
+**RE4's 360 ring is real and running every 90 s in live matches (mine thrower, 10 darts, boss-killing) and the PiP's
+Mine button deploys it on demand (verified: ten darts, thrower in hand); the ring now ejects at least 10 ft from him
+and every built grenade kind is selectable (probes click with allow_unverified, RE6's flash ring confirmed 10/10);
+RE6's launcher-shell spawn and RE5's native blast still stop in the native layer, and the character/Sonic rotation is
+diagnosed but not built.**
+
+The goal is left **active** for the next owner.
