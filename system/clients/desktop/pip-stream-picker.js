@@ -282,8 +282,8 @@
         return '<button type="button" role="option" data-add-index="' + index + '" ' +
           'style="display:block;width:100%;text-align:left;padding:7px 8px;background:transparent;border:0;border-radius:5px;' +
           'color:#e6edf3;font:inherit;cursor:pointer">' + esc(label) +
-          '<span style="display:block;font-size:11px;color:#9aa3b4">' + esc(system) +
-          (item.tag === 'recent' ? ' · recent' : '') + '</span></button>';
+          '<span style="display:block;font-size:11px;color:' + (item.tag === 'recent' ? '#8fb6ff' : '#9aa3b4') + '">' +
+          esc(system) + (item.tag === 'recent' ? ' · recent' : '') + '</span></button>';
       };
       const draw = query => {
         const needle = String(query || '').trim().toLowerCase();
@@ -330,15 +330,33 @@
             try {
               const answer = await call('/api/catalog/best?q=' + encodeURIComponent(needle) + '&limit=30');
               const rows = Array.isArray(answer) ? answer : (answer && (answer.items || answer.games)) || [];
-              const found = (rows || []).filter(game => game && (game.game_id || game.id));
+              let found = (rows || []).filter(game => game && (game.game_id || game.id));
+              const owned = new Set(all.filter(item => item.tag === 'recent')
+                .map(item => String(item.game.game_id || item.game.id || '')));
+              // What you actually launched comes first; never-launched titles keep the server's order below.
+              found = found.slice().sort((a, b) => Number(b.last_played || 0) - Number(a.last_played || 0));
               console.log('pip add: server search', JSON.stringify(needle), '->', found.length);
               if (addMenu && found.length) {
                 addMenu.querySelector('[data-add-list]').innerHTML = found.map((game, index) => {
                   const label = String(game.title || game.alt_title || game.game_id);
                   const system = String(game.platform || (game.collections && game.collections[0]) || '');
-                  return '<button type="button" data-add-found="' + index + '" style="display:block;width:100%;text-align:left;' +
-                    'padding:7px 8px;background:transparent;border:0;border-radius:5px;color:#e6edf3;font:inherit;cursor:pointer">' +
-                    esc(label) + '<span style="display:block;font-size:11px;color:#9aa3b4">' + esc(system) + '</span></button>';
+                  const id = String(game.game_id || game.id || '');
+                  const launched = Number(game.last_played || 0) > 0 || owned.has(id);
+                  const mine = owned.has(id);
+                  // A launched title is framed and tinted so an obscure neighbour cannot be clicked by accident.
+                  const style = 'display:block;width:100%;text-align:left;padding:7px 8px;border-radius:5px;font:inherit;' +
+                    'cursor:pointer;color:#e6edf3;' +
+                    (mine ? 'background:#1b2b45;border:1px solid #4a7fd4;'
+                          : launched ? 'background:#182130;border:1px solid #35507a;'
+                                     : 'background:transparent;border:1px solid transparent;');
+                  const when = Number(game.last_played || 0);
+                  const age = when ? Math.max(0, Math.round((Date.now() / 1000 - when) / 86400)) : null;
+                  const note = mine ? 'recent' : launched ? (age === 0 ? 'launched today' : age === 1 ? 'launched yesterday'
+                    : age !== null ? 'launched ' + age + 'd ago' : 'launched') : '';
+                  return '<button type="button" data-add-found="' + index + '" style="' + style + '">' +
+                    esc(label) + '<span style="display:block;font-size:11px;color:' +
+                    (launched ? '#8fb6ff' : '#9aa3b4') + '">' + esc(system) +
+                    (note ? ' · ' + esc(note) : '') + '</span></button>';
                 }).join('');
                 addMenu.querySelectorAll('[data-add-found]').forEach(buttonEl => {
                   buttonEl.addEventListener('click', () => start(found[Number(buttonEl.dataset.addFound)]));
