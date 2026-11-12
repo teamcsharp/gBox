@@ -2675,7 +2675,11 @@ class Bot:
             # Too far to put a shot on him, so RUN at him: _run_to is the escape run's own mesh path (the quick turn
             # when he lies behind, then the walker with B), so this is traversal of the stage rather than standing in
             # the open trading shots the pad cannot land (see HUNT_RUN_MM).
-            if dist > HUNT_RUN_MM:
+            # NEVER at a heavy. A heavy (hp_max >= HEAVY_HP: the chainsaw Ganados, the Garrador, the Gatling man) kills
+            # from full life in one blow, and the rule for one is that it is "shot from beyond" HEAVY_KEEP_MM - running
+            # at it would carry him inside the range fire_first then answers the gun from, which is how he died on Base
+            # (hp 1860 -> 0 in two hits). A heavy past HUNT_RUN_MM falls through and is shot from here instead.
+            if dist > HUNT_RUN_MM and (e.get("hp_max") or 0) < HEAVY_HP:
                 self.target = e.get("ptr")
                 self.stats["hunts"] = self.stats.get("hunts", 0) + 1
                 self.doing, self.why = "hunt", f"{dist / (100.0 * MM_PER_CM):.0f} m off: running at him"
