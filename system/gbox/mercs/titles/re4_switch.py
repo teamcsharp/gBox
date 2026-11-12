@@ -550,6 +550,10 @@ DPAD = {"up": "dup", "down": "ddown", "left": "dleft", "right": "dright"}
 # Round entry (measured live 2026-11-04, docs/research/re4-switch-round-gate.md): the stage loads with intro banners up and
 # holds the whole round behind them. A pages them; one press is not enough, three start the clock, more are harmless.
 INTRO_PRESSES, INTRO_GAP_S = 3, 0.9
+# How long the intro screen may be confirmed for before the fight path resumes (see tick): a bound only, so a phase byte
+# that keeps saying intro during play cannot trap him tapping confirm forever. The live 2026-11-12 round never started
+# because this screen was treated as in_control (its clock is already running) and the confirm never fired.
+INTRO_MAX_S = 8.0
 
 
 def round_entry_events() -> list[dict]:
@@ -2649,7 +2653,19 @@ class Bot:
     def tick(self, snap: dict, now: float | None = None) -> dict:
         now = self.clock() if now is None else now
         game = snap.get("game")
-        if isinstance(game, dict) and not game.get("in_control"):
+        # The round intro needs a CONFIRM, and it is the one screen whose clock is already alive - so in_control is true
+        # there and the fight path ran instead of the confirm: live 2026-11-12, screen=intro with the clock at 120.0,
+        # intro_taps 1, not_in_control_ticks 1, and the menu driver's own pace line reading
+        # "round_intro settle 0.42 confirm 0.34 (16 ok / 195 miss)". The round never started. Bounded by INTRO_MAX_S so
+        # a phase byte that says intro during play can never trap him in confirm taps.
+        phase = str((game or {}).get("phase") or "") if isinstance(game, dict) else ""
+        if isinstance(game, dict) and phase == "intro":
+            self.__dict__.setdefault("_intro_since", now) if self.__dict__.get("_intro_since") is None else None
+        else:
+            self.__dict__["_intro_since"] = None
+        in_intro = phase == "intro" and self.__dict__.get("_intro_since") is not None \
+            and now - self.__dict__["_intro_since"] <= INTRO_MAX_S
+        if isinstance(game, dict) and (not game.get("in_control") or in_intro):
             act = self._not_in_control(game, now)       # never a shot, never "fire", at a screen that takes no aim
             self._publish_doing()
             return act
@@ -3029,8 +3045,8 @@ class Bot:
         # Why the shot was held, when it was: _may_fire records the gate it refused on, and nothing published it - so a
         # round could read t_aim 590 against t_fire 150 and threat_unanswered 675 ("the gun up, no shot past the raise's
         # grace") without ever naming WHICH gate held the trigger. This says it.
-        if self._gate:
-            self.stats["fire_gate"] = str(self._gate)[:120]
+        if self.__dict__.get("_gate"):
+            self.stats["fire_gate"] = str(self.__dict__["_gate"])[:120]
         if self.doing:
             k = "t_" + str(self.doing)
             self.stats[k] = self.stats.get(k, 0) + 1
@@ -3147,8 +3163,7 @@ class Bot:
         return {"hold": set()}
 
     # Not in control, read from the game's own state (snap["game"], game_state): what each phase presses, how often
-    NOT_IN_CONTROL_KEYS = {"intro": ("a", 0.5), "grabbed": ("a", 0.12), "held": ("a", 0.6), "case": ("b", 1.0),
-                           "dead": ("a", 1.5), "results": ("a", 1.0)}
+    NOT_IN_CONTROL_KEYS = {"intro": ("a", 0.5), "grabbed": ("a", 0.12), "held": ("a", 0.6), "case": ("b", 1.0),                           "dead": ("a", 1.5), "results": ("a", 1.0)}
 
     def _not_in_control(self, game: dict, now: float) -> dict:
         """The round's screen when the game says he is not in control (game_state): the intro card and a hold are paged

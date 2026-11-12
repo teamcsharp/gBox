@@ -648,7 +648,17 @@ def test_the_backoff_does_not_chain_into_a_retreat_loop():
     assert b._hit_backoff(s["player"], live, s, 10.1) is None
 
 
-def test_the_snapshot_builder_never_references_stats():
+def test_the_round_intro_is_confirmed_even_though_its_clock_is_alive():
+    """Live 2026-11-12: screen=intro with the clock at 120.0, intro_taps 1, not_in_control_ticks 1, and the menu
+    driver's pace line reading "round_intro settle 0.42 confirm 0.34 (16 ok / 195 miss)". The intro is the one screen
+    whose clock is already running, so in_control was true and the fight path ran instead of the confirm - and the
+    round never started. Bounded by INTRO_MAX_S so a phase byte that keeps saying intro during play cannot trap him."""
+    b = bot()
+    s = snap([((0.0, 0.0, 500.0), 400)], game={"phase": "intro", "in_control": True})
+    act = b.tick(s, now=1.0)
+    assert act.get("tap") == "a" and b.stats.get("not_in_control_ticks") == 1, "the intro is confirmed, not fought"
+    b.tick(s, now=1.0 + D.INTRO_MAX_S + 0.5)
+    assert b.stats.get("not_in_control_ticks") == 1, "past INTRO_MAX_S the fight path resumes"
     """snapshot() is module level and has no stats to write to. A bare `stats[...]` there is a NameError, and NameError
     was not in that block's except list, so it escaped snapshot() and threw the WHOLE snapshot away - on every tick with
     an unmapped weapon class (live 2026-11-12: snapshot_error "NameError: name 'stats' is not defined", kills 0)."""
