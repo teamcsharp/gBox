@@ -195,9 +195,17 @@ class Controls:
             if self.selection is not None:
                 chosen = self.selection['character']
                 if chosen not in choices:
-                    self.reason = 'The requested character is not currently unlocked; waiting at the menu'
-                    return None
-                self.character, self.reason = chosen, ''
+                    if not choices:
+                        self.reason = 'No character is currently unlocked; waiting at the menu'
+                        return None
+                    # The pick came from a longer roster list than this build's native select (live 2026-11-11: the
+                    # RE5 pick was character 12, the native roster has 10 entries, choose_character returned None, the
+                    # select walked to the spare PLAYER_TARGET and sat there forever). Map the index into the native
+                    # range instead of dead-locking the menu; the receipt records which character really played.
+                    chosen = choices[chosen % len(choices)]
+                    self.reason = (f'the pick {self.selection["character"]} is outside this build\'s native '
+                                   f'roster: playing {chosen}')
+                self.character = chosen
                 return chosen
             previous = self.once['character'] if self.once else self.current_character
             # RE5's select ids include costumes: Wesker STARS after Midnight is
