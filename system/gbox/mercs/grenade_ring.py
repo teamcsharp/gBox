@@ -322,6 +322,10 @@ KINDS = ("flash", "hand", "incendiary", "shell1302", "shell1303", "shell1304")
 #: draws one at random: the parameterised class spawn takes the shell's DTI, the game's projectile registration inside
 #: it carries the round, and the shell's own launcher path explodes it (the wrapper's detonate refuses a shell with 0).
 SHELL_KINDS = ("shell1302", "shell1303", "shell1304")
+#: The launcher's rounds in the game's item order: 0x133 the Grenade round, 0x134 the Acid round, 0x135 the Nitrogen
+#: round (the freeze). Operator 2026-11-11 19:49: "a 360 grenade launcher ring of Nitrogen at these enemies in order
+#: to freeze everyone around them" - the Nitrogen is the crowd-control round the ring prefers when the title offers it.
+LAUNCHER_PREFER = ("shell1304",)
 
 
 def pick_kind(target, decision: dict) -> str | None:
@@ -366,7 +370,8 @@ def fire(ad, decision: dict, stats: dict, now: float, *, ring=None) -> dict:
         if not rounds:
             stats["ring_error"] = "no launcher round kind is reported by this title"
             return {"state": "refused", "reason": stats["ring_error"]}
-        kind, available = random.choice(rounds)
+        preferred = [r for r in rounds if r[0] in LAUNCHER_PREFER]
+        kind, available = random.choice(preferred) if preferred else random.choice(rounds)
         allow_unverified = not available
     if str(kind).lower() == "random":
         kind = pick_kind(target, decision)
