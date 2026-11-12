@@ -760,6 +760,19 @@ def _maintain_mods(ad, snap: dict, stats: dict) -> None:
     # How he is manoeuvring, so a run can be reviewed on numbers: metres walked, how straight the path was, and how long
     # he has stood still (see walk_track).
     walk_track(stats, snap, time.time())
+    # His health, which the snapshot reads (re4_switch.player_life, module PLAYER_LIFE) and nothing published. The
+    # objective is "I dont want the bot getting hurt", and a round report could not show it: round_threat_hits is the
+    # doctrine's count of his health FALLING (respond._hurt), so 0 with outcome=died means the death was a single
+    # transition the counter never saw - an instant kill, not a slow loss. hp/hp_max make that checkable live.
+    pl = (snap or {}).get("player") or {}
+    if isinstance(pl.get("hp"), int):
+        stats["hp"] = pl["hp"]
+        if isinstance(pl.get("hp_max"), int):
+            stats["hp_max"] = pl["hp_max"]
+    # The doctrine's damage answer counters, so a round says whether he was hurt at all (respond.py owns them).
+    for key in ("threat_hits", "hurt_while_idle", "threat_unanswered", "threat_forced_fire", "threat_ticks"):
+        if st.get(key) is not None:
+            stats[key] = st[key]
     # The stage's TIME BONUSES, which the operator wants him going after ("traversing the level, going after the
     # objectives"). Every stage json carries them (r400 8, r402 9, r403 15, r404 15) and nothing read them until now, so
     # a round could not say whether an objective was even on the map. bonus_nearest_* is where the route will aim.
