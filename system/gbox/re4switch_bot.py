@@ -380,8 +380,15 @@ def _ring_step(ad, stats):
         # units_per_cm: RE4's snapshot positions are the game's millimetres (re4_switch.MM_PER_CM = 10), and the ring
         # rule speaks centimetres. Without it every distance the rule saw was 10x too big, so an 8 m boss never
         # counted as "within 800 cm" and the defensive/periodic rings could not see it.
-        return grenade_ring.control(ad, {"map_id": MAP_ID, "menus": "gbox.mercs.titles.re4_switch",
+        step = grenade_ring.control(ad, {"map_id": MAP_ID, "menus": "gbox.mercs.titles.re4_switch",
                                          "units_per_cm": driver.MM_PER_CM})
+        if step is None and stats is not None:
+            # A None here means the rule declined this title (never a game refusal). It used to be a silent None, and
+            # the operator could not tell "the ring never armed" from "the ring is waiting" (live 2026-11-12: no
+            # ring_armed key at all on RE4). Name the ids so the next read is an answer, not a hypothesis.
+            stats["grenade_ring_error"] = (f"the ring rule declined map_id {MAP_ID!r}: "
+                                           f"RING_TITLES={sorted(getattr(grenade_ring, 'RING_TITLES', ()))}")[:300]
+        return step
     except Exception as exc:                             # noqa: BLE001 - a rule that cannot load never ends a run
         stats["grenade_ring_error"] = f"{type(exc).__name__}: {exc}"[:160]
         return None

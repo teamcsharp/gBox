@@ -232,7 +232,9 @@ def rows(game=None, controller=None, ready_error: str = "") -> list | None:
         on_demand = callable(getattr(controller, "ensure_attached", None))
         for row in reported:
             available, reason = row.get("available") is True, str(row.get("reason") or "")[:300]
-            if not available and on_demand and ATTACH_ON_DEMAND in reason:
+            title_spec = title.kinds.get(row["kind"])
+            built = bool(title_spec is not None and "is built" in (title_spec.reason or ""))
+            if not available and on_demand and ATTACH_ON_DEMAND in reason and built:
                 available, reason = True, ""      # the click attaches the harness, then it fires (ensure_attached)
             offered[row["kind"]] = Kind(available, reason, "native")
     out = []

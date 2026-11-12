@@ -183,7 +183,8 @@ def test_a_controller_that_attaches_on_demand_is_advertised_not_refused():
     game = {"game_id": "270a15eb98dab4d7"}
     rows = {r["kind"]: r for r in G.rows(game, Attaches())}
     assert rows["flash"]["available"] is True and rows["hand"]["available"] is True
-    assert rows["mine"]["available"] is True
+    assert rows["mine"]["available"] is False, "the mine ring is a probe: the attach reason is not a build"
+    assert rows["mine"]["reason"]
     assert rows["incendiary"]["available"] is False, "a real refusal keeps its reason"
     other = {r["kind"]: r for r in G.rows(game, NoAttach())}
     assert other["flash"]["available"] is False and "not attached" in other["flash"]["reason"]
