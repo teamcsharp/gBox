@@ -1829,6 +1829,12 @@ THROW_ITEMS = {"hand": 0x01, "fire": 0x02, "flash": 0x0E}     # re4_weapons.NAME
 # always have the ability to use a first aid spray and heal themselves if they need to in the game ... I don't want them
 # bringing up the item screen. I want them able to just instantly just change their weapon by flipping a flag and
 # changing it to the first aid spray and using it in the game in order to survive."
+# OFF (2026-11-12) until the swap is proven on a live round: on Waterworld the round read doing=heal "the first aid
+# spray to hand (548 of 1560)" with the timer frozen at 126.06 across five minutes while last_frame_age stayed 0.0 -
+# frames arriving, round not advancing, HAND_STATE never confirming - and heals never completing. That is the bot and
+# the game stuck on an item swap, the "bringing up the item screen" the operator did not want. The feature stays in the
+# file (it is the route he asked for) but nothing calls it until it can be watched landing.
+HEAL_ON = False
 HEAL_ITEM = 0x05                        # re4_weapons.NAMES: "First Aid Spray"
 HEAL_BELOW, HEAL_HAND_S, HEAL_USE_S, HEAL_SETTLE_S = 0.55, 0.7, 0.15, 0.3
 # A FAILED swap must not become the round (live 2026-11-12, Waterworld: doing=heal "the first aid spray to hand (548 of
@@ -2937,6 +2943,8 @@ class Bot:
         for HAND_STATE to confirm the spray), use (tap it), settle, back (the gun again). Any failure aborts to the gun
         with the reason in stats rather than standing there holding a spray."""
         hp, top = p.get("hp"), p.get("hp_max")
+        if not HEAL_ON:
+            return None                                  # (see HEAL_ON: the swap froze a live round)
         if not isinstance(hp, int) or not isinstance(top, int) or top <= 0:
             return None                                  # no life reading: never guess at a heal
         st = self.__dict__.get("_heal")
