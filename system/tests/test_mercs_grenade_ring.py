@@ -257,3 +257,27 @@ def test_a_dead_player_gets_no_ring_and_no_error():
     GR.observe(live, snap(crowd), 100.0, GR.policy())
     d = GR.decide(dead(snap(crowd)), live, 100.0 + GR.RING_START_GUARD_S + 0.1)
     assert d["fire"] is False and "not alive" in d["reason"]
+
+
+def test_the_launcher_kind_fires_the_shell_round_ring():
+    """Operator 2026-11-11 18:12: the 360 launcher-shot ring. The policy's kind "launcher" draws one of the launcher's
+    shell rounds at random and fires the ring with allow_unverified (a research kind until it has a live receipt)."""
+    calls = []
+
+    class ShellRing(FakeRing):
+        def grenade_kinds(self):
+            return [{"kind": "flash", "available": True},
+                    {"kind": "shell1302", "available": False, "reason": "unverified"},
+                    {"kind": "shell1303", "available": False, "reason": "unverified"},
+                    {"kind": "shell1304", "available": False, "reason": "unverified"}]
+
+        def grenade_ring(self, kind, **kw):
+            calls.append((kind, kw.get("allow_unverified")))
+            return {"state": "confirmed", "verified": False, "kind": kind, "detonated": 1, "requested": 1}
+
+    live = stats()
+    out = GR.fire(None, {"kind": "launcher", "count": 8}, live, 100.0, ring=ShellRing())
+    assert out.get("state") == "confirmed" and calls and calls[0][0] in GR.SHELL_KINDS
+    assert calls[0][1] is True, "the launcher ring takes the unverified path: the spawn is the receipt"
+    assert live["ring_kind_fired"] in GR.SHELL_KINDS
+    assert live["rings_deployed"] == 1

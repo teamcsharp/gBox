@@ -95,10 +95,23 @@ def image_bytes(name: str) -> bytes:
 
 
 def class_for(kind: str) -> GrenadeClass:
-    try:
-        return CLASSES[(kind or "").lower()]
-    except KeyError:
-        raise KeyError(f"unknown grenade class {kind!r}") from None
+    """A ring kind's class: the thrown grenades, or the launcher's shell rounds by kind name (shell1302/1303/1304)."""
+    k = (kind or "").lower()
+    if k in CLASSES:
+        return CLASSES[k]
+    shell = SHELL_KINDS.get(k)
+    if shell is not None:
+        spec = SHELLS[shell]
+        return GrenadeClass(k, spec.item, spec.dti, None)
+    raise KeyError(f"unknown grenade class {kind!r}")
+
+
+#: The launcher rounds as ring kinds (operator 2026-11-11 18:12: "get me the 360 launcher-shot ring"). The round is a
+#: projectile the launcher spawns with a velocity; the parameterised spawn image takes its DTI exactly like the thrown
+#: grenades (the class_cave images are two NOPs), and the spawn's REGISTER_PROJECTILE hands it to the game's projectile
+#: manager. Its own explosion is the launcher path - our detonate wrapper refuses the shell's action class with 0
+#: (a clean refusal, never a crash), so the ring reports the spawned shell instead of pretending to detonate it.
+SHELL_KINDS = {"shell1302": "uWp1302", "shell1303": "uWp1303", "shell1304": "uWp1304"}
 
 
 # --- the launcher rounds (hand-off lane B item 2) ---------------------------------------------------------------------------

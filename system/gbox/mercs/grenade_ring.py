@@ -317,7 +317,11 @@ def controller(ad):
     return interventions.native_controller(ad)
 
 
-KINDS = ("flash", "hand", "incendiary")
+KINDS = ("flash", "hand", "incendiary", "shell1302", "shell1303", "shell1304")
+#: The launcher's own round classes (RE6 grenade launcher uWp1080, items 0x133-0x135). The ring's kind "launcher"
+#: draws one at random: the parameterised class spawn takes the shell's DTI, the game's projectile registration inside
+#: it carries the round, and the shell's own launcher path explodes it (the wrapper's detonate refuses a shell with 0).
+SHELL_KINDS = ("shell1302", "shell1303", "shell1304")
 
 
 def pick_kind(target, decision: dict) -> str | None:
@@ -341,6 +345,14 @@ def fire(ad, decision: dict, stats: dict, now: float, *, ring=None) -> dict:
     """Run the native ring once and keep the stats. Never raises for a game-side refusal; reports it."""
     target = ring or controller(ad)
     kind = decision.get("kind") or "flash"
+    allow_unverified = False
+    if str(kind).lower() == "launcher":
+        # Operator 2026-11-11 18:12: "get me the 360 launcher-shot ring" - the launcher's own shell rounds, spawned
+        # by the parameterised class image. They are a research kind until each has a live receipt, so the launcher
+        # ring takes allow_unverified: the spawn is what is being measured, and a refused spawn is a receipt, not a
+        # crash. The kind fires whole rings of one round class drawn at random.
+        kind = random.choice(SHELL_KINDS)
+        allow_unverified = True
     if str(kind).lower() == "random":
         kind = pick_kind(target, decision)
         if kind is None:
@@ -353,7 +365,8 @@ def fire(ad, decision: dict, stats: dict, now: float, *, ring=None) -> dict:
             receipt = target.grenade_ring(kind)          # RE4's ring picks its own count and radius
         else:
             receipt = target.grenade_ring(kind, count=decision.get("count"), radius_cm=decision.get("radius_cm"),
-                                          inner_cm=decision.get("inner_cm"), ripple_ms=decision.get("ripple_ms"))
+                                          inner_cm=decision.get("inner_cm"), ripple_ms=decision.get("ripple_ms"),
+                                          allow_unverified=allow_unverified)
     except Exception as exc:                             # noqa: BLE001 - a refused ring is a stat, not a crash
         stats["ring_last_at"] = now
         stats["ring_error"] = f"{type(exc).__name__}: {exc}"[:200]

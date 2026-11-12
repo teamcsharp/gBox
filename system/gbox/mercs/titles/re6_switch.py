@@ -64,7 +64,7 @@ MAX_ENEMIES = 512
 GET_DTI_SLOT, DTI_NAME = 5, 0x8
 # The grenade ring's auto-deploy rule (gbox.mercs.grenade_ring): settable from the PiP's bot-logic sidebar. RING off
 # never fires it; RING_N is the crowd inside a few metres that counts as surrounded; RING_EVERY_S is the cooldown.
-RING, RING_N, RING_EVERY_S, RING_KIND = True, 4, 20.0, "flash"
+RING, RING_N, RING_EVERY_S, RING_KIND = True, 4, 20.0, "launcher"
 # The scatter barrage's rule (gbox.mercs.grenade_ring.decide_scatter, operator 2026-11-10 ~07:00: "spray a scatter shot
 # of grenades from his postion at threats at will ... whenever the going gets tough"): a barrage at most every
 # SCATTER_EVERY_S, SCATTER_N rounds (re6_switch_native.grenade_scatter; the PiP's bot-logic sidebar sets them).

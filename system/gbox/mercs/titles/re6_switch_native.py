@@ -57,13 +57,17 @@ CLASS_WAIT_S = 2.0
 # parameterised spawn/detonate pair in native/re6_061d2a06/classes.py takes the class, so the ring *can* fire them
 # (`allow_unverified` on the controller, never on the queue); grenade_kinds() keeps advertising only the verified
 # ones until each has a receipt.
-RING_IMPLEMENTED_KINDS = ("flash",) + tuple(CLASSES.CLASSES)
+RING_IMPLEMENTED_KINDS = ("flash",) + tuple(CLASSES.CLASSES) + tuple(CLASSES.SHELL_KINDS)
 RING_KIND_REFUSED = {
     "hand": "a hand-grenade ring is not yet verified on this build (uWp1091 is known; the compiled spawn image pins "
             "the flash's class)",
     "incendiary": "an incendiary-grenade ring is not yet verified on this build (uWp1093 is known; the compiled spawn "
                   "image pins the flash's class)",
 }
+for _k, _shell in CLASSES.SHELL_KINDS.items():
+    RING_KIND_REFUSED[_k] = (f"the {_shell} launcher round spawns (the parameterised class spawn takes its DTI) but "
+                             f"its own explosion is the launcher's path: the detonate wrapper refuses a shell's action "
+                             f"class with 0 - the ring reports the spawned shell, never a blast it did not make")
 RING_KINDS = RING_VERIFIED_KINDS + tuple(RING_KIND_REFUSED)
 RING_COUNT_DEFAULT, RING_COUNT_MAX = 10, 16
 # Radii in RE6 world units (centimetres, as everywhere in the bot). A flash takes no health, and the ring is still
@@ -547,6 +551,24 @@ class Controller:
         missing transition so the ring aborts with a partial receipt instead of replaying a request.
         """
         spec = CLASSES.class_for(kind)
+        shell = CLASSES.SHELL_KINDS.get(kind)
+        if shell is not None:
+            # The launcher's round: the same verified parameterised spawn image with the shell's DTI. The game's own
+            # projectile registration inside it carries the round; the wrapper's detonate refuses the shell's action
+            # class (0, a clean refusal), so the receipt names the spawned shell - the launcher's fire/explode path is
+            # the shell's own (operator 2026-11-11 18:12: the 360 launcher-shot ring).
+            unit = self.call(CLASSES.SPAWN_CLASS[0], self.player, spec.dti, timeout=CLASS_SPAWN_TIMEOUT_S)
+            if not R.ptr_ok(unit):
+                raise Unavailable(f"native {kind} allocation refused")
+            born = self.w(unit + 0x1308)
+            self.write(unit + RING_UNIT_POS, struct.pack("<3f", x, y, z))
+            try:
+                action = R.unit_action(self, unit)
+            except Exception:                          # noqa: BLE001 - the diagnosis never masks the spawn
+                action = "unreadable"
+            return {"index": index, "kind": kind, "projectile_generation": born, "action": action,
+                    "pos": [round(x, 1), round(y, 1), round(z, 1)],
+                    "explode": "the shell's own launcher projectile"}
         if kind == "flash":
             unit = self.call(0x18F2880, self.player)
         else:
