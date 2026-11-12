@@ -232,6 +232,25 @@ def offline_job(job: dict) -> bool:
     return tool in OFFLINE_TOOLS or tool.startswith("rea_")
 
 
+def _session_live(sid: str, now: float) -> bool:
+    """Whether a store session is actually being played: its telemetry reported within SESSION_STALE_S. A zombie doc
+    (state running, its process dead after a restart or a hang - live 2026-11-11 18:57 blocked the next MercMode launch
+    with "a game is already running there" until it was stopped by hand) does not hold the launch. Unknown telemetry
+    counts as live: a game we cannot see is never launched over."""
+    try:
+        from .server import telemetry_get
+        live = telemetry_get(sid, now) or {}
+        if not live.get("running"):
+            return False
+        return float(live.get("age_s") if live.get("age_s") is not None else 0.0) <= SESSION_STALE_S
+    except Exception:                                        # noqa: BLE001 - never launch over what we cannot see
+        return True
+
+
+#: A session whose telemetry has not reported for this long is a zombie doc, not a game in play (the bot reports ~1 Hz).
+SESSION_STALE_S = 30.0
+
+
 def worker_reason(store, worker: dict, cfg: dict, running: list[dict], now: float | None = None) -> str | None:
     """Why this PC may not start a screensaver game now (None = it may). MercMode the operator started on this PC from the
     app (gbox.mercmode.operator_dispatch) is their own action: no idle wait and no background-testing tick, but never over
@@ -256,7 +275,8 @@ def worker_reason(store, worker: dict, cfg: dict, running: list[dict], now: floa
                       and worker['id'] in (j.get('worker_id'), j.get('require_worker')) and offline_job(j))
         if worker['active_jobs'] > own + offline:
             return "busy with jobs"
-    if any(s.get("session_id", "").startswith(worker["id"] + "-") and s.get("session_id") not in warm for s in running):
+    if any(s.get("session_id", "").startswith(worker["id"] + "-") and s.get("session_id") not in warm
+           and _session_live(s.get("session_id"), now) for s in running):
         return "a game is already running there"
     merc_cfg=mercmode.settings(store,worker['name'])
     if merc_cfg['enabled'] and (merc_cfg['presentation_priority'] or dispatched):
