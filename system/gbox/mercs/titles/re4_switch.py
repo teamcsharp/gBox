@@ -1119,7 +1119,10 @@ def step(scr: dict, now: float | None = None) -> str | None:
     if where in ("main_menu", "extras_menu"):
         cur, tgt = scr.get("cursor"), scr.get("target")
         if not isinstance(cur, int) or not isinstance(tgt, int):
-            return None
+            # The reader could not name the row (live 2026-11-11 22:43: RE4 parked on extras_menu at 0 rounds for the
+            # whole block). These are fixed lists whose target the reader still sets (EXTRAS_ROW / MERCENARIES_ROW), so
+            # a step down beats refusing every press: the walk keeps moving and the next frame names the cursor.
+            return DPAD["down"] if isinstance(tgt, int) else None
         if cur == tgt:
             return _confirm(where, now)
         return DPAD["down"] if cur < tgt else DPAD["up"]
