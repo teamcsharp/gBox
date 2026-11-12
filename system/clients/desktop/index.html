@@ -10,7 +10,10 @@
   html, body, section { scrollbar-width:none !important; } html::-webkit-scrollbar, body::-webkit-scrollbar, section::-webkit-scrollbar { display:none; }
 
   :root { color-scheme:dark; --bg:#16161a; --side:#111114; --fg:#e8e8ee; --mut:#9a9aa6; --line:#2c2c34; --card:#1f1f25; --acc:#7c96ff; --ok:#4cc26b; --bad:#ff6b6b; --warn:#e0b341; }
-  * { box-sizing:border-box; }
+  * { box-sizing:border-box; -webkit-user-select:none; user-select:none; }
+  /* text is legitimate only where it is typed */
+  input, textarea, select, [contenteditable=""], [contenteditable="true"], .selectable,
+  input *, textarea * { -webkit-user-select:text; user-select:text; }
   html, body { margin:0; height:100%; overflow:clip; background:var(--bg); color:var(--fg); font:14px/1.45 system-ui,sans-serif; }
   .app { display:grid; grid-template-columns:200px minmax(0,1fr); height:100vh; transition:grid-template-columns .15s; }
   .app > section { min-width:0; }
@@ -1309,7 +1312,7 @@ window.GBOX_STREAM_FETCH_HEALTH = async src => {
 <script src="../web/viz/stream-watchdog.js"></script>
 <style id="compact-game-style">
   body.gbox-compact { background:#000; overflow:hidden; }
-  body.gbox-compact > :not(.pso-review-window):not(.game-analysis):not(.ga-toggle):not(#gpu-game):not(.gbox-game-overlay):not(.gbox-stream-badge):not(#compact-stream):not(#compact-controls):not(#ssh-access-button):not(#ssh-access-popover):not(#compact-media):not(#compact-transition):not(#rebuild-panel):not(#pipmenu):not(.coach-menu):not(.coach-sub):not(.merc-weapon-menu):not(.merc-round-menu):not(.flash-shortcut-menu):not(.ring-kind-menu):not(#pad-takeover):not(#reconnect.f5):not(#bot-logic-tab):not(#bot-logic-panel):not(#taskpanel):not(#reqform):not(#task-evidence):not(#taskviz):not(#tkv-media):not(#gbox-mod-dialog):not(#gbox-toasts):not(script):not(style) { display:none !important; }   /* #pad-takeover: "You have control" while your pad drives the PiP's game */   /* .coach-menu / .coach-sub: the bot command dropdown and its tuning panel (operator 2026-10-26, #5300) */   /* #bot-logic-tab / #bot-logic-panel: the bot logic sidebar (2026-10-28: its arrow never showed) */
+  body.gbox-compact > :not(.pso-review-window):not(.game-analysis):not(.ga-toggle):not(#gpu-game):not(.gbox-game-overlay):not(.gbox-stream-badge):not(#compact-stream):not(#compact-controls):not(#ssh-access-button):not(#ssh-access-popover):not(#compact-media):not(#compact-transition):not(#rebuild-panel):not(#pipmenu):not(.pip-stream-menu):not(.pip-relaunch-prompt):not(.coach-menu):not(.coach-sub):not(.merc-weapon-menu):not(.merc-round-menu):not(.flash-shortcut-menu):not(.ring-kind-menu):not(#pad-takeover):not(#reconnect.f5):not(#bot-logic-tab):not(#bot-logic-panel):not(#taskpanel):not(#reqform):not(#task-evidence):not(#taskviz):not(#tkv-media):not(#gbox-mod-dialog):not(#gbox-toasts):not(script):not(style) { display:none !important; }   /* #pad-takeover: "You have control" while your pad drives the PiP's game */   /* .coach-menu / .coach-sub: the bot command dropdown and its tuning panel (operator 2026-10-26, #5300) */   /* #bot-logic-tab / #bot-logic-panel: the bot logic sidebar (2026-10-28: its arrow never showed) */
   body.gbox-compact #taskpanel { top:36px; right:8px; width:calc(100vw - 16px); height:calc(100vh - 44px); max-height:none; }
   body.gbox-compact #taskpanel .th { flex-wrap:wrap; padding:6px; }
   body.gbox-compact #reqform { position:fixed; inset:36px 8px 8px; z-index:80; overflow:auto; background:var(--bg); }
@@ -4817,8 +4820,9 @@ function pipMenu(x, y) {
     },
     // Start a recently played game into the PiP - the + button in the Streams panel.
     launch: async game => {
+      try { globalThis.gboxRememberGame?.(game); } catch {}
       const worker = (S.workerName || '').trim();
-      const body = { tool: '@launch', input: { game, node: S.workerId || undefined } };
+      const body = { tool: 'launch_game', input: { game } };
       const answer = await gbox.api('/api/jobs', body);
       if (!answer.ok) throw new Error(answer.error || 'the launch was refused');
       return answer.data;
