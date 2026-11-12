@@ -710,6 +710,10 @@ def play_round(prof, m, send, stopped, stats: dict, lessons=None, sleep=time.sle
                     stats["remote_mines_error"] = f"{type(exc).__name__}: {exc}"[:200]
                 else:
                     if remote_out.get("fired"):
+                        # Operator 2026-11-11 18:44: "dropping massive amounts of remote mines and running for his
+                        # life." The mine ring is escape cover: the same back-step window as the grenade ring, so he
+                        # is moving out of the cluster he just laid instead of standing on it.
+                        stats["ring_blast_until"] = now + RING_BLAST_HOLD_S
                         next_frame()
                         continue
             run = stats.get("player_damage_run")

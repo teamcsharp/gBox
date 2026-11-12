@@ -80,26 +80,27 @@ def test_the_threat_engine_ranks_by_signature_and_skips_the_dying():
     assert later[0].eta == pytest.approx(0.2)                           # lead_s minus the time in the swing
 
 
-def test_prompts_burst_then_rest_and_wait_while_an_attack_lands():
+def test_a_prompt_is_pressed_every_step_and_an_attack_lands_first():
+    """Operator 2026-11-11 18:40: "make sure that the bot is always able to catch these QTE events no matter what" - a
+    shown prompt is answered on every step (no 0.6 s gap, no burst-rest); an attack in flight still holds it."""
     stats = {}
     shown = {"b": "a"}
     pp = reactions.PromptPresser(source=lambda: shown["b"], stats=stats)
-    presses = [t for t in [x * 0.1 for x in range(40)] if pp.step(t)]
-    assert presses[:3] == pytest.approx([0.0, 0.6, 1.2]) and stats["prompt_presses"] == 3   # then resting
+    steps = [pp.step(t) for t in [x * 0.1 for x in range(40)]]
+    assert all(s == [("a",)] for s in steps) and stats["prompt_presses"] == 40
     assert pp.step(10.0, ok=lambda b: False) is None                    # held: an attack lands first
     assert pp.step(10.1) == [("a",)]
 
 
-def test_a_grab_is_shaken_off_every_step_even_while_prompts_rest():
+def test_a_grab_is_shaken_off_every_step():
     """SHAKE OFF drains 10 hp a frame until enough new presses come (live 2026-10-21): no gap, no rest, no hold."""
     stats, shown = {}, {"b": "a"}
     pp = reactions.PromptPresser(source=lambda: shown["b"], stats=stats,
                                  keys=lambda b: [("left", "a"), ("right", "b")] if b == "wiggle" else [(b,)])
-    for t in (0.0, 0.6, 1.2, 1.8):                                      # a stuck A prompt: three presses, then rest
+    for t in (0.0, 0.1, 0.2, 0.3):                                      # the prompt is pressed every step
         pp.step(t)
-    assert pp.step(2.0) is None and pp.rest_until > 2.0
-    shown["b"] = "wiggle"                                               # grabbed while resting
-    steps = [pp.step(2.0 + k * 0.05, ok=lambda b: False) for k in range(10)]
+    shown["b"] = "wiggle"                                               # grabbed mid-prompt
+    steps = [pp.step(0.4 + k * 0.05, ok=lambda b: False) for k in range(10)]
     assert all(s == [("left", "a"), ("right", "b")] for s in steps) and pp.mashing
     assert stats["mash_presses"] == 10
 

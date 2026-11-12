@@ -673,10 +673,20 @@ class Controller:
             if kind in CLASSES.SHELL_KINDS:
                 # The launcher's rounds load with the launcher itself (the loadout spread puts uWp1080/0x112 in every
                 # round), not as a NADE_TYPES wheel item - the earlier wheel-items guard refused every shell ring with
-                # "resources are not loaded" even though the launcher was there (live 2026-11-11 18:26).
+                # "resources are not loaded" even though the launcher was there (live 2026-11-11 18:26). A character
+                # whose loadout has no launcher (the spread is per-pref) falls back to the verified flash ring rather
+                # than failing the tick - the operator's ring keeps protecting him (live 18:40: "the grenade launcher
+                # is not loaded for this character").
                 guns = R.inventory_guns(self, self.player) or {}
                 if LAUNCHER_ITEM not in guns:
-                    raise Unavailable("the grenade launcher is not loaded for this character")
+                    stats_note = "the launcher is not in this loadout: the flash ring answers"
+                    kind = "flash"
+                    spec = CLASSES.class_for(kind)
+                    self.stats["ring_launcher_fallback"] = (self.stats.get("ring_launcher_fallback", 0) + 1)
+                    if "ring_last_failure" not in self.stats:
+                        self.stats["ring_last_failure"] = stats_note
+                else:
+                    stats_note = None
             elif spec.item not in R.inventory_items(self, self.player):
                 raise Unavailable(f"{kind} resources are not loaded for this character")
             hp_before = struct.unpack("<h", self.rd(self.player + R.P_HP, 2))[0]
