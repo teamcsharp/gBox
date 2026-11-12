@@ -305,7 +305,14 @@ def _aim(ad, snap: dict) -> int:
         return 0
     if req.get("steady") and getattr(D, "AIM_RAM", False):
         _steady(ad, snap, req)
-    return 1 if abs(back - target) < 1e-3 else 0
+    ok = abs(back - target) < 1e-3
+    if ok:
+        st = _state(ad)
+        step_deg = math.degrees(D.wrap(back - current))
+        prev = st.get("aim_write_step_max_deg")
+        if prev is None or abs(step_deg) > abs(prev):
+            st["aim_write_step_max_deg"] = step_deg
+    return 1 if ok else 0
 
 
 # The steady aim (re4_switch AIM_RAM; the operator 2026-11-10: "I want the aim impeccable"): data writes only, each one
@@ -1249,6 +1256,7 @@ def status(ad, snap: dict | None = None) -> dict:
            "loadouts": st.get("loadouts"), "loadout_weapon": st.get("loadout_weapon"),
            "weapon_power_x": st.get("weapon_power", 1.0), "max_level": bool(st.get("max_level")),
            "aim_lock": bool(st.get("aim_lock")), "aim_writes": st.get("aim_writes", 0),
+            "aim_write_step_max_deg": st.get("aim_write_step_max_deg"),
            "aim_ram_writes": st.get("aim_ram_writes", 0), "aim_sway_zeroed": st.get("aim_sway_zeroed", 0),
            "aim_sway_was": st.get("aim_sway_was"), "aim_ram_refused": st.get("aim_ram_refused", 0),
            "mag_refills": st.get("mag_refills", 0), "pre_round": st.get("pre_round_result"),
