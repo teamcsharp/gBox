@@ -1851,6 +1851,11 @@ HEAL_BLOCK_S = 8.0
 # the bot locating and fighting these threats". So the fire-first rule stands until a blow actually lands, which is the
 # only honest signal that the trade is being lost - a heavy kills from full life in one blow, so the second must miss.
 HIT_BACKOFF_S = 1.2
+# One backoff per landing, not a retreat loop: without a gap the bot is hit, turns away for 1.2 s, comes back into the
+# crowd, is hit again, and never fires - live 2026-11-12 showed doing=backoff "hit 0.0 s ago" round after round with a
+# handful of kills. And a hit that came from across the stage is not a reason to turn his back on it; only a foe within
+# HIT_BACKOFF_RANGE_MM earns the break.
+HIT_BACKOFF_GAP_S, HIT_BACKOFF_RANGE_MM = 3.0, 8000.0
 HAND_REQUEST: dict = {}       # the bot's ask of re4_switch_mods: {"item": an item id, or None = the gun back, "seq", "at"}
 HAND_STATE: dict = {}         # its answer: {"seq", "item" (in hand now, None = the gun), "verified", "error"}
 # The doctrine's answer to a threat (gbox.mercs.core.respond; the operator 2026-11-10: "the secret to all adversarial
@@ -2942,13 +2947,17 @@ class Bot:
         if isinstance(hp, int) and isinstance(last, int) and hp < last:
             self.__dict__["_hurt_at"] = now
         at = self.__dict__.get("_hurt_at")
-        if at is None or now - at > HIT_BACKOFF_S:
-            return None
+        if at is None or now - at > HIT_BACKOFF_S or now < self.__dict__.get("_backoff_block_until", -1e9):
+            return None                                  # (no chaining: see HIT_BACKOFF_GAP_S)
         if p is None:
             return None
+        near = min((t[0] for t in live), default=None)
+        if near is None or near > HIT_BACKOFF_RANGE_MM:
+            return None                                  # a hit from across the stage: answer it, do not turn away
         act = self._escape(p, live, snap, now, "hit", HIT_BACKOFF_S)
         if act is None:
             return None                                  # walled in: he fights it
+        self.__dict__["_backoff_block_until"] = now + HIT_BACKOFF_GAP_S
         self.doing, self.why = "backoff", f"hit {now - at:.1f} s ago: breaking contact, then back to him"
         self.stats["hit_backoffs"] = self.stats.get("hit_backoffs", 0) + 1
         return act

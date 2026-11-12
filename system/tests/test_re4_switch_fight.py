@@ -616,3 +616,24 @@ def test_a_boss_is_closed_on_and_a_plain_heavy_is_not():
     b2 = bot()
     b2.tick(heavy, now=1.0)
     assert b2.doing != "hunt" and not b2.stats.get("hunts"), "a plain heavy is not charged"
+
+
+def test_a_hit_from_across_the_stage_does_not_turn_him_away():
+    """Only a foe inside HIT_BACKOFF_RANGE_MM earns the break: a shot from the other side of the stage is answered, not
+    turned away from (the operator's rule is fire first, back off when a blow lands on him)."""
+    b = bot()
+    s = snap([((0.0, 0.0, 3000.0), 400)])
+    live = b._live(s["player"], s["enemies"])
+    b.__dict__["_hurt_at"] = 10.0
+    assert b._hit_backoff(s["player"], live, s, 10.1) is None
+
+
+def test_the_backoff_does_not_chain_into_a_retreat_loop():
+    """Hit, turn away 1.2 s, walk back in, be hit again, turn away: that loop never fires a shot. One backoff per
+    landing, HIT_BACKOFF_GAP_S apart."""
+    b = bot()
+    s = snap([((0.0, 0.0, 300.0), 400)])
+    live = b._live(s["player"], s["enemies"])
+    b.__dict__["_hurt_at"] = 10.0
+    b.__dict__["_backoff_block_until"] = 12.0                  # a backoff just happened
+    assert b._hit_backoff(s["player"], live, s, 10.1) is None
