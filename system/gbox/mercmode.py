@@ -12,6 +12,8 @@ import sqlite3
 import time
 import uuid
 
+from pathlib import Path
+
 from . import platform_exclusion
 
 SETTING = 'mercmode'
@@ -188,6 +190,34 @@ TITLES = {
             'reason': 'RE3 Operation Mad Jackal has no reviewed PSX RAM map, combat driver, menu cursor, '
                       'timer or terminal-round reader yet (see mercs/titles/re3_psx.py).'},
 }
+
+
+# The library survey (re4_switch_models.cast_pool / re5_donor_pool.survey) counts usable donors per FRANCHISE, and that is
+# the list the cast-weight sliders choose from. Read once per file change: the survey is ~1 MB and the sidebar polls.
+SURVEY_FILE = Path(__file__).resolve().parents[1] / "gbox-data" / "mercs" / "library-survey.json"
+_SURVEY = {"mtime": None, "franchises": {}}
+
+
+def cast_franchises() -> dict:
+    """{franchise: {usable, refused, games, refusals}} from the library survey, or {} when there is none.
+
+    The operator, 2026-11-12, wants sliders for which characters come up more often, so the sidebar needs to know what the
+    library actually holds before offering a weight: a slider for a franchise with zero usable donors would promise
+    characters that cannot be dealt. Measured 2026-11-12: Wrestling 174 usable, Def Jam 112, Sonic 20, Mario 6.
+    """
+    try:
+        mtime = SURVEY_FILE.stat().st_mtime_ns
+    except OSError:
+        return {}
+    if _SURVEY["mtime"] == mtime:
+        return _SURVEY["franchises"]
+    try:
+        doc = json.loads(SURVEY_FILE.read_text(encoding="utf-8"))
+        franchises = ((doc.get("summary") or {}).get("by_franchise") or {}) if isinstance(doc, dict) else {}
+    except (OSError, ValueError):
+        return _SURVEY["franchises"]
+    _SURVEY.update(mtime=mtime, franchises=franchises if isinstance(franchises, dict) else {})
+    return _SURVEY["franchises"]
 
 
 def normalize(patch, current=None):

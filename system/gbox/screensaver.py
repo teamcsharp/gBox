@@ -2017,6 +2017,10 @@ class Screensaver:
                 'observed_at':observed.get('at'),'desired_settings':mercmode.settings(self.store,w['name']),
                 'command':command | ({'state':job.get('state'),'error':str(job.get('error') or '')[:240]} if job else {}),
                 'scheduler_owner':'local' if _local_scheduler(w) else 'this_control_plane',
+                # What the library actually holds, per franchise (mercmode.cast_franchises, one cached read of the donor
+                # survey): the cast-weight sliders need it before offering a weight, so a slider for a franchise with no
+                # usable donors never promises characters that cannot be dealt.
+                'cast_franchises':mercmode.cast_franchises(),
                 'titles':mercmode.inventory(self.store,w,sessions=sessions,aliases=aliases),'preparation':mercmode.host_preparation(self.store,w),
                 'history':observed.get('history',self.store.get(mercmode.HISTORY,w['name']) or {}),
                 # the warm pool: titles waiting paused for their turn, and the title picked to play next
