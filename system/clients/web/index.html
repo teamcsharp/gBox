@@ -704,6 +704,24 @@ document.addEventListener("mousedown", e => { const m = $("#issuemenu"); if (m &
 // a click on the docked native game window never reaches this page: closing on focus loss covers it (#1423)
 addEventListener("blur", () => { const m = $("#issuemenu"); if (m) m.style.display = "none"; $("#gmenu")?.classList.remove("on"); });
 // right-click a session icon: open / bring it to this PC / stop / mark it mine or an agent's
+// "Tell the bot…" (#3871): a dropdown of the bot's instant commands (fight them, hunt, next area, ...) posted to
+// POST /api/sessions/{sid}/directive (gbox/mercs/directives.py) so the operator can steer the current run.
+async function webBotOrders(sid, sel) {
+  const cmd = sel.value; if (!cmd || typeof sid !== "string" || !sid.includes("-")) return;
+  sel.disabled = true;
+  try {
+    const r = await api(`/api/sessions/${encodeURIComponent(sid)}/directive`, { command: cmd });
+    const label = sel.selectedOptions[0]?.textContent || cmd;
+    TOASTS.push({ text: "🎯 Bot told: " + label + (r?.directive?.hold_s ? ` (for ${r.directive.hold_s}s)` : ""), ms: 5000 });
+  } catch (e) { TOASTS.push({ text: "⚠ Bot order: " + String(e.message || e), ms: 8000 }); }
+  finally { sel.disabled = false; sel.value = ""; }
+}
+async function webBotOrdersFill(sid, sel) {
+  try {
+    const cmds = (await api(`/api/sessions/${encodeURIComponent(sid)}/directive`))?.commands || {};
+    sel.innerHTML = '<option value="">🎯 Tell the bot…</option>' + Object.entries(cmds).map(([k, v]) => `<option value="${esc(k)}">${esc(v)}</option>`).join("");
+  } catch (e) { sel.innerHTML = '<option value="">🎯 Bot orders unavailable</option>'; }
+}
 document.addEventListener("contextmenu", e => {
   const c = e.target.closest(".tchip"); if (!c) return; e.preventDefault();
   const sid = c.dataset.sid, agent = (TRAY.labels?.[sid] || {}).owner === "agent";
@@ -713,9 +731,11 @@ document.addEventListener("contextmenu", e => {
   el.innerHTML = `<div class="tmenu" data-sid="${esc(sid)}">
       <button data-a="open">Open</button>
       ${moves.map(t => `<button data-a="move" data-to="${esc(t.to)}" data-label="${esc(t.label)}">${esc(t.label)} <span class="mut">(${esc(t.hint)})</span></button>`).join("")}
+      <select class="botorders" data-sid="${esc(sid)}" style="width:100%"><option value="">🎯 Tell the bot…</option></select>
       <button data-a="${agent ? "mine" : "agent"}">${agent ? "Mark as mine" : "Mark as an agent's test"}</button>
       <button data-a="stop" style="color:var(--bad)">Stop</button><div class="mut tmst"></div></div>`;
   el.style.left = Math.min(innerWidth - 330, e.clientX) + "px"; el.style.right = "auto"; el.classList.add("on"); TRAY.open = true; trayFit();
+  { const bo = el.querySelector(".botorders"); if (bo) { webBotOrdersFill(sid, bo); bo.onchange = () => { TRAY.open = false; el.classList.remove("on"); el.style.left = ""; webBotOrders(sid, bo); }; } }
 });
 document.addEventListener("click", async e => {
   const mb = e.target.closest(".tmenu button");
@@ -861,7 +881,7 @@ homeView.after = () => {
     launch: (gid, options) => options ? gameMenuIO().launch(gid, { node: "auto", ...(typeof options === "string" ? { mod: options } : options) }) : play(gid),
     context: (event, game) => {
       event.preventDefault(); event.stopPropagation();
-      GBoxGameMenu.open(gameMenuIO(), { gid: game.game_id, title: game.title, card: event.target.closest?.("[data-lh-game]") || event.currentTarget,
+      GBoxGameMenu.open(gameMenuIO(), { gid: game.game_id, title: game.title, entry: game, card: event.target.closest?.("[data-lh-game]") || event.currentTarget,
         x: event.clientX, y: event.clientY });
     },
     models: (gid, title) => show("GameModels", gid, title),
@@ -1762,6 +1782,21 @@ async function play(id, node, debug, boot, opts = {}) {
     if (j.state === "queued" && waitNote) loader.progress(1, waitNote);
     else if (j.progress) loader.progress(j.progress.pct, j.progress.msg);
     else if (j.state === "running") loader.progress(3, "Worker picked up the launch");
+    // Self-heal: if the game is already running, the launch succeeded - even when this poll missed the finish.
+    // Without this the splash can outlive a healthy launch (a throttled tab in a remote desktop never sees
+    // "succeeded"), and the game plays behind an overlay that never lifts, which reads as "it freezes while loading".
+    if (!["succeeded", "failed", "cancelled", "rejected"].includes(j.state) && i % 5 === 4) {
+      const live = await api("/api/sessions", undefined, "GET", 10000).catch(() => null);
+      if (LOADING !== launch) return;
+      const mine = Array.isArray(live) && live.find(s => s.state === "running" &&
+        ((g.title && s.title === g.title) || s.game_id === id || s.session_id === job.id));
+      if (mine) {
+        LOADING = null;
+        loader.progress(100, "Running - opening the game");
+        setTimeout(() => { if (LAST_LAUNCH === launch && !LOADING) loader.hide(); }, 300);
+        return show("Sessions", mine.session_id);
+      }
+    }
     if (j.state === "succeeded") {
       const nsid = j.output?.session_id;
       if (typeof nsid !== "string" || !nsid.trim()) {
