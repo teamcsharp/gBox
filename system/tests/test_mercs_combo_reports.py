@@ -34,19 +34,26 @@ def test_one_report_per_loss_with_the_evidence(monkeypatch):
     assert CR.observe(live, snap(0, threats), 102.0) is None and len(calls) == 1
 
 
-def test_a_second_loss_reports_again_and_the_round_caps_at_three(monkeypatch):
+def test_a_second_loss_reports_again_and_the_round_caps_at_three_plus_summary(monkeypatch):
     calls = []
     monkeypatch.setattr(CR, "post", lambda url, token, payload: calls.append(payload) or {"id": f"req-{len(calls)}"})
     live = {"round_evidence_id": "round-8"}
     for combo in (5, 0, 3, 0, 2, 0, 4, 0):
         CR.observe(live, snap(combo), 100.0 + len(calls))
-    assert len(calls) == 3                                     # four losses, three reports
+    assert len(calls) == 4                                     # four losses: three reports + one summary
+    assert [p["context"].get("summary") for p in calls] == [None, None, None, True]
+    assert "Combo losses this round: 4" in calls[3]["body"]
     assert live["combo_reports_suppressed"] == 1
+    assert live["combo_report_summary"]["request"] == "req-4"
+    # a fifth loss stays under the one summary per round
+    CR.observe(live, snap(1), 300.0)
+    CR.observe(live, snap(0), 301.0)
+    assert len(calls) == 4 and live["combo_reports_suppressed"] == 2
     # a new round starts the count over
     live["round_evidence_id"] = "round-9"
     CR.observe(live, snap(9), 200.0)
     CR.observe(live, snap(0), 201.0)
-    assert len(calls) == 4 and live["combo_reports"] == 4
+    assert len(calls) == 5 and live["combo_reports"] == 4
 
 
 def test_a_failed_post_is_a_stat_and_never_raises(monkeypatch):

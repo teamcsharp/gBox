@@ -88,8 +88,29 @@ def observe(stats, snap, now, *, doing=None, why=None, round_id=None):
         if stats.get("_combo_report_round") != rid:       # a new round: the count starts over
             stats["_combo_report_round"] = rid
             stats["_combo_reports"] = 0
+            stats["_combo_report_summary_filed"] = False
         if int(stats.get("_combo_reports") or 0) >= MAX_PER_ROUND:
             stats["combo_reports_suppressed"] = int(stats.get("combo_reports_suppressed", 0)) + 1
+            if not stats.get("_combo_report_summary_filed"):   # the cap was reached: one summary stands for the rest
+                stats["_combo_report_summary_filed"] = True
+                total = int(stats["_combo_reports"]) + int(stats["combo_reports_suppressed"])
+                payload = {"title": f"Combo lost {total}x in {_CFG.get('title') or 'Mercs'} (round {rid})"[:140],
+                           "body": ("COMBO LOSS SUMMARY - automated follow report (gBox MercMode).\n"
+                                    f"Title: {_CFG.get('title') or '?'} | session: {_CFG.get('session_id') or '?'} | round: {rid}\n"
+                                    f"Combo losses this round: {total} - the detailed reports are capped at {MAX_PER_ROUND}, "
+                                    f"so the {int(stats['combo_reports_suppressed'])} loss beyond the cap is covered by this summary only.\n"
+                                    "The operator's requirement: the bot must maintain the combo; the doctrine/aim/ordnance "
+                                    "follow-up work uses the detailed reports plus this summary."),
+                           "source": "agent", "kind": "text", "author": "agent", "automated": True,
+                           "context": {"session_id": _CFG.get("session_id"), "round_id": rid, "title": _CFG.get("title"),
+                                       "summary": True, "combo_losses": total}}
+                try:
+                    reply = post(_CFG["url"], _CFG["token"], payload)
+                    stats["combo_report_summary"] = {"at": round(time.time(), 1), "request": (reply or {}).get("id"),
+                                                     "round": rid, "combo_losses": total}
+                except Exception as exc:                   # noqa: BLE001 - a failed report never stalls the round
+                    stats["combo_report_error"] = f"{type(exc).__name__}: {exc}"[:200]
+                    stats["combo_report_failures"] = int(stats.get("combo_report_failures", 0)) + 1
             return None
         if not (_CFG.get("url") and _CFG.get("token")):
             stats["combo_report_error"] = "no control plane configured"
