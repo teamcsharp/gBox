@@ -382,6 +382,14 @@ class Controller:
                 self.write(self.heap + 0xA8, struct.pack("<I", 0))
                 self.failed = self.recoverable = False
                 return True
+            if state == 0:
+                # The mailbox is idle: nothing was picked up and nothing is executing, so a fresh click is safe. Only
+                # state 1 (pending) and state 3 (completed but still bound) need the handling below, and both of those
+                # branches kept `failed` set here. Live 2026-11-12: mine_ring_failures 9 with "native controller awaits
+                # recovery after an uncertain operation" for a whole round, no bombs placed at all - the mailbox was
+                # idle, so nothing ever cleared `failed` and every ring and mine was refused.
+                self.failed = self.recoverable = False
+                return True
             if state != 3:
                 return False
             # The completed mailbox still belongs to the original operation.
