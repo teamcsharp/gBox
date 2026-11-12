@@ -1485,6 +1485,14 @@ class RE4Switch(Driver):
 MM_PER_CM = 10.0
 ENGAGE_RANGE_CM = 1200.0 * MM_PER_CM                 # the blind range: no LOS data, fire no further than ~12 m
 ENGAGE_RANGE_LOS_CM = 3500.0 * MM_PER_CM             # with the LASER/nav LOS gate wired, shoot on sight to ~35 m
+# Past this he RUNS at him instead of standing and firing. The shot's tolerance is floored at FIRE_TOL_MIN 0.05 rad, so
+# past ~6 m the bot may fire wider than a body - but a GOOD aim still lands at 10 m (1 deg is 17 cm on a 30 cm half
+# body, which is the fight's own 10 m case), so 9 m was too eager: it stopped shooting where it can still hit. Standing
+# at 15 m and beyond is the case that kills him - a machine-gunner across the stage (the operator, 2026-11-12: "failed
+# to hit a target that was far away, so as a result she got killed by that zombie holding a machine gun on the other
+# side of the map shooting at her"). 15 m keeps the 10 m shot and closes everything past it, and it is what makes the
+# run-to-the-mesh-route case (a Ganado 30 m out behind a wall) a run instead of a raised gun.
+HUNT_RUN_MM = 15000.0
 # (operator 2026-11-11 19:20: "why is the bot just letting these enemies walk up on him? He needs to be using magnums
 #  and dispatching these foes as quickly as possible" - the 12 m blind gate held the gun until the Ganado was on him.
 #  The gate was written before the line-of-sight gate was wired; with the nav/obstacle data the bot may fire to 35 m.)
@@ -2658,6 +2666,14 @@ class Bot:
         pick = self._choose(live, now, p, snap)          # a command never stops a shot at one in range (RE5 HUNT_R)
         if pick is not None:
             dist, err, e = pick
+            # Too far to put a shot on him, so RUN at him: _run_to is the escape run's own mesh path (the quick turn
+            # when he lies behind, then the walker with B), so this is traversal of the stage rather than standing in
+            # the open trading shots the pad cannot land (see HUNT_RUN_MM).
+            if dist > HUNT_RUN_MM:
+                self.target = e.get("ptr")
+                self.stats["hunts"] = self.stats.get("hunts", 0) + 1
+                self.doing, self.why = "hunt", f"{dist / (100.0 * MM_PER_CM):.0f} m off: running at him"
+                return self._run_to(p, tuple(e["pos"]), snap)
             fp_off = 0.0                                 # the fire pattern's yaw offset across his body (FIRE_PATTERN)
             if FIRE_PATTERN and not self.__dict__.get("_pick_blocked"):
                 dist, err, e, fp_off = self._fp_aim(p, live, dist, err, e, snap, now)
