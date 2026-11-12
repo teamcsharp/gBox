@@ -104,6 +104,7 @@
         <label style="display:block"><input type="checkbox" data-stalemate ${host.settings?.stalemate_cut===false?'':'checked'}> Stalemate: no enemy for 15 s with time left, the bot cuts the clock to <input type="number" data-stalemate-s min="1" max="60" value="${stalemateSeconds(host.settings)}" style="width:4em"> s</label>
         <label style="display:block">Bot+bot split-screen turns on RE5 / RE6 Switch ${coopSelect('data-coop',host.settings?.coop_ratio)}</label><p><small>${COOP_NOTE}</small></p>
         ${queueHTML(host,data.catalog)}
+        ${castWeightsHTML(host)}
         <p><button type="button" data-save>Save this PC</button> <button type="button" data-prepare ${host.online?'':'disabled'}>Check cached assets</button>
         ${host.current_run?.mercmode?`<button type="button" data-stay="${escape(host.current_run.session_id)}">Stay in this game (autobot)</button>`:''}
         ${host.adoptable_solo_session&&!host.current_run?`<button type="button" data-adopt="${escape(host.adoptable_solo_session)}" ${host.settings?.enabled?'':'disabled'}>Use current solo bot</button>`:''}</p>
@@ -164,7 +165,8 @@
             presentation_priority:host.querySelector('[data-presentation]').checked,
             titles,rounds_per_title:Number(host.querySelector('[data-rounds]').value),
             ...(stalemate&&stalemateS?{stalemate_cut:!!stalemate.checked,stalemate_cut_s:stalemateSeconds({stalemate_cut_s:stalemateS.value})}:{}),
-            ...(COOP_RATIOS.includes(host.querySelector('[data-coop]')?.value)?{coop_ratio:host.querySelector('[data-coop]').value}:{})});
+            ...(COOP_RATIOS.includes(host.querySelector('[data-coop]')?.value)?{coop_ratio:host.querySelector('[data-coop]').value}:{}),
+            cast_weights:readCastWeights(host)});
           await refresh();
         }else if(button.hasAttribute('data-stay')){
           await stay(api,button.dataset.stay);await refresh();
@@ -740,6 +742,36 @@
     if(ours||!here)return {action:'follow',from:shown,sid,id:d?.id,remember:!here&&!ours};
     return {action:'none'};
   }
+  // WHICH CHARACTERS COME UP MORE OFTEN (the operator, 2026-11-12: "sliders that allows me to choose which characters pop
+  // up more often ... Sonic the Hedgehog characters, I want to see them more often ... Mario characters"). One slider per
+  // FRANCHISE on that title: host.cast_franchises is the library survey's own tally (mercmode.cast_franchises), so a
+  // franchise with no usable donors is not offered at all - a slider there would promise characters that cannot be dealt.
+  // Weight 0 keeps a franchise out, 1 is the even share, and only non-default weights are sent.
+  function castWeightsHTML(host){
+    const lib=host.cast_franchises||{};
+    const weights=host.settings?.cast_weights||{};
+    const titles=host.settings?.titles||[];
+    const rows=Object.entries(lib).filter(([,v])=>Number(v?.usable)>0).sort((a,b)=>Number(b[1].usable)-Number(a[1].usable));
+    if(!rows.length||!titles.length)return '';
+    return `<details><summary>Which characters come up more often</summary>`+titles.map(t=>
+      `<p><strong>${escape(t)}</strong></p>`+rows.map(([name,v])=>{
+        const cur=Number(weights?.[t]?.[name]??1);
+        return `<label style="display:block">${escape(name)} <small>(${Number(v.usable)} usable)</small>
+          <input type="range" min="0" max="10" step="1" value="${cur}" data-cast-weight="${escape(name)}" data-cast-title="${escape(t)}"> <span data-cast-weight-out>${cur}</span></label>`;
+      }).join('')).join('')+`<p><small>0 keeps a franchise out of this title's casts; 1 is its even share.</small></p></details>`;
+  }
+
+  function readCastWeights(host){
+    const out={};
+    host.querySelectorAll('[data-cast-weight]').forEach(el=>{
+      const title=el.dataset.castTitle,name=el.dataset.castWeight,v=Number(el.value);
+      if(!title||!name||!Number.isFinite(v)||v===1)return;          // 1 is the default: do not store it
+      (out[title]=out[title]||{})[name]=v;
+    });
+    return out;
+  }
+
   return {render,mount,stay,hostFor,menuHTML,menuAction,transition,queueHTML,queueAction,formOptions,readForm,wireQueue,wireSwaps,labTitleFor,describe,
-    STALEMATE,stalemateSeconds,titleChoices,runOn,defaultHost,dispatchHTML,readDispatch,dispatchAction,runHTML,pipOwnRun};
+    STALEMATE,stalemateSeconds,titleChoices,runOn,defaultHost,dispatchHTML,readDispatch,dispatchAction,runHTML,pipOwnRun,
+    castWeightsHTML,readCastWeights};
 });
