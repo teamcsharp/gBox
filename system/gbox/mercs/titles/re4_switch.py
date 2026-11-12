@@ -2987,6 +2987,11 @@ class Bot:
         t_aim/t_fire/t_backoff), which is what decides whether HUNT_RUN_MM is costing shots.
         """
         self.stats["doing"], self.stats["why"] = self.doing, self.why
+        # Why the shot was held, when it was: _may_fire records the gate it refused on, and nothing published it - so a
+        # round could read t_aim 590 against t_fire 150 and threat_unanswered 675 ("the gun up, no shot past the raise's
+        # grace") without ever naming WHICH gate held the trigger. This says it.
+        if self._gate:
+            self.stats["fire_gate"] = str(self._gate)[:120]
         if self.doing:
             k = "t_" + str(self.doing)
             self.stats[k] = self.stats.get(k, 0) + 1
