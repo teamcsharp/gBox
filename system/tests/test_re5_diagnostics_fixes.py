@@ -208,3 +208,25 @@ def test_both_close_threat_blasts_stay_out_of_the_calibration(tmp_path):
     assert not cal.dirty and Bal.blasted(rec) and Bal.blasted({"gate": Bal.BLAST_GATE})
     cal.observe(dict(rec, gate="line to him"))
     assert cal.dirty
+
+
+def test_a_laserless_close_blast_does_not_fire_into_a_wall_the_camera_cannot_see(tmp_path):
+    """#5137 cluster (2026-10-27): laserless close shots with the dot on the wall beside the Majini - the camera was
+    aligned on him, but the measured laser ray ended short, on cover the camera does not see. The blast now demands the
+    measured line be clear (a blocked ray vetoes it), like the ray-confirmed path already does."""
+    memory, state = scene(0x1A)
+    foot = (250.0, 0.0, 250.0)                                         # ~3.5 m: inside LASERLESS_BLAST_R
+    state["enemies"][0]["pos"] = foot
+    state["camera"] = {"eye": (0.0, 140.0, 0.0), "at": (foot[0], 110.0, foot[2])}   # the camera is on him
+    state["laser"] = {"from": (0.0, 149.0, 46.0), "at": (100.0, 120.0, 150.0)}      # the dot: the wall beside him
+    combat = laserless(C.Combat(memory, {}, learn_dir=tmp_path, lessons=lambda e: None), 0x1A)
+    assert combat.ray_blocked((tuple(state["laser"]["from"]), tuple(state["laser"]["at"])), foot)  # the fields say blocked
+    keys = combat.tick(dict(state), state["player"], state["enemies"][0], 1.0)["hold"]
+    assert "r1" not in keys                                            # no trigger into the wall
+    assert combat.stats.get("laserless_blasts", 0) == 0
+    assert "obstruction" in combat.stats["combat"]                      # the measured wall vetoes the blast -> reposition
+    # ... and the blast still fires once the measured line is clear (torn reads stay blastable, no new blind holding):
+    state["laser"] = {"from": (0.0, 149.0, 46.0), "at": (foot[0], 110.0, foot[2])}
+    keys = combat.tick(dict(state), state["player"], state["enemies"][0], 1.2)["hold"]
+    assert {"l1", "r1"} <= keys                                        # clear measured line: fires normally
+    assert "on him" in combat.stats["fire_gate"]

@@ -135,11 +135,15 @@ def pick(p: dict, enemies, *, held=None, dotted=None, extra_ok=None):
         return best
 
     dotted = dotted if dotted is not None and living(dotted) else None
+    # A Majini at arm's length in front is fought before everything else - even the one under the laser dot: the dot
+    # is his measured aim, but while someone this near stands in the gun's sector the shot at him crosses that one (the
+    # damage clusters: 29 of 31 hits in 2026-10-28 fell within 1.5 m while the laser sat on a Majini 3-5 m away - on a
+    # wall or an empty aim, the trigger fired into the near foe, and 56 s of his own hits left him dead).
     contact_front = [e for e in level if flat(p["pos"], e["pos"]) <= CONTACT_R
                      and abs(bearing(p, e["pos"])) <= FRONT_CONE]
+    if contact_front:
+        return near(contact_front), "a Majini at arm's length in front"
     if dotted is not None and flat(p["pos"], dotted["pos"]) <= FRONT_CLEAR_R:
-        if contact_front and dotted not in contact_front:
-            return near(contact_front), "a Majini at arm's length in front before the one under the dot"
         return dotted, "laser first hit on him"
     front_close = [e for e in level if flat(p["pos"], e["pos"]) <= FRONT_CLEAR_R and abs(bearing(p, e["pos"])) <= FRONT_CONE]
     if front_close:

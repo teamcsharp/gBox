@@ -31,6 +31,41 @@ def test_one_at_arms_length_in_front_comes_before_the_one_under_the_dot():
     assert target is contact and "arm's length" in why
 
 
+# cluster #430 (2026-10-28): the held target stood 3.5-4.5 m out with the laser dot on him while the one actually hit
+# stood 1.1-1.7 m in front - the trigger fired past the near foe into the one the dot was on.
+def test_cluster_430_the_near_majini_in_front_is_fought_before_the_one_under_the_dot():
+    # turn 26's fields: held target at 448.3 cm, the one under the laser dot; the hit enemy at 114.4-168.0 cm in the cone
+    dotted, near = at(8.0, 448.3, 1), at(-4.0, 140.0, 2)
+    target, why = E.pick(P, [dotted, near], held=1, dotted=dotted)
+    assert target is near and "arm's length in front" in why
+
+
+def test_cluster_430_a_wall_dot_with_a_near_foe_in_front_fights_the_foe():
+    # the laser sits on a wall/empty aim 3-5 m out (its dot on nobody): the Majini at arm's length in front is fought,
+    # not the wall - the old code swung at the wall with the gun down while the near foe closed
+    dotted, near = at(25.0, 380.0, 1), at(10.0, 120.0, 2)
+    target, why = E.pick(P, [dotted, near], held=1, dotted=dotted)
+    assert target is near and "arm's length in front" in why
+
+
+def test_cluster_430_the_front_contact_tier_holds_just_outside_the_cone_and_at_range():
+    # at the contact radius and just inside the gun's sector: still the front tier
+    at_edge = at(34.0, E.CONTACT_R, 2)
+    assert E.pick(P, [at(0, 800, 1), at_edge])[0] is at_edge
+    # the same distance but behind his heading: not the front tier (the body turns to him instead)
+    behind = at(170.0, E.CONTACT_R, 2)
+    target, why = E.pick(P, [at(0, 800, 1), behind])
+    assert target is behind and "turn to him" in why
+
+
+def test_cluster_430_beyond_contact_the_laser_dot_keeps_priority():
+    # a near one in front beyond the contact radius, the dot on the held target: the gun stays on the dot (the old
+    # behavior - the front tier starts only inside the contact radius)
+    dotted, front = at(0, 300, 1), at(20, 220, 2)
+    target, why = E.pick(P, [dotted, front], dotted=dotted, held=1)
+    assert target is dotted and "laser first hit" in why
+
+
 def test_a_threat_in_front_comes_before_a_far_one_under_the_dot():
     far_dotted, front = at(0, 1000, 1), at(30, 250, 2)
     assert E.pick(P, [far_dotted, front], dotted=far_dotted)[0] is front
