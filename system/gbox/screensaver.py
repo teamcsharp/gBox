@@ -275,8 +275,18 @@ def worker_reason(store, worker: dict, cfg: dict, running: list[dict], now: floa
                       and worker['id'] in (j.get('worker_id'), j.get('require_worker')) and offline_job(j))
         if worker['active_jobs'] > own + offline:
             return "busy with jobs"
+    # Only the BOT's own live session holds the launch. An operator session (PSO and the like) does not: MercMode and
+    # the operator's own game demonstrably coexist on this host (live 2026-11-12, RE4 + PSO running together), and the
+    # operator's standing rule is that Merc mode runs 24/7 "while I work on parallel operations on the local clients".
+    # Before this, any live session on the worker refused the launch with "a game is already running there", which is
+    # what blocked every attempt to give RE5 a window while PSO was up. A record with no agent_owned field counts as the
+    # bot's (conservative: never risk a second bot session on one host).
+    def _bot_owned(s: dict) -> bool:
+        owned = s.get("agent_owned")
+        return True if owned is None else bool(owned)
+
     if any(s.get("session_id", "").startswith(worker["id"] + "-") and s.get("session_id") not in warm
-           and _session_live(s.get("session_id"), now) for s in running):
+           and _session_live(s.get("session_id"), now) and _bot_owned(s) for s in running):
         return "a game is already running there"
     merc_cfg=mercmode.settings(store,worker['name'])
     if merc_cfg['enabled'] and (merc_cfg['presentation_priority'] or dispatched):
