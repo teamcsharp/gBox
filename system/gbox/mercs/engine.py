@@ -194,9 +194,14 @@ def play_round(prof, m, send, stopped, stats: dict, lessons=None, sleep=time.sle
     if not observe_only:
         try:
             ring_ad = getattr(m, "adapter", None)
+            # Diagnostic for the "ring never fires" investigation: the profile id and whether an adapter exists are
+            # what grenade_ring.control decides on. Recorded before the call so a refusal is visible in telemetry.
+            stats["ring_prof_map"] = str((prof or {}).get("map_id") or "")
+            stats["ring_adapter"] = bool(ring_ad is not None)
             if ring_ad is not None:
                 from . import grenade_ring
                 ring_step = grenade_ring.control(ring_ad, prof)
+            stats["ring_armed"] = bool(ring_step is not None)
         except Exception as exc:                     # noqa: BLE001
             stats["grenade_ring_error"] = f"{type(exc).__name__}: {exc}"[:160]
     remote_step = None
