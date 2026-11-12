@@ -309,7 +309,10 @@ def decide(snap: dict, stats: dict, now: float, policy_: dict | None = None, *, 
     if periodic > 0 and near >= int(policy_.get("periodic_min_enemies") or 2) and \
             (not isinstance(last, (int, float)) or now - last >= periodic):
         held = flash_held(snap, stats, policy_, title)
-        return {**out, "fire": True, "kind": "random", "flash_ok": held is None,
+        # The kind stays the title's (RING_KIND, the launcher): this branch used to hardcode "random", so the 90 s ring
+        # the operator asked for as a 360 grenade-launcher blast fired a random-ammunition throw instead (live
+        # 2026-11-11 23:34: ring_kind=random on RE5 with ring_armed true).
+        return {**out, "fire": True, "kind": out.get("kind") or RING_KIND, "flash_ok": held is None,
                 "reason": (f"periodic: one ring at least every {periodic:.0f} s with a group on him: "
                            f"{near} within {policy_['near_cm']:.0f} cm")}
     return {**out, "reason": f"nothing worth a ring: {near} within {policy_['near_cm']:.0f} cm"}
