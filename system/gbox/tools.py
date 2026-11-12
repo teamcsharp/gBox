@@ -945,10 +945,13 @@ def _launch_game(inp: LaunchIn, ctx: Ctx):
             ctx.progress(8, f"PS3 game: {eboot}")
             src = eboot
         if g.platform == "switch" and local_mod is None and src.is_file():
-            from . import switch_nsp
-            ok, why = switch_nsp.launchable(src)         # a title update NSP is content for its base game, not a game
-            if not ok:
-                raise ToolUnavailable(why)
+            from . import switch2, switch_nsp
+            if not switch2.is_game(g.model_dump()):
+                ok, why = switch_nsp.launchable(src)         # a Switch 1 title update is content, not a game
+                if not ok:
+                    raise ToolUnavailable(why)
+            # A Switch 2 NUP is a valid boot image for Fritchii/Lichii (the adapter resolves the engine); its serial
+            # still comes from the container's own package metadata.
             ad.serial = ad.serial or switch_nsp.title_id(src)     # the title id (gbox.re_switch capabilities)
         from . import game_unlocks
         unlock_result = game_unlocks.pre_launch(g.model_dump(), ctx, inp.mod)
@@ -999,7 +1002,13 @@ def _launch_game(inp: LaunchIn, ctx: Ctx):
         # any other disc image (the local NVMe is far faster than the read-only CIFS share). PS3/PS4 folder games
         # need sibling assets and are excluded.
         big = src.is_file() and src.stat().st_size > ctx.config.stage_min_mb * 1024 * 1024
-        if g.platform not in ("ps3", "ps4") and not (g.launch.get("archive_member") and not inp.mod) and ((emu and emu.stage_local) or (big and g.library and _stageable(src))):
+        from . import switch2
+        switch2_game = g.platform == "switch" and switch2.is_game(g.model_dump())
+        # A Switch 2 NUP/NSP is read by Fritchii/Lichii from the share: copying 25-30 GB into the cache first would delay
+        # every launch (and the emulator's own loader is the thing that reads it), so these never stage.
+        if (not switch2_game and g.platform not in ("ps3", "ps4")
+                and not (g.launch.get("archive_member") and not inp.mod)
+                and ((emu and emu.stage_local) or (big and g.library and _stageable(src)))):
             mb = src.stat().st_size / 2**20
             ctx.progress(30, f"Staging {src.name} ({mb:,.0f} MB) to the fast local cache")
             from .storage_policy import SystemDriveRefused
@@ -3471,6 +3480,15 @@ def _playbook(ad, g):
     for name in PLAYBOOKS:
         try:
             mod = importlib.import_module(f".{name}", __package__)
+            # Reload it: import_module returns the CACHED sys.modules entry, so a deployed bot module never took effect
+            # in a running worker (live 2026-11-12: gbox.re4switch_bot on the host carried bonus_goal / walk_track /
+            # is_bow for hours while the worker kept the old code and the new telemetry fields stayed blank, which read
+            # as "the fix did not work"). A mission start is the right moment, and a reload that raises falls back to
+            # the module already loaded.
+            try:
+                mod = importlib.reload(mod)
+            except Exception:                                  # noqa: BLE001 - a reload never blocks autoplay
+                mod = importlib.import_module(f".{name}", __package__)
             if mod.matches(ad, g):
                 return mod
         except Exception:                                      # noqa: BLE001 - a broken playbook never blocks autoplay
@@ -6743,3 +6761,253 @@ def switch_decrypt(inp: SwitchDecryptIn, ctx: Ctx):
     return {"result": out}
 
 
+
+
+# --- NUP containers: Switch 1/2 archives -> extracted titles and models ---------------------------------------------
+class SwitchNupIn(BaseModel):
+    op: str = "info"                 # info | list | extract | materialize | verify | models
+    nup: str = ""                    # the .nup on THIS worker (models: a materialised folder is accepted too)
+    out: str = ""                    # extract/materialize/models: where files are written
+    mode: str = "package"            # extract: all | package | subtree
+    package: str = ""                # package index or kind (base/update/addon); empty = the base (or first)
+    subtree: str = "romfs"           # extract/models: directory under the package root
+    pattern: str = ""                # list search / models: extra regex for files to include
+    limit: int = 200                 # list: rows returned
+    offset: int = 0                  # list: rows skipped
+    deep: bool = False               # verify: recompute every file's SHA-256
+    overwrite: bool = False          # extract: replace existing output files
+    full: bool = False               # info: read the tree (per-package counts) as well as the metadata
+
+
+class SwitchNupOut(BaseModel):
+    result: dict
+
+
+@tool("switch_nup", "1.0", SwitchNupIn, SwitchNupOut, capabilities=["catalog", "mod"], permissions=[P.EXECUTE],
+      timeout_s=7200, validation="schema",
+      side_effects=["extract/materialize/models write the selected files under out=",
+                    "materialize records the extracted RomFS for this node (switch-nup-romfs.json)"])
+def switch_nup_tool(inp: SwitchNupIn, ctx: Ctx):
+    """Nintendo Switch 1/2 `.nup` containers (gbox.nup, the clean-room format of SPIN0ZAi/nup-extractor): info,
+    list, extract (package/subtree/all), verify, materialize a bootable title folder, and pull its model sources.
+
+    `materialize out=<folder>` writes the base package with updates overlaid as deconstructed exefs/ + romfs/ (Eden
+    boots it, switch_mods uses its romfs/ for LayeredFS) and a .gbox-nup.json marker. `models out=<game dir>` extracts
+    the RE Engine PAK / MT Framework ARC containers and loose model files into <out>/models_src with a manifest and the
+    converter each one needs (gbox.nup_models)."""
+    from . import nup as N, switch_nup as SN
+    op = (inp.op or "info").lower()
+    src = Path(inp.nup) if inp.nup else None
+    if src is None:
+        raise ValueError("nup=<file.nup> is required")
+    if not src.exists():
+        raise ToolUnavailable(f"{src} is not on this worker")
+
+    if op == "info":
+        if not src.is_file():
+            return {"result": {"op": "info", "folder": str(src), "materialized": SN.materialized(src)}}
+        data = SN.info(src, light=not inp.full, refresh=True)
+        return {"result": {"op": "info", **data}}
+
+    if op == "models":
+        if not inp.out:
+            raise ValueError("models needs out=<the game directory>")
+        progress = ctx.progress
+        if src.is_dir():
+            result = SN.extract_models(src, inp.out, extra_patterns=_nup_patterns(inp.pattern))
+        else:
+            with N.NupReader(src) as reader:
+                sel = _nup_package(inp.package)
+                if sel is None:
+                    packages = [p for p in reader.packages if p.is_game] or [reader.primary_package()]
+                else:
+                    packages = [reader.package_of(sel)]
+                from . import nup_models as NM
+                result = NM.extract_from_reader(reader, packages, inp.out, subtree=inp.subtree,
+                                               extra_patterns=_nup_patterns(inp.pattern), progress=progress)
+                result["source"] = str(src)
+                result["title_id"] = packages[0].title_id_hex
+                result["title"] = reader.title_name(packages[0])
+        return {"result": {"op": "models", **result}}
+
+    if src.is_dir():
+        raise ValueError(f"{op} needs a .nup file, not the folder {src}")
+    if op not in ("list", "extract", "materialize", "verify"):
+        raise ValueError(f"unknown op {op!r} (info, list, extract, materialize, verify, models)")
+    if op in ("extract", "materialize") and not inp.out:
+        raise ValueError(f"{op} needs out=<folder>")
+    if op == "extract" and inp.mode not in ("all", "package", "subtree"):
+        raise ValueError("mode must be all, package or subtree")
+    with N.NupReader(src) as reader:
+        sel = _nup_package(inp.package)
+        if op == "list":
+            pkg = reader.package_of(sel)
+            rows = []
+            needle = inp.pattern.lower()
+            for rel, f in reader.walk(pkg):
+                if needle and needle not in rel.lower():
+                    continue
+                rows.append({"path": rel, "size": f.size, "codec": f.codec_name, "sha256": f.sha256_hex})
+            total = len(rows)
+            page = rows[max(0, inp.offset):max(0, inp.offset) + max(1, inp.limit)]
+            return {"result": {"op": "list", "package": {"index": pkg.index, "kind": pkg.kind_name,
+                                                         "title_id": pkg.title_id_hex},
+                               "files": total, "offset": inp.offset, "entries": page}}
+        if op == "verify":
+            progress = _nup_progress(ctx)
+            report = reader.verify(deep=bool(inp.deep), progress=progress)
+            return {"result": {"op": "verify", "nup": str(src), **report}}
+        if op == "extract":
+            progress = _nup_progress(ctx)
+            res = reader.extract(inp.out, mode=inp.mode, package=sel, subtree=inp.subtree if inp.mode == "subtree" else "",
+                                 overwrite=bool(inp.overwrite), progress=progress)
+            return {"result": {"op": "extract", "nup": str(src), **res}}
+        # materialize
+        progress = _nup_progress(ctx)
+        res = reader.materialize(inp.out, progress=progress)
+        SN.register_romfs(ctx.config, res.get("title_id"), res["folder"])
+        return {"result": {"op": "materialize", "nup": str(src), **res,
+                           "registered_romfs": str(Path(inp.out) / "romfs")}}
+
+
+def _nup_package(value):
+    """'' -> None (the base or first package); a digit -> its index; else the kind name (gbox.nup.package_of)."""
+    text = str(value or "").strip()
+    if not text:
+        return None
+    return int(text) if text.isdigit() else text
+
+
+def _nup_patterns(pattern: str) -> list[str]:
+    return [pattern] if pattern else []
+
+
+def _nup_progress(ctx):
+    """A gbox.nup progress callback (a dict of counts) -> ctx.progress(percent, message)."""
+    def report(ev: dict) -> None:
+        if isinstance(ev, dict):
+            pct = float(ev.get("percent") or 0.0)
+            msg = ev.get("file") or ev.get("phase") or ""
+            done, total = ev.get("files_done"), ev.get("files_total")
+            if done is not None and total:
+                msg = f"{msg} ({done}/{total})"
+            ctx.progress(pct, f"NUP: {msg}".strip())
+        else:
+            ctx.progress(0.0, f"NUP: {ev}")
+    return report
+
+
+# --- Switch 2 runtimes: install Fritchii/Lichii/Hookshot, build the native OoT game --------------------------------
+class Switch2In(BaseModel):
+    op: str = "status"               # status | install | prepare
+    engine: str = "auto"             # fritchii | lichii | hookshot (install; auto = fritchii)
+    game: str = ""                   # prepare: a .nup or an extracted title folder on THIS worker
+    game_id: str = ""                # optional: the catalog id, for the log
+
+
+class Switch2Out(BaseModel):
+    result: dict
+
+
+@tool("switch2", "1.0", Switch2In, Switch2Out, capabilities=["catalog", "runtime"], permissions=[P.EXECUTE],
+      timeout_s=10800, validation="schema",
+      side_effects=["install downloads a pinned emulator release into the node's switch2 runtime folder",
+                    "install copies the operator's prod.keys/title.keys into the engine's portable user/keys",
+                    "prepare builds Hookshot's native OoT game from the operator's .nup (10-45 minutes, GBs of output)"])
+def switch2_tool(inp: Switch2In, ctx: Ctx):
+    """Switch 2 on this node (gbox.switch2): status of Fritchii/Lichii/Hookshot and the operator's keys; install a pinned
+    engine (Fritchii v5.8.4, Hookshot builder) and copy the switch2 share's prod.keys into its portable user/keys; prepare
+    Hookshot's native Ocarina of Time build from a `.nup` (the 10-45 minute step, run once per title/version)."""
+    from . import switch2
+    op = (inp.op or "status").lower()
+    if op == "status":
+        return {"result": {"op": "status", **switch2.status(ctx.config)}}
+    if op == "install":
+        result = switch2.provision(ctx.config, inp.engine or "auto",
+                                   progress=lambda pct, msg: ctx.progress(pct, msg))
+        return {"result": {"op": "install", **result}}
+    if op == "prepare":
+        if not inp.game:
+            raise ValueError("prepare needs game=<a .nup or an extracted title folder on this worker>")
+        result = switch2.prepare_hookshot(ctx.config, inp.game,
+                                          progress=lambda pct, msg: ctx.progress(pct, msg),
+                                          cancel=lambda: bool(getattr(ctx, "_cancel", False)))
+        return {"result": {"op": "prepare", **result}}
+    raise ValueError(f"unknown op {op!r} (status, install, prepare)")
+
+
+# --- bring Switch dumps in from a card/folder ---------------------------------------------------------------
+class SwitchImportIn(BaseModel):
+    op: str = "scan"                 # scan | import | watch | extract
+    source: str = ""                 # scan/import/watch: a card or folder on THIS worker; extract: a .nup
+    dest: str = ""                   # import/watch: library folder (empty = the quickswap-switch2 library root)
+    extract: bool = False            # import/watch: also materialise each NUP
+    games: str = ""                  # extract: game folder (empty = <switch2_root>/games)
+    min_mb: float = 4.0              # ignore smaller files (homebrew demos: lower it)
+    all_drives: bool = False         # watch: every mounted removable drive (plug the card in later)
+    timeout_s: float = 3600.0        # watch: how long to wait for a card
+    scan: bool = True                # import/watch: queue a library scan on the control plane when possible
+
+
+class SwitchImportOut(BaseModel):
+    result: dict
+
+
+@tool("switch_import", "1.0", SwitchImportIn, SwitchImportOut, capabilities=["catalog", "mod"], permissions=[P.EXECUTE],
+      timeout_s=14400, validation="schema",
+      side_effects=["import/watch copy .nup/.nsp/.xci from the card into the switch2 library",
+                    "extract writes a loose exefs/ + romfs/ title under the games folder",
+                    "scan queues a scan_library job on the control plane"])
+def switch_import_tool(inp: SwitchImportIn, ctx: Ctx):
+    """Bring the operator's Switch dumps in: `scan` a card/folder, `import` its .nup/.nsp/.xci into the switch2 library
+    (streamed SHA-256, same-name-same-size skipped, a file still downloading refused), `watch` a card reader (or every
+    removable drive) until the card appears and then import it, or `extract` a NUP into `<switch2_root>/games/<title>
+    [<title id>]`. After import/watch, a library scan is queued so the new rows appear; Play uses the NUP directly in
+    Fritchii (extraction is for the model pipeline / a loose-title emulator)."""
+    from . import switch2, switch_import
+    op = (inp.op or "scan").lower()
+    cfg = ctx.config
+    games = Path(inp.games) if inp.games else switch2.root(cfg) / "games"
+    lib = next((lib for lib in cfg.libraries if lib.id == "quickswap-switch2"), None)
+    library_id = lib.id if lib else None
+    dest = Path(inp.dest) if inp.dest else (lib.root() if lib and lib.root() else switch2.root(cfg) / "library")
+    progress = lambda pct, msg: ctx.progress(pct, msg)
+    cancel = lambda: bool(getattr(ctx, "_cancel", False))
+    if op == "scan":
+        if not inp.source:
+            raise ValueError("scan needs source=<card or folder on this worker>")
+        rows = switch_import.find_titles(inp.source, min_mb=inp.min_mb)
+        return {"result": {"op": "scan", "source": inp.source,
+                           "titles": [{"path": str(p), "bytes": p.stat().st_size} for p in rows],
+                           "installed_content": switch_import.installed_content(inp.source)}}
+    if op == "extract":
+        if not inp.source:
+            raise ValueError("extract needs source=<a .nup on this worker>")
+        return {"result": {"op": "extract", **switch_import.materialize(inp.source, games, progress=progress)}}
+    if op not in ("import", "watch"):
+        raise ValueError(f"unknown op {op!r} (scan, import, watch, extract)")
+    if op == "import" and not inp.source:
+        raise ValueError("import needs source=<card or folder on this worker>")
+    if op == "watch":
+        result = switch_import.watch_titles(dest, sources=[inp.source] if inp.source else None,
+                                           all_drives=bool(inp.all_drives), extract=bool(inp.extract),
+                                           games_dir=games, min_mb=inp.min_mb, timeout_s=float(inp.timeout_s),
+                                           progress=progress, cancel=cancel)
+    else:
+        result = switch_import.import_titles([inp.source], dest, extract=bool(inp.extract), games_dir=games,
+                                             min_mb=inp.min_mb, progress=progress, cancel=cancel)
+    scan_job = _switch_scan(ctx, library_id) if inp.scan and library_id else None
+    return {"result": {"op": op, **result, "scan_job": scan_job}}
+
+
+def _switch_scan(ctx, library_id: str) -> str | None:
+    """Queue the control plane's scan_library for the imported library; None without a server (local tool run)."""
+    if not library_id or not getattr(ctx, "server", None):
+        return None
+    try:
+        import httpx
+        r = httpx.post(f"{ctx.server}/api/jobs", json={"tool": "scan_library", "input": {"libraries": [library_id]}},
+                       headers=getattr(ctx, "headers", {}) or {}, timeout=10)
+        return (r.json() or {}).get("id")
+    except Exception:                                       # noqa: BLE001 - the import itself already succeeded
+        return None

@@ -49,6 +49,12 @@ from pathlib import Path
 BOT_MODULES = frozenset({
     "gbox.mercs_bot", "gbox.re4_merc_bot", "gbox.re4_threats", "gbox.re4_menus", "gbox.re4_ram_prompts",
     "gbox.re4_navmap", "gbox.re4_collision",
+    # The Switch RE4 playbook. gbox.re4switch_bot plays RE4 (re_switch.RE4's 'playbook') and is NOT under gbox.mercs,
+    # so it was never reloaded while its title module was - live 2026-11-12 the host carried bonus_goal, walk_track and
+    # is_bow in gbox/re4switch_bot.py for hours after several deploys while the running worker kept the old code, and
+    # every new telemetry field it publishes (bow, walk_m, bonus_goals) stayed blank: it looked exactly like the fixes
+    # had not worked. Its names are not bound by any non-bot module (test_hot_reload's allow-list invariant).
+    "gbox.re4switch_bot",
     # Co-op loop and its per-run read-only navigation state. The campaign
     # transport, sealed pad proof, native queue and access journal stay live.
     "gbox.pso_campaign", "gbox.pso_coop", "gbox.pso_coop_geometry", "gbox.pso_coop_nav",
