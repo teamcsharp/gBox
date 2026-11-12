@@ -1192,7 +1192,17 @@ def _unstick(ad, snap) -> int:
     of the old answer (NOT_IN_CONTROL_KEYS), which cannot win a stick-wiggle QTE at all. -> writes made.
     """
     p = (snap or {}).get("player") or {}
-    ptr = p.get("ptr")
+    base = (snap or {}).get("module_base")
+    if not isinstance(base, int):
+        return 0
+    # The status block lives off pG, the player GLOBAL at module + PG_PTR_VAR - not off the player unit in
+    # snap["player"]["ptr"]. Reading the unit's address instead silently cleared nothing (the write landed on unrelated
+    # memory), which is why a grab still killed him with mods_qte_unstuck never appearing: live 2026-11-12, doing=grabbed
+    # with hp 0/1560.
+    try:
+        ptr = D.u64(ad, base + D.PG_PTR_VAR)
+    except (ValueError, OSError, RuntimeError):
+        return 0
     if not isinstance(ptr, int) or not D.ptr_ok(ptr):
         return 0
     word_i, mask = D.STA_PL_CATCHED

@@ -10,7 +10,9 @@ import struct
 from gbox.mercs.titles import re4_switch as D
 from gbox.mercs.titles import re4_switch_mods as M
 
-PTR = 0x10000000                      # inside ptr_ok's range
+PTR = 0x10000000                      # the player unit (snap["player"]["ptr"]), NOT where the status block lives
+BASE = 0x30000000                     # the module
+PG = 0x40000000                       # pG, the player GLOBAL at module + PG_PTR_VAR: the status block hangs off this
 
 
 class Ad:
@@ -27,6 +29,8 @@ class Ad:
                 return bytes(d[addr - a:addr - a + n])
         raise ValueError("unmapped")
 
+    rd = read_memory                    # re4_switch.u64 reads through .rd
+
     def write_memory(self, addr, data):
         for a, d in self.at.items():
             if a <= addr and addr + len(data) <= a + len(d):
@@ -38,18 +42,21 @@ class Ad:
 
 def world(status_words):
     ad = Ad()
-    ad.put(PTR + D.PG_STATUS, struct.pack("<4I", *status_words))
-    return ad, {"player": {"ptr": PTR}}
+    mod = bytearray(D.PG_PTR_VAR + 8)                  # module + PG_PTR_VAR holds pG
+    struct.pack_into("<Q", mod, D.PG_PTR_VAR, PG)
+    ad.put(BASE, mod)
+    ad.put(PG + D.PG_STATUS, struct.pack("<4I", *status_words))
+    return ad, {"player": {"ptr": PTR}, "module_base": BASE}
 
 
 def test_a_hold_is_cleared_and_nothing_else_in_the_word_changes():
     ad, snap = world((0xDEADBEEF, 0x8001, 0x1234, 0x5678))          # word 1: caught (0x8000) plus a held 0x0001
     assert M._unstick(ad, snap) == 1
-    now = struct.unpack("<I", ad.read_memory(PTR + D.PG_STATUS + 4, 4))[0]
+    now = struct.unpack("<I", ad.read_memory(PG + D.PG_STATUS + 4, 4))[0]
     assert not now & D.STA_PL_CATCHED[1], "the caught bit is gone: he is not held any more"
     assert now == 0x0001, "the rest of the word is untouched"
-    assert struct.unpack("<I", ad.read_memory(PTR + D.PG_STATUS, 4))[0] == 0xDEADBEEF
-    assert struct.unpack("<I", ad.read_memory(PTR + D.PG_STATUS + 8, 4))[0] == 0x1234
+    assert struct.unpack("<I", ad.read_memory(PG + D.PG_STATUS, 4))[0] == 0xDEADBEEF
+    assert struct.unpack("<I", ad.read_memory(PG + D.PG_STATUS + 8, 4))[0] == 0x1234
 
 
 def test_an_unheld_player_is_left_alone():
