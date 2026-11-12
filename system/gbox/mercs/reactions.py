@@ -6,7 +6,11 @@ when RAM can't tell - with the burst / rest rule that keeps a stuck prompt from 
 """
 from __future__ import annotations
 
-EVERY, BURST, REST = 0.6, 3, 5.0         # press a prompt this often; still up after BURST presses in 3 s: rest REST s
+EVERY, BURST, REST = 0.05, 10 ** 9, 0.0   # Operator 2026-11-11 18:40: "make sure that no matter what QTE event happens,
+# that the bot is able to counter and resist that QTE event ... make sure that the bot is always able to catch these QTE
+# events no matter what." A shown prompt is answered every other frame at 20 Hz and never rested; the old 0.6 s press
+# gap with a 5 s rest after three presses dropped any prompt held longer than ~2 s (the grab catches the operator saw
+# missed). The mash path always pressed every step; the single/chord path now does too.
 MASH = frozenset({"wiggle", "mash"})     # held by an enemy (RE4 SHAKE OFF: every new stick direction and every new A /
                                          # B counts, 0x8014141C): pressed every step while it shows, never rested - the
                                          # hold drains health until it is shaken off (live 2026-10-21: 10 hp a frame,

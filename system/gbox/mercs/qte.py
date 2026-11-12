@@ -58,7 +58,9 @@ AXIS_Y = (("lup",), ("ldown",))
 AXIS_X = (("lleft",), ("lright",))
 
 MASH_HZ = 12.0                # 10-15 presses/sec (the engine's own MASH_DOWN_S cadence is used on its path)
-SINGLE_REACTION_S = (0.10, 0.22)   # a single timed press waits this long (random) so it is not frame-perfect-robotic
+SINGLE_REACTION_S = (0.0, 0.02)   # Operator 2026-11-11 18:40: "make sure that the bot is always able to catch these
+# QTE events no matter what." The old 0.10-0.22 s human-looking delay could land outside a tight prompt window; a
+# single timed press now goes on the first tick (the 0.02 jitter only keeps two presses in one tick apart).
 
 # A token says what the game asks for, the vocabulary the per-title RAM readers already speak:
 #   "press:y"  "release:b"  "mash:a"  "mash:a+b"  "mash:wiggle"  "stick:rotate"  "stick:y"  "stick:x"
