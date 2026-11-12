@@ -276,6 +276,29 @@ class Mesh:
         self._wall_grid: dict | None = None
 
     # --- where ---
+    def nearest_bonus(self, pos, *, max_mm: float = 60000.0):
+        """The nearest reachable TIME BONUS, as (millimetres, row) - the objectives the operator means by "going for all
+        of the time bonuses and traversing the level". Every stage json already carries them (r400.json: 8 rows, 90 s and
+        30 s, each with pos, the walkable `stand` approach and reachable), and re4_nav kept them but nothing ever read
+        them: `time_bonus_route` is declared in re4_gc's profile and implemented nowhere. The row's `stand` is what a
+        route should aim at (it is on the floor; `pos` is the hourglass itself). None when the stage has none in range.
+        """
+        if not self.bonuses or not pos:
+            return None
+        best = None
+        for row in self.bonuses:
+            if row.get("reachable") is False:
+                continue
+            at = row.get("stand") or row.get("pos")
+            if not at or len(at) < 3:
+                continue
+            d = math.hypot(at[0] - pos[0], at[2] - pos[2])
+            if best is None or d < best[0]:
+                best = (d, row)
+        if best is None or best[0] > max_mm:
+            return None
+        return best
+
     def find(self, pos, *, floor_only=False, height_slack=re5_nav.Y_SLACK * MM_PER_CM) -> int | None:
         return self._cm.find(_cm(pos), floor_only=floor_only, height_slack=height_slack / MM_PER_CM) \
             if _ok(pos) else None

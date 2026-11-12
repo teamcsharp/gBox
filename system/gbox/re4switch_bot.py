@@ -683,6 +683,19 @@ def _maintain_mods(ad, snap: dict, stats: dict) -> None:
     # How he is manoeuvring, so a run can be reviewed on numbers: metres walked, how straight the path was, and how long
     # he has stood still (see walk_track).
     walk_track(stats, snap, time.time())
+    # The stage's TIME BONUSES, which the operator wants him going after ("traversing the level, going after the
+    # objectives"). Every stage json carries them (r400 8, r402 9, r403 15, r404 15) and nothing read them until now, so
+    # a round could not say whether an objective was even on the map. bonus_nearest_* is where the route will aim.
+    nav = (snap or {}).get("nav")
+    if nav is not None and hasattr(nav, "nearest_bonus"):
+        try:
+            nb = nav.nearest_bonus(((snap or {}).get("player") or {}).get("pos"))
+            stats["bonus_n"] = len(getattr(nav, "bonuses", ()) or ())
+            if nb is not None:
+                stats["bonus_nearest_m"] = round(nb[0] / 1000.0, 1)
+                stats["bonus_nearest_s"] = nb[1].get("seconds")
+        except Exception as exc:                     # noqa: BLE001 - a bonus read never costs the fight
+            stats["bonus_error"] = f"{type(exc).__name__}: {exc}"[:120]
 
 
 def _game(m, stats: dict) -> dict | None:
