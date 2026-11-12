@@ -4989,12 +4989,12 @@ CITRON_TITLE_SETTINGS = {
 CITRON_LOG = ("log", "citron_log.txt")
 # Titles a Linux node starts in Citron when it is configured (switch_linux_emulator = auto): multi-core there, where
 # Eden v0.2.1 loses a thread that moves itself between cores (EDEN_TITLE_SETTINGS) and runs them single-core.
-SWITCH_CITRON_TITLES = frozenset({"010099A00BC1E000", "01002A000CD48000"})
-# RE4 + RE6 on Citron, RE5 on Eden: the two emulators are separate processes with separate data dirs, so an
-# RE4/RE6 (Citron) title can be warm or playing beside an RE5 (Eden) title - the operator's multiple-instances
-# seamless rotation (2026-11-11 19:36). Before this pair the whole rotation was one Eden slot. RE5/RE6 were verified
-# on Eden (2026-11-03); the Citron settings for both are already in CITRON_TITLE_SETTINGS, and the RE6's Citron boot
-# is the live experiment that turns the RE5<->RE6 boundary from a cold switch into a cross-emulator handoff.
+SWITCH_CITRON_TITLES = frozenset({"010099A00BC1E000"})
+# RE4 on Citron, RE5/RE6 on Eden. The 2026-11-11 19:54 experiment of moving RE6 to the Citron FAILED live:
+# "BootHung: citron exited during boot: FS: RomFS: Update (0.2.0) applied successfully" (the FS/RomFS update path).
+# So the split stays RE4-Citron + RE5/RE6-Eden: the cross-emulator pair is RE4 beside one Eden title; the RE5<->RE6
+# boundary remains a same-Eden cold switch until a second Eden profile (separate data dir) is wired.
+# (The per-kind slot model 2c5fd647 remains valid for the RE4 <-> Eden pair.)
 # A boot that never draws (live 2026-10-26: 1 of 7 Eden single-core boots of RE5 stayed black at 0 FPS after
 # "SetPollingMode") is started again once: these titles animate from the first second (logos, intro, title fog).
 BOOT_WATCH_TITLES = frozenset({"010018100CD46000", "01002A000CD48000", "010099A00BC1E000"})
