@@ -2663,7 +2663,11 @@ class Bot:
             if UNIVERSAL_CORE and self._aim_since is not None and self._aim_stick().usable():
                 keep = AIM_KEEP_CLOSE_RAD if (FIRE_FIRST and fire_first) else AIM_KEEP_RAD
                 cone = max(RAISE_TOL, keep)              # the gun up: the aim stick turns him, the gun stays up
-            if abs(err) > cone:
+            # The turn kept the gun up to 57 deg but the shot only needs FIRE_TOL_MIN (2.9 deg): live 2026-11-12 the
+            # bot converged (282 converge / 194 diverge) down to aim_err 3.33 deg - 0.43 deg outside tolerance - and then
+            # FIRED from there, 101 shots and 0 hits across 28 rounds. The turn now runs to the fire tolerance itself, so
+            # the extra tick that closes the last half degree happens before the trigger instead of never.
+            if abs(err) > min(cone, FIRE_TOL_MIN):
                 self.stats["turns"] += 1
                 self._learn_turn(self.target, err, now)
                 self.doing = "turn"
