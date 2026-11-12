@@ -1245,12 +1245,11 @@ ESCAPE_S, ESCAPE_GAP_S, ESCAPES_MAX = 1.2, 4.0, 4
 # even when it is open.
 DRY_ESCAPE_S, DRY_ESCAPE_R, DRY_ESCAPE_N = 4.0, 250.0, 3
 RUN = ("b", "lup")
-HUNT_R = 2500.0                          # the "hunt" directive: closer than this the fight takes over, farther he walks
-# 2500 (was 1200): measured live 2026-11-12, an RE5 round fired exactly ONE shot with t_walk 7.34 s dominant against
-# t_aim 1.21 s, and its reports are uniformly lost/died at 0-1 kills. The cause is this threshold: in hunt mode, with the
-# gun still down, anything past HUNT_R is WALKED to instead of shot at - so the bot walks into range and dies on the way,
-# having never pulled the trigger. RE4's equivalent gate is ENGAGE_RANGE_LOS_CM (35 m) and it is what made the difference
-# there. 25 m keeps the walk for genuinely distant foes while letting him open fire far sooner.
+HUNT_R = 1200.0                          # the "hunt" directive: closer than this the fight takes over, farther he walks
+# (left at 1200. I had raised it to 2500 to make RE5 open fire sooner, but its rounds still reported 0-2 trigger pulls,
+# and test_re5_switch_directives.test_hunt_walks_to_the_nearest_far_majini... caught that it changes a documented
+# doctrine - hunt WALKS to a far Majini, the fight takes over when close. A change that does not fix the symptom and
+# does break the design is reverted, not rationalised.)
 # The "rush" directive (the PiP's flashbang button, operator 2026-10-29): a mine dropped at once, then for its 10 s he closes
 # to RUSH_R of the nearest - arm's length, where the game offers its melee prompts (taken at once with a Majini that near,
 # _prompt_wanted) - and his crowd fire raises the magnum before the shotgun (RAMPAGE_FAMILIES). stats rushes.
@@ -6332,8 +6331,6 @@ class Bot:
         self._flash_self_tick(snap, now)                 # his own motion after a flash (flash_self_*: measured)
         act = self._flash_window(snap, act, now)         # the flash's seconds used: mine, grenade, step, fire
         self._defer_trigger = False
-        act = re5_target_feedback.apply(self, snap, act, now)
-        act = re5_target_feedback.keep_active(self, snap, act, now)
         act = self._mesh_guard(act, snap)                # the way probed on the stage's own nav mesh before a wall
         act = self._room_guard(act, snap)                # ... and on its real collision (ROOM_MAP)
         if WALL_GOV_GOAL or getattr(self, "_goal_drive", None) != now:
@@ -6344,6 +6341,13 @@ class Bot:
         act = self._calm_sticks(act, snap, now)
         act = self._governor(act, snap, now)
         act = self._shot_tail(act, snap, now)
+        # The fire-permission layer runs AFTER the guards again, as it did before 2b222c04 (2026-10-30) moved it up
+        # beside _tick. Ordered the old way it sees the action the guards actually produced, instead of a raw _tick
+        # action that _never_stand/_governor/_shot_tail then rewrite. Measured 2026-11-12: RE5 holds a target at 1.5 m
+        # dead on (yaw -0.0, pitch +0.0) and fires nothing, reporting 0-1 kills where this file's own history records
+        # 13.8-19.6. This is the one structural change in the regression window (Oct 30 - Nov 10) on the gun path.
+        act = re5_target_feedback.apply(self, snap, act, now)
+        act = re5_target_feedback.keep_active(self, snap, act, now)
         act = self._native_equipment(act, snap)
         act = self._special("post", act, snap, now) or act  # the stagger shot's site, the specials line in the why
         self.stats.update(combat_action=self.doing, combat_reason=self.why,
