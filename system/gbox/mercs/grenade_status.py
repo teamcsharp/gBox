@@ -35,6 +35,9 @@ KIND_NOT_OFFERED = "this title does not offer {kind} grenades"
 CONTROLLER_ABSENT = "{title}'s native grenade controller is not available for this session"
 CONTROLLER_STATUS_UNREAD = "this title's native grenade status could not be read; no kind is advertised without it"
 NO_PLAYER = "no living player in an active Mercenaries round"
+#: The transient reason a native controller gives before its harness is attached (re4_switch_native.grenade_kinds).
+#: A controller with `ensure_attached` attaches on the click itself, so this reason is not "unbuilt".
+ATTACH_ON_DEMAND = "the harness is not attached to the player"
 
 
 @dataclass(frozen=True)
@@ -221,8 +224,17 @@ def rows(game=None, controller=None, ready_error: str = "") -> list | None:
         for kind, spec in title.kinds.items():
             offered[kind] = Kind(spec.available, spec.reason, "title")
         reported, failed = _reported(controller)
+        # A controller that attaches its native harness ON DEMAND (re4_switch_native.Controller.ensure_attached) is not
+        # "unbuilt" because a status read has not attached it yet: the click itself attaches and fires. Before this the
+        # PiP advertised every RE4 kind unavailable ("the harness is not attached to the player") and the queue refused
+        # the click, so the operator never saw a ring on RE4 ("I never see the bot deploy grenade rings in Resident
+        # Evil 4"). Only that transient reason is promoted; a real refusal keeps its reason.
+        on_demand = callable(getattr(controller, "ensure_attached", None))
         for row in reported:
-            offered[row["kind"]] = Kind(row.get("available") is True, str(row.get("reason") or "")[:300], "native")
+            available, reason = row.get("available") is True, str(row.get("reason") or "")[:300]
+            if not available and on_demand and ATTACH_ON_DEMAND in reason:
+                available, reason = True, ""      # the click attaches the harness, then it fires (ensure_attached)
+            offered[row["kind"]] = Kind(available, reason, "native")
     out = []
     for kind in KINDS:
         spec = offered.get(kind)

@@ -157,3 +157,33 @@ def test_an_unknown_title_publishes_only_what_its_controller_reports():
     assert rows[0]["available"] is True and rows[1]["reason"] == "no hand ring"
     error = G.rows({"game_id": "ffff"}, ctl, G.NO_PLAYER)
     assert error[0]["available"] is False and error[0]["reason"] == G.NO_PLAYER
+
+
+def test_a_controller_that_attaches_on_demand_is_advertised_not_refused():
+    """RE4 Switch: the status path only BINDS the player, so its kinds read "the harness is not attached" until a
+    native op attaches it. The click itself attaches (Controller.ensure_attached), so the PiP must offer the kinds -
+    otherwise the queue refuses every click and the operator never sees a ring on RE4."""
+    class Attaches:
+        def grenade_ring(self, *a, **k):
+            return {"state": "confirmed"}
+
+        def ensure_attached(self):
+            return None
+
+        def grenade_kinds(self):
+            why = "the harness is not attached to the player"
+            rows = [{"kind": k, "available": False, "reason": why} for k in ("flash", "hand", "mine")]
+            rows.append({"kind": "incendiary", "available": False,
+                         "reason": "the incendiary blast is not identified on this build yet"})
+            return rows
+
+    class NoAttach(Attaches):
+        ensure_attached = None
+
+    game = {"game_id": "270a15eb98dab4d7"}
+    rows = {r["kind"]: r for r in G.rows(game, Attaches())}
+    assert rows["flash"]["available"] is True and rows["hand"]["available"] is True
+    assert rows["mine"]["available"] is True
+    assert rows["incendiary"]["available"] is False, "a real refusal keeps its reason"
+    other = {r["kind"]: r for r in G.rows(game, NoAttach())}
+    assert other["flash"]["available"] is False and "not attached" in other["flash"]["reason"]
