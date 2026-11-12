@@ -568,3 +568,16 @@ def test_a_flank_budget_ends_the_sight_gate():
     assert b._sight_given_up(e) is True, "a budget's worth of walking: he shoots it"
     assert b.stats.get("sight_given_up") == 1
     assert b._sight_given_up({"ptr": 8}) is False, "another Ganado gets its own budget"
+
+
+def test_walled_in_he_steps_forward_instead_of_standing():
+    """Live 2026-11-12 on Base (r403): every planned direction was refused for brushing a wall ("115 mm, margin 300"),
+    and the never-stand rule stood and re-tried, so the round read walk_m 0.0 while the Ganados closed. A refused
+    destination is not a reason to stand."""
+    b = bot()
+    s = snap([])
+    b._walk_test = lambda snap: (lambda a, bb: False)          # the room map refuses every planned direction
+    b.tick(s, now=0.0)
+    act = b.tick(s, now=D.STAND_MAX_S + 0.2)
+    assert "lup" in (act.get("hold") or ()), "walled in is still a step, not standing"
+    assert b.stats.get("steps_walled_in")

@@ -3579,16 +3579,22 @@ class Bot:
             goal = combat.open_step(pos, rot or 0.0, seg, STAND_STEP_MM, avoid=foes, avoid_r=ESCAPE_CLEAR_MM,
                                     tries_deg=tries)
             if goal is None:
+                # Every planned direction was refused, and this used to stand and re-try: on Base (r403) that was
+                # walk_m 0.0 for the whole round, walk_still_s 2.2 and room_map_walks_refused 7 while the Ganados
+                # closed - the operator's "standing in place trying to walk instead of going forward". A refused
+                # DESTINATION is not a reason to stand: walk forward with a turn (the mesh-less step) and let the next
+                # tick re-plan. Measured first: halving the room map's clearance rescued 0 of 707 wall-side walks, so
+                # the refusal is right and the standing was the defect.
                 self.stats["steps_walled_in"] = self.stats.get("steps_walled_in", 0) + 1
-                st.update(pos=pos, rot=rot, at=now)
-                return act
+                keys = ("lup", TURN["left" if (st["n"] // 4) % 2 else "right"])
         else:
             keys = ("lup", TURN["left" if st["n"] % 2 else "right"])
         st.update(pos=pos, rot=rot, at=now, until=now + STAND_STEP_S, keys=keys, goal=goal)
         self.__dict__.setdefault("_fz", {"pos": None, "rot": None, "tap": -1e9, "on": False})["stepped"] = now
         self.stats["stand_breaks"] += 1
         self.doing, self.why = "step", (f"stood {STAND_MAX_S:.1f} s: a step "
-                                        + ("along open floor" if goal is not None else "(no stage mesh)"))
+                                        + ("along open floor" if goal is not None
+                                           else "walled in: forward anyway" if callable(seg) else "(no stage mesh)"))
         return dict(act, hold=self._step_keys(p, st))
 
     def _step_keys(self, p, st) -> set:
