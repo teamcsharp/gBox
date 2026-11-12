@@ -674,10 +674,13 @@ def _give_weapon(ad, base: int, st: dict, rng, fixed: int | None = None, exclude
     try:
         _write_hand(ad, base, item, g, iid, row, lv["packed"], loaded, nibbles, lv["reload"])
         back = W.decode_item(rd(item, W.ITEM_SZ), item)
-        ok = (back["id"] == iid and back["levels_raw"] == lv["packed"] and back["loaded"] == loaded
-              and not back["empty"] and struct.unpack("<H", rd(mgr + W.M_EQUIPPED_ID, 2))[0] == iid
-              and rd(g + W.G_CLASS, HAND_CLASS_N) == bytes([row["class"], row["variant"], 0, *nibbles])
-              and rd(g + W.G_RELOAD, 1) == bytes([lv["reload"]]))
+        # The identity is what the swap must own: the item is the new gun, the manager holds it, and the game state's
+        # class byte is the new row's class. The level/rounds/reload bytes are the game's own state - a stale cosmetic
+        # byte must not discard a good magnum (live 2026-11-11 19:46: the strict all-fields read-back kept putting the
+        # shotgun back, so the operator saw class 15 in a fight despite MAGNUM_SHARE 1.0).
+        ok = (back["id"] == iid and not back["empty"]
+              and struct.unpack("<H", rd(mgr + W.M_EQUIPPED_ID, 2))[0] == iid
+              and rd(g + W.G_CLASS, 1) == bytes([row["class"]]))
     except errors:
         ok = False
     if not ok:
