@@ -585,10 +585,25 @@ def play(ad, send, stopped, sleep=time.sleep, stats: dict | None = None, *, cloc
                 stats["title_returns"] = stats.get("title_returns", 0) + (prev_where != "title")
             if where == "dead_continue" and prev_where != "dead_continue":
                 stats["deaths"] = stats.get("deaths", 0) + 1     # the walk answers Continue: Yes (re4_switch.step)
+                # What killed him. This posted hp=None, so a death reached the round report with no health and no
+                # position (ten Krauser/Waterworld rounds read outcome=died with round_threat_hits=0 - no damage
+                # counted - and nothing to say why), which is exactly the "instant kill or slow bleed?" question. The
+                # last snapshot has both: his life and how close the nearest live Ganado was.
+                _dsnap = last_snap or {}
+                _dpl = _dsnap.get("player") or {}
+                _dp = _dpl.get("pos")
+                _dnear = None
+                if _dp:
+                    _dds = [math.dist(_dp, e["pos"]) for e in (_dsnap.get("enemies") or ())
+                            if e.get("pos") and (e.get("hp") or 0) > 0]
+                    _dnear = round(min(_dds) / 1000.0, 1) if _dds else None
+                stats["death_hp"] = _dpl.get("hp")
+                stats["death_hp_max"] = _dpl.get("hp_max")
+                stats["death_nearest_m"] = _dnear
                 if rnd is not None and rnd.posted is None and rnd.player_seen:
                     # the round's end, witnessed by the game's own death screen (mercmode.accept_boundary)
-                    _post(rnd, {"screen": "dead", "death_screen": True, "hp": None}, last_snap or {}, stats,
-                          clock(), round_boundary, keys)
+                    _post(rnd, {"screen": "dead", "death_screen": True, "hp": _dpl.get("hp"),
+                                "nearest_m": _dnear}, _dsnap, stats, clock(), round_boundary, keys)
             seen_menu = seen_menu or where in driver.CURSOR_MENUS
             prev_where = where
             # moves on a short cadence once the last one showed; a confirm once its screen has settled (and, on a
