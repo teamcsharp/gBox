@@ -53,6 +53,9 @@ RING_VERIFIED_KINDS = ("flash",)
 #: 13:51, and left the controller uncertain), so the derived pair gets its own, wider budget.
 CLASS_SPAWN_TIMEOUT_S = 3.0
 CLASS_WAIT_S = 2.0
+#: A native request the game's dispatcher never picked up (mailbox state 1) is cleared after this long and the
+#: controller resumes: the dispatcher polls every frame, so a request this stale cannot still run (never replayed).
+RECOVER_NEVER_RAN_S = 60.0
 # Implemented but not yet verified live (the handoff's "get a live receipt per kind, then advertise"): the
 # parameterised spawn/detonate pair in native/re6_061d2a06/classes.py takes the class, so the ring *can* fire them
 # (`allow_unverified` on the controller, never on the queue); grenade_kinds() keeps advertising only the verified
@@ -350,6 +353,7 @@ class Controller:
                 state = self.w(self.heap + 0xA8)
             except (OSError, ValueError, struct.error):
                 state = None
+            self.failed_at = time.monotonic()
             raise Uncertain(f"native completion uncertain; request will not be replayed "
                             f"(heap state {state!r}, off {off:#x})") from exc
         return self.q(self.heap + 0xB8)
@@ -368,7 +372,17 @@ class Controller:
             if self.heap is None:
                 return False
             self.validate_heap()
-            if self.w(self.heap + 0xA8) != 3:
+            state = self.w(self.heap + 0xA8)
+            if state == 1 and getattr(self, "failed_at", None) is not None \
+                    and time.monotonic() - self.failed_at >= RECOVER_NEVER_RAN_S:
+                # A request the game's dispatcher never picked up, stale for a whole minute: the dispatcher polls every
+                # frame, so a state-1 mailbox this old cannot still run the callback. Clear it and resume the controller
+                # (the request itself is never replayed). Live 2026-11-11 19:07: one failed shell spawn locked the
+                # round's rings and mines for its whole length.
+                self.write(self.heap + 0xA8, struct.pack("<I", 0))
+                self.failed = self.recoverable = False
+                return True
+            if state != 3:
                 return False
             # The completed mailbox still belongs to the original operation.
             # A new round may have a different player; do not bind it until the

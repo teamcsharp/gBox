@@ -385,6 +385,10 @@ def fire(ad, decision: dict, stats: dict, now: float, *, ring=None) -> dict:
     except Exception as exc:                             # noqa: BLE001 - a refused ring is a stat, not a crash
         stats["ring_last_at"] = now
         stats["ring_error"] = f"{type(exc).__name__}: {exc}"[:200]
+        # The FIRST failure survives every later "controller awaits recovery" line: it is the one that carries the
+        # native mailbox state and the request offset (live 2026-11-11 19:07: the shell spawn's own error was
+        # overwritten by the lock it caused).
+        stats.setdefault("ring_first_failure", f"{type(exc).__name__}: {exc}"[:300])
         stats["rings_attempted"] = int(stats.get("rings_attempted", 0)) + 1
         return {"state": "failed", "reason": stats["ring_error"]}
     stats["ring_last_at"] = now

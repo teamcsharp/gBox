@@ -323,6 +323,7 @@ class Controller(N.Controller):
                 state = self.w(self.heap + 0x6A8)
             except (OSError, ValueError, struct.error):
                 state = None
+            self.failed_at = time.monotonic()
             raise Uncertain(f"native completion uncertain; request will not be replayed "
                             f"(heap state {state!r}, off {off:#x})") from exc
         return self.q(self.heap + 0x6B8)
@@ -335,7 +336,16 @@ class Controller(N.Controller):
             if self.heap is None:
                 return False
             self.validate_heap()
-            if self.w(self.heap + 0x6A8) != 3:
+            state = self.w(self.heap + 0x6A8)
+            if state == 1 and getattr(self, "failed_at", None) is not None \
+                    and time.monotonic() - self.failed_at >= N.RECOVER_NEVER_RAN_S:
+                # A request the game's dispatcher never picked up, stale for a minute: cleared and the controller
+                # resumes (the request is never replayed). Live 2026-11-11: one uncertain call locked the round's
+                # native ordnance for its whole length.
+                self.write(self.heap + 0x6A8, struct.pack("<I", 0))
+                self.failed = self.recoverable = False
+                return True
+            if state != 3:
                 return False
             if self.q(self.heap + 0x690) != self.player or self.q(self.heap + 0x698) != self.generation:
                 return False

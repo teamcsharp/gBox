@@ -265,6 +265,11 @@ def test_the_launcher_kind_fires_the_shell_round_ring():
     calls = []
 
     class ShellRing(FakeRing):
+        def launcher_kinds(self):
+            return [{"kind": "shell1302", "available": False, "reason": "unverified"},
+                    {"kind": "shell1303", "available": False, "reason": "unverified"},
+                    {"kind": "shell1304", "available": False, "reason": "unverified"}]
+
         def grenade_kinds(self):
             return [{"kind": "flash", "available": True},
                     {"kind": "shell1302", "available": False, "reason": "unverified"},
