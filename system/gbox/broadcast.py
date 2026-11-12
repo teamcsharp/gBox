@@ -478,7 +478,14 @@ def choose(pin: dict, watch: dict | None, rows: list[dict], *, current: str | No
         if watched in running and (watched_agent or not agents_live):
             return watched, why or "following what you watch"
     pool = [r for r in rows if auto_agents or not r.get("agent_owned")]
-    if current in running and (running[current].get("fresh") or not any(r.get("fresh") for r in pool)):
+    # "Still on air" must not hold a NON-agent game against a live MercMode session: the operator wants MercMode 24/7
+    # ("merc mode must always run 24/7 broadcasting from the gbox service while I work on parallel operations on the
+    # local clients"), and this rule ran BEFORE the preference below, so a fresh PSO always kept the stream while the
+    # agent's round was live. A non-agent current row is only held when there is no fresh agent-owned session to take it.
+    agent_fresh = any(r.get("agent_owned") and r.get("fresh") for r in pool)
+    yields_to_agent = agent_fresh and not (running.get(current) or {}).get("agent_owned")
+    if current in running and not yields_to_agent and \
+            (running[current].get("fresh") or not any(r.get("fresh") for r in pool)):
         return current, why or "still on air"          # stays while it has a picture, or while nothing else does
     if not pool:
         return None, why or "no game is running"

@@ -187,8 +187,10 @@ def test_choose_follows_what_the_operator_watches_then_sticks():
     pin = {"mode": "auto"}
     assert B.choose(pin, {"session_id": "b", "at": 100}, rs, current="a", now=110, watch_ttl_s=60) == \
         ("b", "following what you watch")
-    assert B.choose(pin, {"session_id": "b", "at": 0}, rs, current="a", now=110, watch_ttl_s=60) == ("a", "still on air")
-    assert B.choose(pin, {"session_id": None, "at": 100}, rs, current="a", now=110, watch_ttl_s=60)[0] == "a"
+    assert B.choose(pin, {"session_id": "b", "at": 0}, rs, current="a", now=110, watch_ttl_s=60) == \
+        ("b", "newest game with a picture"), "a live agent session displaces the stale operator game on air"
+    assert B.choose(pin, {"session_id": None, "at": 100}, rs, current="a", now=110, watch_ttl_s=60)[0] == "b", \
+        "no watch at all: the live agent session takes it from the operator game"
     assert B.choose(pin, None, rs, current=None, now=0, watch_ttl_s=60) == ("b", "newest game with a picture"), \
         "an agent's MercMode stream before an operator game's: merc mode is the highest priority"
     assert B.choose(pin, None, rs, current=None, now=0, watch_ttl_s=60, auto_agents=False)[0] == "a"
@@ -1456,8 +1458,9 @@ def test_the_operators_own_app_view_never_steers_the_program():
     the desktop app's watch is control, not a program request; a browser/Pine viewer still follows."""
     rs = rows(("a", "lilspark", True, False, 1), ("b", "i9-NUC", True, True, 2))
     pin = {"mode": "auto"}
-    assert B.choose(pin, {"session_id": "b", "at": 100, "client": "desktop-webview"}, rs, current="a", now=110,
-                    watch_ttl_s=60) == ("a", "still on air"), "the app's own view does not take the program"
+    desktop = B.choose(pin, {"session_id": "b", "at": 100, "client": "desktop-webview"}, rs, current="a", now=110,
+                       watch_ttl_s=60)
+    assert desktop[1] != "following what you watch", "the app's own view does not take the program"
     assert B.choose(pin, {"session_id": "b", "at": 100, "client": "browser"}, rs, current="a", now=110,
                     watch_ttl_s=60) == ("b", "following what you watch"), "a viewer's watch still does"
     assert B.choose(pin, {"session_id": "b", "at": 100}, rs, current="a", now=110, watch_ttl_s=60) == \
