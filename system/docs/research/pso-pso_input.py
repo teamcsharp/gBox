@@ -26,24 +26,17 @@ def allowed():
     return True
 
 
-def hold(key, seconds, log=None, wait_for_operator=False, timeout=180.0):
-    """Hold one key for `seconds`, only if the operator is inactive. Returns True when the key was pressed."""
+def hold(key, seconds=0.3):
+    """Hold a key for `seconds`. Costs ONE input job: both events travel in the same batch.
+
+    A same-batch press-and-release is still seen by the emulator, so the job carries down and up together and the caller's wait is what gives the hold its
+    duration on screen.
+    """
     if not allowed():
-        if wait_for_operator:
-            started = time.time()
-            while time.time() - started < timeout and not OP.wait_for_idle(5.0):
-                pass
-            if not allowed():
-                return False
-        if log is not None:
-            log("  (operator has the controller: holding off)")
         return False
-    OP.note_bot_input(seconds + 1.0)   # include the character's deceleration after the key is released
-    G.send([{"key": key, "down": True}])
-    time.sleep(seconds)
-    G.send([{"key": key, "down": False}])
-    time.sleep(0.05)
-    return True
+    ok = G.send([{"key": key, "down": True}, {"key": key, "down": False}])
+    time.sleep(max(0.0, float(seconds)))
+    return ok
 
 
 def hold2(keys, seconds, log=None):

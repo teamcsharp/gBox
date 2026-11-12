@@ -168,12 +168,13 @@ def _owner_pid(hwnd):
 
 
 def send(events, attempts=2):
-    """Submit the press as a session_op job and return without waiting for it.
+    """Submit the press and wait for it, so the job queue cannot run away.
 
-    The queue preserves order, so a press only needs delivering. Waiting was actively harmful: jobs take longer than a frame, and treating a slow job as
-    a failed press stopped the character from moving while the presses were being applied anyway.
+    Returns True only when the job succeeded. The wait ceiling is generous because a queued press is still applied; the point is to keep the caller in step
+    with the worker rather than to give up early.
     """
     import session as S
+    import time as _time
     rows = [{"key": str(event.get("key")), "down": bool(event.get("down"))} for event in events
             if event.get("key")]
     if not rows:
@@ -185,11 +186,57 @@ def send(events, attempts=2):
     payload = {"tool": "session_op",
                "input": {"session_id": sid, "op": "send_input", "args": {"events": rows}},
                "require_worker": sid.split("-")[0], "agent_use": False}
+    _wait_for_room()
     try:
-        S._call("/api/jobs", "POST", payload)
-        return True
+        job = S._call("/api/jobs", "POST", payload)
+        _IN_FLIGHT["jobs"] += 1
     except Exception:                                             # noqa: BLE001
         return False
+    job_id = job.get("id")
+    deadline = _time.time() + 20.0
+    while _time.time() < deadline:
+        try:
+            state = S._call(f"/api/jobs/{job_id}")
+        except Exception:                                         # noqa: BLE001
+            return False
+        if state.get("state") == "succeeded":
+            _IN_FLIGHT["jobs"] = max(0, _IN_FLIGHT["jobs"] - 1)
+            return True
+        if state.get("state") == "failed":
+            _IN_FLIGHT["jobs"] = max(0, _IN_FLIGHT["jobs"] - 1)
+            return False
+        _time.sleep(0.08)
+    return False
+
+
+# ---------------------------------------------------------------------------------------------
+# batched input: one job carries a whole gesture, and the queue is capped
+# ---------------------------------------------------------------------------------------------
+_IN_FLIGHT = {"jobs": 0}
+MAX_IN_FLIGHT = 4
+
+
+def _wait_for_room():
+    """Keep the number of outstanding presses small, so a slow worker becomes backpressure."""
+    import time as _time
+    waited = 0.0
+    while _IN_FLIGHT["jobs"] >= MAX_IN_FLIGHT and waited < 5.0:
+        _time.sleep(0.05)
+        waited += 0.05
+
+
+def tap(key):
+    """One press and release in a single job."""
+    return send([{"key": key, "down": True}, {"key": key, "down": False}])
+
+
+def move(*keys):
+    """Several taps in ONE job: down, up, down, up ... for each key in order."""
+    events = []
+    for key in keys:
+        events.append({"key": key, "down": True})
+        events.append({"key": key, "down": False})
+    return send(events)
 
 
 def win_send_keys(pid, events, polite=False):
