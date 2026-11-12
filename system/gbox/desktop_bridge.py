@@ -595,7 +595,18 @@ class DesktopBridge:
                     offset=self.clock_offset
                     now=time.time()+offset if offset is not None else float('inf')
                     ordinary=remote_pad_events(events,lease,self.input_secret,now)
-                    if ordinary:local.post('/api/sessions/' + sid + '/input', json={'events': ordinary}).raise_for_status()
+                    if ordinary:
+                        # The operator is driving from their app, so the playing bot must yield - and it yields on
+                        # padstate.PLAYER_TOUCH, which only the worker's own XInput poll used to stamp. A federated
+                        # controller therefore never claimed control and its input was overwritten by the bot every
+                        # tick. The operator, 2026-11-12: "allow my controller input to work even on remote sessions
+                        # that I'm connected to if my controller is connected and detected by gBox. Im still trying to
+                        # guide the bot even from the office from the connected controller." Stamped here, with the
+                        # session id, rather than inside padstate.record, where it collided with the autoplay chord's
+                        # own rule that a chord is not a touch (test_pad_takeover).
+                        if any(isinstance(e, dict) and e.get('down', True) for e in ordinary):
+                            padstate.PLAYER_TOUCH[sid]=time.time()
+                        local.post('/api/sessions/' + sid + '/input', json={'events': ordinary}).raise_for_status()
                     for event in events:
                         if not isinstance(event, dict) or not event.get('rpc'):continue
                         rid = event['rpc']
