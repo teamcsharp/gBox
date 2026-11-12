@@ -253,8 +253,12 @@ def test_a_held_shot_becomes_a_flank_then_a_try_again(tmp_path, monkeypatch):
 def test_the_run_to_a_ganado_follows_the_mesh_route():
     """Straight ahead is a wall: the route's first waypoint is off to his right, so he turns right while he runs."""
     route = [mm(q) for q in ((0.0, 0.0, 0.0), (-300.0, 0.0, 600.0), (0.0, 0.0, 3000.0))]
-    act = bot().tick(snap([((0.0, 0.0, 3000.0), 400)], nav=Mesh(waypoints=route)), now=1.0)
+    b = bot()
+    act = b.tick(snap([((0.0, 0.0, 3000.0), 400)], nav=Mesh(waypoints=route)), now=1.0)
     assert act["hold"] == {"lup", D.TURN["right"], D.RUN_BTN}
+    # ...and it was a HUNT, not a coincidental walk: a Ganado 30 m off is past HUNT_RUN_MM, where the shot's 0.05 rad
+    # floor is wider than a body, so the fight runs at him instead of standing and firing (the machine-gunner kill).
+    assert b.stats.get("hunts") == 1 and b.doing == "hunt", (b.stats.get("hunts"), b.doing)
 
 
 def test_an_attached_walker_steers_the_run():
