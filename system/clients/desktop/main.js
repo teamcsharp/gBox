@@ -98,7 +98,19 @@ const procs = new Map();                              // id -> child process (st
 const taskLogs = new Map();                           // recent app commands and their streamed output
 // console output of the whole app (main process, renderer + gBox webview, worker / task streams) for issue reports
 let CONSOLE = "";
-const logPush = (src, text) => { CONSOLE = (CONSOLE + `${new Date().toISOString().slice(11, 23)} [${src}] ${String(text).replace(/\n+$/, "")}\n`).slice(-400000); };
+// The same lines go to a file, so the server's and worker's output can be read without the app's IPC channel.
+const CONSOLE_FILE = "D:\\gBox\\pso-ds\\app-console.log";
+const fsConsole = (() => { try { return require("fs"); } catch { return null; } })();
+// Tee a spawned child's output into the readable log (does not consume the stream).
+const teeChild = (child, label) => {
+  try {
+    if (!fsConsole || !child) return;
+    const write = chunk => { try { fsConsole.appendFileSync(CONSOLE_FILE, `${new Date().toISOString().slice(11, 23)} [${label}] ${String(chunk).replace(/\s+$/, "")}\n`); } catch {} };
+    child.stdout?.on("data", write);
+    child.stderr?.on("data", write);
+  } catch {}
+};
+const logPush = (src, text) => { try { if (fsConsole) fsConsole.appendFileSync(CONSOLE_FILE, `${new Date().toISOString().slice(11, 23)} [${src}] ${String(text).replace(/\n+$/, "")}\n`); } catch {} CONSOLE = (CONSOLE + `${new Date().toISOString().slice(11, 23)} [${src}] ${String(text).replace(/\n+$/, "")}\n`).slice(-400000); };
 for (const lv of ["log", "warn", "error"]) { const orig = console[lv].bind(console); console[lv] = (...a) => { logPush("main:" + lv, a.map(String).join(" ")); orig(...a); }; }
 app.on("web-contents-created", (_e, wc) => {
   if (wc.getType() === "webview") {
@@ -184,7 +196,8 @@ async function startLocalControl() {
       '--port','18765','--name',s.workerName,...(!s.autoStartWorker?['--no-worker']:[])],
       {env,cwd:s.repoLocal,windowsHide:true});
     localControlProcess=child;let buffer='';localControlError='';
-    const channel=clientHandoff.workerChannel(child,controlSecret,{verifyPid:pid=>verifyWorkerPeer(child,pid),onRelaunch:rebuildRelaunch});
+    teeChild(child, "worker");
+const channel=clientHandoff.workerChannel(child,controlSecret,{verifyPid:pid=>verifyWorkerPeer(child,pid),onRelaunch:rebuildRelaunch});
     localControlChannel=channel;
     child.stdout.on('data',chunk=>{buffer+=String(channel.feed(chunk));let split;
       while((split=buffer.indexOf('\n'))>=0){const line=buffer.slice(0,split);buffer=buffer.slice(split+1);
