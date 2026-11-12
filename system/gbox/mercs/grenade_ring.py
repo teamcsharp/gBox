@@ -398,6 +398,11 @@ def fire(ad, decision: dict, stats: dict, now: float, *, ring=None) -> dict:
     if confirmed:
         stats["rings_deployed"] = int(stats.get("rings_deployed", 0)) + 1
         stats["ring_kind_fired"] = receipt.get("kind", kind)
+        if receipt.get("launcher_fallback"):
+            # The launcher-less loadout's fallback is a receipt fact, not a hidden one: the operator sees the flash
+            # ring answering while the launcher is missing (live 2026-11-11 19:27: the shell ring's AttributeError).
+            stats["ring_launcher_fallback"] = int(stats.get("ring_launcher_fallback", 0)) + 1
+            stats.setdefault("ring_launcher_fallback_note", receipt["launcher_fallback"])
         stats["ring_last_detonated"] = receipt.get("detonated")
         if receipt.get("kind", kind) == "flash":
             stamp_flash(stats, "ring", decision.get("reason") or "")   # a flash like any other: its window, the gap

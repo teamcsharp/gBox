@@ -684,6 +684,7 @@ class Controller:
             self.generation = self.w(self.player + 0x1308)
             self.manager = self.player + 0x13A8
             self.check()
+            stats_note = None
             if kind in CLASSES.SHELL_KINDS:
                 # The launcher's rounds load with the launcher itself (the loadout spread puts uWp1080/0x112 in every
                 # round), not as a NADE_TYPES wheel item - the earlier wheel-items guard refused every shell ring with
@@ -696,9 +697,6 @@ class Controller:
                     stats_note = "the launcher is not in this loadout: the flash ring answers"
                     kind = "flash"
                     spec = CLASSES.class_for(kind)
-                    self.stats["ring_launcher_fallback"] = (self.stats.get("ring_launcher_fallback", 0) + 1)
-                    if "ring_last_failure" not in self.stats:
-                        self.stats["ring_last_failure"] = stats_note
                 else:
                     stats_note = None
             elif spec.item not in R.inventory_items(self, self.player):
@@ -744,6 +742,8 @@ class Controller:
                        "player_generation": self.generation, "hp_before": hp_before, "hp_after": hp_after,
                        "self_damage": self_damage, "grenades": grenades,
                        "elapsed_ms": round(1000 * (time.monotonic() - started), 1)}
+            if stats_note:
+                receipt["launcher_fallback"] = stats_note
             if detonated == count and abort is None:
                 effect = "native_flash_ring" if kind == "flash" else f"native_{kind}_ring"
                 return {"state": "confirmed", "verified": True, "effect": effect, **receipt}

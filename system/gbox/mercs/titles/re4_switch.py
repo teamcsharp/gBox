@@ -2857,12 +2857,15 @@ class Bot:
         goal = self._flank_goal(p, e, snap, now) if FLANK_LOS else tuple(e["pos"])
         if goal is not None and goal != tuple(e["pos"]):
             gerr = wrap(heading(goal[0] - p["pos"][0], goal[2] - p["pos"][2]) - (p.get("rot") or 0.0))
-            keys, how = self._approach(p, goal, gerr, snap, run=False)
+            # Operator 2026-11-11 19:36: "the bot needs to always be running around the level full speed in order to
+            # get around and to basically put space between him and the threats behind him" - a flank ran at the walk
+            # speed (run=False) while the Ganado closed; the flank is a run now.
+            keys, how = self._approach(p, goal, gerr, snap, run=True)
             self.stats["flank_los_goals"] = self.stats.get("flank_los_goals", 0) + 1
             self.doing, self.why = "flank", (f"no clear shot: to the spot {self._flat(p['pos'], goal) / 1000:.1f} m on "
                                              f"where it opens, by {how}")
             return {"hold": keys}
-        keys, how = self._approach(p, e["pos"], err, snap, run=False)
+        keys, how = self._approach(p, e["pos"], err, snap, run=True)
         self.doing, self.why = "flank", f"no clear shot: round it by {how}"
         return {"hold": keys}
 
