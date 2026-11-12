@@ -104,6 +104,16 @@ def bonus_goal(bot, snap, now) -> bool:
     try:
         goals = re4_walk.goals_of(bot)
         terminal = getattr(re4_walk.map_goals, "TERMINAL", ())
+        # A bonus we marked that has since COMPLETED is one he actually took: count it under the reviewer's own names
+        # (round_reports' checkpoints group: bonuses_taken, bonus_s) so the objectives show up in the round report.
+        prev = bot.__dict__.get("_bonus_prev")
+        if isinstance(prev, dict) and goals.goal and goals.goal.get("id") == prev.get("id") \
+                and goals.goal.get("state") == "completed":
+            stats = getattr(bot, "stats", None)
+            if isinstance(stats, dict):
+                stats["bonuses_taken"] = stats.get("bonuses_taken", 0) + 1
+                stats["bonus_s"] = stats.get("bonus_s", 0) + int(prev.get("seconds") or 0)
+            bot.__dict__["_bonus_prev"] = None
         if goals.goal is not None and goals.goal.get("state") not in terminal:
             return False                                  # his own mark, or a bonus still on its way
         nav = (snap or {}).get("nav")
@@ -131,6 +141,7 @@ def bonus_goal(bot, snap, now) -> bool:
                               "pos": [float(at[0]), float(at[1]), float(at[2])],
                               "label": f"time bonus +{row.get('seconds') or '?'}s"})
         issued.add(bid)
+        bot.__dict__["_bonus_prev"] = {"id": bid, "seconds": row.get("seconds")}
         stats = getattr(bot, "stats", None)
         if isinstance(stats, dict):
             stats["bonus_goals"] = stats.get("bonus_goals", 0) + 1
@@ -171,6 +182,17 @@ def walk_track(stats: dict, snap, now: float) -> None:
     stats["walk_net_m"] = round(net / 1000.0, 1)                          # how far he got from where the round began
     stats["walk_straight"] = round(net / tr["path"], 2) if tr["path"] > 10.0 else None
     stats["walk_still_s"] = round(now - tr["moved"], 1)
+    # ...and under the names the run reviewer already reads (gbox.mercs.round_reports' route/checkpoint groups), so a
+    # round's maneuvering reaches the report instead of being published in my own vocabulary and lost.
+    still_s = stats["walk_still_s"]
+    stats["navigation_distance_m"] = stats["walk_m"]
+    stats["motion_idle_spin_s"] = still_s                                 # standing, and turning on the spot
+    if still_s >= 1.0:                                                    # a full second without moving a millimetre
+        if not tr.get("counted_still"):
+            tr["counted_still"] = True
+            stats["nav_oscillations"] = stats.get("nav_oscillations", 0) + 1
+    elif still_s < 0.2:
+        tr["counted_still"] = False
 # The bow's loop: the operator asked for 20x (2026-11-10 #9508, and again 2026-11-11: "have the bow able to fire at
 # 20x speed ... rain arrows"). It was 0.025 - only 2x the rifle's 0.05, which is why 20x never appeared however the
 # trigger was tuned. 0.05 / 20 = 0.0025: one decision every 2.5 ms, twenty times the gun's loop.

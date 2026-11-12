@@ -48,3 +48,15 @@ def test_no_nav_or_no_player_marks_nothing():
     assert B.bonus_goal(b, {"player": {"pos": VILLAGE_FIRST, "ptr": 1}, "enemies": []}, 1.0) is False
     assert B.bonus_goal(b, {"nav": re4_nav.load("r400")}, 1.0) is False
     assert not b.stats.get("bonus_error")
+
+
+def test_a_completed_bonus_is_counted_as_taken_for_the_reviewer():
+    """The run reviewer reads bonuses_taken / bonus_s from the stats (gbox.mercs.round_reports' checkpoints group); a
+    marked bonus that has since completed is one he actually took."""
+    b = D.Bot(stats={}, director=False)
+    s = snap_at(VILLAGE_FIRST)
+    assert B.bonus_goal(b, s, 10.0) is True
+    re4_walk.goals_of(b).goal["state"] = "completed"
+    B.bonus_goal(b, s, 20.0)                  # the next tick sees it completed and takes the next nearest
+    assert b.stats["bonuses_taken"] == 1
+    assert b.stats["bonus_s"] >= 30
