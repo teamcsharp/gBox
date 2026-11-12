@@ -971,6 +971,10 @@ def snapshot(m, now: float | None = None, search: bool = True) -> dict:
                     laser = laser_of(aim, player)
                     if laser is not None:
                         snap["laser"] = laser
+                    else:
+                        # Why the laser was refused. Every steady aim request depends on it, and the ~40% rounds could
+                        # not say whether the class byte, the ray's origin or its length was refusing (2026-11-11).
+                        snap["laser_gate"] = laser_gate(aim, player)
         snap["enemies"] = [dict(e, hp_max=e.get("hp_max")) for e in enemies]
     if CAMERA_READ:                                      # the camera (#9386): where it is, how far from him
         cam = camera_state(m, base)

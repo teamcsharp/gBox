@@ -602,6 +602,10 @@ def _maintain_mods(ad, snap: dict, stats: dict) -> None:
         return
     if (snap or {}).get("weapon_class") is not None:
         stats["weapon_class"] = (snap or {}).get("weapon_class")
+    # Why the laser line was refused, when it was: the aim ticket's per-class evidence (the steady aim needs the line,
+    # and the ~40% rounds could not say whether the class byte, the ray's origin or its length was refusing).
+    if (snap or {}).get("laser_gate"):
+        stats["laser_gate"] = (snap or {}).get("laser_gate")
     for key in ("motion_rate_kind", "motion_rate_class", "motion_rate_routine", "aim_ram_writes", "aim_sway_zeroed"):
         if st.get(key) is not None:
             stats[key] = st[key]
