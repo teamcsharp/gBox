@@ -1812,12 +1812,12 @@ FIRE_CLOSE_MM = 3000.0                   # no deliberate scatter on a body insid
                                          # misses - the magnum's scatter off a body at arm's length was most of them)
 FIRE_CAP_HZ = 10.0                       # static: FR 3.0 frames at 30 Hz (the shot gate's floor), not counted live
 FIRE_DEFAULT_FAMILY = None
-CLASS_FAMILY = {0x01: "shotgun", 0x02: None, 0x03: None, 0x04: None, 0x11: None,   # class 0x01 is the Riot Gun
-                                                 # (items 0x21/0x40, re4_weapons.CLASS_OF); the handgun classes 0x02 /
-                                                 # 0x03 / 0x11 carry no scatter. 0x21 sat here as a "shotgun" - an ITEM
-                                                 # id in a class-keyed table - so class 0x01 resolved to None and the
-                                                 # Riot Gun fired with no fire-pattern family (live 2026-11-11 23:23:
-                                                 # weapon 33, 9 shots, 0 hits).
+CLASS_FAMILY = {0x01: None, 0x02: None, 0x03: None, 0x04: None, 0x11: None,   # handguns: no scatter
+                # 0x01 is also the Riot Gun's class (items 0x21/0x40) and it read None here, so weapon 33 fired with
+                # no fire-pattern family - 9 shots, 0 hits (live 2026-11-11 23:23). Giving the class a scatter family
+                # was tried and then reverted: RE4 then churned 19 rounds with 0 kills (live 2026-11-12 00:17), so a
+                # shotgun model on a class that was verified with none is worse than the misfire it was meant to fix.
+                # The item-id entry that used to sit here (0x21) was an ITEM in a class-keyed table and is gone.
                 0x05: "magnum", 0x06: "magnum", 0x0F: "magnum",      # Broken Butterfly, Killer7, Handcannon
                 0x07: "shotgun", 0x08: "shotgun",                    # Shotgun, Striker
                 0x09: "rifle", 0x0A: "rifle",
