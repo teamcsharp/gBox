@@ -33,6 +33,9 @@ def status(game_id: str | None = None) -> list:
 #: ring of remote mines in the area up to 15, and then have those be detonated ... to spread out the enemies and get
 #: rid of being surrounded." A flash stamped this recently (stats["ring_flash_at"]) earns the combo ring.
 FLASH_COMBO_S, FLASH_COMBO_MINES = 1.0, 15
+#: The surround rule's own numbers: 4 within 400 cm earns the big ring at most every 10 s (the operator's "surrounded
+#: by enemies ... dropping massive amounts of remote mines").
+SURROUND_N, SURROUND_R_CM, SURROUND_S = 4, 400.0, 10.0
 DEFAULTS = {
     "enabled": True,
     "drop_every_s": 7.5,           # a ring this often while a round plays (operator 2026-11-11 17:49: "mines are just
@@ -122,6 +125,48 @@ def control(ad, prof, bot_getter=None):
         if set_due and not clear:
             return {**out, "reason": (f"the player is {clear_cm:.0f} cm from the nearest lying ring: the flag waits "
                                       f"{safe_cm:.0f} cm")}
+        # The operator's surrounded rule (2026-11-11 18:44: "surrounded by enemies ... needs to be dropping massive
+        # amounts of remote mines and running for his life"): a real surround earns the big ring on its own cadence,
+        # whatever the flash state. It runs before the flash combo so a surround never waits for a flash that is not
+        # coming.
+        near = 0
+        try:
+            ppos = [float(v) for v in player.get("pos")]
+            near = sum(1 for e in (snap or {}).get("enemies") or ()
+                       if isinstance(e, dict) and (e.get("hp") or 0) > 0 and e.get("pos")
+                       and math.dist(ppos, [float(e["pos"][0]), float(e["pos"][1]), float(e["pos"][2])])
+                       <= SURROUND_R_CM)
+        except (TypeError, ValueError, IndexError):
+            near = 0
+        if (near >= SURROUND_N and now - float(stats.get("mine_surround_at") or 0) >= SURROUND_S
+                and stats.get("mine_surround_at") != now):
+            if hold is not None and hold(set()) is False:
+                return {**out, "reason": "the bot's keys did not release before the surround ring"}
+            receipt = re6_switch_native.bomb_ring_now(ad, count=FLASH_COMBO_MINES,
+                                                      radius_cm=float(policy_["radius_cm"]))
+            stats["mine_surround_at"] = now
+            stats["mine_surround_rings"] = int(stats.get("mine_surround_rings", 0)) + 1
+            stats["mine_next_drop_at"] = now + float(policy_["drop_every_s"]) + \
+                random.uniform(-float(policy_["drop_jitter_s"]), float(policy_["drop_jitter_s"]))
+            if receipt.get("state") == "confirmed":
+                placed = int(receipt.get("placed") or 0)
+                stats["mine_rings_dropped"] = int(stats.get("mine_rings_dropped", 0)) + 1
+                stats["mine_ring_bombs"] = int(stats.get("mine_ring_bombs", 0)) + placed
+                stats["mine_rings_since_detonate"] = rings + 1
+                stats["mine_bombs_since_detonate"] = bombs + placed
+                try:
+                    stats.setdefault("mine_ring_centres", []).append(tuple(float(v) for v in player.get("pos")))
+                    del stats["mine_ring_centres"][:-16]
+                except (TypeError, ValueError):
+                    pass
+                stats.setdefault("mine_first_ring_at", now)
+                stats["mine_ring_last_at"] = now
+            else:
+                stats["mine_ring_failures"] = int(stats.get("mine_ring_failures", 0)) + 1
+                stats["mine_ring_reason"] = str(receipt.get("reason") or receipt.get("state") or "")[:200]
+            return {"fire": True, "op": "bomb_ring", "fired": True,
+                    "reason": (f"surrounded ({near} within {SURROUND_R_CM:.0f} cm): a ring of "
+                               f"{receipt.get('placed')} remote bombs"), "receipt": receipt}
         # The flashbang combo (operator 2026-11-11 18:02): the flash just went -> a 15-mine ring right away (the flash
         # spreads the crowd, the ring clears the surround), then the standard distance-gated detonation.
         flash_at = stats.get("ring_flash_at")

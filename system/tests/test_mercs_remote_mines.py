@@ -163,3 +163,38 @@ def test_the_mine_lane_reports_every_editions_availability():
     assert rows["010018100CD46000"]["available"] is False and "uWp0a" in rows["010018100CD46000"]["reason"]
     assert rows["010099A00BC1E000"]["available"] is False and "mine system" in rows["010099A00BC1E000"]["reason"]
     assert [r["game_id"] for r in RM.status("01002A000CD48000")] == ["01002A000CD48000"]
+
+
+def enemy(x, z=0.0):
+    return {"ptr": 0x1000 + int(x), "pos": [float(x), 0.0, float(z)], "hp": 500, "hp_max": 500}
+
+
+def crowd_snap(enemies, pos=(0.0, 0.0, 0.0)):
+    s = snap(pos)
+    s["enemies"] = list(enemies)
+    return s
+
+
+def test_a_surround_earns_the_massive_mine_ring(monkeypatch):
+    """Operator 2026-11-11 18:44: surrounded -> drop massive amounts of remote mines. Four within 400 cm earns the
+    15-mine ring on its own 10 s cadence, no flash needed."""
+    calls = []
+
+    def ring_now(ad, count=6, radius_cm=200.0):
+        calls.append(("ring", count))
+        return {"op": "bomb_ring", "state": "confirmed", "placed": count, "requested": count}
+
+    monkeypatch.setattr(N, "bomb_ring_now", ring_now)
+    step = RM.control(None, {"map_id": TITLE})
+    crowd = [enemy(100 + i * 50) for i in range(4)]
+    live = stats(remote_mines={"drop_jitter_s": 0})
+    out = step(crowd_snap(crowd), live, 100.0, lambda keys: True)
+    assert out["fired"] is True and calls[0] == ("ring", 15)
+    assert live["mine_surround_rings"] == 1 and live["mine_rings_dropped"] == 1
+    # the same surround inside its 10 s cadence does not ring again
+    out2 = step(crowd_snap(crowd), live, 105.0, lambda keys: True)
+    assert "surrounded" not in (out2.get("reason") or "")
+    # a lone enemy is not a surround
+    lone = stats(remote_mines={"drop_jitter_s": 0})
+    step(crowd_snap([enemy(100)]), lone, 100.0, lambda keys: True)
+    assert not lone.get("mine_surround_rings")
