@@ -193,11 +193,16 @@ def play_round(prof, m, send, stopped, stats: dict, lessons=None, sleep=time.sle
     ring_step = None
     if not observe_only:
         try:
-            ring_ad = getattr(m, "adapter", None)
+            # The ring's target is the session's adapter when it has one (the Switch titles). RE4's MercMode rounds
+            # are driven by its own loop and expose no adapter, so `ring_ad` was None, the whole block was skipped and
+            # the 360 launcher ring never armed on RE4 (live 2026-11-11: rounds 3-9 playing with no ring_armed, no
+            # ring_decision and no grenade_ring_error - the code path never ran). The driver itself is the fallback
+            # target: grenade_ring.controller() builds the title's native controller from whatever it is given.
+            ring_ad = getattr(m, "adapter", None) or m
             # Diagnostic for the "ring never fires" investigation: the profile id and whether an adapter exists are
             # what grenade_ring.control decides on. Recorded before the call so a refusal is visible in telemetry.
             stats["ring_prof_map"] = str((prof or {}).get("map_id") or "")
-            stats["ring_adapter"] = bool(ring_ad is not None)
+            stats["ring_adapter"] = bool(getattr(m, "adapter", None) is not None)
             if ring_ad is not None:
                 from . import grenade_ring
                 ring_step = grenade_ring.control(ring_ad, prof)
