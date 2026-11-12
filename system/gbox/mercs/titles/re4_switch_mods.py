@@ -472,6 +472,11 @@ def _motion_rate(ad, snap: dict, st: dict) -> int:
             st["motion_rate_class"] = snap.get("weapon_class")
             st["motion_rate_routine"] = list(routine)    # why the rate is or is not on: the live class + routine
             kind = W.motion_rate_kind(snap.get("weapon_class"), routine)
+            if kind is None and snap.get("equipped_id") == W.BOW_ITEM:
+                # The item id is the second witness for the class byte (the same fix _bow_in_hand took). Without it a
+                # misread class leaves the 40x motion rate off and Krauser's arrows at the game's own pace - which is
+                # exactly the "the bow isn't 20x" report. The routine gate still applies to the grenades.
+                kind = "bow"
         if kind == "bow":
             mult = max(mult, BOW_MOTION_X)               # the operator: 40 arrows a second, whatever the fire rate
         if kind is None or mult <= 1.0:
@@ -610,10 +615,14 @@ SWAPPABLE = frozenset(W.MAX_LEVELS) | frozenset(lo["equips"] for lo in W.MERC_LO
 MAGNUMS = frozenset({0x29, 0x2A, 0x37})        # Broken Butterfly, Killer7, Handcannon
 SHOTGUNS = frozenset({0x2C, 0x2D, 0x94})       # Shotgun, Striker, Riot Gun
 PRIMARY = MAGNUMS | SHOTGUNS
-MAGNUM_SHARE = 1.0
-# operator 2026-11-11 19:20: "He needs to be using magnums and dispatching these foes as quickly as possible" - every
-# primary draw is a magnum now (the shotguns stay in the pool only when no magnum is available on the character).
-PRIMARY_SHARE = 1.0                            # operator 2026-11-11 15:59: no pistols in the draw - always a
+MAGNUM_SHARE = 0.5
+# Operator 2026-11-11 22:15: "I want to see more weapon variance between the rounds ... maxed out weapons from the
+# campaign, ranging from the PRL to the magnum." 1.0 forced a magnum every round (no variance at all); half the
+# primary draws are magnums now and the rest of the primary draws are shotguns.
+PRIMARY_SHARE = 0.7
+# ...and 30% of the rounds draw ANY campaign high-power weapon (re4_weapons.HIGH_POWER: PRL 0x94, rocket launcher
+# 0x35, Chicago Typewriter 0x34, TMP, rifles) at max level - the "ranging from the PRL to the magnum" spread. The
+# 15:59 no-pistols rule holds: HIGH_POWER carries no handgun.
                                                # magnum or a shotgun, both max level (the pistols upset the stream)
 
 
