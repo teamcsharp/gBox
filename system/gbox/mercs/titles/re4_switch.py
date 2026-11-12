@@ -1465,7 +1465,13 @@ class RE4Switch(Driver):
                       # the gun's raise / lower (FIRE_FIRST's telemetry; the operator 2026-11-10 night: the camera
                       # jerk of the weapon going up and down) and the wall tangents (ROOM_TANGENTS)
                       "gun_downs", "gun_kept", "gun_up_ticks", "gun_down_ticks",
-                      "unwall_tangents", "unwall_tangent_steps") + respond.COUNTERS
+                      "unwall_tangents", "unwall_tangent_steps",
+                      # The round's evidence for the two questions that kept being unanswerable from a report: how many
+                      # shots were taken WITHOUT the aim settled (spray, SPRAY_ALWAYS), how many times a landed blow
+                      # broke contact (hit_backoffs), how often he went back to where enemies were last seen
+                      # (locate_memory), and how many times the pad heal fired (heals - also the survival group's
+                      # round_heals, which read null for every RE4 round until now).
+                      "spray_shots", "hit_backoffs", "locate_memory", "heals") + respond.COUNTERS
 
     def __init__(self, clock=time.monotonic):
         self.clock = clock

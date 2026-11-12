@@ -67,7 +67,10 @@ METRICS = {
             'bow_navigation_handoffs', 'bow_firing_observations', 'bow_unconfirmed_impacts',
             'bow_confounded_outcomes', 'bow_damage_correlations', 'bow_aim_tolerance_deg', 'bow_aim_error_deg',
             # Switch drivers: per-round amounts of their turn-long counters (engine: Driver.round_counters)
-            'round_trigger_s', 'round_quick_shots', 'round_melee', 'round_reloads'),
+            'round_trigger_s', 'round_quick_shots', 'round_melee', 'round_reloads',
+            # RE4: shots taken with the aim NOT settled (SPRAY_ALWAYS), and the times a landed blow broke contact
+            # (HIT_BACKOFF_GAP_S) - the two numbers that say whether volume firing is landing or just spending.
+            'round_spray_shots', 'round_hit_backoffs'),
     'qte': ('qte_presses', 'resuscitate_presses'),
     # Switch drivers: grabs, crowd escapes, heals, dying and deaths in this round; timer = seconds left at the end
     'survival': ('round_holds', 'round_escapes', 'round_burst_backoffs', 'round_heals', 'round_heal_starts',
