@@ -1661,7 +1661,12 @@ IDLE_AIM_S = 2.0
 #     toward it (the kill clock is the anti-idle there): no step; STAND_TURN_RAD of facing is progress;
 #   * a step goes STAND_STEP_MM along open floor (combat.open_step on the stage mesh's clear_segment, not ending within
 #     ESCAPE_CLEAR_MM of a Ganado); walled in on every line, no step (steps_walled_in).
-AIM_KEEP_RAD, AIM_STICK_N, STAND_TURN_RAD, STAND_STEP_MM, STEP_TURN_RAD = 1.0, 10, 0.05, 2000.0, 0.8
+# AIM_KEEP_RAD 0.12 rad (~7 deg, was 1.0 = 57 deg): with the gun up the turn cone was 57 deg, so the bot only turned when
+# the bearing error passed that, then fired through a gate that does not check angular precision - and the measured
+# aim_err sat at 4.9-5.8 deg shot after shot while FIRE_TOL_MIN is 2.9 deg (live 2026-11-12: 61 shots, 19 hits, 31% on
+# the shotgun; the same ~5 deg ceiling on every weapon). 0.12 keeps the gun up while still turning onto the target until
+# the error is inside the tolerance; AIM_KEEP_CLOSE_RAD (the close-range keep) tightens with it.
+AIM_KEEP_RAD, AIM_STICK_N, STAND_TURN_RAD, STAND_STEP_MM, STEP_TURN_RAD = 0.12, 10, 0.05, 2000.0, 0.8
 # FIRE_FIRST (the operator 2026-11-10, a live round: "the bot is raising their weapon over and over and getting
 # defeated ... it needs to fire and deal with threats before lowering his weapon and fleeing or throwing grenades"):
 #   * a living Ganado on him (FIRE_FIRST_MM) with a clear shot line from where he stands is answered with the gun: the
@@ -1670,7 +1675,9 @@ AIM_KEEP_RAD, AIM_STICK_N, STAND_TURN_RAD, STAND_STEP_MM, STEP_TURN_RAD = 1.0, 1
 #   * a target switch while that close keeps the gun up to AIM_KEEP_CLOSE_RAD, turned with the aim stick;
 #   * the gun's lowering is counted with what did it (gun_downs / gun_down_last / gun_down_<doing>) so a live round
 #     says why he raised and lowered (the operator's camera complaint).
-FIRE_FIRST, FIRE_FIRST_MM, AIM_KEEP_CLOSE_RAD = True, 4500.0, 2.6
+FIRE_FIRST, FIRE_FIRST_MM, AIM_KEEP_CLOSE_RAD = True, 4500.0, 0.5   # ~29 deg: follows AIM_KEEP_RAD down, still looser
+                                                                     # than the far cone because a body at arm's length
+                                                                     # covers it (2.6 rad = 149 deg let it fire past him)
 ENGAGED_DOINGS = frozenset({"turn", "aim", "fire", "hold"})
 # Pressed against a wall (combat.WallPress; live 2026-11-10, Krauser / Base on the greybox build, the camera inside a
 # wall and the bot not fighting - the operator: "the issue is more like this"). Every action that walks him (the left
