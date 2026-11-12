@@ -2045,7 +2045,15 @@ class Bot:
         the exact triangle test agreed on every one - while others stood round him; dead in 40 s). With none clear, the
         nearest - and self._pick_blocked says so: the fight goes round to him instead of aiming at the wall."""
         self._pick_blocked = False
-        near = [t for t in live if t[0] <= ENGAGE_RANGE_CM]
+        # The candidates reach as far as the shot can be PROVEN: with the nav/obstacle data (or the room map) the
+        # clear-line test below is the gate, so a Ganado at 20-35 m is a target, not a walk-up (operator 2026-11-11
+        # 19:36: "the bot is not opening fire hard enough on these enemies ... shooting them until they are
+        # vanquished"). Without any LOS data the old 12 m blind limit stands.
+        reach = ENGAGE_RANGE_CM
+        if snap is not None and (snap.get("nav") is not None or snap.get("obstacles") is not None
+                                 or self._room_map(snap) is not None):
+            reach = ENGAGE_RANGE_LOS_CM
+        near = [t for t in live if t[0] <= reach]
         if not near:
             return None
         dropped = self.__dict__.get("_cmd_blocked") or {}  # the operator's repetitive / explore: not that one again yet
