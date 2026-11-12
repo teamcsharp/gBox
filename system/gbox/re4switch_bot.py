@@ -629,6 +629,13 @@ def _maintain_mods(ad, snap: dict, stats: dict) -> None:
     # and the ~40% rounds could not say whether the class byte, the ray's origin or its length was refusing).
     if (snap or {}).get("laser_gate"):
         stats["laser_gate"] = (snap or {}).get("laser_gate")
+    # Whether the round's weapon actually landed in his hand - a refused give leaves him on his stock loadout (Wesker's
+    # Samurai Edge), which reads as a pistol round and kills nothing. Never published before, so a "0 kills" round could
+    # not say whether it had a magnum at all.
+    given = st.get("weapon_given")
+    if isinstance(given, dict):
+        stats["weapon_given"] = (f"{given.get('name') or given.get('id')} verified={given.get('verified')} "
+                                 f"{given.get('reason') or ''}").strip()[:160]
     for key in ("motion_rate_kind", "motion_rate_class", "motion_rate_routine", "aim_ram_writes", "aim_sway_zeroed"):
         if st.get(key) is not None:
             stats[key] = st[key]
