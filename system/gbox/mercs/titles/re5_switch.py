@@ -7740,6 +7740,21 @@ class Bot:
             self._goal_fighting = False
 
     def _decide(self, p, live, flat, near_e, near, snap, now) -> dict:
+        """_decide_inner, and the gate that held the trigger is published on the way out.
+
+        RE5's fire decision is a weapon-family dispatch (_aimctx is set at seven sites, and only some carry a gate), so
+        publishing inside the branches left the reason invisible: live 2026-11-12 a round reported shots 0-2 with
+        aim_gate empty even though the instrument was deployed. Every path returns through here, so the reason is named
+        once, whatever family the round drew. Without it "it aims and does not shoot" is unactionable - the same read
+        that turned RE4 around (fire_gate).
+        """
+        act = self._decide_inner(p, live, flat, near_e, near, snap, now)
+        gate = (self.__dict__.get("_aimctx") or {}).get("gate")
+        if gate:
+            self.stats["aim_gate"] = gate
+        return act
+
+    def _decide_inner(self, p, live, flat, near_e, near, snap, now) -> dict:
         self._giveup_state()
         own = not self.__dict__.get("_goal_fighting", False)   # his own play (not the fight for the operator's mark)
         px, py, pz = p["pos"]
