@@ -2609,7 +2609,7 @@ class Bot:
         game = snap.get("game")
         if isinstance(game, dict) and not game.get("in_control"):
             act = self._not_in_control(game, now)       # never a shot, never "fire", at a screen that takes no aim
-            self.stats["doing"], self.stats["why"] = self.doing, self.why
+            self._publish_doing()
             return act
         p = snap.get("player")
         if not p or p.get("pos") is None:
@@ -2626,7 +2626,7 @@ class Bot:
         self.stats["combo_owed_s"] = round(owed, 1) if owed is not None else None
         frozen = self._frozen(p, now, ram_state=isinstance(game, dict))
         if frozen is not None:
-            self.stats["doing"], self.stats["why"] = self.doing, self.why
+            self._publish_doing()
             return frozen
         fight = self._fight(p, snap, now)
         fight_up = AIM_BTN in set(fight.get("hold") or ())
@@ -2653,7 +2653,7 @@ class Bot:
                 r.settle(act, self.doing)                # what he finally did, counted (threat_* / hurt_while_idle)
             except Exception as exc:                     # noqa: BLE001
                 self.stats["threat_error"] = f"{type(exc).__name__}: {exc}"[:160]
-        self.stats["doing"], self.stats["why"] = self.doing, self.why
+        self._publish_doing()
         return act
 
     def _respond(self, p, snap, act, now) -> dict:
@@ -2961,6 +2961,19 @@ class Bot:
         self.doing, self.why = "backoff", f"hit {now - at:.1f} s ago: breaking contact, then back to him"
         self.stats["hit_backoffs"] = self.stats.get("hit_backoffs", 0) + 1
         return act
+
+    def _publish_doing(self) -> None:
+        """Publish this tick's doing/why, and count it (stats "t_<doing>").
+
+        The operator asked from the first round to be able to see how the bot is manoeuvring, and the open question is
+        whether a round is spent FIGHTING or TRAVELLING - hunts and hit_backoffs alone cannot say, because one hunt can
+        last many seconds and one backoff is 1.2 s. These per-state tick counts make the split visible (t_hunt against
+        t_aim/t_fire/t_backoff), which is what decides whether HUNT_RUN_MM is costing shots.
+        """
+        self.stats["doing"], self.stats["why"] = self.doing, self.why
+        if self.doing:
+            k = "t_" + str(self.doing)
+            self.stats[k] = self.stats.get(k, 0) + 1
 
     def _heal(self, p, snap, now) -> dict | None:
         """Hurt: the first aid spray into his hand, used, and the gun back - all through HAND_REQUEST, a flag write the
