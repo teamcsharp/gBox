@@ -7752,6 +7752,13 @@ class Bot:
         gate = (self.__dict__.get("_aimctx") or {}).get("gate")
         if gate:
             self.stats["aim_gate"] = gate
+        # How long the gun has been up, against the readiness the raise needs. The gate named "the gun coming up" on every
+        # tick of a round (live 2026-11-12) and the two causes need opposite fixes: an age that stays under READY_S means
+        # the raise is being RESTARTED (an unaim or a re-raise resetting aim_since), while an age past READY_S with the
+        # same gate means the readiness test itself is wrong. This says which it is.
+        up = self.__dict__.get("aim_since")
+        self.stats["aim_age_s"] = None if up is None else round(now - up, 2)
+        self.stats["aim_ready_s"] = READY_S
         return act
 
     def _decide_inner(self, p, live, flat, near_e, near, snap, now) -> dict:
