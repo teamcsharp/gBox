@@ -1595,7 +1595,12 @@ HEAVY_HP, HEAVY_KEEP_MM, HEAVY_RUN_S = 2000, 3500.0, 1.0
 # shape of a turn that runs away from its target): every turn tick compares the bearing error with the last one on
 # the same Ganado; TURN_LEARN_N samples with the error growing at least 3x as often as it shrinks (+4) flip
 # TURN_SIGN - here and in re4_walk, so the walker follows - and say so in stats (turn_sign, turn_sign_flips).
-TURN_SIGN = -1                           # 1: an error > 0 turns left (the GameCube convention); -1: right
+# 1 (was -1): the GameCube convention the fight tests encode, and the one the live learner converged on - the round
+# telemetry read turn_sign="error > 0 turns left" after turn_sign_flips=1 (live 2026-11-12). Starting at -1 meant every
+# fresh round turned the WRONG way until the learner noticed: turn_diverge 258 of 616 comparisons and turns=3366 in one
+# round, i.e. essentially every tick spent turning - the operator's "just turning back and forth and not going forward".
+# The default now agrees with the learner; TURN_LEARN still flips it if a build really is mirrored.
+TURN_SIGN = 1                            # 1: an error > 0 turns left (the GameCube convention); -1: right
 # The Switch build's tank/aim axes are mirrored against the GameCube data (re4_switch_nav): with +1 the aim turn
 # pushed the error AWAY from the target and the bot span in a turn loop (live 2026-11-11 20:42: turns 495, raises 363,
 # shots 74, hits 4, doing "turn"). _learn_turn still checks the facing each turn tick and can correct this live.
@@ -2687,7 +2692,13 @@ class Bot:
                 except Exception as exc:                 # noqa: BLE001 - the core never costs the shot
                     self._core_error(exc)
             tol = max(FIRE_TOL_MIN, min(self.TURN_TOL, math.atan2(half, max(dist, 1.0))))
-            if abs(err) > min(cone, tol):
+            # Well off the gun (> RAISE_TOL) he turns on the spot with the gun DOWN - the walk turn. Everything closer
+            # falls through to the aim block below, which holds AIM_BTN and picks a NUDGE (a tap of the right stick)
+            # or a sweep by how close the error is. The gate used to skip that choice entirely: live 2026-11-12 it
+            # returned the walk turn at every error, so while aiming nothing moved the aim - turns=3366 in one round
+            # (every tick), doing=turn, gun_down_turn climbing: the operator's "just turning back and forth and not
+            # going forward".
+            if abs(err) > RAISE_TOL:
                 self.stats["turns"] += 1
                 self._learn_turn(self.target, err, now)
                 self.doing = "turn"
