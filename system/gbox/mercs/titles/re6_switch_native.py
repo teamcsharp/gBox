@@ -70,6 +70,9 @@ for _k, _shell in CLASSES.SHELL_KINDS.items():
                              f"class with 0 - the ring reports the spawned shell, never a blast it did not make")
 RING_KINDS = RING_VERIFIED_KINDS + tuple(RING_KIND_REFUSED)
 RING_COUNT_DEFAULT, RING_COUNT_MAX = 10, 16
+#: The grenade launcher's weapon type (uWp1080, item 0x112): its presence in the loadout is what loads the shell
+#: rounds' class resources, so it is the shell ring's precondition, not the NADE_TYPES wheel items.
+LAUNCHER_ITEM = 0x112
 # Radii in RE6 world units (centimetres, as everywhere in the bot). A flash takes no health, and the ring is still
 # placed outward so the same geometry is safe for an explosive kind once one is verified.
 RING_RADIUS_DEFAULT_CM, RING_RADIUS_MIN_CM, RING_RADIUS_MAX_CM = 600.0, 250.0, 2500.0
@@ -667,7 +670,14 @@ class Controller:
             self.generation = self.w(self.player + 0x1308)
             self.manager = self.player + 0x13A8
             self.check()
-            if spec.item not in R.inventory_items(self, self.player):
+            if kind in CLASSES.SHELL_KINDS:
+                # The launcher's rounds load with the launcher itself (the loadout spread puts uWp1080/0x112 in every
+                # round), not as a NADE_TYPES wheel item - the earlier wheel-items guard refused every shell ring with
+                # "resources are not loaded" even though the launcher was there (live 2026-11-11 18:26).
+                guns = R.inventory_guns(self, self.player) or {}
+                if LAUNCHER_ITEM not in guns:
+                    raise Unavailable("the grenade launcher is not loaded for this character")
+            elif spec.item not in R.inventory_items(self, self.player):
                 raise Unavailable(f"{kind} resources are not loaded for this character")
             hp_before = struct.unpack("<h", self.rd(self.player + R.P_HP, 2))[0]
             started = time.monotonic()
