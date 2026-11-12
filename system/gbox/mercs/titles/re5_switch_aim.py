@@ -458,6 +458,13 @@ def apply(bot, snap, act, now):
         del hist[:-12]
         if len(hist) > 1 and (hist[-1] > 0) != (hist[-2] > 0):
             bot.stats['yaw_flips'] = bot.stats.get('yaw_flips', 0) + 1
+        # How far the error moved since the previous block, in degrees. A swing of tens of degrees in one tick means the
+        # turn is too COARSE for a small error (the fix is a tap, as RE4's AIM_NUDGE does); a swing of a degree or two
+        # means the body is not following at all (a different fix). yaw_flips alone cannot tell those apart.
+        prev_yaw = bot.stats.get('yaw_prev')
+        if isinstance(prev_yaw, (int, float)):
+            bot.stats['yaw_delta'] = round(math.degrees(yaw_error) - prev_yaw, 1)
+        bot.stats['yaw_prev'] = round(math.degrees(yaw_error), 1)
         if 'zr' in keys:
             bot.stats['target_feedback_fire_blocks'] = bot.stats.get('target_feedback_fire_blocks', 0) + 1
         keys.discard('zr')
