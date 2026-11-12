@@ -182,33 +182,15 @@ def ME_point():
 
 
 def ensure_focus():
-    """Restore and raise the app window, then confirm it really has focus.
+    """Report whether the game already has focus. NEVER takes it.
 
-    Returns True only when `game_has_focus()` says so, because `raise_window()` alone reports success on a minimised window while focus never arrives.
+    The operator must be able to type: the bot is not allowed to bring any window to the front. Input goes through session_op jobs, and with the virtual pad
+    bound it needs no foreground window at all.
     """
-    if G.game_has_focus():
-        return True
-    if OP.operator_active():
-        return False
     try:
-        import ctypes
-        u = ctypes.windll.user32
-        hwnd = G.app_window()
-        if hwnd:
-            u.ShowWindow(hwnd, 9)                 # SW_RESTORE from minimised
-            u.SetForegroundWindow(hwnd)
-    except Exception:                                            # noqa: BLE001
-        pass
-    if not G.game_has_focus():
-        G.raise_window()                          # its own attach/focus path
-    if G.game_has_focus():
-        log("  held the window in front to play")
-        return True
-    return False
-
-
-SWITCH_WORDS = ("Door", "Swtch", "Switch", "Key", "Capsule")
-SWITCH_RANGE = 150.0
+        return bool(G.game_has_focus())
+    except Exception:                                             # noqa: BLE001
+        return False
 
 
 def switches():
@@ -382,13 +364,12 @@ def main(seconds=3600.0):
         if os.path.exists(r"D:\gBox\pso-ds\PAUSED") or OP.operator_active():
             time.sleep(0.5)
             continue
-        if not ensure_focus():
-            time.sleep(0.4)
-            continue
+        # Focus is NEVER taken: the operator must be able to type. Input goes through session_op jobs and, when the
+        # virtual pad is bound, needs no foreground window at all.
         try:
             me = player()
             if me is None:
-                time.sleep(1.0)
+                boot()            # no character: press back in rather than idling silently
                 continue
             here = floor()
             if here != current_floor:
