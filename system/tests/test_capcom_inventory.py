@@ -131,3 +131,31 @@ def test_real_dump_decodes(tmp_path):
     assert warn2["compressed"] is False and warn2["tim"] is not None
     obj01 = next(e for e in entries if e["iso_path"] == "1943/OBJ01.DEE")
     assert obj01["sha256"].startswith("5c33dc9c")
+
+
+SCRATCH = "/home/ehm_eckx/.hermes/cache/scratch/capcom_gen"
+
+_EXE_FILES = ("P1943.EXE", "P1942.EXE", "P1943K.EXE")
+
+
+@pytest.mark.skipif(
+    not (os.path.isdir(os.path.join(SCRATCH, "dee"))
+         and all(os.path.isfile(os.path.join(SCRATCH, e)) for e in _EXE_FILES)),
+    reason="owned dump and game EXEs not present",
+)
+def test_real_dump_build_inventory():
+    # build_inventory end-to-end against the owned dump: 54 assets, 52
+    # decode to TIM geometry, non-empty slot maps from all three game
+    # EXEs, target 1943/OBJ01.DEE on P1943.EXE slot 1 with decoded TIM.
+    out = inv.build_inventory(os.path.join(SCRATCH, "dee"), SCRATCH)
+    assert out["asset_count"] == 54
+    assert out["decoded_count"] >= 52
+    assert set(out["slot_tables"]) == set(_EXE_FILES)
+    assert all(v >= 20 for v in out["slot_tables"].values())
+    t = out["target"]
+    assert t["iso_path"] == "1943/OBJ01.DEE" and t["slot"] == 1
+    assert t["sha256"].startswith("5c33dc9c")
+    assert t["tim"] and t["tim"]["width"] == 512 and t["tim"]["bpp"] == 4
+    a = out["alternate"]
+    assert a["iso_path"] == "1943/CHAR.DEE" and a["slot"] == 0
+    assert out["source_sha256"] == inv.CHD_SHA256
