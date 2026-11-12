@@ -460,7 +460,8 @@ def player_target(m=None) -> int:
     return cycle().pick()[1]
 
 BOOT_KEY = "a"                           # a screen RAM can't name out of a round (PRESS ANY BUTTON, a notice)
-STEPS = {"results": "plus", "alert_leaderboard": "b", "alert_ok": "a", "alert": "a", "mercs_title": "a", "title": "a"}
+# Unnamed boot-path alert (FEATURES/episodes prompt): dismiss with B on Switch, 2026-11-12
+STEPS = {"results": "plus", "alert_leaderboard": "b", "alert_ok": "a", "alert": "b", "mercs_title": "a", "title": "a"}
 MENU_HANDOFF = ("results", "alert_ok", "alert_leaderboard", "alert", "select_stage", "select_player")
 CURSORED = {"main_menu": ("dup", "ddown"), "play_game": ("dup", "ddown"), "extra_content": ("dup", "ddown"),
             "dead": ("dleft", "dright"),
