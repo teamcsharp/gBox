@@ -1517,7 +1517,11 @@ RELOAD_CLEAR_CM = 350.0 * MM_PER_CM                  # ... quiet = nobody this n
 CROWD_N, CROWD_CM = 4, 600.0 * MM_PER_CM             # a mob (doctrine CROWD_N / CROWD_M)
 CROWD_CONE = 0.6                         # rad: in a mob, the Ganado nearest the gun's line within this is the target
 SWARM_N, SWARM_CM = 3, 200.0 * MM_PER_CM             # this many this close: turn and go (he cannot shoot three at arm's length)
-STAND_MAX_S, STAND_MOVE_CM, STAND_STEP_S = 1.5, 40.0 * MM_PER_CM, 0.8   # never stand: no metre in 1.5 s and no shot -> a step
+# 1.6 (was 0.8): the operator, 2026-11-12: "Why is the bot lurching forward step by step slowly?" The step's own goal
+# is STAND_STEP_MM 2000 mm, but it only walked STAND_STEP_S 0.8 s - about a metre at RE4's walk speed - so every stride
+# stopped half way through, the stand clock reset, and he stood STAND_MAX_S 1.5 s before lurching another metre. 1.6 s
+# is long enough to actually cover the 2000 mm the step was aiming at, so a step is one stride instead of a stumble.
+STAND_MAX_S, STAND_MOVE_CM, STAND_STEP_S = 1.5, 40.0 * MM_PER_CM, 1.6   # never stand: no metre in 1.5 s and no shot -> a step
 # A turn is not progress (the operator, live 2026-11-12: "they're just turning back and forth in place while stumbling
 # backwards. I need the bot able to walk the level confidently"). A facing change used to reset the stand clock, so a bot
 # facing a target turned every tick, never reached STAND_MAX_S, and spent the round rotating on the spot - the live round
