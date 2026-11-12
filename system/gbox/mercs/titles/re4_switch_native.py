@@ -66,6 +66,13 @@ HAND_BLAST = 0x2E48B0
 #: class exists in the image), so its damage is the burning field, not an instant blast.
 INCENDIARY_CANDIDATE = 0x2E4BA0
 HAND_MIN_MM = 7000.0
+#: A MINE ring is NOT a fourth entry in that table, checked 2026-11-12 for the operator's "360 blast around them using
+#: the mine thrower ... I don't want them equipping the mine thrower": the Mine Thrower (item 0x36, and 0xAB with its
+#: scope) is class 0x0E and the Mine-Darts (0x46) are class 0x00, while that table holds only the grenade classes
+#: 0x13/0x16/0x17 in item order. 0x0E is a WEAPON class (beside the shotgun 0x07 and the rifle 0x09), so the thrower
+#: fires its darts through the ordinary weapon path and has no spawn/detonate helper to point at a coordinate the way
+#: FLASH_BLAST and HAND_BLAST can. A mine ring therefore needs the mine-dart's own projectile spawn found in the image
+#: (the FLASH_BLAST-style research), and cannot be derived by the table's 0x58 stride.
 #: The ring (checkpoint G1/G2): N blasts round him, the inner ring at the kind's floor.
 RING_COUNT_DEFAULT, RING_COUNT_MAX = 10, 16
 RING_RADIUS_MM_DEFAULT, RING_INNER_MM_DEFAULT = 9000.0, 4000.0
