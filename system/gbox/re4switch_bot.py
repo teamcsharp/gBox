@@ -799,6 +799,21 @@ def _maintain_mods(ad, snap: dict, stats: dict) -> None:
             stats["last_hit_dmg"] = took
             stats["max_hit_dmg"] = max(int(stats.get("max_hit_dmg") or 0), took)
             stats["hit_events"] = int(stats.get("hit_events") or 0) + 1
+            # WHO dealt it. max_hit_dmg 1860 says a single attack takes the whole bar, but not which enemy - and six
+            # rounds died at 13-25 kills with that number and nothing to point at (live 2026-11-12). The nearest living
+            # enemy at the instant the health fell is the best attribution available without the game's own damage
+            # event, so its size, class and distance go on the record.
+            try:
+                me = pl.get("pos")
+                foes = [e for e in (snap.get("enemies") or ()) if (e.get("hp") or 0) > 0 and e.get("pos")]
+                if me and foes:
+                    near = min(foes, key=lambda e: math.hypot(e["pos"][0] - me[0], e["pos"][2] - me[2]))
+                    stats["last_hit_foe_hp_max"] = near.get("hp_max")
+                    stats["last_hit_foe_class"] = near.get("class")
+                    stats["last_hit_foe_m"] = round(
+                        math.hypot(near["pos"][0] - me[0], near["pos"][2] - me[2]) / 100.0, 1)
+            except (TypeError, KeyError, ValueError, IndexError):
+                pass
     elif "life_raw" in pl:
         # The read refused: these are the three u16s at PLAYER_LIFE - 2 (life in the middle). Without them a blank hp
         # is indistinguishable from a missing player or a bad base, and both damage tracking and the heal need hp.

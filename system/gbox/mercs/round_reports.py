@@ -62,6 +62,10 @@ METRICS = {
                # are healing throughput. last_hit reads "1860->0" (live 2026-11-12: a 68-kill round died and the report
                # could not say which it was).
                'last_hit', 'last_hit_dmg', 'max_hit_dmg', 'hit_events',
+               # WHO dealt the biggest blow: the nearest living enemy when the health fell, with its size, class and
+               # distance. max_hit_dmg alone says an attack takes the whole bar but cannot name the enemy that owns it
+               # (live 2026-11-12: six RE4 rounds died at 13-25 kills with max_hit 1860 and nothing to point at).
+               'last_hit_foe_hp_max', 'last_hit_foe_class', 'last_hit_foe_m',
                # The blow as the heal itself saw it, e.g. "1280 of 1860": the threshold heal restores within a tick, so
                # a driver-side per-tick health sample never sees the damage (live: heals 4, health sampled at full every
                # time, hit_events 0). mods_blow is text because the driver's publish loop sums numeric values.
