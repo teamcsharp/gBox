@@ -234,9 +234,8 @@
           const game = games[Number(buttonEl.dataset.recentTile)];
           if (!game) return;
           message('Starting ' + String(game.title || game.game_id) + '…');
-          const go = typeof io.launch === 'function'
-            ? io.launch(game)
-            : io.api('/api/jobs', { tool: 'launch_game', input: { game } });
+          const id = String(game.game_id || game.id || '');
+          const go = call('/api/games/' + encodeURIComponent(id) + '/launch?node=auto', {});
           Promise.resolve(go).catch(error => message('Could not start it: ' + String(error?.message || error)));
         });
       });
@@ -364,18 +363,21 @@
       };
       const start = async game => {
         if (!game) return;
-        // A session-derived tile carries only id and title; /api/catalog/<id> gives the entry launch_game needs.
-        if (!game.launch && io.api) {
-          try { const full = await io.api('/api/catalog/' + encodeURIComponent(String(game.game_id))); if (full && (full.game_id || full.id)) game = full; }
-          catch { /* fall back to what we have */ }
-        }
+        // The app's own launch route builds the full LaunchIn from the stored catalogue entry; sending a
+        // hand-built entry to launch_game was rejected with "game_platform / game_source_paths / game_format /
+        // game_profile_id Field required" because the list entry does not carry them.
+        const appLaunch = async target => {
+          const id = String((target && (target.game_id || target.id)) || '');
+          if (!id) throw new Error('no game id');
+          const answer = await call('/api/games/' + encodeURIComponent(id) + '/launch?node=auto', {});
+          return answer;
+        };
         const label = String(game.title || game.game_id);
         try { globalThis.gboxRememberGame?.(game); } catch {}
         dismissAdd();
         if (valid()) message('Starting ' + label + '…');
         try {
-          if (typeof io.launch === 'function') { await io.launch(game); }
-          else { await call('/api/jobs', { tool: 'launch_game', input: { game } }); }
+          await appLaunch(game);
         } catch (error) {
           console.log('pip add: launch failed', String(error && error.message || error));
           if (valid()) message('Could not start it: ' + String(error?.message || error));
