@@ -965,11 +965,22 @@ def snapshot(m, now: float | None = None, search: bool = True) -> dict:
             snap["timer"] = clock.observe(m, base, now)
         snap["clock_addr"], snap["clock_source"] = clock.addr, "clock_finder"
     census = _finder(m, "re4_units", UnitCensus)
-    if census.classes() and U_POS is not None:
-        if search:
-            census.refresh(m, base, now)
-        player, enemies = census.read(m, base)
-        player = player_unit(m, base) or player       # the bss pointer first: no scan needed for him
+    # The player does NOT need the census: player_unit reads his pointer straight out of .bss (no scan, no classes). He
+    # used to be read INSIDE the census gate, so a round whose census found no unit classes lost him completely - no
+    # position, no facing, no health - and the bot went on playing from the frame alone (live 2026-11-12, 15 rounds:
+    # kills 0, t_turn 955, hp hp_max life_raw all blank, doing=grabbed). He is read first, independently; the census only
+    # supplies the Ganados.
+    player, enemies = None, []
+    if U_POS is not None:
+        player = player_unit(m, base)
+        if census.classes():
+            if search:
+                census.refresh(m, base, now)
+            by_census, enemies = census.read(m, base)
+            player = player or by_census
+            snap["census_classes"] = len(census.classes())
+        else:
+            snap["census_classes"] = 0                    # named, so a playerless round says why
         if player is not None:
             if not PLAYER_HP_IN_UNIT:
                 player["hp"], player["hp_max"] = player_life(m, base)   # module PLAYER_LIFE, not his unit

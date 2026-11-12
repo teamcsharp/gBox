@@ -1200,8 +1200,8 @@ def _unstick(ad, snap) -> int:
     # memory), which is why a grab still killed him with mods_qte_unstuck never appearing: live 2026-11-12, doing=grabbed
     # with hp 0/1560.
     try:
-        ptr = D.u64(ad, base + D.PG_PTR_VAR)
-    except (ValueError, OSError, RuntimeError):
+        ptr = struct.unpack("<Q", bytes(ad.read_memory(base + D.PG_PTR_VAR, 8)))[0]
+    except (ValueError, OSError, RuntimeError, struct.error):
         return 0
     if not isinstance(ptr, int) or not D.ptr_ok(ptr):
         return 0
