@@ -973,6 +973,15 @@ def snapshot(m, now: float | None = None, search: bool = True) -> dict:
         if player is not None:
             if not PLAYER_HP_IN_UNIT:
                 player["hp"], player["hp_max"] = player_life(m, base)   # module PLAYER_LIFE, not his unit
+                # A refused life read used to leave hp None and say nothing, which silently disables damage tracking
+                # (threat_hits counts health FALLING) AND the threshold heal (it needs hp) - live 2026-11-12, hp blank
+                # for round after round while kills sat at 2. Keep the three u16s so the next refusal is explainable
+                # instead of invisible: life is raw[1], its neighbours raw[0] / raw[2].
+                if player["hp"] is None:
+                    try:
+                        player["life_raw"] = list(struct.unpack("<3H", bytes(m.rd(base + PLAYER_LIFE - 2, 6))))
+                    except (ValueError, OSError, TypeError, struct.error):
+                        player["life_raw"] = None
             player.setdefault("hp_max", None)
             player.setdefault("rot", None)
             snap["player"] = player

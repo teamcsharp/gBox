@@ -788,6 +788,10 @@ def _maintain_mods(ad, snap: dict, stats: dict) -> None:
         stats["hp"] = pl["hp"]
         if isinstance(pl.get("hp_max"), int):
             stats["hp_max"] = pl["hp_max"]
+    elif "life_raw" in pl:
+        # The read refused: these are the three u16s at PLAYER_LIFE - 2 (life in the middle). Without them a blank hp
+        # is indistinguishable from a missing player or a bad base, and both damage tracking and the heal need hp.
+        stats["life_raw"] = pl["life_raw"]
     # The doctrine's damage answer counters, so a round says whether he was hurt at all (respond.py owns them).
     for key in ("threat_hits", "hurt_while_idle", "threat_unanswered", "threat_forced_fire", "threat_ticks"):
         if st.get(key) is not None:
