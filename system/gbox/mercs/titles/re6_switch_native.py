@@ -541,6 +541,13 @@ class Controller:
                  "reason": "" if kind in RING_VERIFIED_KINDS else RING_KIND_REFUSED.get(kind, "not verified")}
                 for kind in RING_KINDS]
 
+    def launcher_kinds(self):
+        """The rounds this title's grenade launcher fires: the shell classes (uWp1302/1303/1304). Cross-title the
+        launcher ring asks every controller for these (operator 2026-11-11 18:30: "the same 360 grenade launcher
+        blasts ... across titles")."""
+        return [{"kind": kind, "available": False, "reason": RING_KIND_REFUSED.get(kind, "")}
+                for kind in CLASSES.SHELL_KINDS]
+
     def _ring_one(self, x, y, z, index, kind="flash"):
         """One grenade of `kind` spawned, relocated to (x, y, z) and detonated.
 

@@ -341,18 +341,33 @@ def pick_kind(target, decision: dict) -> str | None:
     return random.choice(kinds) if kinds else None
 
 
+def launcher_rounds(target) -> list:
+    """[(kind, available)] the launcher ring may draw for this title: the controller's own launcher_kinds() (RE6's
+    shell rounds) or its grenade kinds (RE5/RE4, whose launcher fires the same grenades). Operator 2026-11-11 18:30:
+    "I want to use the same everything across titles ... the same 360 grenade launcher blasts"."""
+    try:
+        rows = target.launcher_kinds() if hasattr(target, "launcher_kinds") else target.grenade_kinds()
+    except Exception:                                    # noqa: BLE001 - a controller without the report offers none
+        return []
+    return [(str(r.get("kind")), bool(r.get("available"))) for r in rows or ()
+            if isinstance(r, dict) and str(r.get("kind")) in KINDS]
+
+
 def fire(ad, decision: dict, stats: dict, now: float, *, ring=None) -> dict:
     """Run the native ring once and keep the stats. Never raises for a game-side refusal; reports it."""
     target = ring or controller(ad)
     kind = decision.get("kind") or "flash"
     allow_unverified = False
     if str(kind).lower() == "launcher":
-        # Operator 2026-11-11 18:12: "get me the 360 launcher-shot ring" - the launcher's own shell rounds, spawned
-        # by the parameterised class image. They are a research kind until each has a live receipt, so the launcher
-        # ring takes allow_unverified: the spawn is what is being measured, and a refused spawn is a receipt, not a
-        # crash. The kind fires whole rings of one round class drawn at random.
-        kind = random.choice(SHELL_KINDS)
-        allow_unverified = True
+        # Operator 2026-11-11 18:12/18:30: the 360 launcher-shot ring, the same across titles. The rounds are the
+        # title's own (RE6's shells, RE5/RE4's grenades); an unavailable row is a research kind (the shells today),
+        # so the ring takes allow_unverified: the spawn is what is being measured, a refusal is a receipt, not a crash.
+        rounds = launcher_rounds(target)
+        if not rounds:
+            stats["ring_error"] = "no launcher round kind is reported by this title"
+            return {"state": "refused", "reason": stats["ring_error"]}
+        kind, available = random.choice(rounds)
+        allow_unverified = not available
     if str(kind).lower() == "random":
         kind = pick_kind(target, decision)
         if kind is None:

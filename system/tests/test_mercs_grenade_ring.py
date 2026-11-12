@@ -281,3 +281,25 @@ def test_the_launcher_kind_fires_the_shell_round_ring():
     assert calls[0][1] is True, "the launcher ring takes the unverified path: the spawn is the receipt"
     assert live["ring_kind_fired"] in GR.SHELL_KINDS
     assert live["rings_deployed"] == 1
+
+
+def test_the_launcher_ring_uses_each_titles_own_rounds():
+    """Operator 2026-11-11 18:30: the same 360 launcher blasts across titles. RE6 reports its shells; a title without a
+    launcher_kinds() report falls back to its grenade kinds (RE5/RE4 launchers fire their grenades)."""
+
+    class Re6(FakeRing):
+        def launcher_kinds(self):
+            return [{"kind": "shell1302", "available": False},
+                    {"kind": "shell1303", "available": False}]
+
+    class Re5(FakeRing):
+        def grenade_kinds(self):
+            return [{"kind": "flash", "available": True}]
+
+    r6, r5 = Re6(), Re5()
+    GR.fire(None, {"kind": "launcher", "count": 8}, stats(), 100.0, ring=r6)
+    GR.fire(None, {"kind": "launcher", "count": 8}, stats(), 100.0, ring=r5)
+    assert r6.calls[0][0] in ("shell1302", "shell1303"), "RE6: its shell rounds"
+    assert r6.calls[0][1].get("allow_unverified") is True, "the shells are the unverified research path"
+    assert r5.calls[0][0] == "flash", "RE5: its own grenade round, not a RE6 shell"
+    assert r5.calls[0][1].get("allow_unverified") is False, "a verified round takes no unverified escape"
