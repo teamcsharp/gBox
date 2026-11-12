@@ -153,10 +153,24 @@
   // The grenade ring produces native blasts around the player. The type is
   // chosen beside the button. Each live worker advertises its verified types; older workers default to flash.
   const RING_KIND_KEY='gbox.merc.ringKind.v1';
+  // The grenade-ring chooser's base kinds, cross-title (the operator: "choose any sort of 360 protective deployment of
+  // any sort of grenade launcher shell or grenade type"). Every live worker reports which of these it can actually
+  // fire; a kind it does not build is shown with the worker's own reason, never hidden.
   const RING_KINDS=[{kind:'flash',label:'Flash',available:true},
     {kind:'hand',label:'Hand',available:false,reason:'Hand-grenade ring not yet verified on this build.'},
-    {kind:'incendiary',label:'Incendiary',available:false,reason:'Incendiary-grenade ring not yet verified on this build.'}];
-  function ringKindLabel(kind){return (RING_KINDS.find(k=>k.kind===kind)||RING_KINDS[0]).label;}
+    {kind:'incendiary',label:'Incendiary',available:false,reason:'Incendiary-grenade ring not yet verified on this build.'},
+    {kind:'launcher',label:'Launcher',available:false,reason:'The 360 launcher-shot ring is not built on this title.'},
+    {kind:'shell1302',label:'Explosive shell',available:false,reason:'The launcher\'s Explosive round is not built on this title.'},
+    {kind:'shell1303',label:'Acid shell',available:false,reason:'The launcher\'s Acid round is not built on this title.'},
+    {kind:'shell1304',label:'Nitrogen (freeze)',available:false,reason:'The launcher\'s Nitrogen round is not built on this title.'},
+    {kind:'mine',label:'Mine thrower',available:false,reason:'The mine-thrower ring is a probe on this title.'}];
+  function kindLabel(kind){
+    const base=RING_KINDS.find(k=>k.kind===kind);
+    if(base)return base.label;
+    const text=String(kind||'').replace(/[_-]+/g,' ').trim();      // an unknown/future kind: never label it "Flash"
+    return text?text.charAt(0).toUpperCase()+text.slice(1):'Flash';
+  }
+  function ringKindLabel(kind){return kindLabel(kind);}
   // The status names every kind with its own verdict (gbox.mercs.grenade_status): built and verified / verified but
   // not firing now (no round, no worker) / not built for this title. A row's reason is shown as-is; a kind the title
   // does not list at all still appears, saying so, rather than silently disappearing from the chooser.
@@ -165,7 +179,7 @@
     const live=!report||report.available===true;
     const caps=!report||report.capabilities?.includes('grenade_ring');
     const workerReason=report?.reason||'The live worker is unavailable.';
-    return RING_KINDS.map(base=>{
+    const out=RING_KINDS.map(base=>{
       const row=Array.isArray(rows)?rows.find(r=>r?.kind===base.kind):null;
       if(row){
         const available=live&&caps&&row.available===true;
@@ -179,6 +193,15 @@
       return {...base,available:false,reason:base.kind==='flash'
         ?'This session does not report a flash grenade ring.':`This title does not offer ${base.label.toLowerCase()} grenades.`};
     });
+    // A worker that reports a kind this viewer does not know yet still gets a row: the chooser never hides a live
+    // capability because the client predates it (the launcher shells and the mine ring arrived that way).
+    for(const row of (Array.isArray(rows)?rows:[])){
+      if(!row?.kind||out.some(k=>k.kind===row.kind))continue;
+      const available=live&&caps&&row.available===true;
+      out.push({kind:row.kind,label:kindLabel(row.kind),available,
+        reason:available?'':(row.reason||workerReason)});
+    }
+    return out;
   }
   function readRingKind(storage,choices=RING_KINDS){
     try{const v=storage?.getItem(RING_KIND_KEY); if(choices.some(k=>k.kind===v && k.available))return v;}catch{}

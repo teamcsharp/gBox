@@ -59,8 +59,16 @@ def test_surrounded_fires_and_an_ordinary_crowd_does_not():
 
 def test_a_boss_or_dangerous_class_alone_is_worth_the_ring():
     decision = GR.decide(snap([enemy(200, hp=9000, hp_max=9000)]), stats(), 100.0, title="010018100CD46000")
-    assert decision["fire"] is True and "boss/dangerous" in decision["reason"]
+    # a boss this close is now the DEFEND ring (operator 2026-11-12: the 360 freezing ring for a boss on him); the
+    # older boss/dangerous trigger still owns one that is further out
+    assert decision["fire"] is True and (decision.get("defend") is True or "boss/dangerous" in decision["reason"])
     assert decision["dangerous"] == 1
+
+
+def test_a_dangerous_class_further_out_is_still_the_boss_dangerous_ring():
+    decision = GR.decide(snap([enemy(700, hp=1500, hp_max=1500)]), stats(), 100.0, title="010018100CD46000")
+    assert decision["fire"] is True and not decision.get("defend")
+    assert "boss/dangerous" in decision["reason"]
 
 
 def test_the_cooldown_is_honoured():

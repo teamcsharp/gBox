@@ -555,3 +555,13 @@ def test_the_selftest_reports_the_mailbox_counters_when_the_call_never_completes
     assert out["state"] == "uncertain" and "native completion uncertain" in out["reason"]
     assert out["ticks_before"] == before and out["ticks"] == before
     assert out["mailbox_state"] is not None and out["attached_after"] is True
+
+
+def test_the_ring_attaches_the_harness_itself(monkeypatch):
+    """The operator's clicks and the bot's own ring failed "the harness is not attached to the player": the status
+    path only BINDS the player, nothing put the clone on it. Every native op now attaches on demand."""
+    ctl = fake_controller(monkeypatch)
+    assert not ctl.attached()
+    result = ctl.grenade_ring("flash", count=2, radius_cm=500.0, inner_cm=100.0)
+    assert ctl.attached() and result["state"] == "confirmed" and result["detonated"] == 2
+    assert ctl.ticks() == 2, "both native calls really ran through the mailbox"

@@ -377,7 +377,11 @@ def _ring_step(ad, stats):
     """
     try:
         from .mercs import grenade_ring
-        return grenade_ring.control(ad, {"map_id": MAP_ID, "menus": "gbox.mercs.titles.re4_switch"})
+        # units_per_cm: RE4's snapshot positions are the game's millimetres (re4_switch.MM_PER_CM = 10), and the ring
+        # rule speaks centimetres. Without it every distance the rule saw was 10x too big, so an 8 m boss never
+        # counted as "within 800 cm" and the defensive/periodic rings could not see it.
+        return grenade_ring.control(ad, {"map_id": MAP_ID, "menus": "gbox.mercs.titles.re4_switch",
+                                         "units_per_cm": driver.MM_PER_CM})
     except Exception as exc:                             # noqa: BLE001 - a rule that cannot load never ends a run
         stats["grenade_ring_error"] = f"{type(exc).__name__}: {exc}"[:160]
         return None

@@ -706,3 +706,40 @@ def test_fire_tables_are_retried_when_the_first_write_reads_nothing(ad, tmp_path
         assert "fire_tables" not in M.maintain(ad, _round("none", control=False, clock=False)), "done for this boot"
     finally:
         D.FIRE_GAP_S = gap
+
+
+# --- the boss gun (operator 2026-11-12) ------------------------------------------------------------------------------
+
+def _boss_scene(ad, held):
+    W = _armoury(ad, held=held)
+    s = _round()
+    s["players"] = None
+    s["player"] = {"ptr": PLAYER, "pos": [0.0, 0.0, 0.0], "rot": 0.0}
+    s["game"]["stage"] = 0
+    s["enemies"] = [{"pos": [0.0, 0.0, 9000.0], "hp": 6500, "hp_max": 6500, "ptr": 7,
+                     "boss": True, "key": "salvador", "chainsaw": True}]
+    return W, s
+
+
+def test_a_boss_on_screen_gets_a_magnum_in_his_hand(ad):
+    W, s = _boss_scene(ad, held=0x27)                     # a Blacktail: not a boss gun
+    st = {}
+    given = M._boss_weapon(ad, s, st)
+    assert given["verified"] is True and given["id"] == M.BOSS_GUNS[0] and given["boss"] == "salvador"
+    assert st["boss_weapon_swaps"] == 1 and W.name(given["id"]).lower().startswith(("hand", "killer", "broken"))
+    # one swap per boss encounter: the next tick writes nothing
+    assert M._boss_weapon(ad, s, st) is None and st["boss_weapon_swaps"] == 1
+
+
+def test_a_boss_never_replaces_the_magnum_already_in_his_hand(ad):
+    _W, s = _boss_scene(ad, held=0x37)                    # the Handcannon
+    st = {}
+    given = M._boss_weapon(ad, s, st)
+    assert given["verified"] is True and given.get("already") is True and st.get("boss_weapon_swaps", 0) == 0
+
+
+def test_no_boss_no_boss_gun(ad):
+    _W, s = _boss_scene(ad, held=0x27)
+    s["enemies"] = [{"pos": [0.0, 0.0, 9000.0], "hp": 1800, "hp_max": 1800, "ptr": 8}]
+    st = {}
+    assert M._boss_weapon(ad, s, st) is None

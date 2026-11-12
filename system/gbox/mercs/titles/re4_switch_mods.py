@@ -656,6 +656,13 @@ MAGNUM_SHARE = 0.5
 # campaign, ranging from the PRL to the magnum." 1.0 forced a magnum every round (no variance at all); half the
 # primary draws are magnums now and the rest of the primary draws are shotguns.
 PRIMARY_SHARE = 0.7
+# --- the boss gun (operator 2026-11-12: "pull out a magnum or a shotgun and unload on them relentlessly") -------------
+# While a boss is on screen (re4_switch.boss_on_screen) the gun in his hand becomes a magnum or a shotgun if it is not
+# already one: the same verified in-hand swap as the round's random weapon, one per boss encounter. The order is the
+# operator's words - magnums first, then shotguns - and only an id the build's weapon / max-level tables carry is used.
+BOSS_WEAPON = True
+BOSS_GUNS = (0x37, 0x2A, 0x29, 0x2D, 0x94, 0x2C)   # Handcannon, Killer7, Broken Butterfly, Striker, Riot Gun, Shotgun
+BOSS_WEAPON_GAP_S = 45.0                           # one swap per boss encounter (the lock's own duration is longer)
 # ...and 30% of the rounds draw ANY campaign high-power weapon (re4_weapons.HIGH_POWER: PRL 0x94, rocket launcher
 # 0x35, Chicago Typewriter 0x34, TMP, rifles) at max level - the "ranging from the PRL to the magnum" spread. The
 # 15:59 no-pistols rule holds: HIGH_POWER carries no handgun.
@@ -802,6 +809,68 @@ def _round_weapon(ad, snap: dict, st: dict) -> dict | None:
     st["weapon_given"] = given
     if given.get("verified") or tries >= ROUND_WEAPON_TRIES or ("reason" in given and "id" not in given):
         st["rw_given_epoch"] = epoch                    # given, tried enough, or nothing in his hand to swap
+    return given
+
+
+def _boss_weapon(ad, snap: dict, st: dict, rng=None) -> dict | None:
+    """A magnum or a shotgun in his hand while a BOSS is on screen (operator 2026-11-12: "if a boss character shows up
+    on screen, have the bot pull out a magnum or a shotgun and unload on them relentlessly").
+
+    The gun is the same verified in-hand swap as the round's random weapon (_give_weapon: the item's id/levels/rounds,
+    the manager's held id and the game state's class byte, every write read back, the old bytes restored on failure).
+    BOSS_GUNS is the order - the magnums first, then the shotguns - and the first one the weapon table / max-level
+    table actually carries is given. One swap per boss encounter (the same (ptr, key) pair is not re-swapped for
+    BOSS_WEAPON_GAP_S), so a boss that is already being unloaded on never loses the gun to a second swap mid-kill.
+    Nothing is written at a menu, an intro, a result or before the round is live.
+    """
+    if not BOSS_WEAPON or not isinstance(snap, dict) or snap.get("module_base") is None:
+        return None
+    game = snap.get("game")
+    if not isinstance(game, dict) or game.get("phase") != "playing" or game.get("in_control") is False:
+        return None
+    try:
+        from . import re4_switch as R
+        boss = R.boss_on_screen(snap)
+    except Exception:                                      # noqa: BLE001 - a status error is no swap
+        return None
+    if boss is None:
+        st["boss_weapon_boss"] = None
+        return None
+    e = boss.get("enemy") or {}
+    ident = (e.get("ptr"), boss.get("key"))
+    at = time.monotonic()
+    if st.get("boss_weapon_for") == ident and at - float(st.get("boss_weapon_at") or 0.0) < BOSS_WEAPON_GAP_S:
+        return None
+    st["boss_weapon_for"], st["boss_weapon_at"] = ident, at
+    st["boss_weapon_boss"] = {"key": boss.get("key"), "hp_max": e.get("hp_max"),
+                              "distance_cm": round(float(boss.get("distance") or 0.0) / D.MM_PER_CM, 1)}
+    base = snap["module_base"]
+    rd = lambda a, n: bytes(ad.read_memory(a, n))                            # noqa: E731
+    try:
+        held = W.Reader(rd, base).equipped()
+        rows = st.get("weapon_rows")
+        if rows is None:
+            rows = st["weapon_rows"] = W.decode_weapon_table(rd(base + W.WEAPON_TBL, W.WEAPON_N * W.WEAPON_SZ))
+    except (ValueError, OSError, RuntimeError, struct.error):
+        return None
+    if held is None or not held.get("addr"):
+        return None
+    if held.get("id") in BOSS_GUNS:
+        # Already a magnum/shotgun: nothing to write, and the receipt says so rather than a silent no-op.
+        st["boss_weapon"] = {"verified": True, "already": True, "id": held.get("id"), "name": held.get("name")}
+        return st["boss_weapon"]
+    picks = [i for i in BOSS_GUNS if i in rows and W.max_levels(i) is not None and i != held.get("id")]
+    if not picks:
+        st["boss_weapon"] = {"verified": False, "was": held.get("name"),
+                             "reason": "no magnum or shotgun row to give on this build"}
+        return st["boss_weapon"]
+    import random as _random
+    given = _give_weapon(ad, base, st, rng or _random.Random(), fixed=picks[0])
+    given = dict(given or {"verified": False, "reason": "his hand could not be read"})
+    given.update(boss=boss.get("key"), boss_hp_max=e.get("hp_max"), at=round(time.time(), 1))
+    st["boss_weapon"] = given
+    if given.get("verified") and not given.get("already"):
+        st["boss_weapon_swaps"] = int(st.get("boss_weapon_swaps", 0)) + 1
     return given
 
 
@@ -1312,6 +1381,11 @@ def maintain(ad, snap: dict | None = None) -> dict:
                 out["weapon_given"] = 1
                 if given.get("fire_tables"):
                     out["fire_tables"] = given["fire_tables"]      # this round's 20x tables, with its weapon
+        # A boss on screen: a magnum or a shotgun in his hand (the operator 2026-11-12). Runs after the round's weapon
+        # so it has the last word whenever a boss is already there; a boss appears mid-round it simply swaps then.
+        swapped = _boss_weapon(ad, snap, st) if BOSS_WEAPON else None
+        if swapped is not None and swapped.get("verified") and not swapped.get("already"):
+            out["boss_weapon_swapped"] = 1
         if st.get("aim_lock"):
             ram0, sway0 = st.get("aim_ram_writes", 0), st.get("aim_sway_zeroed", 0)
             n = _aim(ad, snap)
@@ -1351,6 +1425,9 @@ def status(ad, snap: dict | None = None) -> dict:
            "heal_below": st.get("heal_below"), "heals": st.get("heals", 0),
            "infinite_ammo": bool(st.get("infinite_ammo")), "fire_rate_x": st.get("fire_rate", 1.0),
            "random_weapon": bool(st.get("random_weapon")), "weapon_given": st.get("weapon_given"),
+            # the boss gun: the last swap (or the "already a magnum/shotgun" receipt) and its count
+            "boss_weapon": st.get("boss_weapon"), "boss_weapon_boss": st.get("boss_weapon_boss"),
+            "boss_weapon_swaps": st.get("boss_weapon_swaps", 0),
            "random_weapon_route": "in_hand" if _code_patch_refusal(ad) else "code_patch",
            "weapon_primary": sorted(W.name(i) for i in PRIMARY), "magnum_share": MAGNUM_SHARE,
            "weapon_rounds": st.get("weapon_rounds") or [], "fire_tables_round": st.get("rf_tables_round"),

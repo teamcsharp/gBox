@@ -495,10 +495,14 @@ def test_the_kill_count_candidate_is_retracted():
 def test_a_heavy_at_arms_length_is_shot_first_the_run_is_the_rollback(monkeypatch):
     """Live 2026-11-10 23:21: Unlimited life undid 26 hits, then one blow took him from 1560 to 0 - a heavy's. The
     operator's next round: "fire and deal with threats before lowering his weapon and fleeing" - FIRE_FIRST: a heavy on
-    him with a clear line meets the gun; the run from it is the rollback (FIRE_FIRST off)."""
+    him with a clear line meets the gun; the run from it is the rollback (FIRE_FIRST off).
+
+    A 2500-health Castle one is a HEAVY but not a BOSS (the stage set list cannot settle it between a zealot leader and
+    a Garrador), so the heavy rule still owns it. A 3000+ one is a boss now: it is closed on and killed instead
+    (operator 2026-11-12, test_re4_boss.py), never evaded."""
     b = bot()
-    s = snap([((0.0, 0.0, 200.0), 3500)])
-    s["enemies"][0]["hp_max"] = 3500
+    s = snap([((0.0, 0.0, 200.0), 2500)])
+    s["enemies"][0]["hp_max"] = 2500
     act = b.tick(s, now=1.0)
     assert D.AIM_BTN in act["hold"] and b.doing in ("turn", "aim", "fire") and b.stats.get("heavy_escapes", 0) == 0
     monkeypatch.setattr(D, "FIRE_FIRST", False)

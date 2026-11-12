@@ -24,8 +24,10 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
-KINDS = ("flash", "hand", "incendiary")
-LABELS = {"flash": "Flash", "hand": "Hand", "incendiary": "Incendiary"}
+KINDS = ("flash", "hand", "incendiary", "launcher", "shell1302", "shell1303", "shell1304", "mine")
+LABELS = {"flash": "Flash", "hand": "Hand", "incendiary": "Incendiary", "launcher": "Launcher",
+          "shell1302": "Explosive shell", "shell1303": "Acid shell", "shell1304": "Nitrogen shell (freeze)",
+          "mine": "Mine thrower"}
 
 # Reason texts are shown in the PiP's chooser and returned by the API/tool. Keep them one sentence and specific.
 TITLE_NOT_BUILT = "the grenade ring is not built for {title} yet"
@@ -73,13 +75,16 @@ TITLES = {
         "RE4 Switch", ("270a15eb98dab4d7", "010099A00BC1E000"),
         # Checkpoint F/G: the flash and the hand-grenade ring are built on the native harness (the game's own blasts
         # through the cloned vtable's one 8-byte store) but have no live receipt yet; the incendiary blast is not
-        # identified on this build (G3).
+        # identified on this build (G3). The mine thrower's placed round is the class table's fourth spawn (G5's
+        # candidate, 0x2E5050): a probe, refused until a live receipt.
         {"flash": Kind(False, "a flash is built on the RE4 Switch native harness (main+0x2E4E50 via one vtable "
                               "store) but has no live receipt yet"),
          "hand": Kind(False, "a hand-grenade ring is built on the RE4 Switch native harness (main+0x2E48B0, 7000 mm "
                              "floor) but has no live receipt yet"),
-         "launcher": Kind(False, "the launcher fires this title's own grenades; the flash round has no live receipt "
-                                 "on the RE4 Switch native harness yet")},
+         "launcher": Kind(False, "RE4 has no grenade launcher: its launcher-style ring is the mine thrower, offered "
+                                 "as the Mine kind"),
+         "mine": Kind(False, "the mine thrower's placed round is the class table's fourth spawn (0x2E5050) - a "
+                             "probe: no live mine-ring receipt yet")},
         controller="re4_switch_native",
     ),
     "re5_switch": _title(
@@ -104,7 +109,13 @@ TITLES = {
          "incendiary": Kind(False, "an incendiary-grenade ring is not yet verified on this build (its item "
                                    "class/DTI is unconfirmed)"),
          "launcher": Kind(False, "the 360 launcher ring spawns the launcher's shell rounds (uWp1302/1303/1304) "
-                                 "through the parameterised class image; awaiting the first live ring receipt")},
+                                 "through the parameterised class image; awaiting the first live ring receipt"),
+         "shell1302": Kind(False, "the launcher's Explosive round (uWp1302) is a probe through the parameterised "
+                                  "class spawn; awaiting the first live shell-ring receipt"),
+         "shell1303": Kind(False, "the launcher's Acid round (uWp1303) is a probe through the parameterised class "
+                                  "spawn; awaiting the first live shell-ring receipt"),
+         "shell1304": Kind(False, "the launcher's Nitrogen round (uWp1304, the freeze) is a probe through the "
+                                  "parameterised class spawn; awaiting the first live shell-ring receipt")},
         controller="re6_switch_native",
     ),
     "re6_ps3": _title(

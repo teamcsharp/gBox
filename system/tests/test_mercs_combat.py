@@ -459,7 +459,10 @@ def test_re4_the_ganado_that_hurt_him_is_the_next_target_before_a_nearer_one(mon
 
 
 def test_re4_a_heavy_in_reach_is_dispatched_first_unless_one_is_at_arms_length():
-    heavy = {"ptr": 100, "hp": 3500, "hp_max": 3500, "pos": (0.0, 0.0, 700.0)}
+    # a 2500-health heavy: past HEAVY_HP but below BOSS_HP_MIN, and the stage set list cannot settle its identity
+    # (zealot leader or Garrador), so the shared DANGEROUS band owns it. A 3000+ boss is its own lock now
+    # (test_re4_boss.py).
+    heavy = {"ptr": 100, "hp": 2500, "hp_max": 2500, "pos": (0.0, 0.0, 700.0)}
     b = R4.Bot(stats={}, director=False)
     b.tick(r4snap([heavy, {"ptr": 101, "hp": 400, "hp_max": 400, "pos": (100.0, 0.0, 400.0)}]), now=1.0)
     assert b.target == 100 and b.stats["dangerous_picks"] == 1

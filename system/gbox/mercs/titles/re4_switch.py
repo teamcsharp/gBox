@@ -983,6 +983,17 @@ def snapshot(m, now: float | None = None, search: bool = True) -> dict:
             by_census, enemies = census.read(m, base)
             player = player or by_census
             snap["census_classes"] = len(census.classes())
+            # Name the bosses on the rows themselves: every RE4 unit is one RAM class, so the stage's set list + the
+            # maximum health is the only identity the boss rules (and the ring's defensive Nitrous trigger,
+            # gbox.mercs.grenade_ring.decide) can read. `boss` / `key` / `chainsaw` per enemy, never a guess for a
+            # health the list does not hold.
+            stage = stage_name(snap)
+            for e in enemies:
+                key = boss_key(e, stage)
+                if key is not None:
+                    e["boss"] = True
+                    e["key"] = key
+                    e["chainsaw"] = key in CHAINSAW_KEYS
         else:
             snap["census_classes"] = 0                    # named, so a playerless round says why
         if player is not None:
@@ -1673,6 +1684,114 @@ HEAVY_HP, HEAVY_KEEP_MM, HEAVY_RUN_S = 2000, 3500.0, 1.0
 # 13.4 m - so it has its own keep distance. The doctrine still hunts and destroys it; this only stops the bot from
 # standing inside its reach to do it.
 APEX_HP, APEX_KEEP_MM = 6000, 15000.0
+# --- a boss on screen: neutralize it until its HP is zero (operator 2026-11-12) -------------------------------------
+# "In Resident Evil 4, if a boss character shows up on screen, have the bot pull out a magnum or a shotgun and unload
+# on them relentlessly. I am watching the bot let bosses come onto screen. They will knock the bosses down, not get rid
+# of all their HP, and then let the boss come right back and finish them off." Measured on the previous RE4 session
+# (7ef0908f, Village, three deaths): boss_picks 0 in every round while a 6500-health boss was engaged (the aim book's
+# own cell 0xae7050:6500, a shot landed "on_body" at 1.3 m), and the round died with max_hit_dmg 1860 - the whole bar
+# in one blow. Two causes in this file: the profile's tier had only a DANGEROUS threshold (so nothing was ever tiered
+# boss unless enemy_identity named the class, and every RE4 unit shares one RAM class), and the apex/heavy keep rule
+# then EVADED a boss instead of finishing it. A boss is now a pick of its own - seen from BOSS_SIGHT_MM, locked until
+# its health is zero (or it stays out of the census BOSS_LOST_S), never abandoned for a nearer Ganado - and
+# re4_switch_mods.boss_weapon puts a magnum or a shotgun in his hand for it.
+BOSS_PRIORITY = True
+BOSS_SIGHT_MM = 30000.0       # a boss this close is "on screen" (a stage is ~50 m across)
+BOSS_FACE_MM = 6000.0         # inside this he is engaged whatever direction he came from
+BOSS_FACE_RAD = 1.75          # ... else within this bearing of his facing (the camera looks past him: ~100 deg)
+BOSS_LOST_S = 5.0             # a boss that drops out of the census keeps the lock this long (knocked down)
+BOSS_COMMIT_MM = 12000.0      # with a boss this close he stays on it: no keep-distance, no swarm escape, no melee
+BOSS_KEYS = frozenset({"salvador", "bella", "garrador", "garrador_armored", "jj", "super_salvador"})
+#: The bosses whose attack is a one-blow kill (a chainsaw: Dr. Salvador, the Bella Sisters, Super Salvador). A boss
+#: with one of these keys approaches -> the defensive ring (grenade_ring.defend: the Nitrous round where the title has
+#: it, the flash - the stun every RE title has - on RE4/RE5).
+CHAINSAW_KEYS = frozenset({"salvador", "bella", "super_salvador"})
+
+
+def stage_name(snap) -> str | None:
+    """The stage the round is on ("Village" / "Castle" / "Base" / "Waterworld"), from the game's own state."""
+    game = (snap or {}).get("game")
+    idx = game.get("stage") if isinstance(game, dict) else None
+    if isinstance(idx, int) and not isinstance(idx, bool) and 0 <= idx < len(STAGES):
+        return STAGES[idx]
+    picked = SELECTION.get("stage")
+    return STAGES[picked] if isinstance(picked, int) and 0 <= picked < len(STAGES) else None
+
+
+def boss_key(enemy, stage=None) -> str | None:
+    """The identity key that names this enemy a BOSS (or None): its maximum health, then the stage's set list.
+
+    RE4 Switch reads one RAM class for every Ganado (0xAE7050), so the class can never name a boss: the maximum health
+    is the identity (enemy_identity.re4_unit_key over the stage's ESL set list; BOSS_HP_MIN is the "dispatch bosses on
+    sight" threshold). A 6500-health Village enemy is Dr. Salvador / a Bella Sister (the set list holds both at that
+    health, so the key is ambiguous - and both are chainsaw bosses, which is what the defensive ring needs to know);
+    a 2600 Castle one the Garrador.
+    """
+    if not isinstance(enemy, dict):
+        return None
+    if enemy.get("boss") is True:
+        return str(enemy.get("key") or "boss")
+    hp = enemy.get("hp_max")
+    if not isinstance(hp, (int, float)) or isinstance(hp, bool):
+        hp = None
+    key = None
+    try:
+        from .. import enemy_identity as EI
+        key = EI.re4_unit_key(hp, stage)
+        if key is None and hp is not None and hp >= BOSS_HP_MIN:
+            rows = EI.RE4_SET_LISTS.get(stage or "")
+            if rows:
+                keys = {k for (_t, h), k in rows.items() if h == hp}
+                if keys and keys <= CHAINSAW_KEYS:       # every identity at this health is a chainsaw boss
+                    key = "salvador" if "salvador" in keys else "bella"
+    except Exception:                                      # noqa: BLE001 - an identity error still tiers by health
+        key = None
+    if key in BOSS_KEYS:
+        return key
+    if hp is not None and hp >= BOSS_HP_MIN:
+        return "boss"
+    return None
+
+
+def boss_on_screen(snap, *, sight_mm: float = BOSS_SIGHT_MM, face_mm: float = BOSS_FACE_MM,
+                   face_rad: float = BOSS_FACE_RAD) -> dict | None:
+    """The nearest boss in this snapshot that is on screen, or None: {enemy, distance, key, chainsaw, stage}.
+
+    "On screen" is the camera's view past him: anything within face_mm (on him), else within face_rad of his facing
+    (~100 deg, the camera's own span). A boss behind him is not yet "on screen" - the bot turns to it as it comes
+    round. The census is all living units, so no range beyond the stage's own (sight_mm) is applied.
+    """
+    player = (snap or {}).get("player") or {}
+    pos = player.get("pos")
+    if not pos or not isinstance(pos, (list, tuple)) or len(pos) != 3:
+        return None
+    stage = stage_name(snap)
+    rot = player.get("rot") or 0.0
+    best = None
+    for e in (snap or {}).get("enemies") or ():
+        if not isinstance(e, dict) or (e.get("hp") or 0) <= 0:
+            continue
+        epos = e.get("pos")
+        if not isinstance(epos, (list, tuple)) or len(epos) != 3:
+            continue
+        key = boss_key(e, stage)
+        if key is None:
+            continue
+        try:
+            dist = math.dist((float(pos[0]), float(pos[1]), float(pos[2])),
+                             (float(epos[0]), float(epos[1]), float(epos[2])))
+        except (TypeError, ValueError):
+            continue
+        if not math.isfinite(dist) or dist > sight_mm:
+            continue
+        if dist > face_mm:
+            err = wrap(heading(float(epos[0]) - float(pos[0]), float(epos[2]) - float(pos[2])) - rot)
+            if abs(err) > face_rad:
+                continue
+        if best is None or dist < best["distance"]:
+            best = {"enemy": e, "distance": dist, "key": key, "chainsaw": key in CHAINSAW_KEYS, "stage": stage}
+    return best
+
 # The turn sign, checked live by the fight itself (2026-11-10: the stock round turned 4,365 ticks for 19 raises, the
 # shape of a turn that runs away from its target): every turn tick compares the bearing error with the last one on
 # the same Ganado; TURN_LEARN_N samples with the error growing at least 3x as often as it shrinks (+4) flip
@@ -2042,7 +2161,11 @@ def combat_profile() -> combat.TitleProfile:
         lethal_keep_x=LETHAL_KEEP_X, lethal_backoff_max_s=LETHAL_BACKOFF_MAX_S,
         class_key=threat_class, motion_key=lambda e: None, attacking=None, windup=None,
         turn_w=1.0, level_w=0.0, keep_x=1.5, grab_r_cm=SWARM_CM / MM_PER_CM,
-        tier=combat.identity_tier(TITLE_ID, fallback=combat.hp_tier(dangerous_hp=HEAVY_HP)),   # a heavy: dangerous
+        # A boss is tiered by its maximum health too (boss_hp): the profile read only a DANGEROUS threshold, so a
+        # 6500-health Dr. Salvador was "dangerous" and could never enter the scorer's boss band - live, boss_picks 0
+        # on every round while one was fought (operator 2026-11-12). BOSS_HP_MIN is the same 3000 the boss close-on
+        # rule uses (and the shared doctrine's "dispatch bosses on sight").
+        tier=combat.identity_tier(TITLE_ID, fallback=combat.hp_tier(boss_hp=BOSS_HP_MIN, dangerous_hp=HEAVY_HP)),
         page_key=FROZEN_KEY, frozen_cm=FROZEN_MM / MM_PER_CM, frozen_rad=FROZEN_RAD, no_effect_s=FROZEN_FIRE_S,
         no_effect_shots=FROZEN_FIRE_SHOTS, step_s=STAND_STEP_S, page_tap_s=FROZEN_TAP_S, page_max_s=FROZEN_PAGE_MAX_S,
         page_clear_cm=0.0, idle_aim_s=IDLE_AIM_S,
@@ -2261,6 +2384,107 @@ class Bot:
         return gate is None
 
     # --- the choice ---
+    def _boss_pick(self, p, live, snap, now):
+        """(distance, error, enemy) of the boss to neutralize, or None (operator 2026-11-12: "neutralize the boss until
+        their HP is zero on sight each and every time").
+
+        The lock is made by the nearest boss on screen (boss_on_screen: BOSS_SIGHT_MM, in front or on him) and kept
+        until its health is zero - never released for a nearer Ganado, a crowd, the combo or the target hold. That is
+        the live failure this fixes: boss_picks 0 in every round of session 7ef0908f while a 6500-health boss was
+        fought, a shot landing "on_body" at 1.3 m, and three deaths to its one blow. A boss that drops out of the
+        census (a knockdown frees or hides the unit) keeps the lock BOSS_LOST_S, firing at the last place it was seen.
+        """
+        d = self.__dict__
+        if not BOSS_PRIORITY or p is None:
+            return None
+        pos = p.get("pos")
+        if not pos:
+            return None
+        lock = d.get("_boss")
+        if lock is not None:
+            found = next((t for t in live if t[2] is not None and t[2].get("ptr") == lock.get("ptr")), None)
+            hp = found[2].get("hp") if found is not None else None
+            if isinstance(hp, (int, float)) and hp > 0:
+                lock.update(seen=now, hp=hp, pos=tuple(found[2].get("pos") or lock.get("pos") or ()),
+                            distance=found[0], enemy=dict(found[2]))
+                self._boss_scene(lock, now)
+                return found
+            if isinstance(hp, (int, float)) and hp <= 0:
+                self._boss_release("killed")
+                return None
+            if found is None:
+                # A killed boss leaves the census before `live` can report hp 0: read the snapshot's own row for it,
+                # so a dead boss ends the lock at once instead of being fired at as if it were knocked down.
+                dead = next((row for row in (snap or {}).get("enemies") or ()
+                             if isinstance(row, dict) and row.get("ptr") == lock.get("ptr")), None)
+                if dead is not None and (dead.get("hp") or 0) <= 0:
+                    self._boss_release("killed")
+                    return None
+            if now - float(lock.get("seen") or 0) <= BOSS_LOST_S and lock.get("pos"):
+                last = tuple(lock["pos"])
+                dist = self._flat(pos, last)
+                err = wrap(heading(last[0] - pos[0], last[2] - pos[2]) - (p.get("rot") or 0.0))
+                fake = {"ptr": lock.get("ptr"), "pos": last, "hp": lock.get("hp"), "hp_max": lock.get("hp_max"),
+                        "class": lock.get("class"), "boss": True, "key": lock.get("key"), "down": True}
+                self.doing = "boss"
+                self.why = (f"the boss went down at {dist / (100.0 * MM_PER_CM):.1f} m: still firing at it "
+                            f"({BOSS_LOST_S - (now - float(lock.get('seen') or 0)):.0f} s)")
+                self._boss_scene(lock, now, dist)
+                return (dist, err, fake)
+            self._boss_release("lost")
+            return None
+        if not live:
+            return None
+        found = boss_on_screen(snap)
+        if found is None:
+            return None
+        e0 = found["enemy"]
+        pick = next((t for t in live if t[2] is not None and t[2].get("ptr") == e0.get("ptr")), None)
+        if pick is None:
+            epos = e0.get("pos")
+            if not epos:
+                return None
+            dist = self._flat(pos, epos)
+            err = wrap(heading(epos[0] - pos[0], epos[2] - pos[2]) - (p.get("rot") or 0.0))
+            pick = (dist, err, e0)
+        lock = d["_boss"] = {"ptr": e0.get("ptr"), "key": found["key"], "chainsaw": bool(found["chainsaw"]),
+                             "hp": e0.get("hp"), "hp_max": e0.get("hp_max"), "class": e0.get("class"),
+                             "pos": tuple(e0.get("pos") or ()), "seen": now, "since": now, "distance": pick[0],
+                             "enemy": dict(e0)}
+        self.stats["boss_engagements"] = int(self.stats.get("boss_engagements", 0)) + 1
+        self.stats["boss_target_key"] = found["key"]
+        self.stats["boss_target_hp_max"] = e0.get("hp_max")
+        self._boss_scene(lock, now)
+        self.doing = "boss"
+        self.why = (f"a BOSS on screen ({found['key']}, {e0.get('hp_max')} hp) at "
+                    f"{pick[0] / (100.0 * MM_PER_CM):.1f} m: neutralizing it until it is dead")
+        return pick
+
+    def _boss_scene(self, lock, now, dist=None) -> None:
+        """Publish the boss picture the ring's own defensive rule reads (grenade_ring.decide, the nitrous question)."""
+        self.stats["boss_on_screen"] = 1
+        self.stats["boss_distance_cm"] = round(float(dist if dist is not None else lock.get("distance") or 0.0)
+                                               / MM_PER_CM, 1)
+        self.stats["boss_chainsaw"] = bool(lock.get("chainsaw"))
+        self.stats["boss_locked_s"] = round(max(0.0, now - float(lock.get("since") or now)), 1)
+        e = lock.get("enemy")
+        if isinstance(e, dict) and (e.get("windup") is True or e.get("winding") is True):
+            self.stats["boss_windup"] = 1
+
+    def _boss_release(self, why: str) -> None:
+        """The lock ends: killed (its health reached zero), lost (out of the census BOSS_LOST_S), or the round reset."""
+        lock = self.__dict__.pop("_boss", None)
+        if lock is None:
+            return
+        if why == "killed":
+            self.stats["boss_kills"] = int(self.stats.get("boss_kills", 0)) + 1
+        elif why == "lost":
+            self.stats["boss_lost"] = int(self.stats.get("boss_lost", 0)) + 1
+        self.stats["boss_released"] = why
+        self.stats.pop("boss_on_screen", None)
+        self.stats.pop("boss_distance_cm", None)
+        self.stats.pop("boss_windup", None)
+
     def _choose(self, live, now, p=None, snap=None):
         """(distance, error, enemy) to fight, or None: the quickest kill once the combo is owed, the one nearest the
         gun's line in a mob, else the nearest. Only Ganados inside ENGAGE_RANGE_CM are candidates, and of those the ones
@@ -2268,6 +2492,12 @@ class Bot:
         the exact triangle test agreed on every one - while others stood round him; dead in 40 s). With none clear, the
         nearest - and self._pick_blocked says so: the fight goes round to him instead of aiming at the wall."""
         self._pick_blocked = False
+        # A BOSS first, before any range/LOS/crowd/continuity rule (operator 2026-11-12: "if a boss character shows up
+        # on screen ... neutralize the boss until their HP is zero on sight each and every time"). The lock survives
+        # the bot's own target hold, a knockdown and a nearer Ganado; see _boss_pick.
+        boss = self._boss_pick(p, live, snap, now) if p is not None else None
+        if boss is not None:
+            return boss
         # The candidates reach as far as the shot can be PROVEN: with the nav/obstacle data (or the room map) the
         # clear-line test below is the gate, so a Ganado at 20-35 m is a target, not a walk-up (operator 2026-11-11
         # 19:36: "the bot is not opening fire hard enough on these enemies ... shooting them until they are
@@ -2377,7 +2607,10 @@ class Bot:
             drv.fp.effect(max(hits.values(), default=-1e9) if isinstance(hits, dict) else None)
             drv.fp.effect(self.__dict__.get("_kill_at"))
             rest = isinstance(self.why, str) and self.why.startswith(FIRE_HOP_WHYS)
-            nb = drv.hop(prof, fam, now, p["pos"], e, [t[2] for t in live], locked=not rest)
+            # No hop away from a BOSS: the fire pattern exists to spread shots over a mob, and it used to switch the
+            # target off the boss mid-kill (operator 2026-11-12: unload on the boss until its HP is zero).
+            nb = None if self.__dict__.get("_boss") is not None else \
+                drv.hop(prof, fam, now, p["pos"], e, [t[2] for t in live], locked=not rest)
             if nb is not None:
                 t = next((t for t in live if t[2] is nb and t[0] <= ENGAGE_RANGE_CM), None)
                 if t is not None and (snap.get("nav") is None and snap.get("obstacles") is None
@@ -2412,6 +2645,8 @@ class Bot:
             self._fp_fired(e, dist, err, snap, now)
         self._since_reload += 1
         self.stats["shots"] += 1
+        if self.__dict__.get("_boss") is not None:
+            self.stats["boss_shots"] = int(self.stats.get("boss_shots", 0)) + 1
         n = self.stats["shots"]
         self.stats["fire_err_deg"] = round((self.stats.get("fire_err_deg") or 0.0) * (n - 1) / n
                                          + math.degrees(abs(err)) / n, 2)   # the mean bearing error at a shot
@@ -2787,30 +3022,37 @@ class Bot:
                 return act
         doctrine = self.__dict__.get("_doctrine_fire") is not None   # core.respond: he fires at the threat, no run-off
         fire_first = self._fire_first(p, snap, now)
+        # A BOSS on screen is the exception to the keep-distance and escape rules (operator 2026-11-12: "unload on them
+        # relentlessly ... neutralize the boss until their HP is zero"). The heavy/apex keep was the measured reason a
+        # 6500-health boss was knocked down and then left alone: it is exactly the rule that keeps the bot at a range
+        # the pad cannot finish it from, so with a boss engaged the bot stays on it (the dodge below still answers a
+        # landed blow, and returns to the boss because the lock survives).
+        boss_now = self._boss_pick(p, live, snap, now)
         # LOW_LIFE stays on under the doctrine too, for the same reason heavy evasion does (see below): the doctrine's
         # answer was the live one, but "he fires at the threat, no run-off" must not mean "he stays in reach at 20 % life
-        # while a heavy closes". A one-shot does not care that the bot is mid-dispatch.
-        low = self._low_life(p, live, now, snap)
+        # while a heavy closes". A one-shot does not care that the bot is mid-dispatch. A BOSS is the same exception:
+        # running from it is what lets it stand back up and finish the round.
+        low = None if boss_now is not None else self._low_life(p, live, now, snap)
         if low is not None:
             return low
-        heavy = None if fire_first else self._heavy_keep(live, now, p, snap)
+        heavy = None if (fire_first or boss_now is not None) else self._heavy_keep(live, now, p, snap)
         if heavy is not None:
             return heavy
         if UNIVERSAL_CORE:
             act = self._lethal_out(p, live, snap, now)    # a learned attack his shots do not stop: out of its reach
             if act is not None:
                 return act
-        act = None if (doctrine or fire_first) else self._escaping(p, snap, now, "swarm")
+        act = None if (doctrine or fire_first or boss_now is not None) else self._escaping(p, snap, now, "swarm")
         if act is not None:
             return act
         swarm = [t for t in live if t[0] <= SWARM_CM]
-        if len(swarm) >= SWARM_N and not doctrine and not fire_first:
+        if len(swarm) >= SWARM_N and not doctrine and not fire_first and boss_now is None:
             act = self._escape(p, live, snap, now, "swarm", LOW_LIFE_RUN_S)
             if act is not None:
                 self.stats["escapes"] += 1
                 self.doing, self.why = "escape", f"{len(swarm)} Ganados at arm's length: away along open floor"
                 return act
-        melee = self._melee(live, now)
+        melee = None if boss_now is not None else self._melee(live, now)
         if melee is not None:
             return melee
         cmd, roam = self._operator_command(p, live, snap, now)
@@ -3227,6 +3469,8 @@ class Bot:
         menus from the frame). Never a shot: the trigger and the aim are let go, the aim lock's request is withdrawn."""
         phase = game.get("phase") or "none"
         self.target = None
+        if phase in ("none", "dead", "results", "intro"):
+            self._boss_release("round")                  # a new round (or a death): the old lock means nothing
         self._aim_since = None
         AIM_REQUEST.clear()
         self.doing = {"none": "wait", "dead": "dead"}.get(phase, phase)

@@ -22,7 +22,10 @@ OPERATIONS = {"flash_now", "equip_primary", "magnum_quick4", "grenade_ring", "gr
 # The grenade-ring button's selectable types. "flash" is the default and the only one verified; the others
 # are refused by the native controller with a reason (never silently substituted). A longer TTL covers the
 # ten spawn/explode pairs the ring runs (each is the verified flash).
-GRENADE_RING_KINDS = ("flash", "hand", "incendiary")
+# The grenade-ring button's selectable types, cross-title: the flash / hand / incendiary grenades, the launcher's own
+# rounds (RE6's shells; RE5/RE4 fire their grenades) and RE4's mine thrower (a probe). A title refuses the ones it does
+# not build with its own reason - never a silent substitution.
+GRENADE_RING_KINDS = ("flash", "hand", "incendiary", "launcher", "shell1302", "shell1303", "shell1304", "mine")
 # The scatter barrage (RE6 Switch, 2026-11-10): a random kind a round ("random", the default) or one named; the native
 # controller refuses an unverified one with its reason. Its TTL is the ring's.
 GRENADE_SCATTER_KINDS = ("random",) + GRENADE_RING_KINDS

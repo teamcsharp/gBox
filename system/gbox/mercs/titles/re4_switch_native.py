@@ -65,6 +65,16 @@ HAND_BLAST = 0x2E48B0
 #: spawn at +0x28. The incendiary's spawn is the persistent fire: it calls EFFECT 0x26 and no AREA_ATTACK (no 0x16 area
 #: class exists in the image), so its damage is the burning field, not an instant blast.
 INCENDIARY_CANDIDATE = 0x2E4BA0
+#: The operator 2026-11-12: "In RE4 have the bot spraying a 360 ring of mine thrower rounds during the match". The
+#: class behaviour table lists a FOURTH entry after the hand / incendiary / flash triple (`0xB05C08`: spawn
+#: `0x2E5050`, secondary `0x2E51E0`) whose spawn is the only one that creates an object (CREATE at 0x8330, effects
+#: 0x42/0x43, sound 6) WITHOUT an AREA_ATTACK - the shape of a placed mine-dart rather than a grenade blast. It is a
+#: CANDIDATE, not an identified kind (the earlier pass recorded why a mine ring is not a fourth grenade-table blast):
+#: the spawn is called at the ring points behind allow_unverified, the receipt says probe, and the status refuses it
+#: until a live receipt shows the object arming/exploding. The hand grenade's 7000 mm floor is reused: a placed mine
+#: inside it would be a self-damage risk with no measured blast reach yet.
+MINE_CANDIDATE = 0x2E5050
+MINE_MIN_MM = 7000.0
 HAND_MIN_MM = 7000.0
 #: A MINE ring is NOT a fourth entry in that table, checked 2026-11-12 for the operator's "360 blast around them using
 #: the mine thrower ... I don't want them equipping the mine thrower": the Mine Thrower (item 0x36, and 0xAB with its
@@ -248,6 +258,18 @@ class Controller(N.Controller):
         return self.player is not None and self.original is not None and \
             self.q(self.player) == self.base + CLONE_AT
 
+    def ensure_attached(self):
+        """Attach the harness on demand (RE5/RE6 attach inside every native op; RE4's ring/flash refused instead).
+
+        This was the live blocker on RE4: the status path binds the player (ready()) but nothing ever put the clone on
+        it, so every PiP ring/flash click and every automatic ring failed with "the harness is not attached to the
+        player" (docs/evidence: the operator's own 2026-11-11 clicks; the bot's own rule's ring_error). The attach is
+        the harness's one vetted vtable store, already exercised by selftest(); a refusal is its own exception
+        (no mailbox, no player, a changed build) and stays a receipt.
+        """
+        if not self.attached():
+            self.attach()
+
     def attach(self):
         """Build the clone, install dispatcher + clone into the cave, and publish the clone - one vtable store."""
         if self.attached():
@@ -357,8 +379,7 @@ class Controller(N.Controller):
 
     def _blast_at(self, blast, kind, x, y, z, floor_mm):
         """One blast through the mailbox: a zeroed object at the point, the game's own function, one call."""
-        if not self.attached():
-            raise Unavailable("the harness is not attached to the player")
+        self.ensure_attached()
         px, py, pz = self.player_position()
         from_mm = math.hypot(x - px, z - pz)
         if from_mm < floor_mm:
@@ -392,15 +413,20 @@ class Controller(N.Controller):
         Flash with Hand (unavailable) / Incendiary (unavailable). flash and hand are both real spawn calls
         (FLASH_BLAST 0x2E4E50, HAND_BLAST 0x2E48B0); the incendiary is only the class-0x16 candidate that
         `grenade_ring` refuses without allow_unverified, so it stays advertised-but-unavailable rather than hidden.
+        "mine" is the operator's mine-thrower ring (2026-11-12): the class table's fourth spawn, a placed mine-dart
+        candidate - probe only until a live receipt (no live receipt yet).
         """
         if not self.attached():
             why = "the harness is not attached to the player"
-            return [{"kind": k, "available": False, "reason": why} for k in ("flash", "hand", "incendiary")]
+            return [{"kind": k, "available": False, "reason": why} for k in ("flash", "hand", "incendiary", "mine")]
         return [
             {"kind": "flash", "available": True, "reason": ""},
             {"kind": "hand", "available": True, "reason": ""},
             {"kind": "incendiary", "available": False,
              "reason": "the incendiary blast is not identified on this build yet (checkpoint G3): probe only"},
+            {"kind": "mine", "available": False,
+             "reason": "the mine thrower's placed round is the class table's fourth spawn (0x2E5050), a probe: "
+                       "no live mine-ring receipt yet"},
         ]
 
     def grenade_ring(self, kind="flash", *, count=None, radius_cm=None, inner_cm=None, ripple_ms=None,
@@ -410,18 +436,17 @@ class Controller(N.Controller):
         The points run outward from the inner ring to the outer radius on his floor; each is one native blast through
         the harness (the same route as `flash_at`). A failed blast aborts the ring with a partial receipt - it is
         never replayed. `state: confirmed` means every blast's call returned; a live receipt is still needed.
-        `allow_unverified` is the probe path for the incendiary (G3): it calls the candidate fire spawn - the class-0x16
-        persistent fire whose dispatch is not confirmed - and marks the receipt `probe: true`; the status and the rule
-        never offer it.
+        `allow_unverified` is the probe path for the incendiary (G3) and the mine thrower's placed round (2026-11-12):
+        it calls the candidate spawn and marks the receipt `probe: true`; the status and the rule never offer them as
+        verified. The harness attaches on demand (ensure_attached): the status path only binds the player, and the
+        missing clone was why every click died "the harness is not attached to the player".
         """
-        if not self.attached():
-            raise Unavailable("the harness is not attached to the player")
+        self.ensure_attached()
         kind = (kind or "flash").lower()
-        if kind == "incendiary" and not allow_unverified:
-            raise Unavailable("the incendiary blast is not identified on this build yet (checkpoint G3); pass "
-                              "allow_unverified for the probe")
+        if kind in ("incendiary", "mine") and not allow_unverified:
+            raise Unavailable(f"the {kind} ring is not identified on this build yet; pass allow_unverified for the probe")
         blasts = {"flash": (FLASH_BLAST, FLASH_MIN_MM), "hand": (HAND_BLAST, HAND_MIN_MM),
-                  "incendiary": (INCENDIARY_CANDIDATE, FLASH_MIN_MM)}
+                  "incendiary": (INCENDIARY_CANDIDATE, FLASH_MIN_MM), "mine": (MINE_CANDIDATE, MINE_MIN_MM)}
         if kind not in blasts:
             raise Unavailable(f"unknown grenade kind {kind!r}")
         blast, floor_mm = blasts[kind]
@@ -453,7 +478,7 @@ class Controller(N.Controller):
                    "expand": expand is not False, "hp_before": life_before, "hp_after": life_after,
                    "self_damage": (life_before - life_after) if isinstance(life_before, int) and
                    isinstance(life_after, int) else None,
-                   "grenades": rounds, "verified": False, "probe": kind == "incendiary",
+                   "grenades": rounds, "verified": False, "probe": kind in ("incendiary", "mine"),
                    "player_generation": self.player_id,
                    "elapsed_ms": round(1000 * (time.monotonic() - started), 1)}
         if len(rounds) == count and abort is None:
@@ -472,8 +497,7 @@ class Controller(N.Controller):
         hand 7000 mm) and the learned reach plus one cm. A partial barrage is `uncertain` and is never replayed.
         """
         import random as _random
-        if not self.attached():
-            raise Unavailable("the harness is not attached to the player")
+        self.ensure_attached()
         kind = (kind or "random").lower()
         if kind == "incendiary":
             raise Unavailable("the incendiary blast is not identified on this build yet (checkpoint G3)")

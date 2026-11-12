@@ -59,9 +59,14 @@ test('grenade ring defaults to flash when no kind is given',async()=>{
   await c.grenadeRing('sess');assert.deepEqual(posts[0].args,{kind:'flash'});c.dispose();
 });
 
-test('ring kind chooser: only flash is selectable, remembered per viewer',()=>{
-  assert.deepEqual(RING_KINDS.map(k=>[k.kind,k.available]),[['flash',true],['hand',false],['incendiary',false]]);
+test('ring kind chooser: flash plus every launcher shell / grenade type, remembered per viewer',()=>{
+  assert.deepEqual(RING_KINDS.map(k=>[k.kind,k.available]),
+    [['flash',true],['hand',false],['incendiary',false],['launcher',false],['shell1302',false],
+     ['shell1303',false],['shell1304',false],['mine',false]]);
   assert.equal(ringKindLabel('incendiary'),'Incendiary');
+  assert.equal(ringKindLabel('shell1304'),'Nitrogen (freeze)');
+  assert.equal(ringKindLabel('mine'),'Mine thrower');
+  assert.equal(ringKindLabel('future_kind'),'Future kind','an unknown kind is never labelled Flash');
   const store=(v)=>({getItem:()=>v});
   assert.equal(readRingKind(store('flash')),'flash');
   assert.equal(readRingKind(store('hand')),'flash','an unverified stored kind falls back to flash');
@@ -141,10 +146,11 @@ test('stale ammo reports never present a cached boolean as live or admit a new c
 });
 
 test('ring types follow optional verified native choices and retain flash-only old-worker defaults',()=>{
+  const base=[true,false,false,false,false,false,false,false];
   const old={available:true,capabilities:['grenade_ring'],options:{}};
-  assert.deepEqual(ringKindOptions(old).map(r=>r.available),[true,false,false]);
+  assert.deepEqual(ringKindOptions(old).map(r=>r.available),base);
   const re4={...old,options:{grenade_kinds:[{kind:'flash',available:true},{kind:'hand',available:true}]}};
-  assert.deepEqual(ringKindOptions(re4).map(r=>r.available),[true,true,false]);
+  assert.deepEqual(ringKindOptions(re4).map(r=>r.available),[true,true,false,false,false,false,false,false]);
   assert.equal(readRingKind({getItem:()=>'hand'},ringKindOptions(re4)),'hand');
   re4.options.grenade_kinds[1]={kind:'hand',available:false,reason:'Verified unlimited health required'};
   assert.equal(ringKindOptions(re4)[1].available,false);assert.match(ringKindOptions(re4)[1].reason,/health/);
@@ -159,7 +165,7 @@ test('ring types show each kind\'s own verdict even when the worker cannot fire 
       {kind:'hand',available:false,reason:'a hand-grenade ring is not yet verified on this build'},
       {kind:'incendiary',available:false,reason:'an incendiary-grenade ring is not yet verified on this build'}]}};
   const rows=ringKindOptions(idle);
-  assert.deepEqual(rows.map(r=>r.available),[false,false,false]);
+  assert.deepEqual(rows.map(r=>r.available),[false,false,false,false,false,false,false,false]);
   assert.match(rows[0].reason,/no living player/);
   assert.match(rows[1].reason,/not yet verified/);
   // A title with no ring at all: the title's own reason reaches the chooser per kind.

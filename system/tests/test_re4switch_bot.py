@@ -580,7 +580,8 @@ def test_the_playbook_builds_the_ring_rule_for_its_own_title(monkeypatch):
                         lambda ad, prof: calls.append(prof) or (lambda *a, **k: {"fire": False}))
     stats = {}
     step = B._ring_step(object(), stats)
-    assert calls == [{"map_id": B.MAP_ID, "menus": "gbox.mercs.titles.re4_switch"}]
+    assert calls == [{"map_id": B.MAP_ID, "menus": "gbox.mercs.titles.re4_switch",
+                      "units_per_cm": B.driver.MM_PER_CM}]
     assert callable(step) and "grenade_ring_error" not in stats
 
 

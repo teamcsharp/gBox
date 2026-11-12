@@ -57,6 +57,16 @@ DEFAULTS = {
     "max_radius_cm": 2500.0,       # the native ring's own ceiling
     "not_thinning_s": 8.0,         # pressure this long counts as a crowd that is not thinning
     "kill_window_s": 12.0,         # kills inside this window after a ring are attributed to it
+    # The operator 2026-11-12: "also if a chainsaw boss approaches the character. Do a 360 grenade launcher 10 round
+    # nitrous blast freezing the immediate enemies in the vicinity. If a boss is preparing to hit the character with a
+    # kill animation, defend them with a 360 grenade nitrous blast." A chainsaw boss inside defend_cm, any boss inside
+    # defend_close_cm, or a boss winding up inside defend_windup_cm earns the defensive ring at once (the kind is the
+    # freezing round where the title has one - RE6's Nitrogen shell1304 - and the flash, the stun every RE title has,
+    # on RE4/RE5: no RE4/RE5 build carries a Nitrogen round, and the flash is that game's own "frozen" state).
+    "defend": True,
+    "defend_cm": 1000.0,           # a CHAINSAW boss this close: the kill animation is coming, ring now
+    "defend_close_cm": 450.0,      # any boss this close: ring now
+    "defend_windup_cm": 1500.0,    # a boss winding up an attack: ring now
 }
 HISTORY_MAX_S = 20.0
 #: No ring in the first seconds of a round (operator's titles live 2026-11-11: the RE5 auto-ring's first attempt at
@@ -103,11 +113,16 @@ def policy(title_module=None, stats=None) -> dict:
         out["radius_cm"] = max(0.0, min(float(out["radius_cm"]), float(out["max_radius_cm"])))
         out["near_cm"] = max(50.0, min(float(out["near_cm"]), 2000.0))
         out["danger_cm"] = max(out["near_cm"], min(float(out["danger_cm"]), 2000.0))
+        out["defend"] = bool(out["defend"])
+        out["defend_cm"] = max(100.0, min(float(out["defend_cm"]), 3000.0))
+        out["defend_close_cm"] = max(50.0, min(float(out["defend_close_cm"]), 3000.0))
+        out["defend_windup_cm"] = max(out["defend_cm"], min(float(out["defend_windup_cm"]), 4000.0))
         out["enabled"] = bool(out["enabled"])
         out["kind"] = str(out["kind"] or "launcher")
     except (TypeError, ValueError):
         out.update({k: DEFAULTS[k] for k in ("enabled", "min_enemies", "cooldown_s", "kind", "radius_cm",
-                                             "near_cm", "danger_cm", "periodic_s", "periodic_min_enemies")})
+                                             "near_cm", "danger_cm", "periodic_s", "periodic_min_enemies",
+                                             "defend", "defend_cm", "defend_close_cm", "defend_windup_cm")})
     return out
 
 
@@ -229,6 +244,52 @@ def dangerous(enemy, title: str | None = None) -> bool:
     return tier in ("boss", "dangerous")
 
 
+def boss_row(enemy, title: str | None = None) -> bool:
+    """A BOSS for the defensive ring: the row's own flag/tier first (a title that names it - RE4's stage set list),
+    then enemy_identity's tier (RE5/RE6 by class, or by the title's own health thresholds)."""
+    if not isinstance(enemy, dict):
+        return False
+    if enemy.get("boss") is True or str(enemy.get("tier") or "").lower() == "boss":
+        return True
+    try:
+        return enemy_identity.tier(title, enemy.get("class"), enemy.get("hp_max")) == "boss"
+    except Exception:                                     # noqa: BLE001
+        return False
+
+
+def chainsaw_row(enemy, title: str | None = None) -> bool:
+    """A boss whose attack is a one-blow chainsaw kill (the kill animation the operator rings the nitrous for)."""
+    if not isinstance(enemy, dict):
+        return False
+    if enemy.get("chainsaw") is True:
+        return True
+    if str(enemy.get("key") or "").lower() in ("salvador", "bella", "super_salvador"):
+        return True
+    try:
+        ident = enemy_identity.identity(title, enemy.get("class"))
+    except Exception:                                     # noqa: BLE001
+        ident = None
+    if not isinstance(ident, dict):
+        return False
+    text = " ".join([str(ident.get("name") or ""), *[str(a) for a in ident.get("aliases") or ()]]).lower()
+    return any(word in text for word in ("chainsaw", "salvador", "bella", "ubistvo"))
+
+
+#: The launcher's freezing round (RE6's uWp1304 Nitrogen shell). A title that does not carry it defends with the
+#: flash: RE4/RE5 have no Nitrogen round, and the flash's stun is the game's own "frozen" state.
+FREEZE_KINDS = ("shell1304",)
+
+
+def defend_kind(target) -> tuple:
+    """(kind, available) of the defensive ring's round: the freezing round where the title carries it, else the flash."""
+    rounds = launcher_rounds(target)
+    for kind, available in rounds:
+        if kind in FREEZE_KINDS:
+            return kind, available
+    flash = [available for kind, available in rounds if kind == "flash"]
+    return "flash", bool(flash and flash[0])
+
+
 def observe(stats: dict, snap: dict, now: float, policy_: dict | None = None) -> dict:
     """Per-tick bookkeeping: the crowd history and the kills attributed to the last ring."""
     policy_ = policy_ or policy(stats=stats)
@@ -295,6 +356,27 @@ def decide(snap: dict, stats: dict, now: float, policy_: dict | None = None, *, 
     last = stats.get("ring_last_at")
     if isinstance(last, (int, float)) and now - last < float(policy_["cooldown_s"]):
         return {**out, "reason": f"{float(policy_['cooldown_s']) - (now - last):.1f} s of the ring cooldown left"}
+    # DEFEND (operator 2026-11-12): a chainsaw boss approaching, a boss on him, or a boss winding up a kill animation
+    # earns the 360 freezing ring NOW - that is what it is for. It is checked before every crowd test (a boss can be
+    # the only enemy in the snapshot) and it overrides the flash's minute (the ring places its blasts at the kind's own
+    # floor, away from him, so it cannot stun him - the minute exists for the flash the bot throws at a crowd).
+    if policy_.get("defend", True) and pos:
+        bosses = [(d, e) for d, e in enemies_near(snap, float(policy_["defend_windup_cm"])) if boss_row(e, title)]
+        if bosses:
+            d_cm, boss = min(bosses, key=lambda row: row[0])
+            saw = chainsaw_row(boss, title)
+            windup = boss.get("windup") is True or boss.get("winding") is True or boss.get("attack") is True
+            limit = float(policy_["defend_cm"] if saw else policy_["defend_close_cm"])
+            if d_cm <= limit or (windup and d_cm <= float(policy_["defend_windup_cm"])):
+                stats["ring_defends_owed"] = int(stats.get("ring_defends_owed", 0)) + 1
+                # the outer blasts must reach HIM, not only ring the bot's own feet: the ring's radius grows to the
+                # boss (a 10-round ring at 6 m would freeze the crowd and leave the chainsaw at 10 m untouched)
+                reach = max(float(out["radius_cm"]), min(float(d_cm) + 300.0, float(policy_["max_radius_cm"])))
+                return {**out, "fire": True, "kind": "nitrous", "defend": True, "flash_ok": True,
+                        "radius_cm": round(reach, 1),
+                        "reason": (f"DEFEND: {'a chainsaw boss' if saw else 'a boss'} {d_cm:.0f} cm off"
+                                   f"{' winding up' if windup else ''}: the 360 {int(policy_['count'])}-round "
+                                   f"freezing ring")}
     if out["kind"] == "flash":
         held = flash_held(snap, stats, policy_, title)
         if held is not None:
@@ -399,6 +481,13 @@ def fire(ad, decision: dict, stats: dict, now: float, *, ring=None) -> dict:
             stats["ring_error"] = ("no grenade kind is available for the ring (none verified on this build, or the "
                                    "flash's one-a-minute gate is closed)")
             return {"state": "refused", "reason": stats["ring_error"]}
+    if str(kind).lower() in ("nitrous", "freeze"):
+        # DEFEND: the freezing round where the title has one (RE6's uWp1304 Nitrogen), else the flash - RE4/RE5 carry
+        # no Nitrogen round and the flash's stun is their own "frozen" state. Recorded as what actually fired.
+        kind, available = defend_kind(target)
+        allow_unverified = not available
+        stats["ring_defend_kind"] = kind
+        stats["ring_kind_fired"] = kind
     module = type(target).__module__.rsplit(".", 1)[-1]
     try:
         if module == "re4_gc_native":
@@ -423,6 +512,8 @@ def fire(ad, decision: dict, stats: dict, now: float, *, ring=None) -> dict:
     if confirmed:
         stats["rings_deployed"] = int(stats.get("rings_deployed", 0)) + 1
         stats["ring_kind_fired"] = receipt.get("kind", kind)
+        if decision.get("defend"):
+            stats["ring_defends"] = int(stats.get("ring_defends", 0)) + 1
         if receipt.get("launcher_fallback"):
             # The launcher-less loadout's fallback is a receipt fact, not a hidden one: the operator sees the flash
             # ring answering while the launcher is missing (live 2026-11-11 19:27: the shell ring's AttributeError).
@@ -438,6 +529,31 @@ def fire(ad, decision: dict, stats: dict, now: float, *, ring=None) -> dict:
     return receipt if isinstance(receipt, dict) else {"state": "failed", "reason": "no receipt"}
 
 
+def _scaled(snap: dict, units_per_cm: float) -> dict:
+    """The snapshot in CENTIMETRES for this rule: a title whose RAM positions are millimetres (RE4 Switch, 10 per cm)
+    passes units_per_cm, every other title 1.0. Without it an 8 m boss read 8000 "cm" and every threshold in this
+    file (all cm) saw nothing - which is why RE4's own ring counted only enemies inside 0.8 m."""
+    if not isinstance(snap, dict) or not units_per_cm or float(units_per_cm) == 1.0:
+        return snap
+    k = float(units_per_cm)
+    out = dict(snap)
+    player = out.get("player")
+    if isinstance(player, dict):
+        pos = player.get("pos")
+        if isinstance(pos, (list, tuple)) and len(pos) == 3:
+            out["player"] = {**player, "pos": [float(v) / k for v in pos]}
+    enemies = out.get("enemies")
+    if isinstance(enemies, list):
+        rows = []
+        for e in enemies:
+            if isinstance(e, dict) and isinstance(e.get("pos"), (list, tuple)) and len(e["pos"]) == 3:
+                rows.append({**e, "pos": [float(v) / k for v in e["pos"]]})
+            else:
+                rows.append(e)
+        out["enemies"] = rows
+    return out
+
+
 def control(ad, prof, *, ring=None):
     """The engine's one-line hook: build the per-round step that decides, fires and keeps the stats.
 
@@ -451,11 +567,16 @@ def control(ad, prof, *, ring=None):
     except Exception:                                    # noqa: BLE001 - a title without its own module: defaults
         title_mod = None
     title = (prof or {}).get("map_id")
+    try:
+        units = float((prof or {}).get("units_per_cm") or 1.0)
+    except (TypeError, ValueError):
+        units = 1.0
 
     def step(snap: dict, stats: dict, now: float, hold=None) -> dict:
+        view = _scaled(snap, units)                      # the rule speaks cm; RE4's RAM speaks mm
         policy_ = policy(title_mod, stats)
-        observe(stats, snap, now, policy_)
-        decision = decide(snap, stats, now, policy_, title=title)
+        observe(stats, view, now, policy_)
+        decision = decide(view, stats, now, policy_, title=title)
         stats["ring_decision"] = (decision["reason"] if not decision["fire"] else "fire: " + decision["reason"])[:200]
         # The kind is recorded with the ATTEMPT, not only with the receipt: a session that rotates or ends mid-fire used
         # to leave ring_kind_fired empty while rings_attempted had counted the attempt, so the operator's 360 ring
@@ -464,7 +585,7 @@ def control(ad, prof, *, ring=None):
             stats["ring_kind_fired"] = str(decision.get("kind") or "")
         if not decision["fire"]:
             if title in SCATTER_TITLES:                      # no ring this tick: the scatter barrage's own rule
-                return scatter_step(snap, stats, now, hold)
+                return scatter_step(view, stats, now, hold)
             return decision
         if hold is not None and hold(set()) is False:
             return {**decision, "fire": False, "reason": "the bot's keys did not release before the ring"}
@@ -487,7 +608,7 @@ def control(ad, prof, *, ring=None):
         if hold is not None and hold(set()) is False:
             return {**decision, "fire": False, "reason": "the bot's keys did not release before the barrage"}
         try:
-            receipt = fire_scatter(ad, decision, stats, now, ring=ring)
+            receipt = fire_scatter(ad, decision, stats, now, ring=ring, units=units)
         except Exception as exc:                         # noqa: BLE001 - a barrage never ends the round
             stats["scatter_error"] = f"{type(exc).__name__}: {exc}"[:200]
             return {**decision, "fire": False, "reason": stats["scatter_error"]}
@@ -632,7 +753,7 @@ def decide_scatter(snap: dict, stats: dict, now: float, policy_: dict | None = N
     return {**out, "reason": f"nothing tough: {len(rows)} within {policy_['reach_cm']:.0f} cm"}
 
 
-def fire_scatter(ad, decision: dict, stats: dict, now: float, *, ring=None) -> dict:
+def fire_scatter(ad, decision: dict, stats: dict, now: float, *, ring=None, units: float = 1.0) -> dict:
     """The native barrage once, with the stats. Never raises for a game-side refusal."""
     target = ring or controller(ad)
     stats["scatter_last_at"] = now
@@ -640,7 +761,11 @@ def fire_scatter(ad, decision: dict, stats: dict, now: float, *, ring=None) -> d
         stats["scatter_failures"] = int(stats.get("scatter_failures", 0)) + 1
         stats["scatter_last_failure"] = "this title's native controller has no scatter barrage"
         return {"state": "unavailable", "reason": stats["scatter_last_failure"]}
-    options = {"count": decision.get("count"), "toward": decision.get("toward") or None,
+    toward = decision.get("toward") or None
+    if toward and units and float(units) != 1.0:
+        # `toward` is in the TITLE's own units (RE4: mm): the decision was made on the cm view, so put the points back
+        toward = [(float(x) * float(units), float(z) * float(units)) for x, z in toward]
+    options = {"count": decision.get("count"), "toward": toward,
                "safe_cm": decision.get("safe_cm")}
     if decision.get("narrowed") and decision.get("kinds"):
         options["kinds"] = tuple(decision["kinds"])
