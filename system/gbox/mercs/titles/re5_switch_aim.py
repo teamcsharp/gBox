@@ -131,6 +131,9 @@ SEGMENT_PITCH_DIST_CM, SEGMENT_PITCH_MAX = 300., math.radians(9)   # a grazing c
 # How long that grazing-pitch hold may keep the trigger off (see apply()). It is a correction window, not a state:
 # live 2026-11-12 a pitch error that never converged held fire for a whole round at 1.5 m.
 SEGMENT_PITCH_HOLD_S = 0.35
+# How close in BOTH axes an unverified shot has to be before it is taken anyway (see apply()). Tight on purpose:
+# this exists because the laser reading can be down, not to widen what counts as a hit.
+ALIGNED_NO_RAY_TOL = math.radians(1.5)
 GUN_FAMILIES = frozenset({'handgun', 'magnum', 'shotgun', 'automatic', 'rifle'})
 # Weapon mastery: a shotgun point blank into the crowd, an automatic held through its burst (apply() below)
 SHOTGUN_POINT_BLANK_CM, POINT_BLANK_YAW, POINT_BLANK_PITCH = 250., math.radians(15), math.radians(20)
@@ -456,9 +459,20 @@ def apply(bot, snap, act, now):
         bot.stats['target_feedback_auto_holds'] = bot.stats.get('target_feedback_auto_holds', 0) + 1
     if point_blank and on:
         bot.stats['target_feedback_point_blank'] = bot.stats.get('target_feedback_point_blank', 0) + 1
+    # THE ALIGNED SHOT WITH NO RAY. This title's laser reading is not always up, and the final gate then withholds the
+    # trigger indefinitely: live 2026-11-12 the journal showed doing=turn act=['rleft'] blk=ray=False up=False d=1.0m
+    # yaw=-0.0 pitch=+0.0 - a Majini at one metre, dead on in BOTH axes, and no shot. RE4's equivalent was a laser gate
+    # that never read (laser_gate stat=0 up=False). With the aim inside ALIGNED_NO_RAY_TOL of the target and nothing
+    # standing short on the line, that is a shot the operator wants taken - fire it and count it, rather than wait for a
+    # ray that may never appear. The tolerance is deliberately tight (1.5 deg) so this is not a licence to spray.
+    if (not on and not valid_ray and not short and not recoil
+            and p.get('motion') in (R.MOTION_AIMED, R.MOTION_SHOT)
+            and abs(yaw_error) <= ALIGNED_NO_RAY_TOL and abs(pitch_error) <= ALIGNED_NO_RAY_TOL):
+        on, contact_kind = True, 'aligned no ray'
+        bot.stats['target_feedback_aligned_no_ray'] = bot.stats.get('target_feedback_aligned_no_ray', 0) + 1
     if not on:
         bot._feedback_contact = None
-        # WHY the trigger was withheld. A live RE5 round showed target_feedback_fire_blocks climbing to 72 with shots 0
+        # A live RE5 round showed target_feedback_fire_blocks climbing to 72 with shots 0
         # and t_fire 0 (2026-11-12): the gate requires a ray-verified body contact and never gets one, so the bot aims
         # forever and fires nothing. The components below separate the two possible causes - a laser/ray that is not up
         # (a reading problem, like RE4's laser_gate) from an aim that lands off the body (a bot problem).
