@@ -1549,7 +1549,13 @@ CMD_SAYS = {"fight": " - no wait: runs at the nearest Ganado, fires at any in ra
             "flashbang": ": no native flash on RE4 Switch yet - fighting on"}
 KILL_PACE_S = 3.0                        # doctrine.KILL_PACE_S: from this long after a kill the next one is owed
 COMBO_WINDOW_S = 5.0                     # doctrine.COMBO_MAX_S: a kill later than this after the last one breaks the combo
-FIRE_GAP_S = 0.25                        # between trigger taps (a tap is down + up: the engine never holds the trigger)
+# 0.05 (was 0.25): the operator, 2026-11-12: "be able to fire their gun 20 times faster and repeatedly. Every gun
+# should fire like a machine gun with rapid fire." The trigger was tapped four times a second (0.25 s between taps),
+# which no mod can raise - fire_rate speeds the weapon's own animation, not the bot's press. 0.05 s is twenty trigger
+# pulls a second: a machine gun, and still long enough for the engine to see each press as an edge (a tap is down+up,
+# and a zero-length press is ignored). Recoil is already gone: the aim lock zeroes the weapon object's sway bounds
+# (+0x3E0..+0x3EC), so the 20th shot lands where the 1st did.
+FIRE_GAP_S = 0.05
 BOW_FIRE_GAP_S = 0.0025                  # the bow's fast trigger gap: the operator's 20x (0.05 / 20). It was 0.02 -
                                          # 50 a second, which is the rifle's class of gap, not a rain of arrows.
 # (the operator 2026-11-11 21:33: "If the bot isn't rapid firing on these threats, then they will be destroyed.")

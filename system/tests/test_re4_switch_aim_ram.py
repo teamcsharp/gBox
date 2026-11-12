@@ -220,7 +220,10 @@ def test_a_hit_from_the_census_resolves_the_shot_and_the_book_learns_it():
     s["enemies"][0]["hp"] = 100                         # his health fell: the shot's hit
     b.tick(s, now=10.7)
     b.tick(s, now=10.7 + A.HIT_S + 0.1)
-    assert b.stats["aimbook_hits"] == 1 and b.stats["aimbook_hit_rate"] == 1.0
+    # (the rate is not pinned to a value any more: the operator's 20-pulls-a-second trigger - FIRE_GAP_S 0.05 - fires
+    # a second shot inside this window, so the exact rate depends on pacing rather than on the census resolution this
+    # test is about. That the hit was RECORDED and the book learned from it is the contract.)
+    assert b.stats["aimbook_hits"] == 1 and b.stats["aimbook_hit_rate"] > 0
     core = b._aim_core()
     assert core.book.cells, "the book learned the resolved shot"
     assert next(iter(core.book.cells)).startswith("magnum|"), "the family from the class byte (0x05 Broken Butterfly)"

@@ -43,7 +43,7 @@ def test_taps_are_paced_so_each_one_is_a_new_press():
     s = snap([((0.0, 0.0, 500.0), 400)])
     b.tick(s, now=9.0)                                              # the gun up
     assert b.tick(s, now=10.0).get("tap") == D.FIRE_BTN
-    assert b.tick(s, now=10.1).get("tap") is None, "inside FIRE_GAP_S: the aim stays, no tap"
+    assert b.tick(s, now=10.0 + D.FIRE_GAP_S / 2).get("tap") is None, "inside FIRE_GAP_S: the aim stays, no tap"
     assert b.tick(s, now=10.0 + D.FIRE_GAP_S + 0.01).get("tap") == D.FIRE_BTN
 
 
