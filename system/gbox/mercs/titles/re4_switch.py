@@ -1595,6 +1595,8 @@ BOW_FIRE_GAP_S = 0.0025                  # the bow's fast trigger gap: the opera
 # shots with a flat 7-degree tolerance - 1.5 m off at 12 m): atan(FIRE_HALF_WIDTH_MM / distance), never under
 # FIRE_TOL_MIN; inside AIM_NUDGE of it the right stick is tapped (a frame of turn) rather than held.
 FIRE_HALF_WIDTH_MM, FIRE_TOL_MIN, AIM_NUDGE = 300.0, 0.05, 0.2
+# Fire even when the aim is wide (see the branch that uses it): the trigger is never held for a few degrees.
+SPRAY_ALWAYS = True
 # FIRE_TOL_MIN 0.05 rad (~2.9 deg): the operator 2026-11-11 19:53 ("the bot is just holding up the weapon without
 # firing it") - at 1.1 deg the aim's pad error almost never came inside the tolerance, so the raise/aim ticks repeated
 # forever and the trigger never tapped. A hit needs the body's half width (0.3 m) inside 0.05 rad to ~6 m; past that the
@@ -2843,10 +2845,27 @@ class Bot:
                 act = self._ram_aim(p, live, e, dist, err, fp_off, snap, now)
                 if act is not None:
                     return act
+            # The bow fires on its own fast path (the operator 2026-11-11 21:32: "the bot was raising their bow and
+            # arrow ... but because they weren't discharging arrows, the threats ... choked them to death"; 21:33:
+            # "If the bot isn't rapid firing on these threats, then they will be destroyed"): the bow needs no rifle
+            # raise wait and no 0.25 s trigger gap - the arrow discharges as soon as the raise settles.
+            bow = self._bow_in_hand(snap)
+            ready = bow or (self._aim_since is not None and now - self._aim_since >= AIM_READY_S)
             if abs(err) > tol:                               # (tol: the body's angle at this distance, above)
                 self.stats["raises"] += 1
                 self.doing = "aim"
                 aim_err = err + fp_off                       # toward this shot's point on him (0 offset: his bearing)
+                # ALWAYS TAKE THE SHOT. The operator, 2026-11-12: "I do not like seeing the bot so hesitant to shoot.
+                # The bot should always be taking the shot, always, and firing like mad at these enemies. If he is
+                # hesitant to take the shot, he is going to get swarmed by enemies." This branch used to return an
+                # aim-only action until the error settled inside tol (about 3 degrees at 5 m), which the aim rarely
+                # managed: the round read t_aim 590 against t_fire 150, and kills 0. He sprays on the trigger while the
+                # stick keeps correcting, so a wide shot costs nothing (infinite ammo) and the swarm never builds.
+                # The raise still comes first - a trigger with the gun down fires nothing.
+                if SPRAY_ALWAYS and ready and now - self._last_fire >= (BOW_FIRE_GAP_S if bow else FIRE_GAP_S):
+                    self.stats["spray_shots"] = self.stats.get("spray_shots", 0) + 1
+                    turn = self._aim_turn(aim_err) if abs(err) > AIM_NUDGE else set()
+                    return dict(self._tap(e, dist, err, snap, now), hold={AIM_BTN} | turn)
                 if abs(err) <= AIM_NUDGE:                    # close: a tap of the right stick, not a sweep past him
                     if UNIVERSAL_CORE:
                         self._aim_stick().rest()
@@ -2854,12 +2873,6 @@ class Bot:
                 if UNIVERSAL_CORE and self._aim_since is not None:
                     self._aim_stick().observe(now, p.get("rot"), 1 if aim_err > 0 else -1)   # does this stick move it?
                 return {"hold": {AIM_BTN} | self._aim_turn(aim_err)}   # the gun up, the right stick turns the aim
-            # The bow fires on its own fast path (the operator 2026-11-11 21:32: "the bot was raising their bow and
-            # arrow ... but because they weren't discharging arrows, the threats ... choked them to death"; 21:33:
-            # "If the bot isn't rapid firing on these threats, then they will be destroyed"): the bow needs no rifle
-            # raise wait and no 0.25 s trigger gap - the arrow discharges as soon as the raise settles.
-            bow = self._bow_in_hand(snap)
-            ready = bow or (self._aim_since is not None and now - self._aim_since >= AIM_READY_S)
             if not ready or now - self._last_fire < (BOW_FIRE_GAP_S if bow else FIRE_GAP_S):
                 self.doing = "aim"
                 return {"hold": {AIM_BTN}}

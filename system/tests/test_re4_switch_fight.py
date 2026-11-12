@@ -53,9 +53,17 @@ def test_a_ganado_well_off_the_gun_is_turned_to_with_the_gun_down():
 
 
 def test_a_small_error_fine_turns_with_the_gun_up():
+    """The operator, 2026-11-12: "The bot should always be taking the shot, always, and firing like mad at these
+    enemies. If he is hesitant to take the shot, he is going to get swarmed by enemies." So a small error still turns
+    the aim with the right stick - and the trigger is not held while it does (SPRAY_ALWAYS)."""
     err = (D.RAISE_TOL + D.Bot.TURN_TOL) / 2
-    act = bot().tick(snap([((500.0 * math.sin(err), 0.0, 500.0 * math.cos(err)), 400)]), now=1.0)
-    assert act["hold"] == {D.AIM_BTN, D.AIM_TURN["left"]} and not act.get("tap"), "the right stick aims (manual)"
+    s = snap([((500.0 * math.sin(err), 0.0, 500.0 * math.cos(err)), 400)])
+    b = bot()
+    b.tick(s, now=1.0)                                   # the gun comes up first: a trigger with it down fires nothing
+    act = b.tick(s, now=1.0 + D.AIM_READY_S + 0.1)
+    assert D.AIM_BTN in act["hold"], "the gun stays up"
+    assert act.get("tap") == D.FIRE_BTN, "and it takes the shot instead of waiting for the aim to settle"
+    assert D.AIM_TURN["left"] in act["hold"], "the right stick still corrects while it fires"
 
 
 def test_no_blind_fire_past_the_range_gate_he_walks_there_instead():
@@ -459,15 +467,16 @@ def test_with_everyone_behind_walls_he_goes_round_instead_of_aiming():
 
 
 
-def test_the_shot_waits_for_the_angle_the_ganado_covers():
-    """Live 2026-11-10 22:07: 11 hits from 166 shots with a flat 7-degree tolerance. At 10 m a Ganado covers ~1.7
-    degrees: 4 degrees off is a nudge of the right stick (a tap), not a shot."""
+def test_the_shot_no_longer_waits_for_the_angle_the_ganado_covers():
+    """Live 2026-11-10 22:07: 11 hits from 166 shots with a flat 7-degree tolerance - which is why this used to wait
+    for the body's angle. The operator overrode that on 2026-11-12 ("always ... taking the shot ... firing like mad"):
+    the trigger goes even off-angle, and the aim corrects under it. The well-aimed shot is unchanged."""
     b = bot()
     err = math.radians(4.0)
     s = snap([((1000.0 * math.sin(err), 0.0, 1000.0 * math.cos(err)), 400)])
     b.tick(s, now=0.0)
     act = b.tick(s, now=D.AIM_READY_S + 0.1)
-    assert act.get("tap") == D.AIM_TURN["left"] and D.AIM_BTN in act["hold"] and b.stats["shots"] == 0
+    assert act.get("tap") == D.FIRE_BTN and D.AIM_BTN in act["hold"] and b.stats["shots"] == 1, "no hesitation"
     near = math.radians(1.0)
     s2 = snap([((1000.0 * math.sin(near), 0.0, 1000.0 * math.cos(near)), 400)])
     b2 = bot()
