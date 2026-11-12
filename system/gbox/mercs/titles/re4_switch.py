@@ -1828,6 +1828,11 @@ THROW_ITEMS = {"hand": 0x01, "fire": 0x02, "flash": 0x0E}     # re4_weapons.NAME
 # changing it to the first aid spray and using it in the game in order to survive."
 HEAL_ITEM = 0x05                        # re4_weapons.NAMES: "First Aid Spray"
 HEAL_BELOW, HEAL_HAND_S, HEAL_USE_S, HEAL_SETTLE_S = 0.55, 0.7, 0.15, 0.3
+# A FAILED swap must not become the round (live 2026-11-12, Waterworld: doing=heal "the first aid spray to hand (548 of
+# 1560)" for the rest of the round, heals 0, shots 14 hits 2 kills 8 - hp stayed under HEAL_BELOW, so the abort cleared
+# the state, the next tick started another swap, and he never fired a shot again). After a failed swap the heal is left
+# alone this long and the fight resumes.
+HEAL_BLOCK_S = 8.0
 # Hit, break contact (the operator's choice, 2026-11-12): asked to pick between fleeing a heavy first and firing first,
 # he said "keep firing but back off after the first heavy hit lands" and "I don't want the bot getting hurt - just have
 # the bot locating and fighting these threats". So the fire-first rule stands until a blow actually lands, which is the
@@ -2927,8 +2932,8 @@ class Bot:
             return None                                  # no life reading: never guess at a heal
         st = self.__dict__.get("_heal")
         if st is None:
-            if hp > top * HEAL_BELOW:
-                return None
+            if hp > top * HEAL_BELOW or now < self.__dict__.get("_heal_block_until", -1e9):
+                return None                              # (a failed swap blocks the retry, so the fight goes on)
             st = self.__dict__["_heal"] = {"phase": "hand", "since": now, "seq": self._hand_ask(HEAL_ITEM)}
         if st["phase"] == "hand":
             if HAND_STATE.get("seq") == st["seq"] and HAND_STATE.get("verified") \
@@ -2937,6 +2942,7 @@ class Bot:
             elif now - st["since"] > HEAL_HAND_S:
                 self.stats["heal_aborts"] = self.stats.get("heal_aborts", 0) + 1
                 self.stats["heal_abort_last"] = f"the swap: {HAND_STATE.get('error') or 'no answer'}"[:120]
+                self.__dict__["_heal_block_until"] = now + HEAL_BLOCK_S
                 st.update(phase="back", since=now, seq=self._hand_ask(None))
             else:
                 self.doing, self.why = "heal", f"the first aid spray to hand ({hp} of {top})"

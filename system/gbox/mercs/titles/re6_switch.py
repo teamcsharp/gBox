@@ -2646,8 +2646,24 @@ NAV_WALK, NAV_REACH_R, NAV_REPLAN_S, NAV_DEGEN_R = True, 90.0, 1.5, 40.0
 # pressed), climbs (B taken while not held), pickups (Y taken); the B spots are logged per stage for the nav
 # (learn_dir / PROMPT_SPOTS_FILE: {stage: [[x, y, z, type], ...]}).
 PROMPTS, PROMPT_REPEAT_S, PROMPT_TAKEN_S, PROMPT_SAFE_R = True, 0.15, 1.5, 300.0
-PROMPT_SKIP_KEYS = frozenset({"r", "y"})  # Y: item pickups; R: the heal hint shown whenever he is hurt (types 1 / 26 with
-                                        # button 34 at 780 / 900 health) - tablets stay with the tablet rules
+PROMPT_SKIP_KEYS = frozenset({"y"})         # Y: item pickups, never needed (unlimited ammo)
+PROMPT_HEAL_TYPES = frozenset({1, 26})      # the heal hint: R, types 1 / 26, button 34, at 780 / 900 health
+
+
+def prompt_skipped(q) -> bool:
+    """A prompt the bot must not answer.
+
+    R used to be skipped by KEY ALONE, which swallowed every R prompt rather than only the heal hint - the comment on
+    that skip names the heal hint by its types (1 / 26, button 34, at 780 / 900 health), and the test never looked at
+    the type. A counter asking for R was therefore dropped whenever his health was above the heal threshold, which is
+    the operator's 2026-11-12 report: "the most important thing about that game is countering the attacks of the
+    enemies with the QTE events ... I see them all the time being told to press R2 and they miss the QTE". Only the
+    heal hint's own types are skipped now; every other R prompt is pressed like any other.
+    """
+    key = (q or {}).get("key")
+    if key in PROMPT_SKIP_KEYS:
+        return True
+    return key == "r" and (q or {}).get("type") in PROMPT_HEAL_TYPES
 PROMPT_SPOTS_FILE, PROMPT_SPOTS_N, PROMPT_SAVE_S = "re6_prompt_spots.json", 200, 30.0
 # QTEs solved at once (operator 2026-11-10 06:45: "I dont like seeing the bot fail QTE events. The bot needs to ram lock
 # that and solve it instantly"): the driver turns the game's own automatic action button and the RAM escape on at every
@@ -5382,7 +5398,7 @@ class Bot:
                 self.prompt_live[key] = {"since": now, "pressed": None, "at": -1e9, "q": q,
                                          "ram0": self.stats.get("qte_solved_ram", 0)}
                 self.stats["prompts_seen"] += 1
-                if q.get("key") not in PROMPT_SKIP_KEYS:
+                if not prompt_skipped(q):
                     self.stats["qte_seen"] += 1
                 row = types.setdefault(str(q["type"]), [0, 0, q.get("key")])
                 row[0] += 1
@@ -5390,7 +5406,7 @@ class Bot:
                     self._prompt_spot(p, snap, q)
         for key in [k for k in self.prompt_live if k not in cur]:
             live = self.prompt_live.pop(key)
-            if (live["q"].get("key") not in PROMPT_SKIP_KEYS and live["pressed"] is None
+            if (not prompt_skipped(live["q"]) and live["pressed"] is None
                     and self.stats.get("qte_solved_ram", 0) <= live.get("ram0", 0)):
                 self.stats["qte_failed"] += 1                    # gone with no press and no RAM solve (target 0)
             if live["pressed"] is not None and now - live["at"] <= PROMPT_TAKEN_S:
@@ -5432,7 +5448,7 @@ class Bot:
                 continue
             if live["pressed"] is None:
                 live["pressed"] = now
-                if key not in PROMPT_SKIP_KEYS:
+                if not prompt_skipped(live["q"]):
                     self.stats["qte_pressed"] += 1
                 n = self.stats.get("prompt_presses", 0) + 1
                 mean = self.stats.get("prompt_latency_ms", 0.0)
@@ -5457,7 +5473,7 @@ class Bot:
             hp, hp_max = p.get("hp") or 0, p.get("hp_max") or 0
             heal = (key == "r" and hp_max and 1 < hp <= TABLET_LOW_HP * hp_max and not self.down
                     and p.get("state") in (0, None) and now - self.tablet_at >= TABLET_RETRY_S)
-            if (key is None or (key in PROMPT_SKIP_KEYS and not heal)
+            if (key is None or (prompt_skipped(q) and not heal)
                     or (key != 'stick' and now - live["at"] < PROMPT_REPEAT_S)):
                 continue
             # crowd guard: 4+ live enemies on his level within CC_CROWD_R → defer the press (gun stays up)
