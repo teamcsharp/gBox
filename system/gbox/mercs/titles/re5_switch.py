@@ -1239,7 +1239,12 @@ ESCAPE_S, ESCAPE_GAP_S, ESCAPES_MAX = 1.2, 4.0, 4
 # even when it is open.
 DRY_ESCAPE_S, DRY_ESCAPE_R, DRY_ESCAPE_N = 4.0, 250.0, 3
 RUN = ("b", "lup")
-HUNT_R = 1200.0                          # the "hunt" directive: closer than this the fight takes over, farther he walks
+HUNT_R = 2500.0                          # the "hunt" directive: closer than this the fight takes over, farther he walks
+# 2500 (was 1200): measured live 2026-11-12, an RE5 round fired exactly ONE shot with t_walk 7.34 s dominant against
+# t_aim 1.21 s, and its reports are uniformly lost/died at 0-1 kills. The cause is this threshold: in hunt mode, with the
+# gun still down, anything past HUNT_R is WALKED to instead of shot at - so the bot walks into range and dies on the way,
+# having never pulled the trigger. RE4's equivalent gate is ENGAGE_RANGE_LOS_CM (35 m) and it is what made the difference
+# there. 25 m keeps the walk for genuinely distant foes while letting him open fire far sooner.
 # The "rush" directive (the PiP's flashbang button, operator 2026-10-29): a mine dropped at once, then for its 10 s he closes
 # to RUSH_R of the nearest - arm's length, where the game offers its melee prompts (taken at once with a Majini that near,
 # _prompt_wanted) - and his crowd fire raises the magnum before the shotgun (RAMPAGE_FAMILIES). stats rushes.
