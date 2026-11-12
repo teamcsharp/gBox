@@ -271,6 +271,22 @@ class Boot:
         why = self.menus.wandered(scr)
         if why:
             return why
+        where_now = scr.get("where")
+        if where_now in ("select_stage", "select_player"):
+            # A select stuck under a managed DJ pick (live 2026-11-11 18:57: the RE5 block sat on select_player for
+            # three minutes and ended): the stats name the pick and the control state, so the next failure is data.
+            try:
+                from .mercs.round_controls import for_memory
+                control = for_memory(self.m)
+                if control is not None:
+                    self.stats["select_managed"] = bool(control.managed)
+                    pick = getattr(control, "selection", None) or {}
+                    if pick:
+                        self.stats["select_pick"] = (f"{pick.get('state')}:{pick.get('stage')}:"
+                                                     f"{pick.get('character')}")
+                    self.stats["select_title"] = getattr(control, "title", "")
+            except Exception:                                # noqa: BLE001 - a diagnostics line never costs the boot
+                pass
         if scr.get("where") == self.jump_at and not self.at_jump and self.round_hooks is not None:
             # every visit (a new round's selects): the profile's round_ops (the per-round randomizer, the loadout)
             failed = self.round_hooks() or []
