@@ -2739,6 +2739,15 @@ class Bot:
                 aim = snap.get("aim") or {}
                 self._aim_shot(p, e, snap, now, plan=None, actual=(wrap((p.get("rot") or 0.0) + (aim.get("waist") or 0.0)),
                                                                    None))
+            if bow:
+                # The bow's own counters, under the names the run reviewer already expects (round_reports' aim group:
+                # bow_firing_observations, bow_aim_error_deg - null because nothing computed them). Ten
+                # Krauser/Waterworld reports read round_threat_forced_fire 41-200 with hits 0-4 and none could say
+                # whether an arrow left the bow at all. bow_gap_s is the trigger gap actually in force, so 0.0025 (the
+                # operator's 20x) is confirmed from the round instead of inferred.
+                self.stats["bow_firing_observations"] = self.stats.get("bow_firing_observations", 0) + 1
+                self.stats["bow_gap_s"] = BOW_FIRE_GAP_S
+                self.stats["bow_aim_error_deg"] = round(math.degrees(abs(err)), 2)
             return self._tap(e, dist, err, snap, now)
         self.target = None
         if self._since_reload >= RELOAD_SHOTS and not any(t[0] <= RELOAD_CLEAR_CM for t in live):
