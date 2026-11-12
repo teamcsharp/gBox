@@ -97,27 +97,11 @@ def app_window():
     return None
 
 
-def raise_window(hwnd=None, tries=6):
-    """Ask the window manager to bring a window forward WITHOUT pinning it on top.
+def raise_window():
+    """NEVER raises a window. The operator must be able to type without interruption.
 
-    Deliberately no HWND_TOPMOST here: that is what left gBox covering the whole desktop when the matching NOTOPMOST call was lost.
+    Kept as a function so existing callers do not break, but it deliberately does nothing and reports failure.
     """
-    hwnd = hwnd or app_window()
-    if not hwnd:
-        return False
-    root = user32.GetAncestor(hwnd, 2)
-    for _ in range(tries):
-        user32.ShowWindow(hwnd, 9)                       # SW_RESTORE
-        user32.BringWindowToTop(hwnd)
-        user32.SetForegroundWindow(hwnd)
-        me = ctypes.windll.kernel32.GetCurrentThreadId()
-        them = user32.GetWindowThreadProcessId(hwnd, None)
-        user32.AttachThreadInput(me, them, True)
-        user32.SetFocus(hwnd)
-        user32.AttachThreadInput(me, them, False)
-        time.sleep(0.18)
-        if adapters._win_input_in_front(user32, root, False):
-            return True
     return False
 
 
@@ -168,70 +152,38 @@ def _owner_pid(hwnd):
 
 
 def send(events, attempts=2):
-    """Submit the press and wait for it, so the job queue cannot run away.
+    """Deliver input as real key events to the window that relays them into the emulator.
 
-    Returns True only when the job succeeded. The wait ceiling is generous because a queued press is still applied; the point is to keep the caller in step
-    with the worker rather than to give up early.
+    This is the path that works: `win_send_keys` sends key events, and the app forwards them into the game. The `session_op`/padstate route does not carry bot
+    input at all - the mirror only reflects the operator's physical pad, proven by reading XInput around a press and seeing no button change.
+
+    It requires the game (or gBox) to be the active window, which is inherent to this path and is why the game must be in front.
     """
-    import session as S
-    import time as _time
-    rows = [{"key": str(event.get("key")), "down": bool(event.get("down"))} for event in events
-            if event.get("key")]
-    if not rows:
+    hwnd = app_window()
+    if not hwnd:
         return False
-    try:
-        sid = S.session_id()
-    except Exception:                                             # noqa: BLE001
-        return False
-    payload = {"tool": "session_op",
-               "input": {"session_id": sid, "op": "send_input", "args": {"events": rows}},
-               "require_worker": sid.split("-")[0], "agent_use": False}
-    _wait_for_room()
-    try:
-        job = S._call("/api/jobs", "POST", payload)
-        _IN_FLIGHT["jobs"] += 1
-    except Exception:                                             # noqa: BLE001
-        return False
-    job_id = job.get("id")
-    deadline = _time.time() + 20.0
-    while _time.time() < deadline:
+    target = _owner_pid(hwnd)
+    for attempt in range(attempts):
         try:
-            state = S._call(f"/api/jobs/{job_id}")
-        except Exception:                                         # noqa: BLE001
-            return False
-        if state.get("state") == "succeeded":
-            _IN_FLIGHT["jobs"] = max(0, _IN_FLIGHT["jobs"] - 1)
+            win_send_keys(target, events, polite=False)
             return True
-        if state.get("state") == "failed":
-            _IN_FLIGHT["jobs"] = max(0, _IN_FLIGHT["jobs"] - 1)
-            return False
-        _time.sleep(0.08)
+        except RuntimeError as exc:
+            message = str(exc)
+            if "must be active" not in message and "isn't open" not in message:
+                raise
+            if attempt == attempts - 1:
+                return False
+            time.sleep(0.15)
     return False
 
 
-# ---------------------------------------------------------------------------------------------
-# batched input: one job carries a whole gesture, and the queue is capped
-# ---------------------------------------------------------------------------------------------
-_IN_FLIGHT = {"jobs": 0}
-MAX_IN_FLIGHT = 4
-
-
-def _wait_for_room():
-    """Keep the number of outstanding presses small, so a slow worker becomes backpressure."""
-    import time as _time
-    waited = 0.0
-    while _IN_FLIGHT["jobs"] >= MAX_IN_FLIGHT and waited < 5.0:
-        _time.sleep(0.05)
-        waited += 0.05
-
-
 def tap(key):
-    """One press and release in a single job."""
+    """One press and release in a single call."""
     return send([{"key": key, "down": True}, {"key": key, "down": False}])
 
 
 def move(*keys):
-    """Several taps in ONE job: down, up, down, up ... for each key in order."""
+    """Several taps in one call: down, up, down, up ... for each key in order."""
     events = []
     for key in keys:
         events.append({"key": key, "down": True})
