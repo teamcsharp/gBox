@@ -269,6 +269,11 @@
         push(game, 'catalog');
       }
 
+      // Most recently opened first: the operator's own sessions, then everything else by last_played.
+      all.sort((a, b) => {
+        if ((a.tag === 'recent') !== (b.tag === 'recent')) return a.tag === 'recent' ? -1 : 1;
+        return Number(b.game.last_played || 0) - Number(a.game.last_played || 0);
+      });
       const list = addMenu.querySelector('[data-add-list]');
       const rowHTML = (item, index) => {
         const game = item.game;
@@ -313,7 +318,37 @@
       };
       draw('');
       const search = addMenu.querySelector('[data-add-search]');
-      if (search) { search.addEventListener('input', () => draw(search.value)); setTimeout(() => search.focus(), 30); }
+      if (search) {
+        let timer = null;
+        search.addEventListener('input', () => {
+          const value = search.value;
+          draw(value);                                  // local matches, immediately
+          const needle = String(value || '').trim();
+          clearTimeout(timer);
+          if (needle.length < 2) return;
+          timer = setTimeout(async () => {
+            try {
+              const answer = await call('/api/catalog/best?q=' + encodeURIComponent(needle) + '&limit=30');
+              const rows = Array.isArray(answer) ? answer : (answer && (answer.items || answer.games)) || [];
+              const found = (rows || []).filter(game => game && (game.game_id || game.id));
+              console.log('pip add: server search', JSON.stringify(needle), '->', found.length);
+              if (addMenu && found.length) {
+                addMenu.querySelector('[data-add-list]').innerHTML = found.map((game, index) => {
+                  const label = String(game.title || game.alt_title || game.game_id);
+                  const system = String(game.platform || (game.collections && game.collections[0]) || '');
+                  return '<button type="button" data-add-found="' + index + '" style="display:block;width:100%;text-align:left;' +
+                    'padding:7px 8px;background:transparent;border:0;border-radius:5px;color:#e6edf3;font:inherit;cursor:pointer">' +
+                    esc(label) + '<span style="display:block;font-size:11px;color:#9aa3b4">' + esc(system) + '</span></button>';
+                }).join('');
+                addMenu.querySelectorAll('[data-add-found]').forEach(buttonEl => {
+                  buttonEl.addEventListener('click', () => start(found[Number(buttonEl.dataset.addFound)]));
+                });
+              }
+            } catch (error) { console.log('pip add: server search failed', String(error && error.message || error)); }
+          }, 180);
+        });
+        setTimeout(() => search.focus(), 30);
+      }
     }
 
     function onAddAway(event) {
