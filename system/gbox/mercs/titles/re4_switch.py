@@ -2294,6 +2294,21 @@ class Bot:
                 have_y, have_p = aim_book.angles(lp, lc)
                 yaw = wrap(rot + wrap(want_y - have_y))
                 pitch = aim["pitch"] + AIM_PITCH_GAIN * (want_p - have_p)
+                # The aim diagnostic (operator 2026-11-11: "analyze each and every round and adjust the aim ... impeccable
+                # aim"): one line per steady request with every angle the request was built from and where the laser
+                # actually crosses vs. the point it should. The 55-shot / 4-hit round could not be explained from the
+                # counters alone; this says whether rot/have/want are on different references or lc is stale.
+                try:
+                    _dx = (pt[0] - lc[0], pt[1] - lc[1], pt[2] - lc[2])
+                    self.stats["aim_diag"] = (
+                        f"rot={math.degrees(rot):+.1f} have_y={math.degrees(have_y):+.1f} "
+                        f"want_y={math.degrees(want_y):+.1f} d_yaw={math.degrees(wrap(want_y - have_y)):+.1f} "
+                        f"pitch={math.degrees(pitch):+.1f} want_p={math.degrees(want_p):+.1f} "
+                        f"have_p={math.degrees(have_p):+.1f} "
+                        f"miss_mm={int(math.dist(lc, pt))} d=({int(_dx[0])},{int(_dx[1])},{int(_dx[2])}) "
+                        f"deg={int(math.dist(lp, lc) / 1000.0)}m")[:240]
+                except Exception:                    # noqa: BLE001 - a diagnostic never costs the aim
+                    pass
             else:
                 yaw = heading(pt[0] - p["pos"][0], pt[2] - p["pos"][2])
                 pitch = math.atan2(pt[1] - origin[1], max(math.hypot(pt[0] - origin[0], pt[2] - origin[2]), 1.0))
