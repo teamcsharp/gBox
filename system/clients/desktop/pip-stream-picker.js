@@ -242,6 +242,7 @@
         push(game, 'catalog');
       }
 
+      if (!addMenu) return;
       const list = addMenu.querySelector('[data-add-list]');
       const rowHTML = (item, index) => {
         const game = item.game;
@@ -287,12 +288,16 @@
         } catch (error) { if (valid()) message('Could not start it: ' + String(error?.message || error)); }
       };
       draw('');
+      if (!addMenu) return;
       const search = addMenu.querySelector('[data-add-search]');
       search.addEventListener('input', () => draw(search.value));
       setTimeout(() => search.focus(), 30);
     }
 
-    function onAddAway(event) { if (!addMenu || !addMenu.contains(event.target)) dismissAdd(); }
+    function onAddAway(event) {
+      if (event.target.closest?.('[data-stream-add]')) return;   // that press is opening it, not dismissing it
+      if (!addMenu || !addMenu.contains(event.target)) dismissAdd();
+    }
     document.addEventListener('pointerdown', onAddAway, true);
     function onAway(event) { if (!menuEl || !menuEl.contains(event.target)) dismissMenu(); }
     function onKey(event) { if (event.key === 'Escape') dismissMenu(); }
