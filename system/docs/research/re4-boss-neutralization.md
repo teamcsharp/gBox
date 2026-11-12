@@ -118,3 +118,40 @@ The chain is proven end to end (queue -> worker -> native spawn -> receipt, no s
 confirmation stopped the ring after one grenade, which is the native flakiness the next pass has to close. The
 status now advertises all eight kinds (`flash` available on RE6) and a controller that attaches on demand is offered
 rather than refused, so the PiP's ring button is no longer greyed out on RE4.
+
+## Round 2 live receipts (2026-11-12, evening) - the RE4 ring now exists, through the weapon path
+
+**The native harness is not the way on this build.** The live `re4_harness_selftest` on a playing RE4 round
+(session `-6c60588a`) returned: `state uncertain`, `ticks_before 0`, `ticks 0`, `mailbox_state 0`,
+`attached_after true`, `player_generation 166`. The clone is on the player's vtable, but the game never calls the
+transform slot the clone redirects - so a ring/flash blast through the harness can never complete (the same click's
+`grenade_ring flash` returned `reason "native completion uncertain; request will not be replayed"` after 1.0 s).
+
+**So RE4's ring is the Mine Thrower, fired through the weapon path** (`re4_switch.Bot._mine_ring_step`,
+`MINE_RING_*`): the 90 s clock arms on the first tick; when due (or a chainsaw boss is within 10 m, at most every
+45 s) the bot asks for item 0x36 through `WEAPON_ASK`, waits up to 4 s for the mods' verified in-hand swap, then puts
+one dart at each of ten headings 36 deg apart (aim request, body turn, ZR tap; one dart per 0.5 s, a 20 s budget).
+
+Live, session `feb0d0f84514404c-a57a393eae554e17`, round 3 (the bot restarted with the new modules at 17:22):
+
+    mine_ring_last_at  1794525854.2        (armed 90 s earlier)
+    mine_ring_starts   1
+    mine_ring_shots    10
+    mine_ring_decision "ring complete: 10 darts"
+    weapon_given       "Mine Thrower" verified=True     (mods_weapon_given 2: the round's gun + the ring's)
+    t_mine_ring        46
+
+That is the operator's "the bot spraying a 360 ring of mine thrower rounds during the match", in a live match.
+
+**RE6 launcher ring: the inventory precondition is fixed, the native call is the next wall.** The round-ops fix
+(the spread now runs before `re6_switch.fast_start`) took: the next RE6 round's ring no longer refused "the launcher
+is not in this inventory yet" - it reached the native path and failed on
+`ring_last_failure "native completion uncertain; request will not be replayed (heap state 2, off 0x18f2bc0)"`
+(rings_attempted 1, kind launcher, the 90 s periodic reason). The shell spawn's completion is the blocker, not the
+loadout.
+
+**Status-bar deployment**: a `grenade_ring flash` posted to the RE6 session reached the worker, spawned its first
+grenade (`detonated 1`, self_damage 0) and stopped on "native explosion transition not confirmed"; a `grenade_ring
+flash` on RE4 attaches the harness on demand (no more "not attached") and then times out in the dead harness as
+above. The PiP's kind surface lists all eight kinds; flash/hand are offered on RE4 (they will now fail in the harness -
+the mine ring is the working RE4 ring and should be wired to the panel next round).
