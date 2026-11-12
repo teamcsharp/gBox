@@ -192,29 +192,43 @@
     let addMenu = null;
     function dismissAdd() { if (addMenu) { addMenu.remove(); addMenu = null; } }
     async function openAdd(event) {
+      // No gate may return quietly: launching a game does not depend on which session this menu belongs to.
       const button = event.target.closest?.('[data-stream-add]');
-      if (!button || !valid()) return;
+      console.log('pip add: click', !!button);
+      if (!button) return;
       event.preventDefault(); event.stopPropagation();
       dismissAdd(); dismissMenu();
       const rect = button.getBoundingClientRect();
       addMenu = document.createElement('div');
       addMenu.className = 'pip-stream-menu pip-stream-add';
       addMenu.setAttribute('role', 'dialog');
-      addMenu.style.cssText = 'position:fixed;z-index:95;width:min(360px,86vw);padding:8px;' +
+      addMenu.style.cssText = 'position:fixed;z-index:9999;width:min(360px,86vw);padding:8px;' +
         'background:#1b1f2a;border:1px solid #3a4152;border-radius:8px;box-shadow:0 8px 28px rgba(0,0,0,.55);' +
-        'left:' + Math.round(Math.min(rect.left, window.innerWidth - 372)) + 'px;top:' + Math.round(rect.bottom + 6) + 'px;';
+        'left:' + Math.round(Math.max(8, Math.min(rect.left, window.innerWidth - 372))) + 'px;' +
+        'top:' + Math.round(Math.min(rect.bottom + 6, window.innerHeight - 120)) + 'px;';
       addMenu.innerHTML = '<div style="padding:2px 2px 6px;font-size:11px;color:#9aa3b4">Start a game</div>' +
         '<input data-add-search type="search" placeholder="Search title or system…" autocomplete="off" ' +
         'style="width:100%;box-sizing:border-box;padding:6px 8px;margin-bottom:6px;background:#0d1117;color:#e6edf3;' +
         'border:1px solid #30363d;border-radius:5px;font:inherit">' +
-        '<div data-add-list style="max-height:50vh;overflow:auto"></div>';
+        '<div data-add-list style="max-height:50vh;overflow:auto">' +
+        '<div style="padding:8px;font-size:12px;color:#9aa3b4">Loading your games…</div></div>';
       document.body.appendChild(addMenu);
+      console.log('pip add: panel appended');
+
+      const call = async (path, init) => {
+        if (typeof io.api === 'function') return io.api(path, init);
+        const helper = globalThis.gbox && globalThis.gbox.api;
+        if (!helper) throw new Error('no api helper');
+        const answer = await helper(path, init);
+        if (answer && answer.ok === false) throw new Error(answer.error || 'request failed');
+        return answer && typeof answer === 'object' && 'data' in answer ? answer.data : answer;
+      };
 
       let recent = [], catalog = [];
       try {
         const [sessionAnswer, catalogAnswer] = await Promise.all([
-          io.api ? io.api('/api/sessions') : null,
-          io.api ? io.api('/api/catalog') : null,
+          call('/api/sessions').catch(() => null),
+          call('/api/catalog').catch(() => null),
         ]);
         const sessions = Array.isArray(sessionAnswer) ? sessionAnswer : (sessionAnswer?.items || []);
         catalog = (Array.isArray(catalogAnswer) ? catalogAnswer
@@ -229,12 +243,17 @@
           const entry = byId.get(id);
           if (entry && !/mercenar/i.test(String(entry.title || entry.alt_title || ''))) recent.push(entry);
         }
-      } catch { recent = []; }
+        console.log('pip add: sessions', (sessions || []).length, 'catalog', catalog.length, 'recent', recent.length);
+      } catch (error) {
+        console.log('pip add: read failed', String(error && error.message || error));
+      }
+      if (!addMenu) { console.log('pip add: panel went away during the read'); return; }
 
       const all = [];
       const push = (game, tag) => {
-        if (all.some(item => item.id === String(game.game_id || game.id))) return;
-        all.push({ id: String(game.game_id || game.id), game, tag });
+        const id = String(game.game_id || game.id);
+        if (all.some(item => item.id === id)) return;
+        all.push({ id, game, tag });
       };
       for (const game of recent) push(game, 'recent');
       for (const game of catalog) {
@@ -242,14 +261,12 @@
         push(game, 'catalog');
       }
 
-      if (!addMenu) return;
       const list = addMenu.querySelector('[data-add-list]');
       const rowHTML = (item, index) => {
         const game = item.game;
         const label = String(game.title || game.alt_title || game.game_id);
-        const system = String(game.platform || game.collections?.[0] || '');
+        const system = String(game.platform || (game.collections && game.collections[0]) || '');
         return '<button type="button" role="option" data-add-index="' + index + '" ' +
-          'data-needle="' + esc((label + ' ' + system).toLowerCase()) + '" ' +
           'style="display:block;width:100%;text-align:left;padding:7px 8px;background:transparent;border:0;border-radius:5px;' +
           'color:#e6edf3;font:inherit;cursor:pointer">' + esc(label) +
           '<span style="display:block;font-size:11px;color:#9aa3b4">' + esc(system) +
@@ -257,41 +274,38 @@
       };
       const draw = query => {
         const needle = String(query || '').trim().toLowerCase();
-        const shown = needle ? all.filter(item => item.needleCache === undefined) : all;
-        list.innerHTML = all.map((item, index) => ({ item, index }))
-          .filter(({ item }) => {
-            if (!needle) return true;
-            const game = item.game;
-            const text = (String(game.title || game.alt_title || game.game_id) + ' ' +
-              String(game.platform || game.collections?.[0] || '')).toLowerCase();
-            return text.includes(needle);
-          })
-          .slice(0, 60)
-          .map(({ item, index }) => rowHTML(item, index)).join('') ||
-          '<div style="padding:8px;font-size:12px;color:#9aa3b4">No games match</div>';
+        const matches = all.filter(item => {
+          if (!needle) return true;
+          const game = item.game;
+          const text = (String(game.title || game.alt_title || game.game_id) + ' ' +
+            String(game.platform || (game.collections && game.collections[0]) || '')).toLowerCase();
+          return text.includes(needle);
+        });
+        list.innerHTML = matches.length
+          ? matches.slice(0, 60).map((item) => rowHTML(item, all.indexOf(item))).join('')
+          : '<div style="padding:8px;font-size:12px;color:#9aa3b4">' +
+            (all.length ? 'No games match' : 'No games available') + '</div>';
         list.querySelectorAll('[data-add-index]').forEach(buttonEl => {
           buttonEl.addEventListener('click', () => start(all[Number(buttonEl.dataset.addIndex)]?.game));
         });
+        console.log('pip add: drew', matches.length, 'of', all.length);
       };
       const start = async game => {
         if (!game) return;
-        dismissAdd();
         const label = String(game.title || game.game_id);
+        dismissAdd();
         if (valid()) message('Starting ' + label + '…');
         try {
-          const body = { tool: '@launch', input: { game, node: io.node ? io.node() : undefined } };
           if (typeof io.launch === 'function') { await io.launch(game); }
-          else if (io.api) {
-            const answer = await io.api('/api/jobs', body);
-            if (answer && answer.ok === false) throw new Error(answer.error || 'refused');
-          } else throw new Error('no way to launch from here');
-        } catch (error) { if (valid()) message('Could not start it: ' + String(error?.message || error)); }
+          else { await call('/api/jobs', { tool: '@launch', input: { game } }); }
+        } catch (error) {
+          console.log('pip add: launch failed', String(error && error.message || error));
+          if (valid()) message('Could not start it: ' + String(error?.message || error));
+        }
       };
       draw('');
-      if (!addMenu) return;
       const search = addMenu.querySelector('[data-add-search]');
-      search.addEventListener('input', () => draw(search.value));
-      setTimeout(() => search.focus(), 30);
+      if (search) { search.addEventListener('input', () => draw(search.value)); setTimeout(() => search.focus(), 30); }
     }
 
     function onAddAway(event) {
