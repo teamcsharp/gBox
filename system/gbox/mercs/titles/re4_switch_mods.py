@@ -109,17 +109,35 @@ def _save(st: dict) -> None:
         pass
 
 
+_FILES: dict = {}                        # id(ad) -> SETTINGS_FILE's mtime_ns when the state last took the file
+
+
 def _state(ad) -> dict:
     """This adapter's state: the saved settings and what was put into its boot. Keyed by id(ad) and checked against
-    the adapter itself, since a new session's adapter can be given a collected one's id."""
+    the adapter itself, since a new session's adapter can be given a collected one's id.
+
+    The file is the operator's (and the app's) hand on this title, so when it CHANGES the saved settings are taken
+    again. Without that, a setting only becomes live at a new adapter: heal_below was added to SAVED_KEYS on a running
+    session and the cached state kept the old filtered settings, so the threshold heal still never ran (live
+    2026-11-12, hp 368/2400 with mods_heals absent).
+    """
     st = ORIG.get(id(ad))
     owner = st.get("_owner") if st is not None else None
-    if st is None or (owner is not None and owner() is not ad):
+    fresh = st is None or (owner is not None and owner() is not ad)
+    if fresh:
         st = ORIG[id(ad)] = _load_saved()
         try:
             st["_owner"] = weakref.ref(ad)
         except TypeError:
             pass
+    try:
+        mtime = SETTINGS_FILE.stat().st_mtime_ns
+    except OSError:
+        mtime = None
+    if mtime is not None and _FILES.get(id(ad)) != mtime:
+        _FILES[id(ad)] = mtime
+        if not fresh:
+            st.update(_load_saved())
     return st
 
 

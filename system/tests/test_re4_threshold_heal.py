@@ -58,6 +58,28 @@ def test_the_setting_survives_the_saved_key_filter():
     assert "heal_below" in M.SAVED_KEYS
 
 
+def test_a_changed_settings_file_is_taken_again_without_a_new_adapter(tmp_path, monkeypatch):
+    """A setting must not need a restart to become live: the cached state kept the settings it was built with, so
+    heal_below added to SAVED_KEYS on a running session still did nothing."""
+    import json
+    import os
+    import time
+
+    p = tmp_path / "re4-mods.json"
+    p.write_text(json.dumps({"heal_below": 0.55}), encoding="utf-8")
+    monkeypatch.setattr(M, "SETTINGS_FILE", p)
+    M.ORIG.clear()
+    M._FILES.clear()
+    ad = object()
+    st = M._state(ad)
+    assert st.get("heal_below") == 0.55
+    p.write_text(json.dumps({"heal_below": 0.4, "enemy_health": 0.5}), encoding="utf-8")
+    os.utime(p, ns=(time.time_ns() + 10**9, time.time_ns() + 10**9))     # a newer file, whatever the tick rate
+    again = M._state(ad)
+    assert again is st, "the same state object, updated in place"
+    assert again["heal_below"] == 0.4 and again.get("enemy_health") == 0.5
+
+
 def test_a_hurt_player_is_healed_and_it_is_counted():
     ad, snap, st = world(400)
     out = M.maintain(ad, snap)
