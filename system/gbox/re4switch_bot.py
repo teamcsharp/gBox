@@ -35,6 +35,7 @@ placed in RAM ("crowd fire", 620 shots, 0 hits) and the map's clock was a matrix
 intro read as "playing" on the frame (the HUD test fires on Waterworld's horizon) and the Bot fired during it again.
 """
 import json
+import math
 import time
 import uuid
 
@@ -87,6 +88,36 @@ def is_bow(snap) -> bool:
     """
     s = snap or {}
     return s.get("weapon_class") == BOW_CLASS or s.get("equipped_id") == BOW_ITEM
+
+
+def walk_track(stats: dict, snap, now: float) -> None:
+    """How he is MOVING, for the run reviewer: metres walked, net displacement, how straight the path is, and how long
+    he has been still. The operator, live 2026-11-12: "they're just turning back and forth in place while stumbling
+    backwards. I need the bot able to walk the level confidently." That failure is exactly `walk_straight` near 0 with
+    `walk_still_s` climbing, so the two numbers together say traversing vs turning on the spot - the next change to the
+    walk can be judged on them instead of on a description.
+    """
+    p = ((snap or {}).get("player") or {}).get("pos")
+    if not p or len(p) < 3:
+        return
+    pos = (float(p[0]), float(p[1]), float(p[2]))
+    rnd = stats.get("rounds")
+    tr = stats.get("_walk")
+    if not isinstance(tr, dict) or stats.get("_walk_round") != rnd:
+        stats["_walk_round"] = rnd
+        stats["_walk"] = tr = {"last": pos, "start": pos, "path": 0.0, "moved": now}
+    step = math.dist(pos, tr["last"])
+    if step > 500.0:                       # mm: half a metre in one tick is a teleport (a round change), not walking
+        tr.update(last=pos, start=pos, path=0.0, moved=now)
+    elif step > 1.0:
+        tr["path"] += step
+        tr["moved"] = now
+        tr["last"] = pos
+    net = math.dist(pos, tr["start"])
+    stats["walk_m"] = round(tr["path"] / 1000.0, 1)                       # the ground he covered
+    stats["walk_net_m"] = round(net / 1000.0, 1)                          # how far he got from where the round began
+    stats["walk_straight"] = round(net / tr["path"], 2) if tr["path"] > 10.0 else None
+    stats["walk_still_s"] = round(now - tr["moved"], 1)
 # The bow's loop: the operator asked for 20x (2026-11-10 #9508, and again 2026-11-11: "have the bow able to fire at
 # 20x speed ... rain arrows"). It was 0.025 - only 2x the rifle's 0.05, which is why 20x never appeared however the
 # trigger was tuned. 0.05 / 20 = 0.0025: one decision every 2.5 ms, twenty times the gun's loop.
@@ -649,6 +680,9 @@ def _maintain_mods(ad, snap: dict, stats: dict) -> None:
     for key in ("motion_rate_restores", "motion_rate_refused", "motion_rate_refused_last"):
         if st.get(key) is not None:
             stats[key] = st[key]
+    # How he is manoeuvring, so a run can be reviewed on numbers: metres walked, how straight the path was, and how long
+    # he has stood still (see walk_track).
+    walk_track(stats, snap, time.time())
 
 
 def _game(m, stats: dict) -> dict | None:

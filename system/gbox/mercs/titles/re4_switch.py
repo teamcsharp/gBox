@@ -1510,6 +1510,12 @@ CROWD_N, CROWD_CM = 4, 600.0 * MM_PER_CM             # a mob (doctrine CROWD_N /
 CROWD_CONE = 0.6                         # rad: in a mob, the Ganado nearest the gun's line within this is the target
 SWARM_N, SWARM_CM = 3, 200.0 * MM_PER_CM             # this many this close: turn and go (he cannot shoot three at arm's length)
 STAND_MAX_S, STAND_MOVE_CM, STAND_STEP_S = 1.5, 40.0 * MM_PER_CM, 0.8   # never stand: no metre in 1.5 s and no shot -> a step
+# A turn is not progress (the operator, live 2026-11-12: "they're just turning back and forth in place while stumbling
+# backwards. I need the bot able to walk the level confidently"). A facing change used to reset the stand clock, so a bot
+# facing a target turned every tick, never reached STAND_MAX_S, and spent the round rotating on the spot - the live round
+# read stand_engaged=655 with turns=889. A turn now excuses the stand only this long after he last actually MOVED; past
+# it the never-stand rule steps him forward regardless of where he is looking.
+TURN_EXCUSE_S = 2.5
 SWEEP_S = 3.0                            # nobody on the map: walk, turning this long one way, then the other
 # The operator's quick commands (the PiP's ▾ menu and ⚠ Flawed, gbox.mercs.directives; operator 2026-11-10: "make sure
 # that when I use one of the quick commands for guidance to the bot, that it's able to take those commands into
@@ -3506,7 +3512,9 @@ class Bot:
         if now - st["at"] < STAND_MAX_S:
             return act
         st["n"] = st.get("n", 0) + 1
-        keys = {"lup", TURN["left" if st["n"] % 2 else "right"]}
+        # One turn direction for a BURST of steps. It used to alternate every single step (n % 2), which is the
+        # back-and-forth on the spot the operator reported; four steps one way still flip, so a wall does not hold him.
+        keys = {"lup", TURN["left" if (st["n"] // 4) % 2 else "right"]}
         st.update(pos=tuple(pos), at=now, until=now + STAND_STEP_S, keys=tuple(keys))
         self.__dict__.setdefault("_fz", {"pos": None, "rot": None, "tap": -1e9, "on": False})["stepped"] = now
         self.stats["stand_breaks"] += 1
@@ -3529,12 +3537,15 @@ class Bot:
         if st["pos"] is None or st["at"] is None or self._flat(st["pos"], pos) > STAND_MOVE_CM:
             st.update(pos=pos, rot=rot, at=now)
             return act
-        turned = rot is not None and st.get("rot") is not None and abs(wrap(rot - st["rot"])) > STAND_TURN_RAD
+        moved_s = now - st["at"]                          # (st["at"] is the last time he actually MOVED)
+        turned = (rot is not None and st.get("rot") is not None and abs(wrap(rot - st["rot"])) > STAND_TURN_RAD
+                  and moved_s <= TURN_EXCUSE_S)
         blocked = bool(self.__dict__.get("_pick_blocked")) or self.__dict__.get("_gate") == "sight"
         if combat.stand_engaged(self.target is not None and self.doing in ENGAGED_DOINGS, blocked,
                                 now - self._last_fire, turned, STAND_MAX_S):
             if turned:
-                st.update(pos=pos, rot=rot, at=now)      # turning toward him is the fight going on
+                st.update(pos=pos, rot=rot)              # the anchor moves on, the stand clock does NOT reset: a turn
+                                                          # is not walking (TURN_EXCUSE_S above)
             self.stats["stand_engaged"] = self.stats.get("stand_engaged", 0) + 1
             return act
         if now - st["at"] < STAND_MAX_S:
