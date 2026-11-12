@@ -168,6 +168,7 @@
   }
   function html(entries, sid, title = row => row.title || row.game_title || row.game_id || 'Game', broadcast = false) {
     return '<div class="pip-stream-heading"><strong>Streams</strong><span>View another instance</span>' +
+      '<button type="button" data-stream-add title="Start a recent game into the PiP">+</button>' +
       (broadcast ? '<button type="button" data-stream-broadcast="auto" title="Let the broadcast follow the active game again">Broadcast: Auto</button>' : '') + '</div>' +
       '<div class="pip-stream-carousel"><button type="button" data-stream-step="-1" aria-label="Previous stream" title="Previous stream">‹</button>' +
       '<div class="pip-stream-cards" role="group" aria-label="Running game streams">' + (entries.length ? entries.map(({row,status:state}) =>
@@ -188,6 +189,54 @@
     // provided by the host as io.close(sid, row) (it confirms, then stops the session); this component
     // only draws the menu. Closing a game here is how the operator frees a worker (e.g. for MercMode).
     let menuEl = null;
+    // Recently played games, for the + button: launch one into the PiP without leaving it.
+    let addMenu = null;
+    function dismissAdd() { if (addMenu) { addMenu.remove(); addMenu = null; } }
+    async function openAdd(event) {
+      if (!valid() || typeof io.launch !== 'function') return;
+      const button = event.target.closest?.('[data-stream-add]');
+      if (!button) return;
+      event.preventDefault(); event.stopPropagation();
+      dismissAdd(); dismissMenu();
+      const rect = button.getBoundingClientRect();
+      addMenu = document.createElement('div');
+      addMenu.className = 'pip-stream-menu pip-stream-add';
+      addMenu.setAttribute('role', 'menu');
+      addMenu.style.cssText = 'position:fixed;z-index:95;min-width:230px;max-width:340px;padding:5px;' +
+        'background:#1b1f2a;border:1px solid #3a4152;border-radius:8px;box-shadow:0 8px 28px rgba(0,0,0,.55);' +
+        'left:' + Math.round(rect.left) + 'px;top:' + Math.round(rect.bottom + 6) + 'px;max-height:60vh;overflow:auto;';
+      addMenu.innerHTML = '<div style="padding:6px 8px;font-size:11px;color:#9aa3b4">Recently played</div>' +
+        '<div style="padding:6px 8px;font-size:12px;color:#9aa3b4">Loading…</div>';
+      document.body.appendChild(addMenu);
+      let games = [];
+      try {
+        const answer = await io.api ? await io.api('/api/catalog') : null;
+        const rows = Array.isArray(answer) ? answer : (answer?.items || answer?.games || answer?.entries || []);
+        games = (rows || []).filter(row => row && (row.game_id || row.id))
+          .sort((a, b) => Number(b.last_played || 0) - Number(a.last_played || 0))
+          .slice(0, 12);
+      } catch { games = []; }
+      if (!addMenu) return;
+      addMenu.innerHTML = '<div style="padding:6px 8px;font-size:11px;color:#9aa3b4">Recently played</div>' +
+        (games.length ? games.map((game, index) =>
+          '<button type="button" role="menuitem" data-add-game="' + index + '" style="display:block;width:100%;text-align:left;padding:6px 8px;' +
+          'background:transparent;border:0;border-radius:5px;color:#e6edf3;font:inherit;cursor:pointer">' +
+          esc(game.title || game.alt_title || game.game_id) +
+          '<span style="display:block;font-size:11px;color:#9aa3b4">' + esc(game.platform || '') +
+          (game.last_played ? ' · played' : '') + '</span></button>').join('')
+          : '<div style="padding:6px 8px;font-size:12px;color:#9aa3b4">No games in the catalog</div>');
+      addMenu.querySelectorAll('[data-add-game]').forEach(buttonEl => {
+        buttonEl.addEventListener('click', async () => {
+          const game = games[Number(buttonEl.dataset.addGame)];
+          dismissAdd();
+          if (!game) return;
+          try { await io.launch(game); if (valid()) message('Starting ' + (game.title || game.game_id) + '…'); }
+          catch (error) { if (valid()) message('Could not start it: ' + String(error?.message || error)); }
+        });
+      });
+    }
+    function onAddAway(event) { if (!addMenu || !addMenu.contains(event.target)) dismissAdd(); }
+    document.addEventListener('pointerdown', onAddAway, true);
     function onAway(event) { if (!menuEl || !menuEl.contains(event.target)) dismissMenu(); }
     function onKey(event) { if (event.key === 'Escape') dismissMenu(); }
     function dismissMenu() {
@@ -257,6 +306,7 @@
       } catch (error) { if (valid()) root.textContent = 'Streams unavailable: ' + error.message; }
     }
     async function click(event) {
+      if (event.target.closest?.('[data-stream-add]')) { openAdd(event); return; }
       const button = event.target.closest?.('[data-stream-sid], [data-stream-step], [data-stream-broadcast]');
       if (!button || !valid() || busy || button.disabled) return;
       event.stopPropagation();
