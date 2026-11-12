@@ -158,6 +158,21 @@ def ram_bot():
     return RamBot()
 
 
+def test_a_laser_that_never_comes_up_does_not_hold_the_trigger_for_ever():
+    """Live 2026-11-12, Waterworld r404: laser_gate stat=0 up=False for the whole round, so the steady aim's `fresh` was
+    never true and it held AIM_BTN from the first tick to the last - kills 0, aimbook_shots 0, aim_ram_holds 119, why
+    "the steady aim: the gun comes up onto the book's point". The sight-stall branch always had a timeout; this one had
+    none, so a laser that never read meant a bot that never fired."""
+    b = ram_bot()
+    s = fight_snap(sight=GANADO)
+    s["laser"]["up"] = False
+    act = b.tick(s, now=10.0)
+    assert act == {"hold": {D.AIM_BTN}} and "comes up onto the book" in b.why, "it does try the rise first"
+    assert not b.stats.get("aim_rise_fallbacks"), "not yet: the raise is still running"
+    b.tick(s, now=10.0 + D.AIM_RISE_MAX_S + 0.01)
+    assert b.stats.get("aim_rise_fallbacks") == 1, "past AIM_RISE_MAX_S the old gate fires instead of holding"
+
+
 def test_the_steady_aim_fires_only_while_the_games_sight_names_a_ganado():
     b = ram_bot()
     b.tick(fight_snap(), now=10.0)                      # the gun up

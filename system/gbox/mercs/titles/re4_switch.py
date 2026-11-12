@@ -1706,6 +1706,9 @@ IDLE_AIM_S = 2.0
 #   * a step goes STAND_STEP_MM along open floor (combat.open_step on the stage mesh's clear_segment, not ending within
 #     ESCAPE_CLEAR_MM of a Ganado); walled in on every line, no step (steps_walled_in).
 AIM_KEEP_RAD, AIM_STICK_N, STAND_TURN_RAD, STAND_STEP_MM, STEP_TURN_RAD = 1.0, 10, 0.05, 2000.0, 0.8
+# The steady aim cannot wait forever for a laser that never reads (see _ram_aim): past this it aims and fires the old
+# way. AIM_READY_S is the raise itself, so this is the raise plus a beat.
+AIM_RISE_MAX_S = 1.5
 # FIRE_FIRST (the operator 2026-11-10, a live round: "the bot is raising their weapon over and over and getting
 # defeated ... it needs to fire and deal with threats before lowering his weapon and fleeing or throwing grenades"):
 #   * a living Ganado on him (FIRE_FIRST_MM) with a clear shot line from where he stands is answered with the gun: the
@@ -2442,8 +2445,20 @@ class Bot:
             self.stats["aim_ram"] = "line" if fresh else "rising"
             if not fresh:
                 self._ram_since = None
+                # The laser has to come up before the steady aim can measure anything - but it may never read at all
+                # (live 2026-11-12, Waterworld: laser_gate stat=0 up=False for the whole round, so `fresh` was never
+                # true and this branch held AIM_BTN from the first tick to the last: kills 0, aimbook_shots 0,
+                # aim_ram_holds 119, why "the steady aim: the gun comes up onto the book's point"). The other stall
+                # branch below has a timeout; this one had none. Past AIM_RISE_MAX_S the old gate fires normally.
+                rise = self.__dict__.get("_rise_since")
+                if rise is None:
+                    rise = self.__dict__["_rise_since"] = now
+                if now - rise >= AIM_RISE_MAX_S:
+                    self.stats["aim_rise_fallbacks"] = self.stats.get("aim_rise_fallbacks", 0) + 1
+                    return None                          # no laser to measure: aim and fire the old way
                 self.doing, self.why = "aim", "the steady aim: the gun comes up onto the book's point"
                 return {"hold": {AIM_BTN}}
+            self.__dict__["_rise_since"] = None
             alive = {t[2].get("ptr"): t[2] for t in live if t[2].get("ptr") is not None}
             sight = aim.get("sight")
             on = alive.get(sight)
