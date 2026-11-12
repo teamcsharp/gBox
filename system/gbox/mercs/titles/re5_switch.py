@@ -565,6 +565,12 @@ UNAIM_ERR = math.radians(35)             # the ray this far off him: the gun goe
 KEEP_TARGET = 1.5                        # the current Majini is kept unless another costs this much less ...
 THREAT_R = 250.0                         # ... or another is this near (he grabs next): that one
 READY_S = 0.15                           # ZL down this long before the laser is believed (the last aim's ray clears)
+# How much of the yaw error the aim writer corrects per tick. 1.0 commands the whole error, which is right only if the
+# write is read back before the next tick; when it is not (the camera's heading lags the write), the next tick adds the
+# whole error again on the stale heading and the aim hunts. Measured live 2026-11-12: yaw_flips reached 60 in one round -
+# the error changing SIGN sixty times - with the gate then withholding fire on the 30-85 deg passes. Half gain damps that
+# hunt at the cost of reaching a moving target slightly slower.
+YAW_GAIN = 0.5
 LASER_WAIT_S = 0.6                       # ZL down this long without the laser coming up (a stagger, a grab): ZL again
 RAY_STALE_S = 1.0                        # the ray unchanged this long with the gun up: not aiming: ZL again
 BACKOFF_S, BACKOFF_GAP_S = 0.5, 1.5      # one too close in front with the gun down: back off this long, then fight
@@ -7607,7 +7613,7 @@ class Bot:
             st["w_at"] = now
             pitch = None if pitch_err is None else max(-re5_switch_aim.PITCH_LIMIT, min(
                 re5_switch_aim.PITCH_LIMIT, cam["pitch"] + re5_switch_aim.step(pitch_err, re5_switch_aim.PITCH_RATE, dt)))
-            hd = wrap(cam["heading"] + re5_switch_aim.step(yaw_err, re5_switch_aim.YAW_RATE, dt))
+            hd = wrap(cam["heading"] + re5_switch_aim.step(yaw_err * YAW_GAIN, re5_switch_aim.YAW_RATE, dt))
             try:
                 wrote = bool(writer(cam, pitch, hd))
             except Exception:                                # noqa: BLE001 - a failed write: the stick
