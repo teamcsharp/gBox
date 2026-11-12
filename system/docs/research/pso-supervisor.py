@@ -81,7 +81,7 @@ def main():
             was_waiting = False
         works, detail = background_input_works()
         log(f"background input test: {works} ({detail})")
-        script = "play_background.py" if works else "play_when_focused.py"
+        script = "play_background.py" if works else "play_pad.py"
         log(f"starting {script}")
         child = subprocess.Popen([sys.executable, script, "3600"], cwd=str(TMP),
                                  stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
