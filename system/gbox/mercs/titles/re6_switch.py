@@ -319,7 +319,10 @@ def continue_target() -> int:
 
 BOOT_KEY = "a"                          # a screen RAM can't name out of a round (PRESS ANY BUTTON)
 STEPS = {"results": "plus", "alert_leaderboard": "b", "alert_ok": "a", "mercs_wrong_mode": "b", "press_any_button": "a",
-         "alert": "b", "split_lobby": "a"}     # split_lobby: A starts the game (only once Player 2 has joined on its pad)
+         "alert": "b", "split_lobby": "a", "extra_content": "a"}     # split_lobby: A starts the game (only once Player 2
+                                                 # has joined on its pad). extra_content (live 2026-11-11 22:39: RE6 sat
+                                                 # there at 0 rounds): the screen is cursored - confirming opens its
+                                                 # submenu and the walk carries on, where no entry parked the title.
 MENU_HANDOFF = ("results", "alert_ok", "alert_leaderboard", "alert_wait", "alert", "select_stage", "select_player",
                 "dead")
 CURSORED = {"main_menu": ("up", "down"), "play_game": ("up", "down"), "extra_content": ("up", "down"),
