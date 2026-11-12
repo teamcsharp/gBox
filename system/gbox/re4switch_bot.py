@@ -74,6 +74,19 @@ STATE_LOG_EVERY_S = 5.0                 # one row per (RAM phase, frame screen) 
 ROUND_END_TICKS = 3                     # the game's state reads no round this many ticks in a row: the round is over
 FIGHT_TICK_S = 0.05                     # the RAM fight's loop
 BOW_CLASS = 0x1C                        # Krauser's bow (re4_weapons.MOTION_RATE_CLASSES)
+BOW_ITEM = 0x52                         # ...and its ITEM id (re4_weapons.CLASS_OF[0x52] is 0x1C)
+
+
+def is_bow(snap) -> bool:
+    """The bow, by EITHER witness: the class byte (0x1C) or the equipped item (0x52).
+
+    Live 2026-11-12: the 20x loop hung on `snap["weapon_class"] == BOW_CLASS` at all four call sites, so a bow whose
+    class byte did not read 0x1C kept the gun's 0.05 s loop - the operator's "the bow is supposed to be firing 20x" and
+    it never was. The title module already treats either witness as the bow (_bow_in_hand); the driver's tick and tap
+    hold must agree with it or the fast path is decided by a byte that may be wrong.
+    """
+    s = snap or {}
+    return s.get("weapon_class") == BOW_CLASS or s.get("equipped_id") == BOW_ITEM
 # The bow's loop: the operator asked for 20x (2026-11-10 #9508, and again 2026-11-11: "have the bow able to fire at
 # 20x speed ... rain arrows"). It was 0.025 - only 2x the rifle's 0.05, which is why 20x never appeared however the
 # trigger was tuned. 0.05 / 20 = 0.0025: one decision every 2.5 ms, twenty times the gun's loop.
@@ -389,7 +402,7 @@ def play(ad, send, stopped, sleep=time.sleep, stats: dict | None = None, *, cloc
             if bot is not None and snap is not None:
                 stats["fight"] = "ram"
                 keys.apply(bot.tick(snap, now=clock()),
-                           tap_hold=BOW_TAP_HOLD_S if (snap or {}).get("weapon_class") == BOW_CLASS else 0.0)
+                           tap_hold=BOW_TAP_HOLD_S if is_bow(snap) else 0.0)
                 re4_walk.publish(pub, snap, bot, stats["screen"])
             else:
                 keys.release()
@@ -554,12 +567,12 @@ def play(ad, send, stopped, sleep=time.sleep, stats: dict | None = None, *, cloc
                     stats["ring_decision"] = str(ring_out.get("reason") or "")[:200]
                     if ring_out.get("fired"):
                         re4_walk.publish(pub, snap, bot, "playing")
-                        sleep(BOW_FIGHT_TICK_S if (snap or {}).get("weapon_class") == BOW_CLASS else FIGHT_TICK_S)
+                        sleep(BOW_FIGHT_TICK_S if is_bow(snap) else FIGHT_TICK_S)
                         continue
             keys.apply(bot.tick(snap, now=clock()),
-                       tap_hold=BOW_TAP_HOLD_S if (snap or {}).get("weapon_class") == BOW_CLASS else 0.0)
+                       tap_hold=BOW_TAP_HOLD_S if is_bow(snap) else 0.0)
             re4_walk.publish(pub, snap, bot, "playing")
-            sleep(BOW_FIGHT_TICK_S if (snap or {}).get("weapon_class") == BOW_CLASS else FIGHT_TICK_S)
+            sleep(BOW_FIGHT_TICK_S if is_bow(snap) else FIGHT_TICK_S)
             continue
 
         # --- no player in RAM: advance, sweep the aim, fire. Screen-only, so this is deliberately blunt.
@@ -607,6 +620,11 @@ def _maintain_mods(ad, snap: dict, stats: dict) -> None:
         return
     if (snap or {}).get("weapon_class") is not None:
         stats["weapon_class"] = (snap or {}).get("weapon_class")
+    # The bow's two witnesses, published so a round can say which one (if either) named the bow: the operator's "the bow
+    # is supposed to be firing 20x" has to be answerable from telemetry instead of inferred from the same silence.
+    if (snap or {}).get("equipped_id") is not None:
+        stats["equipped_id"] = (snap or {}).get("equipped_id")
+    stats["bow"] = is_bow(snap)
     # Why the laser line was refused, when it was: the aim ticket's per-class evidence (the steady aim needs the line,
     # and the ~40% rounds could not say whether the class byte, the ray's origin or its length was refusing).
     if (snap or {}).get("laser_gate"):
