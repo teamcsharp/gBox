@@ -1046,7 +1046,11 @@ class Screensaver:
                     failed = 'the round preparation timed out'
                 if failed:
                     row, changed = row | {'prepare_failed': str(failed)[:240]}, True
-            loading = warm.get('state') == 'loading' and now - row.get('at', now) <= LAUNCH_TIMEOUT
+            loading = (warm.get('state') == 'loading' and now - row.get('at', now) <= LAUNCH_TIMEOUT
+                       and (warm.get('screen') or '') in ('', 'loading', 'unknown', 'title_locked'))
+            # The observer's screen is the truthful "still loading" signal (the operator's seamless preload, 2026-11-11):
+            # a probe that already reports a ready menu screen must not keep the row in the loading state for the whole
+            # launch timeout - that starved the round preparation and stopped the RE6 preload before it could be paused.
             preparing = row.get('state') != 'ready' and bool(row.get('prepare_job')) and not row.get('prepare_failed') \
                 and now - row.get('prepare_at', now) <= LAUNCH_TIMEOUT
             if row.get('state') == 'prelaunch' and job.get('state') == 'succeeded' and not loading and not preparing \
