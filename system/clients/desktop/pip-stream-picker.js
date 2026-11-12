@@ -192,80 +192,106 @@
     let addMenu = null;
     function dismissAdd() { if (addMenu) { addMenu.remove(); addMenu = null; } }
     async function openAdd(event) {
-      if (!valid() || typeof io.launch !== 'function') return;
       const button = event.target.closest?.('[data-stream-add]');
-      if (!button) return;
+      if (!button || !valid()) return;
       event.preventDefault(); event.stopPropagation();
       dismissAdd(); dismissMenu();
       const rect = button.getBoundingClientRect();
       addMenu = document.createElement('div');
       addMenu.className = 'pip-stream-menu pip-stream-add';
-      addMenu.setAttribute('role', 'menu');
-      addMenu.style.cssText = 'position:fixed;z-index:95;min-width:230px;max-width:340px;padding:5px;' +
+      addMenu.setAttribute('role', 'dialog');
+      addMenu.style.cssText = 'position:fixed;z-index:95;width:min(360px,86vw);padding:8px;' +
         'background:#1b1f2a;border:1px solid #3a4152;border-radius:8px;box-shadow:0 8px 28px rgba(0,0,0,.55);' +
-        'left:' + Math.round(rect.left) + 'px;top:' + Math.round(rect.bottom + 6) + 'px;max-height:60vh;overflow:auto;';
-      addMenu.innerHTML = '<div style="padding:6px 8px;font-size:11px;color:#9aa3b4">Recently played</div>' +
-        '<div style="padding:6px 8px;font-size:12px;color:#9aa3b4">Loading…</div>';
+        'left:' + Math.round(Math.min(rect.left, window.innerWidth - 372)) + 'px;top:' + Math.round(rect.bottom + 6) + 'px;';
+      addMenu.innerHTML = '<div style="padding:2px 2px 6px;font-size:11px;color:#9aa3b4">Start a game</div>' +
+        '<input data-add-search type="search" placeholder="Search title or system…" autocomplete="off" ' +
+        'style="width:100%;box-sizing:border-box;padding:6px 8px;margin-bottom:6px;background:#0d1117;color:#e6edf3;' +
+        'border:1px solid #30363d;border-radius:5px;font:inherit">' +
+        '<div data-add-list style="max-height:50vh;overflow:auto"></div>';
       document.body.appendChild(addMenu);
-      let games = [], previous = null;
+
+      let recent = [], catalog = [];
       try {
         const [sessionAnswer, catalogAnswer] = await Promise.all([
           io.api ? io.api('/api/sessions') : null,
           io.api ? io.api('/api/catalog') : null,
         ]);
         const sessions = Array.isArray(sessionAnswer) ? sessionAnswer : (sessionAnswer?.items || []);
-        const catalog = Array.isArray(catalogAnswer) ? catalogAnswer : (catalogAnswer?.items || catalogAnswer?.games || []);
-        const byId = new Map((catalog || []).filter(game => game && (game.game_id || game.id))
-          .map(game => [String(game.game_id || game.id), game]));
-        // What the operator launched themselves: sessions they own, not agent or Merc runs.
-        const mine = (sessions || []).filter(row => row && row.agent_owned === false && row.game_id)
-          .sort((a, b) => Number(b.started || 0) - Number(a.started || 0));
+        catalog = (Array.isArray(catalogAnswer) ? catalogAnswer
+          : (catalogAnswer?.items || catalogAnswer?.games || [])).filter(game => game && (game.game_id || game.id));
+        const byId = new Map(catalog.map(game => [String(game.game_id || game.id), game]));
         const seen = new Set();
-        for (const row of mine) {
+        for (const row of (sessions || []).filter(item => item && item.agent_owned === false && item.game_id)
+          .sort((a, b) => Number(b.started || 0) - Number(a.started || 0))) {
           const id = String(row.game_id);
           if (seen.has(id)) continue;
           seen.add(id);
           const entry = byId.get(id);
-          if (!entry) continue;
-          // Never a Mercenaries title, whatever launched it.
-          if (/mercenar/i.test(String(entry.title || entry.alt_title || row.title || ''))) continue;
-          if (!previous) previous = entry;
-          games.push(entry);
-          if (games.length >= 12) break;
+          if (entry && !/mercenar/i.test(String(entry.title || entry.alt_title || ''))) recent.push(entry);
         }
-      } catch { games = []; previous = null; }
-      if (!addMenu) return;
-      const previousRow = previous
-        ? '<button type="button" role="menuitem" data-add-previous="" style="display:block;width:100%;text-align:left;padding:7px 8px;' +
-          'background:#22304a;border:1px solid #33456b;border-radius:5px;color:#e6edf3;font:inherit;cursor:pointer;margin-bottom:4px">' +
-          'Launch the previous game<span style="display:block;font-size:11px;color:#9aa3b4">' +
-          esc(previous.title || previous.game_id) + '</span></button>'
-        : '';
-      addMenu.innerHTML = '<div style="padding:6px 8px;font-size:11px;color:#9aa3b4">Your recent launches</div>' + previousRow +
-        (games.length ? games.map((game, index) =>
-          '<button type="button" role="menuitem" data-add-game="' + index + '" style="display:block;width:100%;text-align:left;padding:6px 8px;' +
-          'background:transparent;border:0;border-radius:5px;color:#e6edf3;font:inherit;cursor:pointer">' +
-          esc(game.title || game.alt_title || game.game_id) +
-          '<span style="display:block;font-size:11px;color:#9aa3b4">' + esc(game.platform || '') +
-          (game.last_played ? ' · played' : '') + '</span></button>').join('')
-          : '<div style="padding:6px 8px;font-size:12px;color:#9aa3b4">No games in the catalog</div>');
-      addMenu.querySelector('[data-add-previous]')?.addEventListener('click', async () => {
-        const game = previous;
-        dismissAdd();
-        if (!game) return;
-        try { await io.launch(game); if (valid()) message('Starting ' + (game.title || game.game_id) + '…'); }
-        catch (error) { if (valid()) message('Could not start it: ' + String(error?.message || error)); }
-      });
-      addMenu.querySelectorAll('[data-add-game]').forEach(buttonEl => {
-        buttonEl.addEventListener('click', async () => {
-          const game = games[Number(buttonEl.dataset.addGame)];
-          dismissAdd();
-          if (!game) return;
-          try { await io.launch(game); if (valid()) message('Starting ' + (game.title || game.game_id) + '…'); }
-          catch (error) { if (valid()) message('Could not start it: ' + String(error?.message || error)); }
+      } catch { recent = []; }
+
+      const all = [];
+      const push = (game, tag) => {
+        if (all.some(item => item.id === String(game.game_id || game.id))) return;
+        all.push({ id: String(game.game_id || game.id), game, tag });
+      };
+      for (const game of recent) push(game, 'recent');
+      for (const game of catalog) {
+        if (/mercenar/i.test(String(game.title || game.alt_title || ''))) continue;
+        push(game, 'catalog');
+      }
+
+      const list = addMenu.querySelector('[data-add-list]');
+      const rowHTML = (item, index) => {
+        const game = item.game;
+        const label = String(game.title || game.alt_title || game.game_id);
+        const system = String(game.platform || game.collections?.[0] || '');
+        return '<button type="button" role="option" data-add-index="' + index + '" ' +
+          'data-needle="' + esc((label + ' ' + system).toLowerCase()) + '" ' +
+          'style="display:block;width:100%;text-align:left;padding:7px 8px;background:transparent;border:0;border-radius:5px;' +
+          'color:#e6edf3;font:inherit;cursor:pointer">' + esc(label) +
+          '<span style="display:block;font-size:11px;color:#9aa3b4">' + esc(system) +
+          (item.tag === 'recent' ? ' · recent' : '') + '</span></button>';
+      };
+      const draw = query => {
+        const needle = String(query || '').trim().toLowerCase();
+        const shown = needle ? all.filter(item => item.needleCache === undefined) : all;
+        list.innerHTML = all.map((item, index) => ({ item, index }))
+          .filter(({ item }) => {
+            if (!needle) return true;
+            const game = item.game;
+            const text = (String(game.title || game.alt_title || game.game_id) + ' ' +
+              String(game.platform || game.collections?.[0] || '')).toLowerCase();
+            return text.includes(needle);
+          })
+          .slice(0, 60)
+          .map(({ item, index }) => rowHTML(item, index)).join('') ||
+          '<div style="padding:8px;font-size:12px;color:#9aa3b4">No games match</div>';
+        list.querySelectorAll('[data-add-index]').forEach(buttonEl => {
+          buttonEl.addEventListener('click', () => start(all[Number(buttonEl.dataset.addIndex)]?.game));
         });
-      });
+      };
+      const start = async game => {
+        if (!game) return;
+        dismissAdd();
+        const label = String(game.title || game.game_id);
+        if (valid()) message('Starting ' + label + '…');
+        try {
+          const body = { tool: '@launch', input: { game, node: io.node ? io.node() : undefined } };
+          if (typeof io.launch === 'function') { await io.launch(game); }
+          else if (io.api) {
+            const answer = await io.api('/api/jobs', body);
+            if (answer && answer.ok === false) throw new Error(answer.error || 'refused');
+          } else throw new Error('no way to launch from here');
+        } catch (error) { if (valid()) message('Could not start it: ' + String(error?.message || error)); }
+      };
+      draw('');
+      const search = addMenu.querySelector('[data-add-search]');
+      search.addEventListener('input', () => draw(search.value));
+      setTimeout(() => search.focus(), 30);
     }
+
     function onAddAway(event) { if (!addMenu || !addMenu.contains(event.target)) dismissAdd(); }
     document.addEventListener('pointerdown', onAddAway, true);
     function onAway(event) { if (!menuEl || !menuEl.contains(event.target)) dismissMenu(); }
