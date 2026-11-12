@@ -238,6 +238,8 @@ def switches():
         except Exception:                                        # noqa: BLE001
             continue
         distance = math.dist((me[0], me[2]), (x, z))
+        if "Door" in name and state == 224 and not getattr(press_switches, "allow_key", False):
+            continue                                   # key-locked: needs an item the bot does not have yet
         if "Door" in name and hp <= 0:
             continue                                   # no hit points: a despawned or unrelated door (the live dump shows 0 vs 32987)
         if "Door" in name and state not in (0, 2, 224, 240, 880, 176, 48, 1):
@@ -377,7 +379,9 @@ def main(seconds=3600.0):
                 log(f"  {foes_now[0]['class']} at {foes_now[0]['distance']:.0f} units is on us - fighting")
                 fight(foes_now[0])
                 continue
-            if doors_now and doors_now[0]["distance"] < 40:
+            openable = [door for door in doors_now if door["state"] != 224]
+            if openable and openable[0]["distance"] < 40:
+                doors_now = openable
                 pso_input.hold("a", 0.3)
                 log(f"  pressed A near {doors_now[0]['class']} (state {doors_now[0]['state']}, {doors_now[0]['distance']:.0f} units)")
                 time.sleep(0.4)
