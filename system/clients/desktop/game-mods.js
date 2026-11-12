@@ -76,6 +76,20 @@
     {id: 'random', label: 'Randomised gear on an interval', icon: ICONS.random, op: 'randomized',
      ask: [{key: 'interval', label: 'Seconds between re-rolls (5-300)', value: '120', type: 'number'}]},
     {id: 'pb', label: 'Photon blast at maximum', icon: ICONS.pb, op: 'pb'},
+    {id: 'armor4', label: 'Four random armor pieces, equipped', icon: ICONS.armor || ICONS.mag,
+     // frame 01 01 ii, barrier 01 02 ii, unit 01 03 ii - one frame, one barrier, two units, each a random index
+     run: async (rpc) => {
+       const families = [0x0101, 0x0102, 0x0103, 0x0103];
+       const codes = families.map(family => {
+         const index = Math.floor(Math.random() * 0x60);
+         return ((family << 8) | index).toString(16).padStart(6, '0');
+       });
+       for (const code of codes) {
+         await rpc('give', { code, count: 1, equip: true });
+       }
+       window.__gboxArmorCodes = codes;
+       return codes;
+     }},
     {id: 'area', label: 'Go to any area of Episode I', icon: ICONS.warp, op: 'floor_warp',
      ask: [{key: 'target', label: 'Area', type: 'select', value: '1', options: [
        {value: '0', label: 'Pioneer 2 (city)'},
