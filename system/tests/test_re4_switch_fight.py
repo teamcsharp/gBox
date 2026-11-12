@@ -534,3 +534,37 @@ def test_the_walk_turn_does_not_flutter_when_the_error_sits_near_the_tolerance()
     assert b._step_keys(p, {"goal": goal(0.13)}) == first
     assert b._step_keys(p, {"goal": goal(-0.125)}) == first, "a small opposite error keeps the turn (no flutter)"
     assert b._step_keys(p, {"goal": goal(-0.5)}) != first, "a clear reversal turns the other way"
+
+# --- the shot's tolerance is the body's angle at THAT distance (live 2026-11-12, the operator's frame: the bot pressed
+# into a Ganado at 01'56" with 0 kills, doing=turn). The turn used the flat FIRE_TOL_MIN (2.86 deg) at every range while
+# the shot's real tolerance is atan2(half, dist) capped at TURN_TOL (6.9 deg): at arm's length the bot demanded
+# precision the shot did not need and turned instead of firing.
+
+def test_a_ganado_at_two_metres_is_shot_not_turned_at_five_degrees():
+    b = bot()
+    off = 200.0 * math.tan(math.radians(5.0))          # 2 m out, 5 deg off the gun's line
+    s = snap([((off, 0.0, 200.0), 400)])
+    b.tick(s, now=10.0)
+    assert b.doing != "turn", "5 deg at 2 m is inside the body's 6.9 deg: it shoots, it does not turn"
+
+
+def test_a_ganado_at_twelve_metres_is_not_shot_at_five_degrees():
+    b = bot()
+    off = 1200.0 * math.tan(math.radians(5.0))         # 12 m out: the body covers 1.4 deg, so 5 deg is a miss
+    s = snap([((off, 0.0, 1200.0), 400)])
+    for i in range(4):
+        b.tick(s, now=10.0 + i * 0.1)
+    assert b.doing in ("turn", "locate"), "at 12 m the same 5 deg is outside the body: it turns or acquires"
+    assert not b.stats.get("shots"), "and it must not have fired a shot 5 deg wide at 12 m"
+
+
+def test_a_flank_budget_ends_the_sight_gate():
+    b = bot()
+    e = {"ptr": 7, "pos": (0.0, 0.0, 1000.0), "hp": 100}
+    assert b._sight_given_up(e) is False, "nothing flanked yet: the gate still holds"
+    b._flank_spent = {7: 1.0}
+    assert b._sight_given_up(e) is False, "under the budget: the gate still holds"
+    b._flank_spent = {7: D.FLANK_GIVE_UP_S}
+    assert b._sight_given_up(e) is True, "a budget's worth of walking: he shoots it"
+    assert b.stats.get("sight_given_up") == 1
+    assert b._sight_given_up({"ptr": 8}) is False, "another Ganado gets its own budget"
