@@ -28,6 +28,7 @@ from pso_pad import Pad, call
 
 try:
     from walk_to import walk_to                    # VISIBLY WALK to a target: one tap, measure, repeat
+    from weapons import ensure_equipped            # class-aware weapon choice + the 2-5 min timer
 except Exception:                                # noqa: BLE001
     walk_to = None
 
@@ -799,6 +800,13 @@ def play(pad: Pad, seconds: float = 120.0) -> str:
                 moved += 1
                 time.sleep(0.1)
                 continue
+
+        # WEAPON CLASS RULE: fliers need the gun because melee cannot reach them at all; otherwise the
+        # operator's strict 2-5 minute timer decides which weapon is equipped.
+        try:
+            ensure_equipped(pad, now.get('entities') or [], log)
+        except Exception:                              # noqa: BLE001 - a swap must never stop the loop
+            pass
 
         if enemies:
             target = min(enemies, key=lambda e: (float(e.get("x") or 0) - x) ** 2
