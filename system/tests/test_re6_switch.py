@@ -707,6 +707,10 @@ def test_a_death_is_logged_with_its_cause_and_forgets_the_bomb():
     run(bot, snap, clock, 1)
     d = bot.stats["death_log"][-1]
     assert d["near_2m"] == 3 and d["bomb_phase"] == "wait" and d["bomb_cm"] == 300 and d["held"] is False
+    # The scalar cause string survives the telemetry mirror that drops the nested death_log, so a death seen live
+    # can be attributed without the round-report path (which still has no death detail on a died round).
+    cause = bot.stats["death_cause"]
+    assert "near2m=3" in cause and "bomb=wait@300cm" in cause and "held=0" in cause and "doing=" in cause
     assert bot.bomb_at is None and bot.bomb_phase is None
 
 

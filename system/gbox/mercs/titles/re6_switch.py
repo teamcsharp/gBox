@@ -7452,10 +7452,18 @@ class Bot:
         if self.bomb_at is not None:
             bomb = round(math.hypot(px - self.bomb_at[0], pz - self.bomb_at[1]))
         log = self.stats.setdefault("death_log", [])
-        log.append({"held": bool(self.in_hold), "doing": self.doing, "why": self.why[:80],
-                    "lost_by_doing": doing_fall, "hp_3s": [h for _t, h, _d in self.hp_hist[::5]],
-                    "near_2m": sum(1 for d in near if d <= 200), "near_4m": sum(1 for d in near if d <= 400),
-                    "bomb_phase": self.bomb_phase, "bomb_cm": bomb})
+        entry = {"held": bool(self.in_hold), "doing": self.doing, "why": self.why[:80],
+                 "lost_by_doing": doing_fall, "hp_3s": [h for _t, h, _d in self.hp_hist[::5]],
+                 "near_2m": sum(1 for d in near if d <= 200), "near_4m": sum(1 for d in near if d <= 400),
+                 "bomb_phase": self.bomb_phase, "bomb_cm": bomb}
+        log.append(entry)
+        # The telemetry mirror keeps scalars only, so the nested death_log never reached the live panel or the
+        # watcher that captures a death: this one-line cause string does, so survival work starts from evidence.
+        lost = sorted(doing_fall.items(), key=lambda kv: -kv[1])[:3]
+        self.stats["death_cause"] = (
+            f"doing={self.doing} why={self.why[:60]} held={int(bool(self.in_hold))} "
+            f"lost={'/'.join(f'{d}:{v}' for d, v in lost) or '0'} hp3s={entry['hp_3s']} "
+            f"near2m={entry['near_2m']} near4m={entry['near_4m']} bomb={self.bomb_phase}@{bomb}cm")[:240]
         del log[:-DEATH_LOG_N]
         self.hp_hist = []
         self.bomb_phase, self.bomb_at, self.bomb_walk, self.bomb_walk_since = None, None, None, None
