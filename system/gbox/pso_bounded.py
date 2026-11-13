@@ -185,13 +185,15 @@ class Watchdog:
       is the second.
     """
 
-    def __init__(self, *, movement_epsilon: float = 2.0, stall_s: float = 20.0,
+    def __init__(self, *, movement_epsilon: float = 2.0, heading_epsilon: float = 10.0, stall_s: float = 20.0,
                  max_recoveries: int = 4, hard_progress_s: float = 300.0) -> None:
         self.movement_epsilon = float(movement_epsilon)
+        self.heading_epsilon = float(heading_epsilon)
         self.stall_s = float(stall_s)
         self.max_recoveries = int(max_recoveries)
         self.hard_progress_s = float(hard_progress_s)
         self.position = None
+        self.heading = None
         self.moved_at = 0.0
         self.started_at = 0.0
         self.recoveries = 0
@@ -204,7 +206,14 @@ class Watchdog:
             self.started_at = now
             self.progressed_at = now
         position = (float(player.get("x") or 0), float(player.get("z") or 0))
-        if self.position is None or math.dist(self.position, position) > self.movement_epsilon:
+        heading = player.get("heading_deg")
+        turned = (self.position is not None and heading is not None and self.heading is not None
+                  and abs(((float(heading) - self.heading + 540.0) % 360.0) - 180.0) > self.heading_epsilon)
+        self.heading = None if heading is None else float(heading) % 360.0
+        if self.position is None or math.dist(self.position, position) > self.movement_epsilon or turned:
+            # Turning counts as liveness: the measured stalls that mattered were a pad that moved the character in
+            # neither position nor facing. A bot that only turns is caught by the objective clock instead, which is
+            # the signal the mandate actually grades.
             self.position, self.moved_at = position, now
             self.recoveries = 0
             return None
@@ -955,7 +964,8 @@ class Automaton:
         self.switch_misses[objective.ptr] = misses
         if misses >= self.bounds.max_switch_attempts:
             return (f"pressed {objective.cls} at {objective.ptr} {misses} times and no stage-flag bit changed; "
-                    f"the switch is not wired to a flag this build exposes")
+                    f"the array may already be saturated by an earlier full-group write, or this switch is not wired "
+                    f"to a flag in this group")
         return ""
 
     def _budget(self, objective: Objective, progressed: bool) -> str:

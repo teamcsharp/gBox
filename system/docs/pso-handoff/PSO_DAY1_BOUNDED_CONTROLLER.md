@@ -4,7 +4,7 @@
 `WHY-IT-STANDS-STILL.md`: a branch that can hold the loop for minutes, no watchdog that runs before every branch,
 operator takeover that waits for an iteration, and no evidence ledger.
 
-**Result:** the controller exists, is bounded by construction, and is proven twice — by a 26-test suite and by a live
+**Result:** the controller exists, is bounded by construction, and is proven twice — by a 27-test suite and by a live
 run on the running GameCube session. The live audit also found two things that change the plan: the motion model is
 not yet right, and this session's stage-flag array is contaminated, so it cannot produce switch→door evidence.
 
@@ -55,7 +55,7 @@ produced the zigzag the operator watched for hours.
 ## 2. Offline evidence
 
 ```
-python -m pytest tests/test_pso_bounded.py -q     →  26 passed
+python -m pytest tests/test_pso_bounded.py -q     →  27 passed
 ```
 
 The tests drive a simulated world that is adversarial on purpose: key→world directions, a wall that blocks, an enemy
@@ -154,6 +154,23 @@ different one. That is exactly the pre-state → action → post-state mismatch 
 `unlock_floor`, no automatic arming — and the flag array must be read before and after every interaction. This is the
 first task of the next round.
 
+### 3.6 Switch verification, live
+
+A 110 s `play` run found `TObjDoorKey` at `80DB5DF0`, closed from **106 to 10.2 units** in controller input only, and
+pressed A three times. The stage-flag array's sha256 was **identical before and after all three presses**:
+
+```
+seq 40  press a  'press TObjDoorKey at 11.6 units (attempt 1)'  flags 975bea3eef -> 975bea3eef
+seq 41  press a  'press TObjDoorKey at 11.0 units (attempt 2)'  flags 975bea3eef -> 975bea3eef
+seq 42  press a  'press TObjDoorKey at 10.2 units (attempt 3)'  flags 975bea3eef -> 975bea3eef
+```
+
+The run then **stopped** with `failure-play-20261113-090706.json`: the switch named, the three distances, and the 39
+ticks that led there. That is the behaviour §9 asks for and the old loop never had — it called a switch pressed as
+soon as A was sent, then walked into a door that had never opened. Because the array is saturated (§3.5), the
+no-change result is not yet evidence about the switch itself; what it proves is that the verifier does not invent a
+success.
+
 ---
 
 ## 4. What is not done, stated plainly
@@ -162,8 +179,11 @@ first task of the next round.
   away rather than within 8. The next step is a dedicated primitive calibration (open ground, ten samples per key,
   single tap versus a five-tap batch) and then either a corrected heading model or a per-tick re-calibrated vector
   model — not another steering algorithm written from guesswork.
-* **No switch→flag evidence in this session** — see 3.5. The verifier is implemented and tested; it has nothing clean
-  to verify against.
+* **No switch→flag evidence in this session** — see 3.5. The verifier is implemented, tested and ran live; it has
+  nothing clean to verify against.
+* **The movement watchdog counted turning as standing still.** The first live `play` run recorded three recoveries
+  while the character was turning to face the next waypoint. Turning is now liveness (position *or* heading change);
+  a bot that only turns is caught by the objective clock instead.
 * **No combat evidence.** The sequencer is implemented and tested; this room has no enemies (the live profile shows
   one enemy on the floor, out of reach).
 * **G1/G4–G8 are untouched.** No acceptance gate is claimed.

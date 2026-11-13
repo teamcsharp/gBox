@@ -285,6 +285,22 @@ def test_no_objective_progress_for_the_limit_ends_the_run_with_a_fixture(workdir
     assert (workdir / "failure.json").exists()
 
 
+def test_the_watchdog_counts_turning_as_liveness_but_not_as_progress():
+    """A character turning on the spot is responding to input; one where neither position nor facing changes is not.
+
+    Three spurious recoveries in the first live `play` run (21-22 s each while the character turned) are why this
+    distinction exists. The objective clock still catches a bot that turns forever, which is the signal that matters.
+    """
+    watchdog = B.Watchdog(stall_s=5.0)
+    still = {"x": 0.0, "z": 0.0, "heading_deg": 0.0}
+    assert watchdog.observe(still, 1000.0) is None
+    assert watchdog.observe({**still, "heading_deg": 40.0}, 1002.0) is None, "turning is liveness"
+    assert watchdog.observe({**still, "heading_deg": 40.0}, 1006.0) is None
+    stall = watchdog.observe({**still, "heading_deg": 40.0}, 1008.0)
+    assert stall is not None, "no position and no facing change for longer than stall_s is a stall"
+    assert watchdog.stalls == 1
+
+
 def test_no_player_tick_presses_nothing(workdir):
     clock = FakeClock()
     world = FakeWorld(clock)
