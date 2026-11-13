@@ -235,6 +235,18 @@ def control(ad, prof, bot_getter=None):
     def observe(snap, stats, now):
         nonlocal last_attempt, blocked_owner, receipt_owner, last_census
         owner = owner_of(snap, stats)
+        # How long a set actually takes to clear (the deadline is 5 s): the escape flag flips in Deadlines.observe,
+        # which the engine runs before this controller. Observability only - it changes no control decision.
+        escape_now = bool(stats.get('mine_escape_required'))
+        if escape_now and not stats.get('mine_escape_was_required'):
+            stats['mine_escapes_started'] = int(stats.get('mine_escapes_started', 0)) + 1
+            stats['mine_escape_started_at'] = now
+        elif stats.get('mine_escape_was_required') and not escape_now:
+            stats['mine_escapes_cleared'] = int(stats.get('mine_escapes_cleared', 0)) + 1
+            started = stats.get('mine_escape_started_at')
+            if finite(started):
+                stats['mine_escape_clear_s_last'] = round(now - started, 2)
+        stats['mine_escape_was_required'] = escape_now
         travel.observe(owner, snap, stats, now, rules.policy(stats)['enabled'])
         landing.observe(owner, snap, stats, now, rules.policy(stats)['enabled'])
         p = snap.get('player') or {}
@@ -254,6 +266,21 @@ def control(ad, prof, bot_getter=None):
         if receipt is not None:
             placed = int(receipt.get('placed') or 0)
             stats['mine_ring_last'] = receipt
+            stats['mine_ring_last_op'] = str(receipt.get('op') or '')[:32]
+            units_now = receipt.get('units') if isinstance(receipt.get('units'), (list, tuple)) else ()
+            stats['mine_ring_last_units'] = len(units_now)
+            stats['mine_ring_last_armed'] = sum(1 for u in units_now
+                                                if isinstance(u, dict) and u.get('armed') is True)
+            if receipt.get('op') == 'bomb_ring' and units_now:
+                # A later travel drop overwrites mine_ring_last, which used to cost the movement guard its only
+                # radial-escape proof for a ring still lying around him (floor_safety_blocks climbed while the
+                # armed ring stayed). Keep the last rings' constructor geometry so any of them stays escapable.
+                rings = [r for r in stats.get('mine_rings') or () if isinstance(r, dict)]
+                rings.append({'op': 'bomb_ring', 'radius_cm': receipt.get('radius_cm'),
+                              'requested': receipt.get('requested'),
+                              'units': [{k: u.get(k) for k in ('pos', 'armed')} for u in units_now
+                                        if isinstance(u, dict)]})
+                stats['mine_rings'] = rings[-4:]
             stats['mine_ring_bombs'] = int(stats.get('mine_ring_bombs', 0)) + placed
             trail, landed = receipt.get('op') == 'bomb_trail', receipt.get('op') == 'bomb_landing'
             field = 'mine_landing_drops' if landed else 'mine_trail_drops' if trail else 'mine_rings_dropped'

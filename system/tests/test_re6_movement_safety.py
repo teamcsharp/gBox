@@ -133,6 +133,30 @@ def test_identified_surrounding_remote_ring_permits_escape_without_weakening_ext
     assert not S._bomb_clear(b, snap, center, point)
 
 
+def test_ring_kept_in_mine_rings_stays_escapable_after_a_later_travel_receipt():
+    # The controller publishes every confirmed ring's constructor geometry to mine_rings. A later travel drop
+    # overwrites mine_ring_last; without the retained geometry the movement guard loses its radial-escape proof
+    # while the ring still lies around him (live 2026-11-13: floor_safety_blocks climbing, armed ring left pending).
+    b, snap = bot(), view()
+    center = snap['player']['pos']
+    sites = [[center[0] + 200 * math.cos(i * math.tau / 15), 0.,
+              center[2] + 200 * math.sin(i * math.tau / 15)] for i in range(15)]
+    travel = dict(op='bomb_trail', requested=1, radius_cm=0.,
+                  units=[dict(pos=[center[0] + 5., 0., center[2]], armed=True)])
+    b.stats.update(mine_avoid_positions=sites,
+                   mine_rings=[dict(op='bomb_ring', requested=15, radius_cm=200.,
+                                    units=[dict(pos=p, armed=True) for p in sites])],
+                   mine_ring_last=travel)
+    out = S.guard(b, snap, {'hold': ('lup',)}, 100.)
+    point = end(snap, out['hold'])
+    assert set(out['hold']) & S.LEFT
+    assert S._bomb_clear(b, snap, center, point)
+    # The identical step is refused when the ring geometry was not retained (the pre-fix behaviour).
+    b2, snap2 = bot(), view()
+    b2.stats.update(mine_avoid_positions=sites, mine_ring_last=travel)
+    assert not S._bomb_clear(b2, snap2, center, point)
+
+
 def test_departure_from_nearest_bomb_cannot_approach_another_unsafe_bomb():
     b = bot()
     b.stats['mine_avoid_positions'] = [[-100., 0., 0.], [600., 0., 0.]]

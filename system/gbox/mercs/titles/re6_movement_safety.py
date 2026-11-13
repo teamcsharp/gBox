@@ -67,29 +67,36 @@ def _bomb_clear(bot, snap, start, end):
         return True
     # A confirmed ring's centre is known from its native constructor order.
     # Its remote bombs do not contact-trigger: leaving the middle necessarily
-    # approaches some bombs first. Allow radial escape from that identified
-    # ring; all external bombs keep their nondecreasing clearance requirement.
+    # approaches some bombs first. Allow radial escape from any identified ring
+    # still around him (a later travel receipt overwrites mine_ring_last, so the
+    # ring geometry kept in mine_rings is used too); all external bombs keep
+    # their nondecreasing clearance requirement.
+    dx, dz = end[0] - start[0], end[2] - start[2]
+    rings = [r for r in (bot.stats.get('mine_rings') or ()) if isinstance(r, dict)]
     receipt = bot.stats.get('mine_ring_last') or {}
-    units, radius = receipt.get('units') or (), receipt.get('radius_cm')
-    if (receipt.get('op') == 'bomb_ring' and units and isinstance(radius, (int, float))
-            and math.isfinite(radius) and 0 < radius <= 600. and units[0].get('armed') is True):
-        first = units[0].get('pos')
-        if isinstance(first, (list, tuple)) and len(first) == 3:
-            offset = math.pi / 4 if receipt.get('requested') == 4 else 0.
-            center = (first[0] - radius * math.cos(offset), first[2] - radius * math.sin(offset))
-            radial = start[0] - center[0], start[2] - center[1]
-            delta = end[0] - start[0], end[2] - start[2]
-            if (math.hypot(*radial) <= radius + 20. and radial[0] * delta[0] + radial[1] * delta[1] >= 0
-                    and math.hypot(end[0] - center[0], end[2] - center[1]) > math.hypot(*radial)):
-                own = [u['pos'] for u in units if u.get('armed') is True and u.get('pos')]
-                sites = [p for p in sites if not any(math.dist(p, q) < 2. for q in own)]
-                if not sites:
-                    return True
+    if isinstance(receipt, dict) and receipt.get('op') == 'bomb_ring':
+        rings = [receipt] + [r for r in rings if r is not receipt]
+    for ring in rings:
+        units, radius = ring.get('units') or (), ring.get('radius_cm')
+        if not (isinstance(units, (list, tuple)) and units
+                and isinstance(radius, (int, float)) and math.isfinite(radius) and 0 < radius <= 600.):
+            continue
+        first = units[0].get('pos') if isinstance(units[0], dict) else None
+        if not (isinstance(first, (list, tuple)) and len(first) == 3 and units[0].get('armed') is True):
+            continue
+        offset = math.pi / 4 if ring.get('requested') == 4 else 0.
+        center = (first[0] - radius * math.cos(offset), first[2] - radius * math.sin(offset))
+        radial = start[0] - center[0], start[2] - center[1]
+        if (math.hypot(*radial) <= radius + 20. and radial[0] * dx + radial[1] * dz >= 0
+                and math.hypot(end[0] - center[0], end[2] - center[1]) > math.hypot(*radial)):
+            own = [u['pos'] for u in units if isinstance(u, dict) and u.get('armed') is True and u.get('pos')]
+            sites = [p for p in sites if not any(math.dist(p, q) < 2. for q in own)]
+            if not sites:
+                return True
     margin = policy(bot.stats)['detonate_safe_cm']
     required = bot.stats.get('mine_required_clearance_cm')
     if isinstance(required, (int, float)) and math.isfinite(required):
         margin = max(margin, required)
-    dx, dz = end[0] - start[0], end[2] - start[2]
     for p in sites:
         rx, rz = start[0] - p[0], start[2] - p[2]
         before = math.hypot(rx, rz)
@@ -147,6 +154,10 @@ def guard(bot, snap, action, now):
             result = dict(action, hold=rest + keys)
             why = ('redirecting to verified floor and bomb clearance' if escaping else 'redirecting to verified floor') if keys else 'no verified floor escape direction'
     bot.stats['floor_safety_blocks'] = int(bot.stats.get('floor_safety_blocks', 0)) + 1
+    # The telemetry mirror keeps scalars only; this scalar carries the why (and the directive of the applied hold)
+    # to the live panel and the round audit instead of the nested floor_safety_last object.
+    bot.stats['floor_safety_why'] = why
+    bot.stats['floor_safety_applied'] = ''.join(sorted(k for k in result['hold'] if k in MOVEMENT))[:24]
     bot.stats['floor_safety_last'] = dict(at=now, mesh=getattr(mesh, 'name', None), pos=list(pos),
                                         requested_hold=list(held), applied_hold=list(result['hold']), reason=why,
                                         native_heading_write=heading_written)
