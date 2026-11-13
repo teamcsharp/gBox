@@ -9,6 +9,8 @@ import threading
 NAV_PHASES = frozenset({'walk', 'locate', 'relocate', 'explore', 'route', 'approach', 'escape',
                         'bonus_run', 'gather_time', 'break_for_time', 'roam', 'retreat'})
 BUSY_PHASES = frozenset({'grabbed', 'held', 'case', 'dead', 'intro', 'results'})
+REMOTE_ESCAPE_ACTIONS = frozenset('cPlAction_pl_act_' + name for name in
+                                  ('wait', 'walk', 'walk_to_wait', 'run', 'dash'))
 _WRITE_LOCK = threading.Lock()
 
 
@@ -63,6 +65,70 @@ def waypoint(row):
 def movement(row):
     controls = row.get('controls') or {}
     return set(controls.get('keys', controls.get('hold', ())) or ())
+
+
+def navigating(row):
+    if row.get('phase') in NAV_PHASES:
+        return True
+    # RE6 calls walking away from a remote bomb the "bomb" phase. Treat only
+    # fresh, final escape decisions during native locomotion as navigation;
+    # placement, held prompts and dying animations cannot establish a wall.
+    diagnostics = row.get('diagnostics') or {}
+    escape = diagnostics.get('bomb_escape_output') or {}
+    at = escape.get('at')
+    return (row.get('phase') == 'bomb' and diagnostics.get('mine_escape_required') is True
+            and escape.get('act') == 'bomb_escape'
+            and row.get('native_action') in REMOTE_ESCAPE_ACTIONS
+            and type(at) in (int, float) and math.isfinite(at)
+            and 0 <= row['t']-at <= .75)
+
+
+def remote_escape_identity(row):
+    diagnostics = row.get('diagnostics') or {}
+    deadline = diagnostics.get('mine_deadline_at')
+    bombs = [(b.get('unit'), b.get('generation')) for b in row.get('throwables') or ()
+             if b.get('kind') == 'remote']
+    if (diagnostics.get('mine_timing_source') != 'native_placed_armed'
+            or not diagnostics.get('mine_deadline_pending') or not bombs
+            or type(deadline) not in (int, float) or not math.isfinite(deadline)
+            or any(type(unit) is not int or type(generation) is not int
+                   for unit, generation in bombs)):
+        return None
+    return deadline, tuple(sorted(bombs))
+
+
+def remote_escape_stall(rows):
+    """Bounded escape oscillation, including final input vetoes, needs triage.
+
+    Intent alone is not wall contact. Retain actual input coverage separately,
+    and require one player/life and unchanged native bomb identities throughout.
+    """
+    if len(rows) < 5 or rows[-1]['t']-rows[0]['t'] < 5.8:
+        return None
+    identity = remote_escape_identity(rows[-1])
+    owner = rows[-1].get('player'), rows[-1].get('player_generation')
+    if identity is None or owner[0] is None or owner[1] is None:
+        return None
+    clearances = []
+    for row in rows:
+        value = (row.get('diagnostics') or {}).get('mine_clearance_cm')
+        if (row.get('phase') != 'bomb' or not navigating(row)
+                or remote_escape_identity(row) != identity
+                or (row.get('player'), row.get('player_generation')) != owner
+                or type(value) not in (int, float) or not math.isfinite(value) or value < 0):
+            return None
+        clearances.append(value)
+    span = rows[-1]['t']-rows[0]['t']
+    intent = sum(b['t']-a['t'] for a, b in zip(rows, rows[1:]) if set(
+        a['diagnostics']['bomb_escape_output'].get('requested_hold') or ())
+        & {'lup', 'ldown', 'lleft', 'lright'}) / span
+    extent = max(math.dist(r['pos'], rows[0]['pos']) for r in rows)
+    if (intent < .8 or clearances[-1]-clearances[0] >= 20 or extent >= 150
+            or math.dist(rows[0]['pos'], rows[-1]['pos']) >= 75
+            or max(r['pos'][1] for r in rows)-min(r['pos'][1] for r in rows) >= 30):
+        return None
+    return {'identity': identity, 'intent_coverage': intent, 'extent_cm': extent,
+            'clearance_start': clearances[0], 'clearance_end': clearances[-1]}
 
 
 def final_goal(row):
@@ -196,7 +262,7 @@ class Monitor:
         if previous and not 0 < now-previous['t'] <= .6:
             self.close(now, 'telemetry_gap')
         if (row.get('pos') is None or row.get('game_phase') in BUSY_PHASES
-                or row.get('phase') not in NAV_PHASES or row.get('in_control') is False):
+                or not navigating(row) or row.get('in_control') is False):
             self.close(now, 'navigation_interrupted')
             return
         dest, metric = waypoint(row)
@@ -210,17 +276,30 @@ class Monitor:
             if changed or (row.get('player'), row.get('player_generation')) != \
                     (self.active['player'], self.active['player_generation']):
                 self.close(now, 'goal_or_player_changed')
+        if self.active and self.active.get('escape_identity') is not None \
+                and remote_escape_identity(row) != self.active['escape_identity']:
+            self.close(now, 'escape_hazards_changed')
         self.window.append(row)
         if self.active:
-            distance = math.dist(row['pos'], dest) if dest is not None else None
-            progress = self.active['distance_at_open_cm']-distance if distance is not None else None
-            restored = (distance < 75 or progress >= 100) if distance is not None else \
-                math.dist(row['pos'], self.active['position_cm']) >= 100
+            escaping = self.active.get('escape_identity') is not None
+            if escaping:
+                distance = (row.get('diagnostics') or {}).get('mine_clearance_cm')
+                if type(distance) not in (int, float) or not math.isfinite(distance):
+                    self.close(now, 'escape_clearance_unknown')
+                    return
+                progress = distance-self.active['distance_at_open_cm']
+                restored = progress >= 100
+            else:
+                distance = math.dist(row['pos'], dest) if dest is not None else None
+                progress = self.active['distance_at_open_cm']-distance if distance is not None else None
+                restored = (distance < 75 or progress >= 100) if distance is not None else \
+                    math.dist(row['pos'], self.active['position_cm']) >= 100
             if restored:
                 if self.recovery_since is None:
                     self.recovery_since = now
                 if now-self.recovery_since >= .8:
-                    self.close(now, 'movement_restored_goal_unknown' if distance is None else
+                    self.close(now, 'clearance_progress_restored' if escaping else
+                               'movement_restored_goal_unknown' if distance is None else
                                'goal_reached' if distance < 75 else 'progress_restored')
                     return
             else:
@@ -229,7 +308,9 @@ class Monitor:
             if now-self.last_emit >= 5:
                 self.emit(now)
             return
-        rows = [r for r in self.window if now-r['t'] <= 3.2]
+        escape_rows = [r for r in self.window if now-r['t'] <= 6.2]
+        escape = remote_escape_stall(escape_rows) if dest is None else None
+        rows = escape_rows if escape else [r for r in self.window if now-r['t'] <= 3.2]
         if len(rows) < 5 or rows[-1]['t']-rows[0]['t'] < 2.8:
             return
         # A real detour can move away from the final goal. Measure the active
@@ -252,10 +333,15 @@ class Monitor:
         turns = [(-1 if 'lleft' in movement(r) else 1 if 'lright' in movement(r) else 0) for r in rows]
         turns = [t for t in turns if t]
         reversals = sum(a != b for a,b in zip(turns, turns[1:]))
-        if (distance is not None and (distance < 75 or progress >= 20)) or coverage < .8:
+        if not escape and ((distance is not None and (distance < 75 or progress >= 20)) or coverage < .8):
             return
         kinds = []
-        if churn:
+        if escape:
+            metric = 'nearest_pending_bomb_clearance'
+            distance = escape['clearance_end']
+            progress = distance-escape['clearance_start']
+            kinds.append('remote_bomb_escape_without_progress')
+        elif churn:
             kinds.append('navigation_waypoint_churn_without_progress')
         elif travel < 30:
             kinds.append('navigation_no_progress')
@@ -293,6 +379,10 @@ class Monitor:
                            if timer_span is not None and timer_span < .01 else [],
                        'cause': 'unknown; inspect route, geometry, interactions and applied inputs',
                        'analysis_state': 'needs_triage', 'learning_applied': False}
+        if escape:
+            self.active.update(escape_identity=escape['identity'],
+                               movement_intent_coverage=round(escape['intent_coverage'], 3),
+                               max_excursion_cm=round(escape['extent_cm'], 2))
         self.emit(now)
 
 

@@ -79,6 +79,44 @@ def test_missing_ground_mine_observation_is_distinct_from_confirmed_empty():
     assert rows[0]['ground_mines'] is None and rows[1]['ground_mines'] == []
 
 
+def test_mine_census_and_actual_planner_hazards_remain_distinct():
+    f = FlightRecorder()
+    live = {'ptr': 66, 'generation': 7, 'active': True, 'pos': [0, 0, 0]}
+    refused = {'ptr': 78, 'generation': 8, 'active': False, 'pos': [0, 0, 100]}
+    f.observe(1, {'ground_mines': [live], 'ground_mine_observations': [live, refused]}, {}, {})
+    live['generation'] = 99
+    f.observe(2, {'ground_mine_observations': [refused]}, {}, {})
+    f.observe(3, {'ground_mines': []}, {}, {})
+    a, b, c = f.snapshot()['tail']
+    assert a['ground_mines_source'] == 'ground_mine_observations'
+    assert a['ground_mine_hazards'] == [{'ptr': 66, 'generation': 7}]
+    assert len(a['ground_mines']) == 2 and a['ground_mines'][1]['active'] is False
+    assert b['ground_mine_hazards'] is None  # unknown, not a confirmed empty hazard list
+    assert c['ground_mines_source'] == 'ground_mines' and c['ground_mine_hazards'] == []
+
+
+def test_native_capture_and_pitch_failure_evidence_retains_separate_raw_signals():
+    f = FlightRecorder()
+    snap = {'player': {'ptr': 10, 'generation': 2, 'pos': [0, 0, 0], 'state': 0,
+                       'motion': 4012, 'action': 'cEm1000ActAtkSokusiCatchHit_PL'},
+            'enemies': [{'ptr': 20, 'generation': 3, 'pos': [0, 0, 10], 'hp': 800,
+                         'state': 9, 'action': 'native_attack'}]}
+    stats = {'target_feedback_dt_ms': 0., 'target_feedback_camera_pitch_deg': -.06,
+             'target_feedback_wanted_pitch_deg': -28., 'target_feedback_refresh_ms': 2.5,
+             'qte_auto': True, 'qte_solved_ram': 4, 'qte_escapes_observed': 0,
+             'qte_escape_flash': {'state': 'unavailable', 'reason': 'native owner unavailable'}}
+    f.observe(1, snap, {}, stats)
+    snap['enemies'][0]['action'] = 'next_action'
+    row = f.snapshot()['tail'][0]
+    assert row['native_state'] == 0 and row['native_motion'] == 4012
+    assert row['native_action'] == 'cEm1000ActAtkSokusiCatchHit_PL'
+    assert row['nearby_enemies'][0]['generation'] == 3
+    assert row['nearby_enemies'][0]['state'] == 9
+    assert row['nearby_enemies'][0]['action'] == 'native_attack'
+    assert row['diagnostics'] == stats
+    json.dumps(row, allow_nan=False)
+
+
 def record(phase='walk', step=0, turns=False, scale=1):
     f = FlightRecorder(scale)
     for k in range(30):
