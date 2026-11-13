@@ -24,6 +24,15 @@ import traceback
 
 from pso_pad import Pad, call
 
+# The game's own affordance classifier, so a door key is recognised from its entity CLASS in RAM rather than guessed
+# from distance: SWITCH_CLASSES {'TLazerFenceSw', 'TObjDoorKey'} must be PRESSED, DOOR_CLASSES {'TObjDoor',
+# 'TObjLazerFenceNorm', 'TOBarrierEnergy01'} are walked through.
+sys.path.insert(0, r"C:\_tools\gBox\system")
+try:
+    from gbox import pso_coop_gates
+except Exception:                                          # noqa: BLE001 - the loop must still run without it
+    pso_coop_gates = None
+
 GAME = "436e0bb84d5337d1"
 BOOT_MENU = [("start", 2.6), ("down", 1.2), ("a", 3.0), ("a", 3.0), ("a", 3.0), ("a", 3.0), ("a", 3.5)]
 
@@ -452,6 +461,7 @@ def play(pad: Pad, seconds: float = 120.0) -> str:
     gates_seen, crossed = set(), []
     unproductive, walked_out = 0, 0
     unlock_counter, last_unlock = 0, ""
+    pressed_keys, key_misses = set(), 0      # door keys already pressed this window, and approach misses
     last_enemy_hp = {}
 
     while time.time() - started < seconds:
@@ -538,46 +548,73 @@ def play(pad: Pad, seconds: float = 120.0) -> str:
                         globals()["APPROACH_SIDE"] = -approach_side
                 moved += 1
         else:
-            # No enemies here. Instead of sweeping blindly, walk to a DOOR: the state lists every gate with its
-            # position (fields carry 19-24 of them), so "proceed to the next room" becomes a target to steer at.
-            gates = [e for e in (now.get("entities") or []) if str(e.get("kind")) == "gate"
-                     and e.get("x") is not None and e.get("z") is not None]
-            if gates:
-                gate = min(gates, key=lambda e: (float(e.get("x") or 0) - x) ** 2
-                           + (float(e.get("z") or 0) - z) ** 2)
-                gx, gz = float(gate.get("x") or 0), float(gate.get("z") or 0)
-                gdist = math.hypot(gx - x, gz - z)
-                gates_seen.add((round(gx / 25.0), round(gz / 25.0)))     # distinct gates, coarsely binned
-                if gdist <= 20.0:
-                    # A gate is ACTIVATED with A - walking into it does nothing on its own. Press the button, walk
-                    # through, and only count a crossing when the room actually changes.
-                    room_before = player.get("room")
-                    tap(pad, "b")
-                    time.sleep(0.12)
-                    tap(pad, "a")                                   # the button
-                    time.sleep(0.35)
-                    hold(pad, "up", 0.9)                            # walk through the opening
-                    time.sleep(0.25)
-                    after_gate = state(pad).get("player") or {}
-                    if after_gate.get("room") != room_before:
-                        crossed.append((round(gx / 25.0), round(gz / 25.0)))
-                        log(f"  crossed a gate: room {room_before} -> {after_gate.get('room')}")
-                    else:
-                        tap(pad, "a")                               # maybe a switch rather than a door
-                        time.sleep(0.25)
+            # No enemies here. Classify the room's forward affordances FROM RAM - a TObjDoorKey or TLazerFenceSw is a
+            # switch that has to be PRESSED, a TObjDoor/TObjLazerFenceNorm/TOBarrierEnergy01 is a door to walk through.
+            # The app's own model (pso_coop_gates.forward_candidates) sorts switches before doors and nearest-first.
+            rows = []
+            if pso_coop_gates is not None:
+                try:
+                    rows = pso_coop_gates.forward_candidates(now.get("entities") or [], player.get("room"),
+                                                             x, z, skip_switches=False)
+                except Exception:                                  # noqa: BLE001
+                    rows = []
+            if rows:
+                is_switch, adist, gkey, entity, kind = rows[0]
+                ax = float(entity.get("x") or 0)
+                az = float(entity.get("z") or 0)
+                cls = str(entity.get("class"))
+                if is_switch == 0:
+                    # A DOOR KEY. Its press only registers close up, so approach and then press, and say so.
+                    if adist <= 6.5:
+                        tap(pad, "b")
+                        time.sleep(0.1)
+                        tap(pad, "a")
+                        time.sleep(0.3)
+                        log(f"  pressed the door key {cls} at {adist:.1f} units")
+                        pressed_keys.add(gkey)
+                    elif adist <= 70.0:
+                        if gkey not in pressed_keys or adist <= 25.0:
+                            log(f"  DOOR KEY {cls} detected {adist:.1f} units ahead - going to press it")
+                        side_key = globals().get("KEY_SIDE", 1)
+                        before_key = adist
+                        hold(pad, "left" if side_key > 0 else "right", 0.18)
                         hold(pad, "up", 0.7)
+                        time.sleep(0.2)
+                        after_rows = []
+                        try:
+                            after_now = state(pad)
+                            after_rows = pso_coop_gates.forward_candidates(
+                                after_now.get("entities") or [], (after_now.get("player") or {}).get("room"),
+                                float((after_now.get("player") or {}).get("x") or 0),
+                                float((after_now.get("player") or {}).get("z") or 0), skip_switches=False)
+                        except Exception:                      # noqa: BLE001
+                            after_rows = []
+                        after_key = after_rows[0][1] if after_rows else before_key
+                        if after_key > before_key - 1.0:
+                            key_misses += 1
+                            if key_misses >= 4:
+                                globals()["KEY_SIDE"] = -side_key
+                                key_misses = 0
+                        else:
+                            key_misses = 0
+                    moved += 1
                 else:
-                    gate_side = globals().get("GATE_SIDE", 1)
-                    before_g = gdist
-                    hold(pad, "left" if gate_side > 0 else "right", 0.18)
-                    hold(pad, "up", 0.75)
-                    after_p = state(pad).get("player") or {}
-                    ax, az = float(after_p.get("x") or 0), float(after_p.get("z") or 0)
-                    if math.hypot(gx - ax, gz - az) > before_g - 0.5:
-                        globals()["GATE_SIDE"] = -gate_side
-                moved += 1
+                    # A DOOR: walk through it, and only count a crossing when the room actually changes.
+                    if adist <= 18.0:
+                        room_before = player.get("room")
+                        hold(pad, "up", 1.0)
+                        time.sleep(0.25)
+                        after_gate = state(pad).get("player") or {}
+                        if after_gate.get("room") != room_before:
+                            crossed.append((round(ax / 25.0), round(az / 25.0)))
+                            log(f"  crossed a door: room {room_before} -> {after_gate.get('room')}")
+                    else:
+                        side_key = globals().get("KEY_SIDE", 1)
+                        hold(pad, "left" if side_key > 0 else "right", 0.18)
+                        hold(pad, "up", 0.75)
+                    moved += 1
             else:
-                # a room with no gates listed: sweep, but keep it short so the next sample can find one
+                # Nothing classifiable nearby: sweep, but keep it short so the next sample can find something.
                 hold(pad, "left" if int(time.time()) % 2 else "right", 0.25)
                 hold(pad, "up", 0.6)
                 moved += 1
