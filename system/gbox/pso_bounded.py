@@ -856,7 +856,7 @@ class CommitMotion:
                 self.dirs.pop(self.last_key, None)
                 if not self.probe_queue:
                     self.probe_queue = list(self.keys)
-                    self.probe_scores = {}
+                    self.probe_scores = {None: math.dist((x, z), (float(target[0]), float(target[1])))}
                     self.probe_target = (float(target[0]), float(target[1]))
                 self.last_y = float(y_now)
                 self.key = self.probe_queue.pop(0) if self.probe_queue else self.keys[0]
@@ -908,10 +908,18 @@ class CommitMotion:
             self.probes += 1
             if not self.probe_queue:
                 # every key has been tried: commit to the one whose resulting position was closest to the target
-                ranked = sorted(self.probe_scores.items(), key=lambda kv: kv[1])
+                ranked = [(k, v) for k, v in sorted(self.probe_scores.items(), key=lambda kv: kv[1]) if k is not None]
                 if ranked:
                     self.key = ranked[0][0]
                     self.remaining = 1 if self.probe_every_move else self.commit
+                # If no direction improved on the starting position, turn instead of pushing: the hand-run loop that
+                # crossed the plaza did exactly this, and the version that kept pushing ended up embedded in geometry
+                # (measured at (244,221): all four taps 0.0 and all four holds 0.0, while A still rotated the heading -
+                # input was fine, the body was inside the wall).
+                start_distance = self.probe_scores.get(None)
+                if self.probe_every_move and start_distance is not None and ranked:
+                    if ranked[0][1] >= start_distance - 0.5:
+                        self.key = "left"
                 self.blocked = 0
             return press(key, f"probe {key} around the obstruction ({self.probes} probes)")
         distance = math.hypot(float(target[0]) - x, float(target[1]) - z)
@@ -941,7 +949,7 @@ class CommitMotion:
             aim = _unit(float(target[0]) - x, float(target[1]) - z)
         if self.probe_every_move and self.remaining <= 0 and not self.probe_queue:
             self.probe_queue = list(self.keys)
-            self.probe_scores = {}
+            self.probe_scores = {None: math.dist((x, z), (float(target[0]), float(target[1])))}
             self.probe_target = (float(target[0]), float(target[1]))
             key = self.probe_queue.pop(0)
             self.key, self.last_key, self.last_pos = key, key, (x, z)
