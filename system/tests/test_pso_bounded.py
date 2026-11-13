@@ -293,8 +293,12 @@ def test_a_wedged_character_is_recovered_a_bounded_number_of_times_then_fixtured
                     bounds=B.Bounds(max_recoveries=2, max_objective_ticks=60))
     ticks = box.run_for(120.0)
     recoveries = [action for action in world.actions if "watchdog recovery" in action.reason]
-    assert recoveries and all(action.kind == "hold" for action in recoveries), \
-        "the escape must be a hold: 40 taps moved 0.0 units in a corner where one 0.45 s hold moved 33"
+    assert recoveries, "a wedge must be recovered, not silently looped"
+    # The escape alternates a turn and a short hold: the stick is camera-relative, so in a corner all four directions
+    # can point into the same wall (measured at (310,540): holds moved 0.0 for 70 s, one turn plus the same hold moved
+    # 7 units), and a hold is still what produces the displacement (40 taps moved 0.0 where one hold moved 33).
+    assert any(action.kind == "press" for action in recoveries), "a turn comes first, to change the frame"
+    assert any(action.kind == "hold" for action in recoveries), "and a hold produces the movement"
 
     assert box.stopped, "a wedge must end in a reported failure, not a silent loop"
     assert box.watchdog.stalls >= 1

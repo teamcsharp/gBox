@@ -628,3 +628,25 @@ foreground. The adapter sets `Dolphin.Input.BackgroundInput`, but that covers th
 was invisible from inside the bot: reads and the frame counter were healthy, only the effect of input was missing - the
 operator's PowerShell windows taking focus did it.
 
+
+
+## 19. The stick is camera-relative, and that is why corners and routes fail
+
+Investigating another wedge - the character ignoring every direction at `(310, 540)` in Forest 1 for seventy seconds,
+three stall verdicts, three escapes, zero movement - produced the mechanism behind most of the wandering:
+
+**the input directions are camera-relative.** "Up" is not north; it is whichever way the camera faces. The calibration
+measures each key's world displacement **once**, in one camera orientation, and every later tap is interpreted in a
+frame that has since rotated - so a key that moved the character toward the target at calibration time can point into a
+wall a minute later. Evidence, at the wedge: every hold in every direction moved **0.0** for 70 s; one turn to heading
+359 and the *same* "up" hold moved **7 units**; four turn-then-hold cycles carried the character from `(310,540)` to
+`(317,569)`.
+
+That is one mechanism explaining three symptoms: characters that "orbit" a target, routes that stop closing, and
+corners where all four directions are dead. The escape now alternates a **turn** and a short **hold** in the new frame,
+instead of pushing four directions in the old one. The hill climber already adapts implicitly (it credits the key that
+moved the aim direction), which is why it is the most reliable motion in unmapped rooms.
+
+What is still missing is a **heading-aware model**: the calibration should be re-measured (or rotated by the heading
+delta) whenever the character turns, so the motion model's frame stays current instead of relying on per-tap learning.
+

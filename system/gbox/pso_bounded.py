@@ -271,18 +271,18 @@ class Watchdog:
         lands a second late), which is a defect for *movement* but exactly what an escape wants: a large, immediate
         displacement out of whatever geometry the small steps cannot leave.
         """
-        plan = (("left", "strafe away and probe, short push"),
-                ("right", "strafe the other way, short push"),
-                ("down", "reverse out of the obstruction, short push"),
-                ("up", "advance again after the sidestep, short push"),
-                ("left", "second pass, longer push"),
-                ("right", "second pass, longer push"))
-        key, why = plan[min(self.recoveries, len(plan)) - 1]
+        # **The stick is camera-relative**, so when the character is wedged every one of the four directions can point
+        # into the same wall - and a hold only pushes harder. Measured at (310,540) in Forest 1, heading 186 degrees:
+        # every hold moved 0.0 for seventy seconds; one turn to heading 359 and the same "up" hold moved 7 units, and
+        # four turn-then-hold cycles carried it from (310,540) to (317,569). So the escapes alternate: a turn, then a
+        # short push in the new frame.
+        if self.recoveries % 2 == 1:
+            return press("left", f"watchdog recovery {self.recoveries}/{self.max_recoveries}: turn - the stick is "
+                                 f"camera-relative and every direction may point into the same wall")
         # A 0.45 s hold travels ~35 units (release latency), and at a map boundary that is enough to push the character
-        # into the geometry it cannot leave: measured at (607,520), after two escape holds the character ignored every
-        # direction and only attack animations nudged it 0.3 units. Short pushes first; the longer pair only afterwards.
-        seconds = 0.18 if self.recoveries <= 4 else 0.35
-        return hold(key, seconds, f"watchdog recovery {self.recoveries}/{self.max_recoveries}: {why}")
+        # into the geometry it cannot leave. Short pushes.
+        return hold("up", 0.30, f"watchdog recovery {self.recoveries}/{self.max_recoveries}: short push in the "
+                                f"turned frame")
 
     def exhausted(self) -> bool:
         return self.recoveries > self.max_recoveries
@@ -980,6 +980,7 @@ class HeadingMotion:
 # Progression policy: what to do next, in dependency order
 # ---------------------------------------------------------------------------------------------------------------------
 SWITCH_CLASSES = frozenset({"TObjDoorKey", "TLazerFenceSw", "TOKeyGenericSw"})
+CITY_ROOMS = ("10", "20", "40")     # Pioneer 2 rooms; the forest uses other numbers
 DOOR_CLASSES = frozenset({"TObjDoor", "TObjLazerFenceNorm", "TOBarrierEnergy01", "TObjLazerFence"})
 CONTAINER_HINTS = ("Container", "Capsule", "Trap")
 
@@ -1062,9 +1063,10 @@ class ProgressionPolicy:
                         continue                              # verified this session: a flag bit changed for it
                     candidates.append(Objective(2, "switch", (float(entity["x"]), float(entity["z"])),
                                                 distance, cls, ptr, None, "switch for the way on"))
-                elif cls == "TObject":
-                    # Warp pads are TObjects with no room: (360,26) in Pioneer 2 is the Forest 1 pad, verified by two
-                    # floor 0 -> 1 transitions after an A press.
+                elif cls == "TObject" and str(player.get("room")) in CITY_ROOMS:
+                    # Warp pads are TObjects with no room, and only Pioneer 2's pads are the way on: (360,26) took the
+                    # character to Forest 1 twice, verified. In the Forest the TObjects are the pads *back*, and
+                    # targeting them ping-pongs: measured (366,8) -> (574,486) -> (336,14) through two pads in one run.
                     candidates.append(Objective(0, "warp", (float(entity["x"]), float(entity["z"])),
                                                 distance, cls, ptr, None, "warp pad"))
                 elif cls in DOOR_CLASSES:
