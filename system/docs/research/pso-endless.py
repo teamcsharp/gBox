@@ -18,11 +18,15 @@ from __future__ import annotations
 
 import json
 import math
+import pathlib
 import sys
 import time
 import traceback
 
 from pso_pad import Pad, call
+
+# The operator's controller relay (controller_relay.py) creates this while they are playing, so the bot stands down.
+OPERATOR_PLAYING = pathlib.Path(r"D:\gBox\pso-ds\operator-playing.flag")
 
 # The game's own affordance classifier, so a door key is recognised from its entity CLASS in RAM rather than guessed
 # from distance: SWITCH_CLASSES {'TLazerFenceSw', 'TObjDoorKey'} must be PRESSED, DOOR_CLASSES {'TObjDoor',
@@ -351,6 +355,40 @@ def open_all_gates(pad: Pad) -> str:
     return f"floor {floor}: {'all gates open' if ok else 'flag write did not stick'}"
 
 
+DIFFICULTY_GLOBAL = 0x805D5550      # 0 normal, 1 hard, 2 very hard, 3 ultimate
+
+
+def set_ultimate(pad: Pad) -> str:
+    """Force Ultimate and verify it - the objective asks for the whole game on Ultimate, and this is live memory."""
+    import struct as _struct
+
+    before = call("/api/sessions/%s/rpc" % pad.sid,
+                  {"op": "read_memory", "args": {"address": DIFFICULTY_GLOBAL, "length": 4}}, "POST")
+    try:
+        current = int.from_bytes(bytes.fromhex(before), "big")
+    except Exception:                                      # noqa: BLE001
+        current = None
+    if current == 3:
+        return "already Ultimate"
+    job = call("/api/jobs", {"tool": "write_memory", "require_worker": pad.worker,
+                             "input": {"session_id": pad.sid, "address": DIFFICULTY_GLOBAL,
+                                       "hex_bytes": _struct.pack(">I", 3).hex()}}, "POST")
+    job_id = job.get("id") if isinstance(job, dict) else None
+    for _ in range(8):
+        time.sleep(0.3)
+        row = call("/api/jobs/" + job_id) if job_id else {}
+        if row.get("state") in ("succeeded", "failed", "cancelled"):
+            break
+    time.sleep(0.2)
+    after = call("/api/sessions/%s/rpc" % pad.sid,
+                 {"op": "read_memory", "args": {"address": DIFFICULTY_GLOBAL, "length": 4}}, "POST")
+    try:
+        now = int.from_bytes(bytes.fromhex(after), "big")
+    except Exception:                                      # noqa: BLE001
+        now = None
+    return f"{current} -> {now}" + ("  (Ultimate)" if now == 3 else "  (DID NOT STICK)")
+
+
 def arm(pad: Pad) -> None:
     """Make this cycle's character able to play: unblockable, armed, and unable to stay dead.
 
@@ -370,6 +408,7 @@ def arm(pad: Pad) -> None:
         answer = mods(pad, payload)
         log(f"  {payload['op']} {payload.get('code', '')}: {answer.get('state')} "
             f"{str(answer.get('error'))[:70]}")
+    log(f"  difficulty: {set_ultimate(pad)}")
     log(f"  gates: {open_all_gates(pad)}")
     ARMED_SESSIONS.add(pad.sid)
 
@@ -435,6 +474,7 @@ def unstick(pad: Pad, attempts: int = 3) -> str:
                 log(f"  wedged at ({hx:.0f},{hy:.0f},{hz:.0f}) - relocating {dx:+.0f},{dz:+.0f} at the same height")
                 if not teleport(pad, hx + dx, hy, hz + dz):
                     continue
+                time.sleep(1.2)                     # let the game settle the character before judging the move
                 before_move = state(pad).get("player") or {}
                 start = (float(before_move.get("x") or 0), float(before_move.get("z") or 0))
                 hold(pad, "up", 0.8)
@@ -466,6 +506,17 @@ def play(pad: Pad, seconds: float = 120.0) -> str:
     last_enemy_hp = {}
 
     while time.time() - started < seconds:
+        # The operator's controller relay drops this file while they are touching the pad: stand down so the bot does
+        # not fight them for it. They get the game; the bot waits.
+        if OPERATOR_PLAYING.exists():
+            if not globals().get("_PAUSED_LOGGED"):
+                log("  operator is playing - bot standing down")
+                globals()["_PAUSED_LOGGED"] = True
+            time.sleep(0.4)
+            continue
+        else:
+            globals()["_PAUSED_LOGGED"] = False
+
         now = state(pad)
         player = now.get("player") or {}
         if not player:
