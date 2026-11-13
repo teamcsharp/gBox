@@ -14,6 +14,13 @@ from .re6_traversal import Landing, at_landing
 
 ROOT = Path(__file__).resolve().parents[2] / 'gbox-data' / 'mercs' / 'native-remote-receipts'
 TRAVEL_CM, REQUEST_GAP_S = 609.6, 3.0
+#: The operator's automine asks for an armed bomb every 20 ft of measured travel. A live bomb normally held the
+#: next set until it detonated, so on 2026-11-13 a 4-minute No Mercy round produced one bomb: the bot fought, never
+#: ran the rule's 1100 cm escape distance in one go, and the lane starved. A bomb this far BEHIND him is already
+#: escaped: one more travel drop may be chained while it lies there. Safety is unchanged - detonation still reads
+#: every actual bomb and refuses below detonate_safe_cm - and every deadline stays its own (recorded as missed when
+#: it is). Emergency rings still wait for the old set, and any bomb nearer than this still blocks production.
+TRAIL_CHAIN_CM = TRAVEL_CM - 100.
 TRAVEL_ACTIONS = frozenset('cPlAction_pl_act_' + name for name in (
     'walk', 'run', 'dash', 'weapon_ready_move', 'weapon_fire'))
 
@@ -73,7 +80,7 @@ class Travel:
         self.distance, self.last_request = 0., now
 
 
-def single_drop_now(ad, owner, cancelled, *, preflight=None, op='bomb_trail'):
+def single_drop_now(ad, owner, cancelled, *, preflight=None, op='bomb_trail', allow_existing=False):
     """One body-position drop with an atomic all-bomb and held-gun preflight."""
     from .titles import re6_switch_native as native
     result = {'op': op, 'state': 'unavailable', 'verified': False,
@@ -92,7 +99,7 @@ def single_drop_now(ad, owner, cancelled, *, preflight=None, op='bomb_trail'):
             units = native.R.owned_throwables(ctl, ctl.base, owner[1])
             if not isinstance(units, list):
                 raise native.Unavailable('live native bomb census is unavailable')
-            if any(u.get('kind') == 'remote' for u in units):
+            if any(u.get('kind') == 'remote' for u in units) and not allow_existing:
                 raise native.Unavailable('existing native remote bomb must resolve before a travel drop')
             before = ctl.current_weapon()
             if before is None:
@@ -342,8 +349,8 @@ def control(ad, prof, bot_getter=None):
         if (not policy['enabled'] or stats.get('operator_control') or stats.get('round_evidence_closed')
                 or stats.get('screen') not in (None, 'playing')):
             return dict(result, reason='automatic remote rings are switched off')
-        if flight.busy or stats.get('mine_deadline_pending'):
-            return dict(result, reason=result.get('reason') or 'existing bombs: escape and detonate before another ring')
+        if flight.busy:
+            return dict(result, reason=result.get('reason') or 'native bomb allocation already in progress')
         if blocked_owner == owner_of(snap, stats):
             return dict(result, reason=stats.get('mine_allocation_blocked_reason'))
         p = snap.get('player') or {}
@@ -353,12 +360,20 @@ def control(ad, prof, bot_getter=None):
         # observations must not manufacture an empty field or reset a fuse.
         if not isinstance(snap.get('throwables'), list):
             return dict(result, reason='waiting for a complete native bomb census')
-        if any(u.get('kind') == 'remote' for u in snap['throwables']):
+        pos = p['pos']
+        remotes = [u for u in snap['throwables'] if isinstance(u, dict) and u.get('kind') == 'remote']
+        behind = [tuple(u['pos']) for u in remotes if position(u.get('pos'))]
+        # Every armed bomb normally holds the next set until it detonates. One bomb this far behind him is already
+        # escaped, so a moving bot may chain the next 20 ft travel drop while it lies there (TRAIL_CHAIN_CM); a
+        # bomb nearer than that, or a census missing its position, still blocks every kind of drop. Detonation
+        # still reads every actual bomb and refuses below the rule's clearance.
+        chaining = (bool(remotes) and len(behind) == len(remotes)
+                    and all(math.dist(pos, b) >= TRAIL_CHAIN_CM for b in behind))
+        if remotes and not chaining:
             return dict(result, reason='native remote bomb still present; wait for placement or completed blast')
         bot = bot_getter() if callable(bot_getter) else None
         if bot is not None and (getattr(bot, 'bomb_phase', None) is not None or getattr(bot, 'nade', None) is not None):
             return dict(result, reason="the driver's own bomb or grenade action is in progress")
-        pos = p['pos']
         near = sum(1 for e in snap.get('enemies') or [] if (e.get('hp') or 0) > 0 and e.get('pos')
                    and math.dist(pos, e['pos']) <= rules.SURROUND_R_CM)
         recovery = stats.get('qte_escape_mines_due')
@@ -368,8 +383,11 @@ def control(ad, prof, bot_getter=None):
         surrounded = near >= rules.SURROUND_N and now - float(stats.get('mine_surround_at') or 0) >= rules.SURROUND_S
         emergency = flash or surrounded
         landed = not emergency and landing.due()
-        if not emergency and not landed and not travel.due(now):
+        travel_due = travel.due(now)
+        if not emergency and not landed and not travel_due:
             return dict(result, reason=f'measured travel {travel.distance:.0f}/{TRAVEL_CM:.0f} cm; no stationary timer drops')
+        if stats.get('mine_deadline_pending') and not (travel_due and not emergency and not landed and chaining):
+            return dict(result, reason=result.get('reason') or 'existing bombs: escape and detonate before another ring')
         count, radius = (rules.FLASH_COMBO_MINES, policy['radius_cm']) if emergency else (1, 0.)
         owner = owner_of(snap, stats)
         landing_evidence, landing_mesh = landing.pending, landing.mesh
@@ -384,7 +402,7 @@ def control(ad, prof, bot_getter=None):
             if landed:
                 return landing_drop_now(ad, owner, stopped, landing_mesh, landing_evidence)
             if not emergency:
-                return single_drop_now(ad, owner, stopped)
+                return single_drop_now(ad, owner, stopped, allow_existing=chaining)
             return emergency_ring_now(ad, owner, stopped, count, radius)
         metadata = {'count': count, 'radius_cm': radius,
                  'reason': 'flash' if flash else 'surrounded' if surrounded else 'traversal_landing' if landed else 'travel',

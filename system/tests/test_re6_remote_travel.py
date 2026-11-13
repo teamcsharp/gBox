@@ -82,7 +82,7 @@ def travel(step, st, start=100., base=0., **player):
 def test_twenty_feet_of_measured_run_drops_one_bomb_and_waits_for_escape(lane, monkeypatch):
     step, st, flight = lane
     calls = []
-    monkeypatch.setattr(C, 'single_drop_now', lambda *a: calls.append(a[1]) or
+    monkeypatch.setattr(C, 'single_drop_now', lambda *a, **k: calls.append(a[1]) or
                         dict(op='bomb_trail', state='confirmed', placed=1, units=[placed()]))
     monkeypatch.setattr(N, 'bomb_detonate_now', lambda *a, **k: calls.append('flag') or
                         dict(verified=True, count=1, detonated=[10], triggered_at=104.))
@@ -154,6 +154,33 @@ def test_old_bombs_block_both_travel_and_emergency_production(lane, monkeypatch)
     assert st['mine_escape_required'] and st['mine_clearance_cm'] == 600.
 
 
+def test_a_bomb_left_behind_lets_the_next_twenty_feet_chain_while_it_lies(lane, monkeypatch):
+    """The operator's automine asks for a bomb every 20 ft of measured travel.
+
+    Before this, one armed bomb starved the lane (a 4-minute live No Mercy round on 2026-11-13 produced a single
+    bomb): the bot fought and never covered the rule's 1100 cm escape distance in one run. A bomb already behind
+    him is escaped, so the next 20 ft travel drop chains while it lies there. Safety is unchanged: detonation
+    reads every actual bomb, and a bomb nearer than TRAIL_CHAIN_CM still blocks all production, as do the
+    emergency rings (they wait for the old set).
+    """
+    step, st, flight = lane
+    calls = []
+    monkeypatch.setattr(C, 'single_drop_now', lambda *a, **k: calls.append(k) or
+                        dict(op='bomb_trail', state='confirmed', placed=1, units=[placed()]))
+    # The bomb lies far behind him; no enemies (no emergency, no landing).
+    for i, x in enumerate((0., 200., 400., 609.6)):
+        step(snap(x, units=[bomb(x=-1200.)]), st, 100. + .25 * i, lambda _: None)
+    assert st['mine_deadline_pending'] == 1
+    assert len(flight.requests) == 1 and flight.requests[0]['reason'] == 'travel'
+    flight.finish()                                   # the worker runs the native drop outside the input tick
+    assert calls and calls[0].get('allow_existing') is True
+    # An emergency ring still waits for the bomb out, even with it far behind.
+    sent = len(flight.requests)
+    st['ring_flash_at'] = 102.
+    step(snap(700., units=[bomb(x=-1200.)]), st, 102.1, lambda _: None)
+    assert len(flight.requests) == sent
+
+
 def test_late_receipt_and_unknown_census_keep_new_and_old_hazards(lane):
     step, st, flight = lane
     travel(step, st)
@@ -201,7 +228,7 @@ def test_uncertain_allocation_is_not_replayed_until_new_player_life(lane):
 def test_worker_refuses_if_player_stopped_before_controller_became_available(lane, monkeypatch):
     step, st, flight = lane
     seen = []
-    monkeypatch.setattr(C, 'single_drop_now', lambda ad, owner, cancelled:
+    monkeypatch.setattr(C, 'single_drop_now', lambda ad, owner, cancelled, **k:
                         seen.append(cancelled()) or dict(state='unavailable', placed=0))
     travel(step, st)
     step.observe(snap(609.6), st, 101.1)
