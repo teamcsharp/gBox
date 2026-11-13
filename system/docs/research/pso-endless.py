@@ -842,22 +842,35 @@ def play(pad: Pad, seconds: float = 120.0) -> str:
                 killed += 0
                 attacks += 1
             else:
-                approach_side = globals().get("APPROACH_SIDE", 1)
-                before = distance
-                hold(pad, "left" if approach_side > 0 else "right", 0.18)
-                hold(pad, "up", 0.75)
-                found_after = state(pad)
-                after_enemies = [e for e in (found_after.get("entities") or [])
-                                 if str(e.get("kind")) == "enemy" and e.get("hp") is not None
-                                 and float(e.get("hp")) > 0]
-                if after_enemies:
-                    near = min(after_enemies, key=lambda e: (float(e.get("x") or 0) - float((found_after.get("player") or {}).get("x") or 0)) ** 2
-                               + (float(e.get("z") or 0) - float((found_after.get("player") or {}).get("z") or 0)) ** 2)
-                    px = float((found_after.get("player") or {}).get("x") or 0)
-                    pz = float((found_after.get("player") or {}).get("z") or 0)
-                    after_distance = math.hypot(float(near.get("x") or 0) - px, float(near.get("z") or 0) - pz)
-                    if after_distance > before - 0.5:
-                        globals()["APPROACH_SIDE"] = -approach_side
+                # TELEPORT-WALK to the enemy, exactly as the boxes are reached: the map's route over safe cells, no
+                # heading involved. Measured on boxes: 115 units -> 5.4 in one call. The hill-climb that used to be
+                # here wandered 115-167 for fourteen samples because heading_deg is not a reliable compass.
+                walked = False
+                if teleport_walk is not None:
+                    try:
+                        teleport_walk(pad, tx, tz, max_hops=10)
+                        walked = True
+                    except Exception:                      # noqa: BLE001
+                        walked = False
+                if not walked:
+                    # the map could not help: steer as before
+                    approach_side = globals().get("APPROACH_SIDE", 1)
+                    before = distance
+                    hold(pad, "left" if approach_side > 0 else "right", 0.18)
+                    hold(pad, "up", 0.75)
+                    found_after = state(pad)
+                    player_after = (found_after.get("player") or {})
+                    px = float(player_after.get("x") or 0)
+                    pz = float(player_after.get("z") or 0)
+                    after_enemies = [e for e in (found_after.get("entities") or [])
+                                     if str(e.get("kind")) == "enemy" and e.get("hp") is not None
+                                     and float(e.get("hp")) > 0]
+                    if after_enemies:
+                        near = min(after_enemies, key=lambda e: (float(e.get("x") or 0) - px) ** 2
+                                   + (float(e.get("z") or 0) - pz) ** 2)
+                        after_distance = math.hypot(float(near.get("x") or 0) - px, float(near.get("z") or 0) - pz)
+                        if after_distance > before - 0.5:
+                            globals()["APPROACH_SIDE"] = -approach_side
                 moved += 1
         else:
             # No enemies: find the way forward, in priority order. All of it comes from RAM - entity CLASSES and the
