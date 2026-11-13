@@ -911,6 +911,35 @@ class ShiftingWorld(FakeWorld):
         self.pos[1] += rdz * step
 
 
+def test_wall_follow_steps_around_a_wall_where_hill_climb_grinds(workdir):
+    """A wall dead ahead is not a gain-table problem: every key that closes the distance hits the wall, so the hill
+    climber grinds in place - which is exactly what the bot did in Forest 1 room 4. The wall follower aims sideways for
+    a few taps, then resumes the target."""
+    effects = {"up": (8.0, 0.0), "down": (-8.0, 0.0), "left": (0.0, 8.0), "right": (0.0, -8.0)}
+
+    def blocked(here, nxt):
+        # A wall at x = 40 spanning z -20..20: east is blocked, north/south is free.
+        return here[0] < 40.0 <= nxt[0] and -20.0 <= nxt[1] <= 20.0
+
+    def travel(motion, limit=120):
+        """The closest the motion gets to the target within `limit` taps (a wall can trap it far away)."""
+        pos = [0.0, 0.0]
+        best = math.dist(pos, (100.0, 0.0))
+        for _ in range(limit):
+            action = motion.step({"x": pos[0], "z": pos[1]}, (100.0, 0.0))
+            if action is None:
+                break
+            dx, dz = effects[action.key]
+            nxt = (pos[0] + dx, pos[1] + dz)
+            if not blocked(tuple(pos), nxt):
+                pos = [nxt[0], nxt[1]]
+            best = min(best, math.dist(pos, (100.0, 0.0)))
+        return best
+
+    assert travel(B.HillClimbMotion(arrive=6.0)) > 20.0, "the wall leaves the hill climber short, as it did live"
+    assert travel(B.WallFollowMotion(arrive=6.0, effects=effects)) <= 8.0, "the wall follower gets around it to the target"
+
+
 def test_hill_climbing_finds_the_closing_key_when_the_frame_keeps_shifting(workdir):
     """The frame is unknowable here: the mapping rotates 90 degrees every three taps, so no inferred frame survives.
 

@@ -607,6 +607,117 @@ class HillClimbMotion:
         return ranked[0]
 
 
+class WallFollowMotion:
+    """Close the distance; when a wall stops the taps, step sideways and go around it.
+
+    `HillClimbMotion` learns which key pays, but a wall dead ahead is not something a gain table can fix: every key that
+    closes the distance pushes into the wall, every key that moves is credited as bad, and the character grinds in place.
+    That is exactly what the operator watched for hours (and what the bot did in Forest 1 room 4, 220 units from its
+    target with the room outside the decoded map's frame).
+
+    So a blocked tap (one that moves less than `blocked_units`) sets a **detour target** `detour_units` to the side,
+    perpendicular to the aim direction; the same gain learning pursues it, then the real target is tried again. The side
+    alternates only after a detour fails to help, so the motion commits instead of oscillating.
+    """
+
+    def __init__(self, *, arrive: float = 6.0, min_gain: float = 1.0, patience: int = 2,
+                 blocked_units: float = 1.0, detour_units: float = 12.0, detour_taps: int = 3,
+                 keys: Iterable[str] = DIRECTIONS, effects: dict | None = None) -> None:
+        self.arrive = float(arrive)
+        self.min_gain = float(min_gain)
+        self.patience = int(patience)
+        self.blocked_units = float(blocked_units)
+        self.detour_units = float(detour_units)
+        self.detour_taps = int(detour_taps)
+        self.keys = tuple(keys)
+        # When the session has been calibrated, each key's measured displacement steers directly. Ranking keys by a
+        # gain table cannot: it took until tap 25 to pass the test wall and then orbited the target (live: the same
+        # orbit the operator has watched), because a gain is history, not a direction.
+        self.effects = {str(key): (float(value[0]), float(value[1])) for key, value in (effects or {}).items()
+                        if len(value) >= 2}
+        self.key = None
+        self.last_key = None
+        self.last_pos = None
+        self.last_dir = None
+        self.last_point = None
+        self.gains = {key: 0.0 for key in self.keys}
+        self.misses = 0
+        self.detour: tuple | None = None
+        self.side = 1.0
+        self.detour_steps = 0
+        self.detours = 0
+
+    def step(self, player: dict, target: tuple, reason: str = "") -> Action | None:
+        x, z = float(player.get("x") or 0), float(player.get("z") or 0)
+        here = (x, z)
+        if self.last_key is not None and self.last_pos is not None and self.last_dir is not None:
+            delta = math.dist(here, self.last_pos)
+            moved = (x - self.last_pos[0]) * self.last_dir[0] + (z - self.last_pos[1]) * self.last_dir[1]
+            if moved >= self.min_gain:
+                self.gains[self.last_key] += moved
+                self.misses = 0
+            else:
+                self.gains[self.last_key] -= 2.0
+                self.misses += 1
+            if delta < self.blocked_units:
+                self._blocked(here, target)
+        if self.detour is not None:
+            self.detour_steps += 1
+            if (math.dist(here, self.detour) <= self.arrive
+                    or self.detour_steps > self.detour_taps * max(1, self.patience + 1)):
+                self.detour = None
+                self.detour_steps = 0
+        goal = self.detour if self.detour is not None else target
+        dx, dz = float(goal[0]) - x, float(goal[1]) - z
+        distance = math.hypot(dx, dz)
+        if distance <= self.arrive and self.detour is None:
+            return None
+        ux, uz = _unit(dx, dz)
+        if self.effects:
+            self.key = self._steer(ux, uz)
+        elif self.key is None or self.misses >= self.patience:
+            self.key = self._next_key()
+            self.misses = 0
+        self.last_key = self.key
+        self.last_pos = here
+        self.last_dir = (ux, uz)
+        where = "detour" if self.detour is not None else (reason or "target")
+        return press(self.key, f"tap {self.key} ({distance:.0f} units toward {where}, "
+                              f"gain {self.gains[self.key]:+.1f})")
+
+    def _blocked(self, here: tuple, target: tuple) -> None:
+        if self.detour is not None:
+            return                          # already going around; let the detour finish
+        ux, uz = _unit(float(target[0]) - here[0], float(target[1]) - here[1])
+        # Perpendicular to the aim: step around the obstacle, then aim at the target again.
+        self.detour = (here[0] - uz * self.detour_units * self.side,
+                       here[1] + ux * self.detour_units * self.side)
+        self.detour_steps = 0
+        self.detours += 1
+        # One consistent side: flipping after a fixed count undid progress (measured: 161 taps for a 121-unit path
+        # because every third detour turned back). A finite obstacle always ends on one side.
+
+    def _steer(self, ux: float, uz: float) -> str:
+        """The calibrated key pointing most nearly along the aim."""
+        best, best_dot = None, -2.0
+        for key in self.keys:
+            effect = self.effects.get(key)
+            if effect is None:
+                continue
+            ex, ez = _unit(effect[0], effect[1])
+            dot = ex * ux + ez * uz
+            if dot > best_dot:
+                best, best_dot = key, dot
+        return best or self.keys[0]
+
+    def _next_key(self) -> str:
+        ranked = sorted(self.keys, key=lambda key: -self.gains[key])
+        for key in ranked:
+            if key != self.last_key:
+                return key
+        return ranked[0]
+
+
 @dataclass
 class Calibration:
     """What each key actually did, measured once at the start of a session.
