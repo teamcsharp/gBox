@@ -1236,7 +1236,7 @@ def _screen_impl(m, merc=None, now: float | None = None) -> dict:
             where, cursor, target = "main_menu", _i32(m, ui["uIdStartUp00"] + MENU_CURSOR), MAIN_PLAY_GAME
         elif "uIdTitle00" in ui and getattr(m, "mercs_split_screen", False) is True                 and snap.get("mercenaries_mode") == "no_mercy":
             # split screen's lobby (a live run 2026-10-27, real frames): after the stage select, "THE MERCENARIES NO
-            # MERCY · <stage>", Player 1 joined, Player 2's slot "Press -/+ to join", A starts the game. Its own unit is
+            # MERCY Â· <stage>", Player 1 joined, Player 2's slot "Press -/+ to join", A starts the game. Its own unit is
             # not named yet; the title unit stays listed under it, and a real title never has the No Mercy mode set
             where = "split_lobby"
         elif "uIdTitle00" in ui:
@@ -2507,6 +2507,10 @@ BOMB_CROWD_N, BOMB_CROWD_R = 2, 300.0
 # still kept; only the pure-movement monopoly ends. Deadlines are never waived: the blast is still set off only from
 # the rule's clearance, and a missed deadline stays in mine_deadline_incidents.
 ESCAPE_TIMEOUT_S, ESCAPE_TIMEOUT_FIGHT_R = 12.0, 600.0
+#: A timed-out escape retries on this cycle (live 2026-11-13): sprint ESCAPE_SPRINT_S toward open floor, fight in
+#: between, and detonate the moment the live clearance passes the rule. The old one-shot timeout meant no further
+#: pure-movement attempt ever happened once 12 s had passed, so a set could stay pending for the whole round.
+ESCAPE_SPRINT_S, ESCAPE_CYCLE_S = 6.0, 24.0
 DEATH_LOG_N, HP_HIST_S = 8, 3.0         # stats death_log: the last deaths, each with his last HP_HIST_S
 BOMB_STUCK_S, BOMB_SIDE_S = 0.6, 0.8    # walking off it: not 30 cm further in this long, a side step this long
 BOMB_HURT_HP = 50                       # a blast that takes this much of his health (BOMB_LEARN_S): stats bomb_self_hits
@@ -4599,7 +4603,7 @@ class Bot:
         if any(now - t <= 1.5 and isinstance(h, (int, float)) and isinstance(hp_now, (int, float))
                and h > hp_now for t, h, _ in self.hp_hist):
             self._burst().end('damage_response')  # emergency flash/heal may interrupt the commitment
-        # #5056: just took HP loss with no enemy within HAZARD_CONTACT_R — the damage came from a ranged enemy
+        # #5056: just took HP loss with no enemy within HAZARD_CONTACT_R â€” the damage came from a ranged enemy
         # (or a hazard), not a melee attacker. Break out of the current decision mode (cc_kick, quick_turn,
         # bonus_run, etc.) and turn to fight the ranged enemy or move to safety, rather than continuing the
         # current action that left the bot exposed.
@@ -5698,7 +5702,7 @@ class Bot:
     def _prompt(self, p, snap, now) -> dict | None:
         """A shown prompt's button, pressed at once and again every PROMPT_REPEAT_S while it stays. None: no prompt to
         take this tick. A flanking crowd (4+ within CC_CROWD_R) defers the press: lowering the gun to take a prompt
-        in a surround is the crowd_gun_down trigger (cluster b294c62b554c77fd) — the bot waits for the crowd to
+        in a surround is the crowd_gun_down trigger (cluster b294c62b554c77fd) â€” the bot waits for the crowd to
         thin before pressing, matching the crowd_hold convention used by the other decision paths."""
         shown = getattr(self, "_prompt_shown", None) or []
         if not PROMPTS or not shown:
@@ -5715,7 +5719,7 @@ class Bot:
             if (key is None or (prompt_skipped(q) and not heal)
                     or (key != 'stick' and now - live["at"] < PROMPT_REPEAT_S)):
                 continue
-            # crowd guard: 4+ live enemies on his level within CC_CROWD_R → defer the press (gun stays up)
+            # crowd guard: 4+ live enemies on his level within CC_CROWD_R â†’ defer the press (gun stays up)
             n = sum(1 for e in (snap.get("enemies") or ()) if (e.get("hp") or 0) > 0
                     and abs(e["pos"][1] - p["pos"][1]) <= MAX_DY
                     and math.hypot(e["pos"][0] - px, e["pos"][2] - pz) <= CC_CROWD_R)
@@ -7476,16 +7480,27 @@ class Bot:
         deadline_escape = act == 'bomb_escape' and self.stats.get('mine_escape_required')
         timed_out = False
         if deadline_escape:
-            elapsed = self.stats.get('mine_elapsed_s')
-            if isinstance(elapsed, (int, float)) and math.isfinite(elapsed) and elapsed >= ESCAPE_TIMEOUT_S:
-                # The five-second deadline is already missed and recorded with its reason (mine_deadline_incidents):
-                # the pure-movement monopoly ends here. The route is kept and the gun comes back up, so a live round
-                # cannot be walked away with the combo dying (stats escape_timeouts) while the blast is still only
-                # ever set off from the rule's clearance.
-                timed_out, deadline_escape = True, False
-                if getattr(self, '_escape_timeout_for', None) != self.stats.get('mine_oldest_placed_at'):
-                    self._escape_timeout_for = self.stats.get('mine_oldest_placed_at')
-                    self.stats['escape_timeouts'] = self.stats.get('escape_timeouts', 0) + 1
+            # One sprint is not a plan: live 2026-11-13 a set 1150 cm away stayed pending for 183 s because the
+            # single 12 s window expired and the bot then fought near the bomb (which walks it back inside the
+            # margin) for the rest of the round, with no pure-movement attempt ever again. Cycle the two: sprint
+            # ESCAPE_SPRINT_S at a time toward open floor, fight in between, and the native flag still detonates
+            # the instant the live clearance passes the rule (re6_remote_control.observe runs every tick).
+            started = self.stats.get('mine_escape_started_at')
+            if isinstance(started, (int, float)) and math.isfinite(started):
+                phase = (now - started) % ESCAPE_CYCLE_S
+                if phase >= ESCAPE_SPRINT_S:
+                    timed_out, deadline_escape = True, False
+                    window = int((now - started) // ESCAPE_CYCLE_S)
+                    if getattr(self, '_escape_window', None) != window:
+                        self._escape_window = window
+                        self.stats['escape_timeouts'] = self.stats.get('escape_timeouts', 0) + 1
+            else:
+                elapsed = self.stats.get('mine_elapsed_s')
+                if isinstance(elapsed, (int, float)) and math.isfinite(elapsed) and elapsed >= ESCAPE_TIMEOUT_S:
+                    timed_out, deadline_escape = True, False
+                    if getattr(self, '_escape_timeout_for', None) != self.stats.get('mine_oldest_placed_at'):
+                        self._escape_timeout_for = self.stats.get('mine_oldest_placed_at')
+                        self.stats['escape_timeouts'] = self.stats.get('escape_timeouts', 0) + 1
         fight_r = ESCAPE_TIMEOUT_FIGHT_R if timed_out else BOMB_FIGHT_R
         # A pre-placement crowd push may lead back toward the new bomb. Rank
         # the escape from its current position instead; the final floor guard
