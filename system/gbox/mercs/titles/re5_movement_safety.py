@@ -85,6 +85,11 @@ def guard(bot, action, snap, now):
     heading = _travel_heading(player, held)
     if heading is None:
         return action
+    if bot.stats.get('target_feedback_ram') is True:
+        # Native aim can rotate the actor after this snapshot. A world-space
+        # safe heading cannot be certified from its previous rotation.
+        bot.stats['stage_hazard_heading_waits'] = bot.stats.get('stage_hazard_heading_waits', 0) + 1
+        return dict(action, hold=tuple(k for k in held if k not in MOVEMENT))
     pos = tuple(player['pos'])
     end = _end(mesh, pos, heading)
     hazard = hazards.blocked_segment(mesh, pos, end, departing=True)

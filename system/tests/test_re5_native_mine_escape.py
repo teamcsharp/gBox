@@ -165,6 +165,25 @@ def test_safely_departed_combat_is_left_unchanged():
     assert E.guard(bot, action, snap, 1.) is action
 
 
+def test_aim_write_needs_fresh_heading_but_early_escape_prevents_new_aim():
+    bot,snap = scene()
+    bot.stats['target_feedback_ram'] = True
+    assert E.guard(bot,{'hold':('zl','zr')},snap,1.) == {'hold':()}
+    # Before aim runs, the current snapshot is authoritative; a previous tick's
+    # feedback flag cannot prevent taking the escape lane this tick.
+    out = E.guard(bot,{'hold':('zl','zr')},snap,1.,before_aim=True)
+    assert 'zl' not in out['hold'] and 'zr' not in out['hold']
+    assert S._travel_heading(snap['player'],out['hold']) is not None
+
+
+def test_same_tick_aim_flag_cannot_override_mandatory_held_qte():
+    bot,snap = scene()
+    bot.stats['target_feedback_ram'] = True
+    snap['player']['motion'] = next(iter(R.MOTION_HELD))
+    action = {'hold':('lup',)}
+    assert E.guard(bot,action,snap,1.) is action
+
+
 def test_stage_incinerator_remains_a_hard_exclusion_during_mine_escape():
     from test_re5_stage_hazards import floor_grid
     bot, snap = scene(pos=(-2713., 470., -22500.), mines={1: (-2713., 470., -22000.)})

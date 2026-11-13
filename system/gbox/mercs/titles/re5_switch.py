@@ -6496,6 +6496,10 @@ class Bot:
         self._flash_self_tick(snap, now)                 # his own motion after a flash (flash_self_*: measured)
         act = self._flash_window(snap, act, now)         # the flash's seconds used: mine, grenade, step, fire
         self._defer_trigger = False
+        # Escape owns movement before aim may write the player's heading. It
+        # is checked again after wall/governor rewrites at final submission.
+        from .re5_native_mine_escape import guard as native_mine_escape_guard
+        act = native_mine_escape_guard(self, act, snap, now, before_aim=True)
         act = re5_target_feedback.apply(self, snap, act, now)
         act = re5_target_feedback.keep_active(self, snap, act, now)
         act = self._mesh_guard(act, snap)                # the way probed on the stage's own nav mesh before a wall
@@ -6510,7 +6514,6 @@ class Bot:
         act = self._shot_tail(act, snap, now)
         act = self._native_equipment(act, snap)
         act = self._special("post", act, snap, now) or act  # the stagger shot's site, the specials line in the why
-        from .re5_native_mine_escape import guard as native_mine_escape_guard
         act = native_mine_escape_guard(self, act, snap, now)
         from .re5_movement_safety import guard as stage_hazard_guard
         act = stage_hazard_guard(self, act, snap, now)  # final veto, after every movement rewrite

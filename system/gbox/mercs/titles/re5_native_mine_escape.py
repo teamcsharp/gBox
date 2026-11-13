@@ -144,7 +144,7 @@ def _mandatory(bot, snap, now):
     return None
 
 
-def guard(bot, action, snap, now):
+def guard(bot, action, snap, now, *, before_aim=False):
     """Own final movement while departing; later stage guard can still veto it."""
     from . import re5_switch as config
     player, mines = snap.get('player') or {}, getattr(bot, 'mines', None)
@@ -176,6 +176,11 @@ def guard(bot, action, snap, now):
             bot.doing, bot.why = 'mine', pause + '; releasing trigger before departure'
             return {'hold': ()}
         return action
+    if not before_aim and bot.stats.get('target_feedback_ram') is True:
+        bot._gun_down()
+        bot.doing, bot.why = 'mine', 'native aim changed heading; wait for fresh pose before escape movement'
+        bot.stats['native_mine_escape_pause'] = 'fresh player heading after native aim write'
+        return {'hold': ()}
     mesh = snap.get('nav')
     fingerprint = (getattr(mesh, 'sig', None), tuple(sorted((str(k), tuple(v)) for k, v in sites.items())),
                    tuple(sorted(getattr(bot, 'blocked_links', ()))))

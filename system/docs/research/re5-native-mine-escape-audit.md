@@ -46,6 +46,10 @@ Grab/QTE input and active native equipment/healing synchronization remain in
 control. During a boosted shot or its tail, the guard releases the trigger and
 keeps movement neutral until the animation lock ends, then departs. It does
 not perpetuate rapid fire while waiting for a movement opportunity.
+Departure also runs before the late aim controller, so that controller cannot
+rotate the player underneath a planned escape direction. Final submission
+requires a fresh player heading if an aim write nevertheless occurred; verified
+grab/QTE inputs retain priority over both mine and incinerator movement guards.
 
 128 focused tests passed across native mine escape, native scheduling/census,
 legacy mine compatibility and final stage movement safety. These are offline

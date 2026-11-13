@@ -136,3 +136,11 @@ def test_final_stage_guard_preserves_verified_grab_stick_qte():
     b.doing = 'prompt'
     b._prompt_type = lambda *a: 'enemy'
     assert S.guard(b,action,snap,11.) is action
+
+
+def test_stage_guard_does_not_reuse_heading_from_before_native_aim_write():
+    b,snap = setup()
+    b.stats['target_feedback_ram'] = True
+    out = S.guard(b,{'hold':('lup','b','zl','zr')},snap,10.)
+    assert out['hold'] == ('zl','zr')
+    assert b.stats['stage_hazard_heading_waits'] == 1
