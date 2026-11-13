@@ -27,9 +27,9 @@ import traceback
 from pso_pad import Pad, call
 
 try:
-    from teleport_walk import teleport_walk      # move to route waypoints: deterministic, no heading needed
+    from walk_to import walk_to                    # VISIBLY WALK to a target: one tap, measure, repeat
 except Exception:                                # noqa: BLE001
-    teleport_walk = None
+    walk_to = None
 
 import singleton                      # one bot only: a second loop fights the first for the pad
 
@@ -755,7 +755,7 @@ def play(pad: Pad, seconds: float = 120.0) -> str:
         trivials = [e for e in enemies
                     if float(e.get("hp") or 9999) <= TRIVIAL_HP
                     and math.hypot(float(e.get("x") or 0) - x, float(e.get("z") or 0) - z) <= 22.0]
-        if nearby_boxes and not trivials:
+        if nearby_boxes and not enemies:   # ENEMIES OUTRANK BOXES: kills are progress and levels
             box = min(nearby_boxes, key=lambda e: (float(e.get("x") or 0) - x) ** 2
                       + (float(e.get("z") or 0) - z) ** 2)
             bx, bz = float(box.get("x") or 0), float(box.get("z") or 0)
@@ -773,9 +773,9 @@ def play(pad: Pad, seconds: float = 120.0) -> str:
                     # TELEPORT-WALK along the map's route. Measured 115 -> 5.4 units in one call, versus five steering
                     # algorithms that wandered 115-167 and never closed because heading_deg is not a reliable compass.
                     now_b = bdist
-                    if teleport_walk is not None:
+                    if walk_to is not None:
                         try:
-                            now_b = teleport_walk(pad, bx, bz, max_hops=12)
+                            now_b, _ = walk_to(pad, bx, bz)
                         except Exception:                      # noqa: BLE001 - fall back to steering
                             now_b = bdist
                     if now_b > bdist - 1.0:
@@ -846,9 +846,9 @@ def play(pad: Pad, seconds: float = 120.0) -> str:
                 # heading involved. Measured on boxes: 115 units -> 5.4 in one call. The hill-climb that used to be
                 # here wandered 115-167 for fourteen samples because heading_deg is not a reliable compass.
                 walked = False
-                if teleport_walk is not None:
+                if walk_to is not None:
                     try:
-                        teleport_walk(pad, tx, tz, max_hops=10)
+                        walk_to(pad, tx, tz)
                         walked = True
                     except Exception:                      # noqa: BLE001
                         walked = False

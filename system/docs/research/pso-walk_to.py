@@ -24,8 +24,8 @@ sys.path.insert(0, r"C:\_tools\gBox\.tmp")
 
 from pso_pad import Pad, call                                     # noqa: E402
 
-TOLERANCE = 18.0        # degrees; comfortably inside the real 26-45 degree half-angle cones
-STEP = 0.5              # seconds of forward walk = ~10 units
+TOLERANCE = 20.0        # degrees; taps settle at ~10 deg so inside this we can step
+STEP = 0.22             # measured: 0.5s walks 31.6 units, so 0.22s is ~14 units - short enough not to overshoot
 ARRIVE = 12.0           # units; the real PMT reach is 13-30, so this is inside attack range
 DIRECTIONS = ("up", "down", "left", "right")
 
