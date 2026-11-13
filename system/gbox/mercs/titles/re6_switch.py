@@ -1028,9 +1028,10 @@ def snapshot(m) -> dict:
                 try:
                     pos = struct.unpack("<3f", m.rd(e + E_POS, 12))
                     hp, hp_max = struct.unpack("<hh", m.rd(e + E_HP, 4))
+                    generation = struct.unpack('<I', m.rd(e + 0x1308, 4))[0]
                 except (ValueError, OSError):
                     continue
-                snap["enemies"].append({"slot": slot, "ptr": e, "pos": pos, "hp": hp, "hp_max": hp_max,
+                snap["enemies"].append({"slot": slot, "ptr": e, 'generation': generation, "pos": pos, "hp": hp, "hp_max": hp_max,
                                         "class": enemy_class(m, e)})
         me = (snap.get("player") or {}).get("pos")
         if me is not None:                                  # what the near ones are doing (their wind-ups)
@@ -3755,7 +3756,6 @@ class Bot:
         self._round_start(snap, now)
         self.throw_aim.observe(snap, now)
         self._score_hits(snap, now)
-        self._aim_tick(snap, now)                            # the aim book: the open shots resolved and learned (AIM_BOOK)
         if UNIVERSAL_CORE:
             self._core_tick(p, snap, now)                        # the profile of this tick, who hurt him (combat.Threats)
         cooldown = p.get('fire_cooldown_s')
@@ -3769,9 +3769,13 @@ class Bot:
                          and cooldown > max(0., prior[1] + .001))
         if discharge:
             self.stats['native_fire_rearms_observed'] = self.stats.get('native_fire_rearms_observed', 0) + 1
+            if AIM_BOOK:
+                self._aim_core().confirm_discharge(now, (self.stats.get('round_evidence_id'), *fire_identity),
+                    snap.get('enemies'), unconfounded=self._aim_learning_clear(snap, now))
         self._native_fire_sample = ((fire_identity, cooldown, now) if isinstance(cooldown, (int, float))
                                     and math.isfinite(cooldown) else None)
         self._burst().observe((self.stats.get('round_evidence_id'), p.get('ptr'), p.get('generation')), now, discharge)
+        self._aim_tick(snap, now)  # confirm emission before resolving the trigger's damage window
         self._ppos = p["pos"]
         self._mesh = snap.get("navmesh")
         global _NAV_MESH
@@ -5210,8 +5214,16 @@ class Bot:
     def _aim_core(self):
         c = self.__dict__.get("_aim_book_core")
         if c is None:
-            c = self._aim_book_core = aim_book.AimCore(combat_profile(), self.stats, lead_prior_s=AIM_LEAD_PRIOR_S)
+            c = self._aim_book_core = aim_book.AimCore(combat_profile(), self.stats, lead_prior_s=AIM_LEAD_PRIOR_S,
+                                                      verified_only=True)
         return c
+
+    def _aim_learning_clear(self, snap, now):
+        units = snap.get('throwables')
+        recent = (self.melee_at, self.frag_last, self.flash_last, self.mind_at,
+                  self.stats.get('native_flash_confirmed_at'), self.stats.get('mine_last_detonate_at'))
+        return (isinstance(units, list) and not units
+                and all(v is None or now-v >= 1.0 for v in recent))
 
     def _aim_tick(self, snap, now) -> None:
         if AIM_BOOK:
@@ -5248,7 +5260,13 @@ class Bot:
             laser = source == "laser"
             self._aim_core().shot(now, e, plan, origin=origin if laser else None, at=dot if laser else None,
                                   contact=bool(on) if laser else None, los=False if self.is_blocked(e, now) else
-                                  (True if laser else None), family=aim_family(p), body=body(e))
+                                  (True if laser else None), family=aim_family(p), body=body(e),
+                                  extra={'learning_eligible': False,
+                                         'fire_identity': (self.stats.get('round_evidence_id'), p.get('ptr'),
+                                             p.get('generation'), p.get('equipped'), p.get('weapon_id')),
+                                         'unconfounded': self._aim_learning_clear(self._snap or {}, now),
+                                         'aim_settled': self.aim_since is not None and now-self.aim_since >= READY_S
+                                             and now-getattr(self, 'lock_redirect_at', -1e9) >= .15})
         except Exception as exc:                          # noqa: BLE001
             self.stats["aimbook_error"] = f"{type(exc).__name__}: {exc}"[:160]
 

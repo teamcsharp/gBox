@@ -93,6 +93,42 @@ def active(ctl):
     return {'item': item, 'object': obj, 'controller': wep}
 
 
+def current_weapon(ctl):
+    """A temporarily absent/zero object is unknown, never an invalid wire ID."""
+    ctl.ready()
+    item = (active(ctl) or {}).get('item')
+    return item if type(item) is int and item in WEAPONS else None
+
+
+def reconcile(ctl, life, held, current, rows):
+    """Retire uncertainty only on native completion plus coherent equipment.
+
+    Never resubmit an outstanding call. A new player life may establish its own
+    equipment; on the same life only the requested weapon resolves the receipt.
+    Legacy boolean uncertainty has no evidence and remains blocked.
+    """
+    from .re4_switch_native import Uncertain
+    receipt = getattr(ctl, 'weapon_uncertain', None)
+    if not receipt:
+        return
+    quiet = getattr(ctl, 'equipment_quiescent', None)
+    coherent = bool(held and current and current['item'] in WEAPONS and
+                    current['item'] == held['id'] == held.get('held_id') and held['id'] in rows)
+    if coherent:
+        row = rows[held['id']]
+        coherent = ctl.rd(ctl.base + W.GAME_OBJ + W.G_CLASS, 2) == bytes((row['class'], row['variant']))
+    if isinstance(receipt, dict) and callable(quiet) and quiet() and coherent:
+        new_life = tuple(receipt['life']) != tuple(life)
+        confirmed_late = receipt.get('stage') == 'refresh_returned' and held['id'] == receipt.get('item')
+        if new_life or confirmed_late:
+            ctl.weapon_resolution = dict(receipt, resolved='new_native_life' if new_life else 'late_object',
+                                         resolved_life=life, resolved_item=held['id'])
+            ctl.weapon_uncertain = None
+            return
+    detail = f"; first failure at {receipt.get('stage')}: {receipt.get('error')}" if isinstance(receipt, dict) else ''
+    raise Uncertain('previous native equip is unresolved; no repeat published' + detail)
+
+
 def choices(ctl):
     ctl.ready()
     rows = W.decode_weapon_table(ctl.rd(ctl.base + W.WEAPON_TBL, W.WEAPON_N * W.WEAPON_SZ))
@@ -127,8 +163,6 @@ def replace(ctl, item, *, expected=None, allowed=None):
             if game.get('phase') != 'playing' or not game.get('in_control'):
                 raise Unavailable('weapon replacement needs a live controllable player')
         guard()
-        if getattr(ctl, 'weapon_uncertain', False):
-            raise Uncertain('previous native equip is unresolved; no repeat published')
         for off, head in ((REFRESH, REFRESH_HEAD), (SELECT, SELECT_HEAD)):
             if ctl.rd(ctl.base + off, len(head)) != head:
                 raise Unavailable('native equipment routine signature changed')
@@ -136,6 +170,7 @@ def replace(ctl, item, *, expected=None, allowed=None):
         held = reader.equipped()
         current = active(ctl)
         rows = W.decode_weapon_table(ctl.rd(ctl.base + W.WEAPON_TBL, W.WEAPON_N * W.WEAPON_SZ))
+        reconcile(ctl, life, held, current, rows)
         if not held or not current or item not in rows or held['id'] not in rows:
             raise Unavailable('native equipped inventory/weapon cannot be identified')
         if reader.game_obj() != ctl.base + W.GAME_OBJ:
@@ -179,18 +214,22 @@ def replace(ctl, item, *, expected=None, allowed=None):
         payload = bytearray(old)
         struct.pack_into('<H', payload, 0, item)
         struct.pack_into('<HH', payload, 6, lv['packed'], loaded << 3)
-        published = False
+        published, stage = False, 'inventory'
         try:
             ctl.write(slot, bytes(payload))
             guard()
             published = True
+            stage = 'select_pending'
             ctl.call(SELECT, ctl.base + W.ITEM_MGR, slot)
+            stage = 'select_returned'
             guard()
             # Repair an earlier data-only swap's stale class using the actual
             # active object, so the native comparison cannot silently skip it.
             ctl.write(ctl.base + W.GAME_OBJ + W.G_CLASS,
                       bytes((actual_row['class'], actual_row['variant'])))
+            stage = 'refresh_pending'
             ctl.call(REFRESH, timeout=5.0)
+            stage = 'refresh_returned'
             guard()
             got = active(ctl)
             deadline = time.monotonic() + 1.0
@@ -207,9 +246,10 @@ def replace(ctl, item, *, expected=None, allowed=None):
                     'item': item, 'weapon': W.name(item), 'player': life[0],
                     'player_generation': life[1], 'weapon_generation': got['object'],
                     'weapon_object_item': got['item'], 'loaded': loaded, 'assets': assets}
-        except Exception:
+        except Exception as exc:
             if published:
-                ctl.weapon_uncertain = True  # no replay/rollback after native teardown may have begun
+                ctl.weapon_uncertain = {'life': life, 'item': item, 'stage': stage,
+                                        'error': f'{type(exc).__name__}: {exc}'[:240]}
             else:
                 ctl.write(slot, old)
             raise

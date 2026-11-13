@@ -523,7 +523,8 @@ def play(ad, send, stopped, sleep=time.sleep, stats: dict | None = None, *, cloc
             gs = _game(m, stats) if m is not None else None
             phase = gs.get("phase") if gs else None
             live = bool(gs) and phase in ("playing", "grabbed") and bool(gs.get("clock_running"))
-            ram_round = bool(gs) and phase in driver.ROUND_PHASES and (live or where in FRAME_UNSURE)
+            ram_round = (bool(gs) and phase in driver.ROUND_PHASES and (live or where in FRAME_UNSURE)
+                         and (in_round or phase not in ('dead', 'results')))
             if fresh:
                 checker.check(gs, where)
             stats["frame_screen"], stats["state_source"] = where, "ram" if gs is not None else "frame"
@@ -1036,6 +1037,7 @@ ROUND_COUNTERS = tuple(getattr(getattr(driver, "DRIVER", None), "round_counters"
 def _new_round(stats: dict, at: float) -> Round:
     """A round with the counters' starting values, so its end can record this round's own amounts."""
     rnd = Round(at)
+    stats.update(round_evidence_id=rnd.id, round_evidence_closed=False)
     rnd.counter_base = {key: stats.get(key, 0) for key in ROUND_COUNTERS}
     from .mercs import lessons, run_capture
     rnd.capture = run_capture.RunCapture(lessons.ROOT.parent / "round_maps", MAP_ID, rnd.id,
@@ -1062,6 +1064,7 @@ def _record_round(rnd: Round, end: dict, stats: dict) -> None:
     if getattr(rnd, "evidence_recorded", False):
         return
     rnd.evidence_recorded = True
+    stats['round_evidence_closed'] = True
     outcome = {"results": "completed", "dead": "died"}.get(end.get("screen"), "interrupted")
     pick = driver.SELECTION
     stage = driver.STAGES[pick.get("stage") or 0]

@@ -296,6 +296,20 @@ def test_normal_ram_round_runs_the_native_grenade_ring_controller(monkeypatch):
     assert calls and all(s.get('player') for s in calls)
 
 
+@pytest.mark.parametrize('phase', ['dead', 'results'])
+def test_terminal_ram_with_an_unclassified_frame_never_invents_another_round(monkeypatch, phase):
+    monkeypatch.setattr(B.screens, 'Reader', lambda: Reader(['unknown'] * 50))
+    monkeypatch.setattr(B, '_game', lambda *a: {'phase': phase, 'clock_running': False})
+    ticks = [0]
+    def stopped():
+        ticks[0] += 1
+        return ticks[0] > 12
+    stats = {}
+    B.play(Adapter([b'frame']*50), lambda rows: None, stopped, sleep=lambda s: None,
+           stats=stats, m=object())
+    assert stats['rounds'] == 0 and 'round_evidence_id' not in stats
+
+
 @pytest.mark.parametrize('stale', [True, False])
 def test_input_recorder_failure_never_stops_the_fight(monkeypatch, stale):
     from gbox.mercs.run_capture import RunCapture

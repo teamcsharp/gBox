@@ -128,3 +128,66 @@ def test_existing_character_resources_are_preserved():
     (4,19,0,23), (2,19,0,19), (0,10,2,32), (0,9,1,21), (5,7,0,7)])
 def test_character_asset_remapping_matches_native_loader(character, cls, variant, want):
     assert E.asset_index(character, cls, variant) == want
+
+
+def uncertain_equip():
+    ad = Ad(); _armoury(ad); ctl = ad.native
+    real = ctl.call
+    ctl.call = lambda off, *args, **kw: real(off, *args, **kw) if off == E.SELECT else None
+    with pytest.raises(Uncertain):
+        ctl.equip_primary(0x2A)
+    ctl.call = real
+    return ad, ctl
+
+
+def test_original_failure_is_retained_on_later_attempts():
+    ad, ctl = uncertain_equip()
+    receipt = dict(ctl.weapon_uncertain)
+    with pytest.raises(Uncertain, match='first failure at refresh_returned'):
+        ctl.equip_primary(0x2C)
+    assert ctl.weapon_uncertain == receipt
+
+
+@pytest.mark.parametrize('quiet', [False, True])
+def test_late_native_object_requires_quiescent_dispatch_before_reconciliation(quiet):
+    ad, ctl = uncertain_equip()
+    ctl.equipment_quiescent = lambda: quiet
+    obj = E.active(ctl)['object']
+    ad.write_memory(obj + R.OBJ_ITEM, struct.pack('<H', 0x2A))
+    ad.write_memory(BASE + W.GAME_OBJ + W.G_CLASS, bytes((W.CLASS_OF[0x2A], 0)))
+    before = len(ctl.calls)
+    if quiet:
+        result = ctl.equip_primary(0x2C)
+        assert result['verified']
+        assert ctl.weapon_resolution['resolved'] == 'late_object'
+    else:
+        with pytest.raises(Uncertain):
+            ctl.equip_primary(0x2C)
+        assert len(ctl.calls) == before
+
+
+@pytest.mark.parametrize('new_life,quiet', [(False,True),(True,False),(True,True)])
+def test_valid_new_life_can_retire_old_failed_equipment_without_replay(new_life, quiet):
+    ad, ctl = uncertain_equip()
+    # The engine has reset the new round to its native handgun.
+    ad.write_memory(ITEM, struct.pack('<H', 0x27))
+    ad.write_memory(BASE + W.ITEM_MGR + W.M_EQUIPPED_ID, struct.pack('<H', 0x27))
+    ad.write_memory(BASE + W.GAME_OBJ + W.G_CLASS, bytes((W.CLASS_OF[0x27], 0)))
+    ctl.ready = lambda: (ctl.player, 8 if new_life else 7)
+    ctl.equipment_quiescent = lambda: quiet
+    before = len(ctl.calls)
+    if new_life and quiet:
+        assert ctl.equip_primary(0x2C)['verified']
+        assert ctl.weapon_resolution['resolved'] == 'new_native_life'
+        assert [c[0] for c in ctl.calls[before:]] == [E.SELECT, E.REFRESH]
+    else:
+        with pytest.raises(Uncertain):
+            ctl.equip_primary(0x2C)
+        assert len(ctl.calls) == before
+
+
+def test_zero_current_object_is_unknown_for_controls_status():
+    ad = Ad(); _armoury(ad); ctl = ad.native
+    obj = E.active(ctl)['object']
+    ad.write_memory(obj + R.OBJ_ITEM, bytes(2))
+    assert E.current_weapon(ctl) is None

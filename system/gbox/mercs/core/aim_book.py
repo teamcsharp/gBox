@@ -355,13 +355,16 @@ class AimBook:
     """The two layers for one title (see the module text). key / ukey name the cells; correction() blends them;
     learn() takes a resolved shot; save() writes the title's file and its own sub-cells of the universal one."""
 
-    def __init__(self, title_id: str, root: Path | str | None = None, clock=time.time, lead_prior_s: float = LEAD_PRIOR_S):
+    def __init__(self, title_id: str, root: Path | str | None = None, clock=time.time,
+                 lead_prior_s: float = LEAD_PRIOR_S, verified_only: bool = False):
         self.title_id = str(title_id)
         self.root = Path(root) if root is not None else DATA
         self.clock = clock
         self.lead_prior_s = float(lead_prior_s)
-        self.path = self.root / self.title_id / FILE
-        self.upath = self.root / UNIVERSAL / FILE
+        self.verified_only = verified_only
+        filename = 'aim_book_verified.json' if verified_only else FILE
+        self.path = self.root / self.title_id / filename
+        self.upath = self.root / UNIVERSAL / filename
         self.cells: dict = {k: v for k, v in (_load(self.path).get("cells") or {}).items() if _cell_ok(v)}
         self.others: dict = {}                             # ukey -> {title: cell} of the OTHER titles (the prior)
         self.mine: dict = {}                               # ukey -> this title's universal sub-cell
@@ -445,10 +448,15 @@ class AimBook:
                           ("title+" if c else "") + "prior:" + ",".join(titles))
 
     # --- learning ---
+    def can_learn(self, shot: dict) -> bool:
+        return (shot.get('los') is not False and shot.get('outcome') in ('hit', 'kill', 'miss')
+                and (not self.verified_only or (shot.get('discharge_confirmed') is True
+                                               and shot.get('learning_eligible') is True)))
+
     def learn(self, shot: dict) -> list:
         """A resolved shot into the title cell and this title's universal sub-cell; [] when it teaches nothing (no line
         of sight, lost, unresolved)."""
-        if shot.get("los") is False or shot.get("outcome") not in ("hit", "kill", "miss"):
+        if not self.can_learn(shot):
             return []
         now = self.clock()
         c = self.cells.setdefault(self.key(shot.get("family"), shot.get("cls"), shot.get("band")), new_cell())
@@ -495,7 +503,8 @@ class AimBook:
 
 # --- the ledger -----------------------------------------------------------------------------------------------------------
 LOG_KEYS = ("target", "family", "cls", "kind", "band", "dist_cm", "los", "contact", "uv", "vlat", "lead_s", "corr",
-            "outcome", "cause", "hits", "hp_delta", "hp0", "cam", "gun", "source")
+            "outcome", "cause", "hits", "hp_delta", "hp0", "cam", "gun", "source",
+            'discharge_confirmed', 'discharge_source', 'learning_eligible', 'learning_refusal', 'aim_settled')
 
 
 def shot_row(s: dict, title_id: str, round_key=None) -> dict:
@@ -574,7 +583,7 @@ class Ledger:
         self.kills = None
         self.kill_at = []                                   # (when, how many) of the game's kill count rises
         self._errs: list = []
-        for k in ("shots", "hits", "kills", "misses", "lost", "learned") + tuple("miss_" + c for c in CAUSES):
+        for k in ("shots", "hits", "kills", "misses", "lost", "learned", "unconfirmed", "confirmed") + tuple("miss_" + c for c in CAUSES):
             self.stats.setdefault(f"{prefix}_{k}", 0)
 
     def _s(self, k, v=1):
@@ -649,10 +658,16 @@ class Ledger:
             s["cause"] = ("no_los" if s.get("los") is False else "off_body" if s.get("contact") is False else
                           "moved" if s.get("contact") and abs(s.get("vlat") or 0.0) >= MOVER_CM_S else
                           "on_body" if s.get("contact") else "unmeasured")
+        if self.book is not None and self.book.verified_only and not s.get('discharge_confirmed'):
+            s['outcome'] = 'unconfirmed'
+            s['learning_refusal'] = 'no matched native discharge; trigger attempt is not a miss'
         s["resolved_at"] = now
         out = s["outcome"]
         if self.log is not None:
             self.log.write(s, self.stats.get("round_evidence_id") or self.stats.get("rounds"))
+        if out == 'unconfirmed':
+            self._s('unconfirmed')
+            return
         if out == "lost":
             self._s("lost")
             return
@@ -673,7 +688,7 @@ class Ledger:
         self.stats[f"{self.prefix}_hit_rate"] = round(self.stats[f"{self.prefix}_hits"] / max(judged, 1), 3)
         if self.book is not None:
             ch = self.book.learn(s)
-            if s.get("los") is not False:
+            if self.book.can_learn(s):
                 self._s("learned")
             if ch:
                 self.stats[f"{self.prefix}_book_change"] = f"{s.get('family') or 'gun'}|{s.get('cls')}|{s.get('band')}: " \
@@ -686,11 +701,13 @@ class AimCore:
     positions handed in are in the title's units, everything kept is in cm."""
 
     def __init__(self, prof, stats: dict | None = None, root=None, prefix: str = "aimbook", window_s: float = HIT_S,
-                 lead_prior_s: float = LEAD_PRIOR_S, apply: bool = True, clock=time.time, log: bool = True):
+                 lead_prior_s: float = LEAD_PRIOR_S, apply: bool = True, clock=time.time, log: bool = True,
+                 verified_only: bool = False):
         self.prof = prof
         self.stats = stats if stats is not None else {}
         self.apply = bool(apply)
-        self.book = AimBook(prof.title_id or prof.title, root, clock=clock, lead_prior_s=lead_prior_s)
+        self.book = AimBook(prof.title_id or prof.title, root, clock=clock, lead_prior_s=lead_prior_s,
+                            verified_only=verified_only)
         self.log = ShotLog(prof.title_id or prof.title, None if root is None else Path(root) / "_shots") if log else None
         self.ledger = Ledger(self.stats, prefix, window_s, self.book, self.log)
         self.prefix = prefix
@@ -699,7 +716,36 @@ class AimCore:
 
     @staticmethod
     def target_key(e):
-        return (e or {}).get("ptr", (e or {}).get("slot"))
+        key = (e or {}).get("ptr", (e or {}).get("slot"))
+        return (key, e['generation']) if e and e.get('generation') is not None else key
+
+    def confirm_discharge(self, now, identity, enemies, *, unconfounded):
+        """Match one native rearm to a recent request, never to a new life/weapon.
+
+        Repeated requests on the same target can share a confirmation window;
+        changing targets makes attribution ambiguous. HP changes remain correlated
+        outcomes, not projectile impact evidence.
+        """
+        candidates = [s for s in self.ledger.open if not s.get('discharge_confirmed')
+                      and s.get('fire_identity') == identity and 0 <= now-s['t'] <= .25]
+        if not candidates or len({s.get('target') for s in candidates}) != 1:
+            return False
+        shot = candidates[-1]
+        seen = {self.target_key(e) for e in enemies or ()}
+        if shot.get('target') not in seen:
+            return False
+        shot.update(discharge_confirmed=True, discharge_source='native_fire_cooldown_rearm')
+        residual = shot.get('resid')
+        measured = (isinstance(residual, (tuple, list)) and len(residual) == 2
+                    and all(type(v) in (int, float) and math.isfinite(v) and abs(v) <= math.radians(15)
+                            for v in residual))
+        eligible = (unconfounded and shot.get('unconfounded') is True and shot.get('aim_settled') is True
+                    and shot.get('source') == 'line' and shot.get('los') is True and measured)
+        shot['learning_eligible'] = bool(eligible)
+        if not eligible:
+            shot['learning_refusal'] = 'aim unsettled/unmeasured or another damage source is active'
+        self.ledger._s('confirmed')
+        return True
 
     def velocity(self, e) -> tuple:
         got = self._seen.get(self.target_key(e))

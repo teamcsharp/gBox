@@ -165,8 +165,11 @@ class Controller(N.Controller):
 
     def current_weapon(self):
         from . import re4_switch_weapon_native as E
-        self.ready()
-        return (E.active(self) or {}).get('item')
+        return E.current_weapon(self)
+
+    def equipment_quiescent(self):
+        return not self.failed and self.mailbox is not None and self.w(self.mailbox + MAILBOX['state']) in (
+            STATE['idle'], STATE['done'])
 
     def equip_primary(self, item, *, expected=None, allowed=None):
         from . import re4_switch_weapon_native as E
