@@ -323,18 +323,31 @@ def unstick(pad: Pad, attempts: int = 3) -> str:
                 break                                  # backing up is blocked too - stop wasting time
         log(f"  retreated {retreated:.1f} units")
         if retreated < 0.5 and TELEPORT_ATTEMPTS["count"] < 2:
-            # Every direction blocked and the retreat blocked: a ledge, not a menu. Drop to ground level at the same
-            # x/z - the fields all read y ~0.1, and a character standing at y 27 cannot walk anywhere.
+            # Every direction blocked and the retreat blocked: the character is wedged. Relocate it a short distance
+            # AT ITS OWN HEIGHT - writing y=0.1 buried it in terrain when it stood at y 32.3, which is why earlier
+            # "drop landed" attempts never freed it. Measured: a same-height move of 15 units freed it and it then
+            # walked 8.9 units normally.
             TELEPORT_ATTEMPTS["count"] += 1
             here = state(pad).get("player") or {}
-            hx, hz = float(here.get("x") or 0), float(here.get("z") or 0)
+            hx = float(here.get("x") or 0)
             hy = float(here.get("y") or 0)
-            log(f"  every direction is blocked at y {hy:.1f} - dropping to ground level at {hx:.1f},{hz:.1f}")
-            landed = teleport(pad, hx, 0.1, hz)
-            log(f"  drop {'landed' if landed else 'did not take'}")
-            if landed:
+            hz = float(here.get("z") or 0)
+            freed = False
+            for dx, dz in ((15.0, 0.0), (-15.0, 0.0), (0.0, 15.0), (0.0, -15.0)):
+                log(f"  wedged at ({hx:.0f},{hy:.0f},{hz:.0f}) - relocating {dx:+.0f},{dz:+.0f} at the same height")
+                if not teleport(pad, hx + dx, hy, hz + dz):
+                    continue
+                before_move = state(pad).get("player") or {}
+                start = (float(before_move.get("x") or 0), float(before_move.get("z") or 0))
+                hold(pad, "up", 0.8)
+                after_move = state(pad).get("player") or {}
+                end = (float(after_move.get("x") or 0), float(after_move.get("z") or 0))
+                if math.dist(start, end) > 2.0:
+                    log(f"  relocation freed it ({math.dist(start, end):.1f} units)")
+                    freed = True
+                    break
+            if freed:
                 TELEPORT_ATTEMPTS["count"] = 0
-                hold(pad, "up", 0.6)
                 return "up"
         hold(pad, "left" if attempt % 2 == 0 else "right", 0.5)
         time.sleep(0.15)
@@ -424,9 +437,23 @@ def play(pad: Pad, seconds: float = 120.0) -> str:
                 gdist = math.hypot(gx - x, gz - z)
                 gates_seen.add((round(gx / 25.0), round(gz / 25.0)))     # distinct gates, coarsely binned
                 if gdist <= 20.0:
-                    # close enough to cross: walk straight through it, walk_through keeps geometry out of the way
-                    hold(pad, "up", 0.9)
-                    crossed.append((round(gx / 25.0), round(gz / 25.0)))
+                    # A gate is ACTIVATED with A - walking into it does nothing on its own. Press the button, walk
+                    # through, and only count a crossing when the room actually changes.
+                    room_before = player.get("room")
+                    tap(pad, "b")
+                    time.sleep(0.12)
+                    tap(pad, "a")                                   # the button
+                    time.sleep(0.35)
+                    hold(pad, "up", 0.9)                            # walk through the opening
+                    time.sleep(0.25)
+                    after_gate = state(pad).get("player") or {}
+                    if after_gate.get("room") != room_before:
+                        crossed.append((round(gx / 25.0), round(gz / 25.0)))
+                        log(f"  crossed a gate: room {room_before} -> {after_gate.get('room')}")
+                    else:
+                        tap(pad, "a")                               # maybe a switch rather than a door
+                        time.sleep(0.25)
+                        hold(pad, "up", 0.7)
                 else:
                     gate_side = globals().get("GATE_SIDE", 1)
                     before_g = gdist
