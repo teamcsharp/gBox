@@ -707,3 +707,32 @@ HP drops and the death recorded as persistent evidence. The tuning that made it 
 measurement said: attack inside **20** units rather than 30, and do not abandon the target after two whiffs (the
 measured pattern is two misses then a hit, so `whiff_limit` is 6).
 
+
+
+## 22. The city crossing: short hops, not one long walk - and a savestate that does not load
+
+Two operational findings from a round spent mostly recovering.
+
+**The Pioneer 2 plaza is crossed with short hops, 6 for 6.** One long walk to the pad fails every time (the planner
+re-targets while the character fights the railing). A hand-written chain of waypoints, each a separate `CommitMotion`
+hop with a 45 s budget, converged every time:
+
+```
+(186,179) 81 -> 9 units      (209,164) 31 -> 8      (227,100) 71 -> 10
+(255,-5) 119 -> 11           (340,50) 93 -> 10      (360,26) 27 -> 11
+final (350,31) - ten units from the pad; A warped floor 0 -> 1
+```
+
+Short hops work because each one re-measures the key map from scratch: the camera-relative frame is learned again per
+hop, and a 100-unit hop is short enough that the frame does not drift inside it.
+
+**A three-day-old Dolphin savestate does not restore into a live session.** `load_state` on `GPOE8P.s01` (saved
+2026-11-10) reported success and left the game with **no player and no entities** - a dead state. It has to be
+save-then-load **within** one session to be useful, and the save job did not even produce a file on the attempt made
+here, so a session-level checkpoint remains unproven.
+
+**Hard wedges are the real blocker.** Three of them now: `(607,520)`, `(310,540)`, `(104,174)` and `(256,214)`. At the
+last one all four direction taps moved **0.6 units or less for 201 seconds** while the heading changed with every turn
+- the input arrives, the character is inside geometry and cannot leave. Neither turning, holding, attacking, the menu
+nor loading a state recovers it; only a session restart does. That is why this round kept restarting.
+
