@@ -225,6 +225,54 @@ def test_rate_change_retains_owned_baseline():
     assert m.get(OBJ + 0x304, '<f') == 1
 
 
+def countdown_controller(machine, *, consumed=1, lost_write=False, error='memory write not confirmed by read-back'):
+    """The real native guard runs between the host store and equality check."""
+    ctl=SimpleNamespace(mailbox=BOX,player=PLAYER,player_id=7,checks=0)
+    ctl.rd=lambda at,n:bytes(machine.u.mem_read(at,n))
+    ctl.w=lambda at:machine.get(at,'<I')
+    def check():ctl.checks+=1
+    ctl.check=check
+    def write(at,data):
+        if not lost_write:machine.u.mem_write(at,data)
+        for _ in range(consumed):machine.tick()
+        if ctl.rd(at,len(data))!=bytes(data):raise RuntimeError(error)
+    ctl.write=write
+    return ctl
+
+
+@pytest.mark.parametrize('consumed',[1,2,6])
+def test_real_native_countdown_consumption_acknowledges_lease_store(consumed):
+    m=Machine();m.tick();ctl=countdown_controller(m,consumed=consumed)
+    G._publish_lease(ctl,60)
+    assert m.field('lease')==60-consumed
+    assert ctl.checks==1
+
+
+def test_an_old_lease_without_the_requested_store_is_not_an_acknowledgment():
+    m=Machine();m.tick();ctl=countdown_controller(m,lost_write=True)
+    with pytest.raises(RuntimeError,match='not confirmed'):G._publish_lease(ctl,60)
+
+
+@pytest.mark.parametrize('consumed,error',[(0,'memory write not confirmed by read-back'),
+    (61,'memory write not confirmed by read-back'),(1,'process changed')])
+def test_missing_or_expired_publication_and_unrelated_write_errors_still_fail(consumed,error):
+    m=Machine();m.tick();ctl=countdown_controller(m,consumed=consumed,lost_write=consumed==0,error=error)
+    with pytest.raises(RuntimeError):G._publish_lease(ctl,60)
+
+
+def test_actor_change_during_lease_write_is_not_accepted():
+    m=Machine();m.tick();ctl=countdown_controller(m)
+    def changed():raise RuntimeError('player changed')
+    ctl.check=changed
+    with pytest.raises(RuntimeError,match='player changed'):G._publish_lease(ctl,60)
+
+
+def test_native_sequence_wrap_accepts_only_the_bounded_countdown():
+    m=Machine();m.tick();m.put(BOX+C.RATE['sequence'],'<I',0xfffffffe)
+    G._publish_lease(countdown_controller(m),60)
+    assert m.field('sequence')==0 and m.field('lease')==59
+
+
 def test_controller_lease_preserves_request_mailbox_and_detach_restores(monkeypatch):
     from test_re4_native import fake_controller, put, PLAYER as P, MAILBOX as MB
     ctl = fake_controller(monkeypatch)

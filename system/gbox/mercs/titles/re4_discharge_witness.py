@@ -14,15 +14,36 @@ from __future__ import annotations
 import math
 import struct
 
+from ..native.re4_82c2a04a import code as C
+
 HANDLER = 0x1265A28
 HANDLERS = {0x3351A0: 'shotgun', 0x3270F0: 'magnum'}
 CLASSES = {'shotgun': {7, 8, 33}, 'magnum': {5, 6, 15}}
-PLAYER_CLASSES = (0xB09A60, 0xB0C0A0)
+PLAYER_CLASSES = tuple(C.TICK_BY_CLASS)
 MAX_AGE = .25
 
 
 def _ptr(n):
     return type(n) is int and 0x10000 <= n < 1 << 48 and n % 4 == 0
+
+
+def _player_class(memory, base, player, player_id, vtable):
+    """Admit a known original, or this reader's exact owned native-hook clone.
+
+    The rate/defense callback replaces the player's vtable. Its pointer alone
+    cannot authorize evidence: retain the controller's original class and
+    current actor identity, as the main player reader does while attached.
+    """
+    if vtable-base in PLAYER_CLASSES:
+        return vtable-base
+    ad = getattr(memory, 'adapter', None) or getattr(memory, 'ad', None) or getattr(memory, '_ad', None)
+    ctl = getattr(ad, '_re4_switch_harness', None)
+    if (ctl is not None and ctl.base == base and ctl.player == player and ctl.player_id == player_id
+            and ctl.original in (base+c for c in PLAYER_CLASSES)
+            and ctl.clone_address == vtable and ctl.attached()):
+        ctl.check()
+        return ctl.original-base
+    return None
 
 
 def read(memory, base, snap, now):
@@ -39,6 +60,7 @@ def read(memory, base, snap, now):
             vtable, flags = struct.unpack('<QI', header)
             raw = bytes(memory.rd(p+0x110, 8))
             player_id = struct.unpack_from('<I', raw)[0]
+            player_class = _player_class(memory, base, p, player_id, vtable)
             wep = struct.unpack('<Q', memory.rd(p+0x938, 8))[0]
             if not _ptr(wep):
                 return None
@@ -50,20 +72,20 @@ def read(memory, base, snap, now):
             cls = bytes(memory.rd(base+W.GAME_OBJ+W.G_CLASS, 1))[0]
             equipped = struct.unpack('<H', memory.rd(base+W.ITEM_MGR+W.M_EQUIPPED_ID, 2))[0]
             handler = struct.unpack('<Q', memory.rd(base+HANDLER, 8))[0]-base
-            return (vtable, flags, player_id, wep, obj, obj_id, item, state, cls, equipped, handler, tuple(raw[4:]))
+            return (vtable, flags, player_id, wep, obj, obj_id, item, state, cls, equipped, handler, tuple(raw[4:]), player_class)
 
         a = fields()
         if a is None or fields() != a:
             return None
-        vt, flags, pid, wep, obj, oid, item, state, cls, equipped, handler, routine = a
+        vt, flags, pid, wep, obj, oid, item, state, cls, equipped, handler, routine, player_class = a
         family = HANDLERS.get(handler)
-        if (vt-base not in PLAYER_CLASSES or flags & 0x201 != 1 or player.get('id') != pid
+        if (player_class is None or flags & 0x201 != 1 or player.get('id') != pid
                 or family is None or cls not in CLASSES[family] or W.CLASS_OF.get(item) != cls or equipped != item
                 or (snap.get('aim') or {}).get('obj') != obj):
             return None
         return {'identity': (p, pid, wep, obj, oid, item, cls, handler), 'routine': routine,
                 'at': now, 'object_state': state, 'family': family, 'source': 'native_post_emission_step'}
-    except (KeyError, TypeError, ValueError, OSError, OverflowError, IndexError, struct.error):
+    except (KeyError, TypeError, ValueError, OSError, RuntimeError, AttributeError, OverflowError, IndexError, struct.error):
         return None
 
 

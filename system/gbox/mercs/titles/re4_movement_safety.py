@@ -115,6 +115,30 @@ def guard(w, act):
     def supported(h, distance=PROBE_MM):
         return (not block or abs(_wrap(h-block['heading'])) > math.radians(40)) and clear(w, pos, h, distance)
 
+    portal = getattr(w, 'portal_command', None)
+    if (isinstance(portal, dict) and portal.get('at') == w.now
+            and portal.get('owner') == w._portal_owner() and portal.get('pos') == pos
+            and hold == set(portal.get('keys') or ()) and not act.get('tap')
+            and isinstance(portal.get('anchor'), (tuple, list)) and len(portal['anchor']) == 3
+            and all(isinstance(v, (int, float)) and math.isfinite(v) for v in portal['anchor'])):
+        # The walker now approaches a stand point on this floor, not a point
+        # beyond the gap. A stale wall-recovery turn must not fight its facing
+        # or inject forward during the stationary Y pulse. Movement still
+        # passes exactly the same floor, SAT and measured-pressure checks.
+        st['recovery'] = None
+        if not hold & {'lup', 'ldown'}:
+            st.update(last={'moving': False}, press=None)
+            return act
+        distance = min(PROBE_MM, _flat(pos, portal['anchor']))
+        if hold == {'lup'} and distance > 0 and supported(yaw, distance):
+            st['last'] = {'moving': True, 'heading': yaw, 'held': sorted(hold)}
+            w.stats['walk_final_guard'] = 'approaching interaction point on proved floor'
+            return act
+        st.update(last={'moving': False}, press=None)
+        w.stats['walk_final_vetoes'] = w.stats.get('walk_final_vetoes', 0)+1
+        w.stats['walk_final_guard'] = 'interaction approach blocked; no translation'
+        return dict(act, hold=hold-MOVE_KEYS)
+
     move = 'lup' in hold or 'ldown' in hold
     backward = 'ldown' in hold and 'lup' not in hold
     travel_yaw = _wrap(yaw+math.pi) if backward else yaw

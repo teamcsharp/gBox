@@ -1,10 +1,12 @@
 """RE5 EBFFDB22 direct proximity mines, following native player drop 7B9340.
 
 Research addresses are main-relative (the saved Ghidra project adds 0x100000).
-Factory -> resource readiness -> dropped-item reset -> native configure ->
-state 3 -> detach/ground. No equipment, inventory, input or detonation writes.
+Factory -> resource readiness -> dropped-item reset -> inactive ground validation
+for every requested point -> native configure -> state 3. No equipment,
+inventory, input or detonation writes.
 Live acceptance is deliberately separate from a successful native-call return.
 """
+import hashlib
 import math
 import struct
 import time
@@ -13,6 +15,11 @@ from contextlib import contextmanager
 DTI, VTABLE, ITEM = 0x1D715A8, 0x1C5E478, 0x10A
 RADIUS_CM, RING_COUNT = 152.4, 5
 COUNTS = (1, RING_COUNT, 8)  # retain the earlier eight-mine research request
+# Placement policy, not a claimed blast height: match the existing escape
+# floor lookup's 61cm tolerance and refuse distant floors before activation.
+FLOOR_SLOP_CM = 61.0
+GROUND, GROUND_SIZE = 0x793AB0, 0x108
+GROUND_SHA256 = '9e9c111b224aa84d19a69bdaff46128beb6bf69ca50d6dfefb4cdfa246dab347'
 # 2026-11-13: live single drops and five-mine ring, native armed volumes read
 # back with the Hydra still equipped. See docs/research/re5-automine.md.
 LIVE_VERIFIED = True
@@ -22,6 +29,10 @@ FUNCTIONS = {
     0x790FE0: bytes.fromhex('f70f1cf8f65701a9f44f02a9fd7b03a9'),
     0x793AB0: bytes.fromhex('ffc302d1e84300fdf44f09a9fd7b0aa9'),
 }
+
+
+class _FloorRefused(Exception):
+    """Known inactive batch, with no activation submitted."""
 
 
 def points(center, count):
@@ -99,6 +110,15 @@ def place(ctl, count=1, *, allow_unverified=False, allowed=None, expected=None, 
             row.setdefault('calls_completed', []).append(hex(off))
             return result
 
+        def inactive(row):
+            unit = actor(row)
+            primary = ctl.q(unit + 0x2710)
+            if (ctl.rd(unit + 0x27B9, 1) != b'\0' or ctl.rd(unit + 0x28C1, 1) != b'\0'
+                    or ctl.q(unit + 0x48) != 0
+                    or (primary and (not R.ptr_ok(primary) or ctl.rd(primary + 0x14, 1) != b'\0'))):
+                raise Uncertain('prepared mine is active or attached; placement refused')
+            return actor(row)  # reject allocation recycling during the flag/attachment reads
+
         try:
             current()
             if ctl.pair() == 'pre_class':
@@ -106,6 +126,10 @@ def place(ctl, count=1, *, allow_unverified=False, allowed=None, expected=None, 
             for off, expected in FUNCTIONS.items():
                 if ctl.rd(ctl.base + off, len(expected)) != expected:
                     raise Unavailable(f'RE5 mine function mismatch at {off:#x}')
+            # The complete function must preserve the raycast W0 through RET;
+            # a prologue match cannot establish that return-value contract.
+            if hashlib.sha256(ctl.rd(ctl.base + GROUND, GROUND_SIZE)).hexdigest() != GROUND_SHA256:
+                raise Unavailable('RE5 mine ground-hit return contract mismatch')
             # Bound both manual and future automatic placement independently of inventory.
             existing = R.ground_mines(ctl, ctl.base)
             if len(existing) + count > 40:
@@ -114,18 +138,28 @@ def place(ctl, count=1, *, allow_unverified=False, allowed=None, expected=None, 
             receipt['hp_before'] = struct.unpack('<h', ctl.rd(player + R.P_HP, 2))[0]
             receipt['player_pos_before'] = list(struct.unpack('<3f', ctl.rd(player + R.P_POS, 12)))
             ctl.attach()
+            # A rejected floor must not leak another batch of inactive native
+            # allocations on each retry. Retain at most one bounded batch,
+            # scoped to this exact player life; never reuse an uncertain actor.
+            pool = getattr(ctl, '_proximity_prepared', None)
+            if not isinstance(pool, dict) or pool.get('owner') != (player, generation):
+                pool = {'owner': (player, generation), 'rows': []}
+                ctl._proximity_prepared = pool
             for i in range(count):
                 current()
-                unit = ctl.call(0x118E820, player, generation, ctl.base + DTI, timeout=2.5)
-                if not R.ptr_ok(unit):
-                    raise Unavailable('native proximity-mine factory refused allocation')
-                row = {'index': i, 'unit': unit, 'generation': ctl.q(unit + 0x1A00)}
+                if pool['rows']:
+                    cached = pool['rows'].pop()
+                    unit = inactive(cached)
+                    row = {'index': i, 'unit': unit, 'generation': cached['generation'], 'reused_inactive': True}
+                else:
+                    unit = ctl.call(0x118E820, player, generation, ctl.base + DTI, timeout=2.5)
+                    if not R.ptr_ok(unit):
+                        raise Unavailable('native proximity-mine factory refused allocation')
+                    row = {'index': i, 'unit': unit, 'generation': ctl.q(unit + 0x1A00)}
                 prepared.append(row)
 
                 def loaded():
-                    actor(row)
-                    if ctl.rd(unit + 0x27B9, 1) != b'\0' or ctl.rd(unit + 0x28C1, 1) != b'\0':
-                        raise Uncertain('prepared mine became active before placement')
+                    inactive(row)
                     return (ctl.rd(unit + 0x1B88, 1) == b'\1' and ctl.w(unit + 0x1B28) >= 4
                             and R.ptr_ok(ctl.q(unit + 0x1FB8)) and R.ptr_ok(ctl.q(unit + 0x1D38))
                             and ctl.w(unit + 0x1D5C) > 0)
@@ -140,15 +174,48 @@ def place(ctl, count=1, *, allow_unverified=False, allowed=None, expected=None, 
             receipt.update(center=list(center), center_source=center_source)
             commit = time.monotonic()
             for row, pos in zip(prepared, points(center, count)):
-                unit = actor(row)
-                if ctl.rd(unit + 0x27B9, 1) != b'\0' or ctl.rd(unit + 0x28C1, 1) != b'\0':
-                    raise Uncertain('prepared mine became active; transform not written')
+                unit = inactive(row)
                 # Inactive units only; native activation and transform processing follow.
                 raw = struct.pack('<4f', *pos, 0)
                 ctl.write(unit + 0x60, raw)
                 ctl.write(unit + 0x2680, raw)
                 row['requested_pos'] = list(pos)
                 invoke(row, 0x7E51A0)
+                inactive(row)
+                # 793AB0's native raycast preserves W0 through its epilogue.
+                # It only changes Y on a hit. Run it while the mine is still
+                # inactive, so a lower floor can never become a live hazard.
+                hit = invoke(row, GROUND, 1) & 0xFFFFFFFF
+                inactive(row)
+                projected = struct.unpack('<3f', ctl.rd(unit + 0x60, 12))
+                row.update(ground_hit=bool(hit), ground_pos=list(projected),
+                           grounding='native_raycast_before_activation', floor_slop_cm=FLOOR_SLOP_CM)
+                floor_ok = (hit and all(math.isfinite(v) for v in projected)
+                            and abs(projected[1]-pos[1]) <= FLOOR_SLOP_CM
+                            and math.hypot(projected[0]-pos[0], projected[2]-pos[2]) <= 1.)
+                if not floor_ok:
+                    # No configure/state-3 call has been made for this batch.
+                    # Recheck every identity before retaining safe inactive units.
+                    for item in prepared:
+                        inactive(item)
+                    pool['rows'].extend({'unit': item['unit'], 'generation': item['generation']}
+                                        for item in prepared)
+                    receipt.update(state='refused', verified=False, floor_refused=True,
+                                   reason='native mine floor missed, moved sideways, or differs from requested floor',
+                                   refused_index=row['index'])
+                    break
+                row['floor_validated'] = True
+                row['pos'] = list(projected)
+            else:
+                receipt['all_floors_validated'] = True
+            if receipt.get('floor_refused'):
+                raise _FloorRefused(receipt['reason'])
+            # All ring members are checked before the first active mine exists.
+            for row in prepared:
+                unit = inactive(row)
+                observed = struct.unpack('<3f', ctl.rd(unit + 0x60, 12))
+                if any(not math.isfinite(v) for v in observed) or math.dist(observed, row['ground_pos']) > 1.:
+                    raise Uncertain('inactive mine moved after floor validation; activation refused')
                 # The third native argument sets +273F. The put action's first
                 # tick (91E6D0) uses it to enable the primary collision volume.
                 # Passing zero leaves a visible mine that cannot detonate even
@@ -158,8 +225,6 @@ def place(ctl, count=1, *, allow_unverified=False, allowed=None, expected=None, 
                 if invoke(row, 0x790FE0, 3, 0, 0, 0xFFFFFFFF, 0) != 1:
                     raise Uncertain('native mine drop state refused; activation not replayed')
                 row['state_accepted'] = True
-                invoke(row, 0x793AB0, 1)
-                row['grounding'] = 'native_raycast_requested'
                 row['pos'] = list(struct.unpack('<3f', ctl.rd(unit + 0x60, 12)))
                 row['activation_elapsed_ms'] = round(1000*(time.monotonic()-commit), 1)
                 deployed.append(row)
@@ -208,6 +273,8 @@ def place(ctl, count=1, *, allow_unverified=False, allowed=None, expected=None, 
             receipt['hp_loss_observed'] = receipt['hp_before'] - receipt['hp_after']
             receipt['damage_attribution'] = 'unattributed; enemies may attack during native placement'
             receipt.update(state='confirmed', verified=LIVE_VERIFIED)
+        except _FloorRefused:
+            pass  # explicit refused receipt; inactive allocations are bounded and reusable
         except Exception as exc:
             if prepared:
                 ctl._fail(exc, recoverable=True)

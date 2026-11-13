@@ -15,8 +15,8 @@ Rules carried over, in mm (RE5's cm x 10):
   leaves its GOAL_CELL_MM square; a waypoint counts as passed within WP_MM only once the next lies on open floor from
   him (LOOKAHEAD; within WP_NEAR_MM whatever lies beyond); within DIRECT_R_MM the straight line - unless the mesh says
   the line is not open floor;
-* a crossing (re5_nav.Traversal: a fence or sill jump-over, a ladder): walked to its approach on his own floor, then
-  pushed through its portal toward the landing with Y pulsed (the game's prompt takes the press); crossed once he is
+* a crossing (re5_nav.Traversal: a fence or sill jump-over, a ladder): walked to a safe stand point on his own floor,
+  then faced with Y pulsed while stationary (the game's prompt takes the press); crossed once he is
   past the portal (a level crossing) or nearer the landing's height (a ladder). LINK_TRY_S there without crossing and
   it is left out of the routes for AVOID_S (route(avoid=)) and another way planned. None of the crossings has been
   seen taken in game;
@@ -52,7 +52,8 @@ from . import re4_nav, re4_room_map
 REPLAN_S, REPLAN_MIN_S, GOAL_CELL_MM, GOAL_CELL_Y_MM = 1.0, 0.75, 2000.0, 1000.0
 WP_MM, WP_NEAR_MM, CLEARANCE_MM, LOOKAHEAD = 1200.0, 450.0, 350.0, True
 DIRECT_R_MM, LEVEL_DY_MM, RUN_R_MM = 3000.0, 1500.0, 6000.0
-LINK_TRY_S, LINK_PUSH_MM, LINK_PAST_MM = 4.0, 1500.0, 150.0
+LINK_TRY_S, LINK_PAST_MM = 4.0, 150.0
+LINK_APPROACH_S, LINK_REACH_MM = 8.0, 150.0
 CROSSING_PUSHES, AVOID_S, LINKS_AVOIDED = 3, 120.0, 24
 STALL_FOE_MM = 1800.0                    # a stall with a Ganado this near him or the route's point: not the way's fault
 FORGIVE_FLOOR = True                     # floor waypoints refused after stalls that shut every route: forgiven (_waypoint)
@@ -126,6 +127,8 @@ class Walker:
         self.at_link = False
         self.how = ""
         self.leg = None                                 # this tick's route leg ({at, keys, to, crossing, open})
+        self.portal_command = None                     # fresh same-floor approach / stationary interaction
+        self._portal_plan = None
         self._door = {'pos': None, 'since': 0.0, 'start': None, 'retry': -1e9, 'phase': -1}
 
     # --- what he stands on ---
@@ -135,6 +138,7 @@ class Walker:
         mesh = self.snap.get("nav")
         self.mesh = mesh if mesh is not None and hasattr(mesh, "route") else None
         self.now = time.monotonic() if now is None else now
+        self.portal_command = None
 
     def _pos(self):
         pos = (self.p or {}).get("pos")
@@ -207,11 +211,69 @@ class Walker:
         except Exception:                                  # noqa: BLE001 - a log never costs a tick
             pass
 
+    def _portal_anchor(self, q, pos):
+        """A stand point on the approach floor, never the far side of the portal.
+
+        Base AEV[3]'s exported ladder approach is only 180 mm from a SAT wall.
+        Back off along its native approach direction until both the floor and
+        body clearance permit standing there. No collision exemption is used.
+        """
+        dx, dz = q.portal[0] - q.approach[0], q.portal[2] - q.approach[2]
+        n = math.hypot(dx, dz)
+        if n < 1.0:
+            dx, dz = q[0] - q.approach[0], q[2] - q.approach[2]
+            n = math.hypot(dx, dz)
+        if n < 1.0:
+            return None
+        rm = re4_room_map.for_snap(self.snap)
+        for back in (0., 100., 200., 300., 400., 500., 600., 700., 800., 900.):
+            a = (q.approach[0] - dx/n*back, q.approach[1], q.approach[2] - dz/n*back)
+            if abs(pos[1] - a[1]) > 600. or not self._open(pos, a[0], a[2], a[1]):
+                continue
+            if rm is not None and (rm.walk_block(pos, a, end_r=0.) is not None
+                                   or rm.walk_block(a, a, end_r=self.clearance) is not None):
+                continue
+            return a
+        return None
+
+    def _portal_keys(self, pos, rot):
+        plan = self._portal_plan
+        anchor, portal = plan['anchor'], plan['portal']
+        near = _flat(pos, anchor) <= LINK_REACH_MM
+        point = portal if near else anchor
+        err = wrap(heading(point[0] - pos[0], point[2] - pos[2]) - rot)
+        # A broad walking arc can clip the railing even when the stand point
+        # itself is safe. Refine the actual heading before each short step.
+        from . import re4_movement_safety
+        must_align = not near and abs(err) > 1e-6 and not re4_movement_safety.clear(
+            self, pos, rot, min(PROBE_MM, _flat(pos, anchor)))
+        if abs(err) > (TURN_TOL if near else math.radians(5.)) or must_align:
+            keys = (self.turn_pos if err > 0 else self.turn_neg,)
+            state = 'face portal' if near else 'face approach'
+        elif not near:
+            keys, state = (FORWARD,), 'approach on own floor'
+        else:
+            if self._link.get('prompt_since') is None:
+                self._link['prompt_since'] = self.now
+            keys = (ACTION,) if int(self.now / ACTION_PULSE_S) % 2 == 0 else ()
+            state = 'stationary interaction; awaiting native traversal'
+        self.portal_command = {'at': self.now, 'keys': keys, 'anchor': anchor,
+                               'pos': pos, 'owner': self._portal_owner(), 'state': state}
+        self.stats['walk_portal'] = {'state': state, 'at': self.now, 'anchor_mm': list(anchor),
+                                     'portal_mm': list(portal), 'distance_mm': round(_flat(pos, anchor), 1)}
+        return keys
+
+    def _portal_owner(self):
+        p = self.p or {}
+        return (self.stats.get('round_evidence_id'), p.get('ptr'), p.get('generation', p.get('id')),
+                getattr(self.mesh, 'sig', None))
+
     # --- the route ---
     def _waypoint(self, goal):
         """The next point (x, z) of the mesh's route to goal, or None (no mesh, an end off it, no route). At a
-        crossing's foot it is a point past the portal and self.at_link is True."""
+        crossing's foot it is a safe same-floor stand point and self.at_link is True."""
         self.at_link = False
+        self._portal_plan = None
         mesh, pos = self.mesh, self._pos()
         if mesh is None or pos is None or len(goal) < 3:
             return None
@@ -283,17 +345,27 @@ class Walker:
                     continue
                 if d <= WP_MM or self._link["key"] == tuple(round(v) for v in q.portal):
                     key = tuple(round(v) for v in q.portal)
-                    if self._link["key"] != key:
-                        self._link.update(key=key, since=self.now)
+                    if self._link["key"] != key or self._link.get('owner') != self._portal_owner():
+                        self._link.update(key=key, since=self.now, prompt_since=None,
+                                          anchor=self._portal_anchor(q, pos), owner=self._portal_owner())
                         self._count("mesh_links_tried")
-                    if self.now - self._link["since"] > LINK_TRY_S:
+                    prompt_since = self._link.get('prompt_since')
+                    if (self.now - self._link["since"] > LINK_APPROACH_S or
+                            prompt_since is not None and self.now - prompt_since > LINK_TRY_S):
                         self.refuse(tuple(q.portal), "a crossing that never let him through")
                         self._count("mesh_links_refused")
                         self._log_crossing("refused", q)
                         return None
+                    anchor = self._link.get('anchor')
+                    if anchor is None:
+                        self.refuse(tuple(q.portal), 'no safe same-floor interaction point')
+                        self._count('mesh_links_refused')
+                        self._log_crossing('refused', q)
+                        return None
                     self.at_link = True
                     self._count("mesh_route_ticks")
-                    out = (q.portal[0] + dx / n * LINK_PUSH_MM, q.portal[2] + dz / n * LINK_PUSH_MM)
+                    self._portal_plan = {'anchor': anchor, 'portal': tuple(q.portal)}
+                    out = (anchor[0], anchor[2])
                     self.wp = out + (self.now,)
                     return out
             elif len(pts) > 1 and d <= WP_MM and abs(point[1] - py) <= LEVEL_DY_MM:
@@ -366,9 +438,15 @@ class Walker:
             self.now = now
         pos = self._pos()
         self.wp, self.at_link = None, False
+        self.portal_command, self._portal_plan = None, None
         self.leg, self._route_denied = None, False
         if pos is None or goal is None or len(goal) < 2:
             return ()
+        if self._link['key'] is not None:
+            from . import re4_movement_safety
+            if re4_movement_safety._native(self):
+                self.how = self.stats['walk_how'] = 'native traversal in progress'
+                return ()
         px, py, pz = pos
         gx, gz = goal[0], goal[2] if len(goal) > 2 else goal[1]
         dist = math.hypot(gx - px, gz - pz)
@@ -399,6 +477,11 @@ class Walker:
             self._count("nav_direct_ticks")
         self.stats["walk_how"] = self.how
         rot = (self.p or {}).get("rot", (self.p or {}).get("facing")) or 0.0
+        if self.at_link and self._portal_plan is not None:
+            # Do not let generic wall recovery or a quick turn walk across a
+            # ladder gap. The final guard checks every approach step, and the
+            # actual native traversal is what admits the later height change.
+            return self._portal_keys(pos, rot)
         err = wrap(heading(tx - px, tz - pz) - rot)
         keys = self.steer(err, dist > RUN_R_MM if run is None else bool(run))
         if self.at_link:
