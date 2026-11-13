@@ -45,3 +45,28 @@ def test_operator_cancelled_request_writes_nothing():
     with pytest.raises(Unavailable, match='cancelled'):
         ctl.equip_primary(0x2A, allowed=lambda: False)
     assert not ad.writes and not ctl.calls
+
+
+def test_zero_object_item_can_refresh_from_coherent_owned_native_selection():
+    ad = Ad(); _armoury(ad, held=0x21); ctl = ad.native
+    obj = E.active(ctl)['object']
+    ad.write_memory(obj + R.OBJ_ITEM, b'\0\0')
+    ad.write_memory(obj + 0x3F8, struct.pack('<Q', ctl.player))
+    result = ctl.equip_primary(0x2A)
+    assert result['verified'] and result['weapon_object_item'] == 0x2A
+
+
+@pytest.mark.parametrize('fault', ['owner', 'class', 'selection', 'same_class'])
+def test_zero_object_item_never_licenses_an_unidentified_weapon_write(fault):
+    ad = Ad(); _armoury(ad, held=0x21); ctl = ad.native
+    obj = E.active(ctl)['object']
+    ad.write_memory(obj + R.OBJ_ITEM, b'\0\0')
+    ad.write_memory(obj + 0x3F8, struct.pack('<Q', ctl.player if fault != 'owner' else 0))
+    if fault == 'class':
+        ad.write_memory(BASE + W.GAME_OBJ + W.G_CLASS, b'\xff\0')
+    if fault == 'selection':
+        ad.write_memory(BASE + W.ITEM_MGR + W.M_EQUIPPED_ID, struct.pack('<H', 0x27))
+    ad.writes.clear()
+    with pytest.raises(Unavailable, match='coherent recovery'):
+        ctl.equip_primary(0x21 if fault == 'same_class' else 0x2A)
+    assert not ad.writes and not ctl.calls

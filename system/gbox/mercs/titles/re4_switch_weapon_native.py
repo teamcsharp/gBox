@@ -75,10 +75,26 @@ def replace(ctl, item, *, expected=None, allowed=None):
         held = reader.equipped()
         current = active(ctl)
         rows = W.decode_weapon_table(ctl.rd(ctl.base + W.WEAPON_TBL, W.WEAPON_N * W.WEAPON_SZ))
-        if not held or not current or item not in rows or current['item'] not in rows:
+        if not held or not current or item not in rows or held['id'] not in rows:
             raise Unavailable('native equipped inventory/weapon cannot be identified')
         if reader.game_obj() != ctl.base + W.GAME_OBJ:
             raise Unavailable('game-state allocation changed')
+        actual_row = rows.get(current['item']) if current['item'] in WEAPONS else None
+        if actual_row is None:
+            # Live Ada/Punisher: the weapon object exists with its owner, but
+            # its +0x400 item field is zero. Do not mistake that observation for
+            # a missing inventory gun and postpone every round's loadout.
+            # A coherent native selection can establish the old class for a
+            # DIFFERENT-class refresh; final success still requires the actual
+            # new object's item. Never manufacture that identity from inventory.
+            selected_row = rows[held['id']]
+            selected_class = bytes((selected_row['class'], selected_row['variant']))
+            if current['item'] != 0 or ctl.q(current['object'] + 0x3F8) != ctl.player \
+                    or held.get('held_id') != held['id'] \
+                    or ctl.rd(ctl.base + W.GAME_OBJ + W.G_CLASS, 2) != selected_class \
+                    or rows[item]['class'] == selected_row['class']:
+                raise Unavailable('weapon object identity is unavailable and selection is not a coherent recovery source')
+            actual_row = selected_row
         # Wait for the gun to lower after the bot has released its inputs.
         deadline = time.monotonic() + .8
         while ctl.rd(current['object'] + R.OBJ_STAT, 1)[0] in R.LASER_UP_STATS:
@@ -110,12 +126,16 @@ def replace(ctl, item, *, expected=None, allowed=None):
             guard()
             # Repair an earlier data-only swap's stale class using the actual
             # active object, so the native comparison cannot silently skip it.
-            actual_row = rows[current['item']]
             ctl.write(ctl.base + W.GAME_OBJ + W.G_CLASS,
                       bytes((actual_row['class'], actual_row['variant'])))
             ctl.call(REFRESH, timeout=5.0)
             guard()
             got = active(ctl)
+            deadline = time.monotonic() + 1.0
+            while (not got or got['item'] != item) and time.monotonic() < deadline:
+                guard()
+                time.sleep(.01)
+                got = active(ctl)
             selected = reader.equipped()
             cls = ctl.rd(ctl.base + W.GAME_OBJ + W.G_CLASS, 2)
             if not got or got['item'] != item or not selected or selected['id'] != item \
