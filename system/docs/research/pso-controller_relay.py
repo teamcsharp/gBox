@@ -24,6 +24,11 @@ import pygame                                                      # noqa: E402
 
 from pso_pad import Pad, call                                       # noqa: E402
 
+try:
+    import play_trace                      # record the operator's play so it can be replayed
+except Exception:                             # noqa: BLE001
+    play_trace = None
+
 PAUSE_FILE = pathlib.Path(r"D:\gBox\pso-ds\operator-playing.flag")
 IDLE_RELEASE = 4.0
 DEADZONE = 0.24
@@ -168,6 +173,14 @@ def main():
                 pass
             send(pad, events)
             print(f"  relayed {len(events)} event(s): {[e['key'] for e in events]}", flush=True)
+            if play_trace is not None:
+                # Snapshot the state with the input, so a row means "pressed X while at Y facing Z" rather than just
+                # "pressed X". A failed read still records the input - losing the press is worse than losing position.
+                try:
+                    _snap = call("/api/sessions/%s/rpc" % pad.sid, {"op": "state", "args": {}}, "POST") or {}
+                except Exception:                # noqa: BLE001
+                    _snap = {}
+                play_trace.record(pad.sid, events, _snap)
         elif time.time() - last_activity > IDLE_RELEASE:
             if PAUSE_FILE.exists():
                 try:

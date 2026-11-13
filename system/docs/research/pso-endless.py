@@ -38,6 +38,9 @@ import singleton                      # one bot only: a second loop fights the f
 # The operator's controller relay (controller_relay.py) creates this while they are playing, so the bot stands down.
 OPERATOR_PLAYING = pathlib.Path(r"D:\gBox\pso-ds\operator-playing.flag")
 FLAG_STALE_S = 15.0        # a pause flag older than this is a dead relay, not a playing operator
+FLOOR_GATES = {'open': False}   # remembered across frames: the unlock result only arrives every 12th frame
+AUTO_UNLOCK = {"at": 0.0, "floor": None}   # proximity door unlocking: last run and the floor it was for
+LIVENESS = {"pos": None, "ts": 0.0, "stalls": 0, "recent": [], "circles": 0}   # watchdog: last known position and when it changed
 PRESSED_SWITCHES = {}      # switch pointer -> when it was pressed, so each is pressed once then left alone
 TRIVIAL_HP = 40            # an enemy this cheap is worth killing before a box (the flies are 8 HP)
 LOOP_LOCK = pathlib.Path(r"D:\gBox\pso-ds\endless.lock")
@@ -452,7 +455,10 @@ def arm(pad: Pad) -> None:
                      "codes": ["009d00", "003200", "004400", "000100", "000200"]}):
         answer = mods(pad, payload)
         log(f"  {payload['op']}: {answer.get('state')} {str(answer.get('error'))[:60]}")
-    log(f"  gates: {open_all_gates(pad)}")
+    gates_result = open_all_gates(pad)
+    log(f"  gates: {gates_result}")
+    # the gates are opened HERE, during arming - record it while the fact is known
+    FLOOR_GATES["open"] = ("open" in str(gates_result).lower())
     ARMED_SESSIONS.add(pad.sid)
 
 
@@ -789,6 +795,29 @@ def play(pad: Pad, seconds: float = 120.0) -> str:
         # not fight them for it. They get the game; the bot waits.
         # Stand down while the operator plays - but never trust a stale marker. If the relay dies with the flag set,
         # an endless stand-down is indistinguishable from a dead bot, so the flag expires on its own age.
+        # AUTO-UNLOCK ANY DOOR THE CHARACTER APPROACHES - running BEFORE the stand-down check, so it applies "forever,
+        # anytime", including while the operator is driving. Ram writes only; no vision, no walking, no switches.
+        try:
+            _au = state(pad)
+            _aup = _au.get("player") or {}
+            _aux, _auz = float(_aup.get("x") or 0), float(_aup.get("z") or 0)
+            _aufloor = _aup.get("room")
+            _door_near = any(
+                str(e.get("class")) in ("TObjDoor", "TObjLazerFenceNorm", "TOBarrierEnergy01",
+                                        "TObjLazerFence", "TLazerFenceSw", "TObjDoorKey")
+                and e.get("x") is not None and e.get("z") is not None
+                and math.hypot(float(e.get("x") or 0) - _aux, float(e.get("z") or 0) - _auz) <= 45.0
+                for e in (_au.get("entities") or []))
+            if _aufloor != AUTO_UNLOCK["floor"]:
+                AUTO_UNLOCK["floor"] = _aufloor
+                AUTO_UNLOCK["at"] = 0.0                      # new area: unlock on the first frame
+            if _door_near and (time.time() - float(AUTO_UNLOCK["at"] or 0)) > 2.5:
+                AUTO_UNLOCK["at"] = time.time()
+                log(f"  AUTO-UNLOCK: door within 45 units - flipping floor {_aufloor} stage flags")
+                unlock_floor(pad)
+        except Exception:                                    # noqa: BLE001 - never let this stop the loop
+            pass
+
         operator_active = False
         if OPERATOR_PLAYING.exists():
             try:
@@ -802,6 +831,72 @@ def play(pad: Pad, seconds: float = 120.0) -> str:
             time.sleep(0.4)
             continue
         globals()["_PAUSED_LOGGED"] = False
+
+        # LIVENESS WATCHDOG - BEFORE EVERY BRANCH. Nothing may leave the character standing still. Measured failure it
+        # exists for: the position unchanged at (487,0) for 180 seconds while the log repeated a walking instruction.
+        _frame = state(pad).get("player") or {}
+        _fx, _fz = float(_frame.get("x") or 0), float(_frame.get("z") or 0)
+        if LIVENESS["pos"] is None or math.dist(LIVENESS["pos"], (_fx, _fz)) > 2.0:
+            LIVENESS["pos"] = (_fx, _fz)
+            LIVENESS["ts"] = time.time()
+        elif (time.time() - float(LIVENESS["ts"] or 0)) > 20.0:
+            stalled = time.time() - float(LIVENESS["ts"] or 0)
+            LIVENESS["stalls"] += 1
+            log(f"  WATCHDOG: no movement for {stalled:.0f}s at ({_fx:.0f},{_fz:.0f}) - forcing motion"
+                f" (stall #{LIVENESS['stalls']})")
+            unstick(pad)
+            _after = state(pad).get("player") or {}
+            _ax, _az = float(_after.get("x") or 0), float(_after.get("z") or 0)
+            if math.dist((_fx, _fz), (_ax, _az)) < 2.0:
+                # The unstick did not free it either. Try every direction in turn: when `up` is blocked the other three
+                # have been measured to move 29-38 units each, so a burst of all four almost always breaks a wedge.
+                log("  WATCHDOG: unstick did not free it - sweeping every direction")
+                for _key in ("down", "left", "right", "up"):
+                    hold(pad, _key, 0.55)
+                    time.sleep(0.15)
+                    _now_at = state(pad).get("player") or {}
+                    if math.dist((_fx, _fz), (float(_now_at.get("x") or 0), float(_now_at.get("z") or 0))) > 2.0:
+                        break
+            LIVENESS["pos"] = None            # re-baseline: the next frame records wherever we ended up
+            LIVENESS["ts"] = time.time()
+
+        # CIRCLING CHECK - the stronger shape test. The stall watchdog above only catches a character that does not
+        # move; pacing two feet in a circle moves constantly and defeats it. Over a 30 s window, if the character has
+        # never been more than 18 units from the window centre, it is circling rather than progressing.
+        LIVENESS["recent"].append((time.time(), _fx, _fz))
+        LIVENESS["recent"] = [row for row in LIVENESS["recent"] if time.time() - row[0] <= 30.0]
+        if len(LIVENESS["recent"]) >= 6:
+            _xs = [row[1] for row in LIVENESS["recent"]]
+            _zs = [row[2] for row in LIVENESS["recent"]]
+            _cx = sum(_xs) / len(_xs)
+            _cz = sum(_zs) / len(_zs)
+            _radius = max(math.hypot(px - _cx, pz - _cz) for _t, px, pz in LIVENESS["recent"])
+            if _radius < 18.0:
+                LIVENESS["circles"] += 1
+                log(f"  CIRCLING: stayed within {_radius:.0f} units for {len(LIVENESS['recent'])} samples"
+                    f" (attempt {LIVENESS['circles']}) - forcing a straight run")
+                hold(pad, "down" if LIVENESS["circles"] % 2 else "left", 1.8)
+                time.sleep(0.2)
+                if LIVENESS["circles"] >= 3:
+                    log("  CIRCLING: still going nowhere after repeated runs - leaving the area")
+                    go_to_field(pad)
+                    LIVENESS["circles"] = 0
+                LIVENESS["recent"] = []          # re-baseline after intervening
+
+        # NEVER STAY IN TOWN. Clearing a stage returns the character to Pioneer 2, where there is nothing to fight and
+        # nothing to open - the signature is NPCs with no gates and no enemies (measured: room 20, 20 NPCs, 0 gates, 0
+        # enemies). The loop only handled starting in town; arriving in it mid-run left the bot walking at doors that
+        # are not part of a level, once moving 522 units the wrong way. So warp straight back out.
+        _town_state = state(pad)
+        _town_ents = _town_state.get("entities") or []
+        _town_npc = sum(1 for e in _town_ents if str(e.get("kind")) == "npc")
+        _town_gates = sum(1 for e in _town_ents if str(e.get("kind")) == "gate")
+        _town_enemies = sum(1 for e in _town_ents if str(e.get("kind")) == "enemy"
+                            and float(e.get("hp") or 0) > 0)
+        if _town_npc and not _town_gates and not _town_enemies:
+            log(f"  in town ({_town_npc} NPCs, no gates, no enemies) - warping back to a field")
+            go_to_field(pad)
+            continue
 
         # The operator types notes into operator-notes.txt; they are read and acted on every iteration.
         read_notes(pad)
@@ -829,6 +924,9 @@ def play(pad: Pad, seconds: float = 120.0) -> str:
             if result != last_unlock:
                 log(f"  doors: {result}")
                 last_unlock = result
+            # remember whether the RAM write already opened the floor: if it did, walking to a physical switch
+            # is redundant work - and the operator asked for the switch to be flipped through RAM, not on foot.
+            FLOOR_GATES['open'] = 'open' in str(result).lower()
 
         if stuck >= 2:
             # measured, not assumed: try every direction and keep the one that moves
@@ -872,6 +970,10 @@ def play(pad: Pad, seconds: float = 120.0) -> str:
                 recent_press = max(PRESSED_SWITCHES.values()) if PRESSED_SWITCHES else 0.0
                 if rank == 1 and (time.time() - recent_press) < 60.0:
                     rank = 3
+                # THE RAM ALREADY OPENED THE FLOOR. Walking to a switch to do what the stage-flag write has done is
+                # wasted travel, and it is how the bot wedged itself for minutes on the way to a fence switch.
+                if rank == 1 and FLOOR_GATES.get('open'):
+                    continue
                 interact.append((rank, idist, candidate))
         if interact and not engaged:
             interact.sort(key=lambda t: (t[0], t[1]))
