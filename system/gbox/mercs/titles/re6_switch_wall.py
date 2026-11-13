@@ -3,6 +3,8 @@ from __future__ import annotations
 
 import math
 
+from ..navigation_incidents import guard_started, guard_finished
+
 WINDOW, PROGRESS, GAP = .4, 15., .5
 PROBE_S, RECOVERY_S, SKIP_S = .25, 1.2, 12.
 MOVEMENT = frozenset(("lup", "ldown", "lleft", "lright", "b", "rleft", "rright"))
@@ -42,18 +44,21 @@ def apply(bot, snap, action, now):
     if snap.get("mercenaries_phase") != R.PHASE_PLAYING:
         state["walls"], state["actor"], bot._walk_skip = [], None, {}
     if not _eligible(bot, snap, action) or not p.get("pos"):
+        guard_finished(bot, p, now, 'recovery_interrupted')
         state["previous"], state["anchor"], state["effort"], state["recovery"] = None, None, 0., None
         return action
     pos, yaw = tuple(p["pos"]), (snap.get("camera") or {}).get("yaw", p["rot"])
     previous, state["previous"] = state["previous"], None
     actor = (p.get("ptr"), getattr(bot, "_round_started", None), getattr(snap.get("navmesh"), "name", None))
     if state["actor"] != actor:
+        guard_finished(bot, p, now, 'player_or_stage_changed')
         if state["actor"] is not None:
             bot._walk_skip = {}
         state["walls"], state["recovery"], previous = [], None, None
         state["actor"] = actor
     if previous is None or not 0 < now - previous[0] <= GAP or _flat(pos, previous[1]) > 100. \
             or abs(pos[1] - previous[1][1]) > 40.:
+        guard_finished(bot, p, now, 'measurement_discontinuity')
         state["anchor"], state["effort"] = pos, 0.
     elif previous[2]:
         if state["anchor"] is None or _flat(pos, state["anchor"]) >= PROGRESS:
@@ -71,6 +76,17 @@ def apply(bot, snap, action, now):
             return {**action, "hold": tuple(k for k in hold if k not in MOVEMENT)
                     + tuple(bot._turn(R.wrap(remembered[2] - yaw), R.TURN_TOL))}
         _count(bot, "movement_blocks")
+        goal = next(({'id': b.get('ptr'), 'kind': 'bonus', 'pos': b.get('pos')}
+                     for b in snap.get('bonuses') or () if bot.doing == 'bonus'
+                     and b.get('ptr') == getattr(bot, 'run_target', None)), None)
+        if goal is None:
+            target = getattr(bot, '_walk_target', None)
+            goal = next(({'id': target, 'kind': 'enemy', 'pos': e.get('pos')}
+                         for e in snap.get('enemies') or () if e.get('ptr', e.get('slot')) == target), None)
+        guard_started(bot, 're6_wall_guard', p, now, anchor=state['anchor'], effort_s=state['effort'],
+                      threshold_s=WINDOW, progress_limit_cm=PROGRESS,
+                      commands=previous[3] if previous and len(previous) > 3 else (), goal=goal,
+                      route=getattr(bot, 'nav_path', None))
         rec = state["recovery"] = {"at": now, "pos": pos, "head": R.wrap(yaw + math.pi)}
         state["walls"] = (state["walls"] + [(pos, yaw, rec["head"], now + SKIP_S)])[-32:]
         state["effort"] = 0.
@@ -88,11 +104,13 @@ def apply(bot, snap, action, now):
     keys = tuple(k for k in hold if k not in MOVEMENT)
     if _flat(pos, rec["pos"]) >= PROGRESS:
         _count(bot, "movement_recoveries")
+        guard_finished(bot, p, now, 'movement_restored')
         state["recovery"] = None
         return {**action, "hold": keys}
     elapsed = now - rec["at"]
     if elapsed >= RECOVERY_S:
         _count(bot, "movement_recovery_failures")
+        guard_finished(bot, p, now, 'recovery_failed')
         state["recovery"] = None
     movement = ("ldown",) if elapsed < PROBE_S else ("lleft",) if elapsed < 2 * PROBE_S else \
         tuple(bot._turn(R.wrap(rec["head"] - yaw), R.TURN_TOL))
@@ -104,7 +122,7 @@ def feedback(bot, snap, action, now):
     state, p = _state(bot), snap.get("player") or {}
     hold = action.get("hold") or ()
     forward = _eligible(bot, snap, action) and "lup" in hold and state["recovery"] is None
-    state["previous"] = (now, tuple(p["pos"]), forward) if p.get("pos") else None
+    state["previous"] = (now, tuple(p["pos"]), forward, tuple(hold)) if p.get("pos") else None
 
 
 # Steer before the wall, not after it (operator 2026-10-29: "the bot is just running into a wall or an object and is just

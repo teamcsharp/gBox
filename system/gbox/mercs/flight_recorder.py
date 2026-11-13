@@ -86,6 +86,7 @@ class FlightRecorder:
                'game_phase': safe((snap.get('game') or {}).get('phase', snap.get('mercenaries_phase'))),
                'in_control': safe((snap.get('game') or {}).get('in_control')),
                'prompt': safe(snap.get('prompt')), 'navigation': safe(plan.get('navigation')),
+               'navigation_obstruction': safe(stats.get('navigation_obstruction_context')),
                'route_requires_prompt': safe(plan.get('route_requires_prompt')),
                'controls': safe(plan.get('controls')), 'goal': safe(plan.get('operator_goal')),
                'target': safe(target), 'route': [self.point(v) for v in (plan.get('route') or [])[:12]],

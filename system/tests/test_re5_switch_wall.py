@@ -49,12 +49,17 @@ def test_running_into_a_wall_stops_forward_and_only_counts_an_observed_escape():
         act = b.tick(snap(bonuses=[statue]))
     assert b.stats["wall_hits"] == 1 and "lup" not in act["hold"] and "ldown" in act["hold"]   # the step back
     assert len(b._walls) == 1 and b.stats["wall_push_s"] <= R.WALL_WINDOW_S + .1
+    witness = b.stats['navigation_obstruction_context']
+    assert witness['source'] == 're5_wall_guard' and witness['outcome'] == 'open'
+    assert 'lup' in witness['commands']
+    assert witness['goal']['id'] == 900 and witness['effort_s'] >= R.WALL_WINDOW_S
     clock[0] = 0.75
     act = b.tick(snap(bonuses=[statue]))
     assert "lup" not in act["hold"] and b.stats["wall_recoveries"] == 0
     clock[0] = .83
     b.tick(snap(pos=(0.0, 0.0, -25.0), bonuses=[statue]))
     assert b.stats["wall_recoveries"] == 1
+    assert witness['outcome'] == 'movement_restored' and witness['recovery_position_cm'] == [0, 0, -25]
     assert b._bonus is None and b._bonus_block[900] > clock[0], "the failed bonus cannot immediately request the same wall"
 
 
@@ -73,6 +78,7 @@ def test_a_remembered_wall_is_not_pushed_again_on_that_heading():
     b.wall_memory(0.0, 0.0, 0.0)
     act = b.tick(snap(bonuses=[at(1500, 0)]))
     assert b.stats["wall_preempts"] == 1 and "lup" not in act["hold"] and "ldown" in act["hold"]
+    assert 'navigation_obstruction_context' not in b.stats
 
 
 def test_moving_freely_is_left_alone():

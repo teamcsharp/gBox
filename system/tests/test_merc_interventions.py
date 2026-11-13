@@ -1,5 +1,6 @@
 import concurrent.futures
 import hashlib
+import json
 import uuid
 
 import pytest
@@ -190,6 +191,50 @@ def test_native_return_without_effect_proof_does_not_strand_later_receipts(queue
     assert raw['state'] == 'confirmed'
     assert q.finish_many('sid', batch) == stored
     assert not q.claim('sid', 'life-1', caps, options=options)
+
+
+@pytest.mark.parametrize('state,verified', [('confirmed', False), ('confirmed', True), ('uncertain', False)])
+def test_large_mine_receipt_keeps_full_evidence_without_blocking_later_clicks(queue, tmp_path, monkeypatch,
+                                                                          state, verified):
+    q, now = queue
+    monkeypatch.setattr(I, 'RECEIPT_ROOT', tmp_path / 'receipts')
+    post(q); post(q)
+    claims = q.claim('sid', 'life-1', ['flash_now'])
+    rows = [{'index': i, 'unit': 400566233504+i*0x10000, 'generation': i+165,
+             'armed': True, 'active': True, 'evidence': 'native actor details '*40} for i in range(5)]
+    raw = {'state': state, 'verified': verified, 'op': 'proximity_mine_ring', 'requested': 5,
+           'placed': 5, 'armed': 5, 'weapon_before': 25, 'weapon_after': 25, 'weapon_unchanged': True,
+           'prepared': rows, 'mines': rows}
+    compact = I.completion_receipt(raw, session_id='sid', request_id=claims[0]['id'])
+    assert len(json.dumps(compact)) <= I.RECEIPT_LIMIT
+    assert compact['placed'] == compact['armed'] == compact['requested'] == 5
+    assert compact['weapon_unchanged'] and compact['mines_records'] == 5
+    assert compact['state'] == ('confirmed' if verified else 'uncertain')
+    archive = next((tmp_path / 'receipts').glob('*.json'))
+    full = json.loads(archive.read_text())
+    assert full['session_id'] == 'sid' and full['request_id'] == claims[0]['id']
+    assert full['result']['mines'] == rows and full['result']['prepared'] == rows
+    assert full['sha256'] == compact['receipt_sha256']
+    batch = [{'id': c['id'], 'claim': c['claim'], 'result': result} for c, result in zip(claims,
+             [compact, {'state': 'confirmed', 'verified': True}])]
+    now[0] += I.TTL + 1  # a late receipt may settle uncertainty without executing again
+    stored = q.finish_many('sid', batch)
+    assert stored[0]['result'] == compact and stored[1]['state'] == 'confirmed'
+    assert q.finish_many('sid', batch) == stored
+    assert I.completion_receipt(raw, session_id='sid', request_id=claims[0]['id']) == compact
+    assert len(list((tmp_path / 'receipts').glob('*.json'))) == 1
+    assert not q.claim('sid', 'life-1', ['flash_now'])
+
+
+def test_large_receipt_archive_failure_still_delivers_a_truthful_result(tmp_path, monkeypatch):
+    blocked = tmp_path / 'not-a-directory'
+    blocked.write_text('occupied')
+    monkeypatch.setattr(I, 'RECEIPT_ROOT', blocked)
+    result = I.completion_receipt({'state': 'uncertain', 'verified': False, 'placed': 3,
+                                  'reason': 'partial publication', 'prepared': ['x'*5000]})
+    assert result['state'] == 'uncertain' and result['placed'] == 3
+    assert result['reason'] == 'partial publication' and result['receipt_archive_error']
+    assert 'receipt_archive' not in result and len(json.dumps(result)) <= I.RECEIPT_LIMIT
 
 
 def test_http_routes_require_auth_and_running_session(tmp_path):

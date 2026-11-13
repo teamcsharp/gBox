@@ -26,6 +26,9 @@ def controller(ok=True):
     bot = SimpleNamespace(target=2, doing='aim', stats={}, aim_since=0, _feedback_at=0,
                           _writer=lambda: write, _aim_h=lambda *args: R.CHEST_H,
                           _crowd_hit=R.Bot._crowd_hit, _trigger=lambda on, now: {'zr'} if on else set())
+    # Most tests begin in an already accepted, continuous acquisition at t=0.
+    s = scene()
+    bot._feedback_context = F._feedback_context(s['player'], s['aim_cam'], s['enemies'][0], s['inventory'][0])
     return bot, writes
 
 
@@ -141,11 +144,63 @@ def test_close_target_uses_actual_low_offset_muzzle_not_nominal_camera_height():
     assert not bot.stats.get('target_feedback_unloads')
 
 
-@pytest.mark.parametrize('dt', [0., -.1, .001, .01, .05, 1.])
+@pytest.mark.parametrize('dt', [0., -.1, .001, .01, .05, .1, .15, .25, 1.])
 def test_no_minimum_step_or_stall_catchup(dt):
     bot, writes = controller()
     F.apply(bot, scene(heading=.8), {'hold': ('zl', 'rleft')}, dt)
-    assert abs(writes[-1][1]-.8) == pytest.approx(F.YAW_RATE*max(0, min(dt, F.MAX_DT)))
+    elapsed = min(dt, F.MAX_DT) if 0 <= dt <= F.MAX_GAP else 0.
+    assert abs(writes[-1][1]-.8) == pytest.approx(F.YAW_RATE*elapsed)
+
+
+def test_real_150ms_cadence_retains_configured_turn_rate_and_never_claims_a_hit():
+    bot, writes = controller()
+    s = scene(heading=1.2)
+    out = F.apply(bot, s, {'hold': ('zl', 'zr')}, .15)
+    assert 1.2 - writes[-1][1] == pytest.approx(F.YAW_RATE * .15)
+    assert 'zr' not in out['hold']
+    assert bot.stats['target_feedback_dt_ms'] == 150
+
+
+@pytest.mark.parametrize('changed', ['life', 'camera', 'target', 'target_life', 'weapon', 'raise', 'first'])
+def test_changed_acquisition_context_does_not_inherit_turn_budget(changed):
+    bot, writes = controller()
+    s = scene(heading=.8)
+    if changed == 'life': s['player']['generation'] = s['aim_cam']['generation'] = 2
+    elif changed == 'camera': s['aim_cam']['qfps'] = 22
+    elif changed == 'target': s['enemies'][0]['ptr'] = bot.target = 3
+    elif changed == 'target_life': s['enemies'][0]['generation'] = 2
+    elif changed == 'weapon': s['inventory'][0]['item'] = 0x0b
+    elif changed == 'raise': s['player']['motion'] = 22
+    elif changed == 'first': del bot._feedback_context
+    F.apply(bot, s, {'hold': ('zl',)}, .15)
+    assert writes[-1][1] == pytest.approx(.8)
+    # The next accepted sample may advance, without a catch-up for the first.
+    F.apply(bot, s, {'hold': ('zl',)}, .25)
+    assert .8 - writes[-1][1] == pytest.approx(F.YAW_RATE * .1)
+
+
+def test_failed_write_drops_interval_until_a_new_accepted_sample():
+    bot, writes = controller(False)
+    s = scene(heading=.8)
+    F.apply(bot, s, {'hold': ('zl',)}, .15)
+    assert bot._feedback_at is None
+    bot._writer = lambda: lambda st, pitch, heading: writes.append((pitch, heading)) or True
+    F.apply(bot, s, {'hold': ('zl',)}, .3)
+    assert writes[-1][1] == pytest.approx(.8)
+    F.apply(bot, s, {'hold': ('zl',)}, .4)
+    assert .8 - writes[-1][1] == pytest.approx(F.YAW_RATE * .1)
+
+
+def test_missing_camera_or_lowered_gun_drops_interval_instead_of_banking_it():
+    for missing in (True, False):
+        bot, writes = controller()
+        s = scene(heading=.8)
+        if missing: s['aim_cam'] = None
+        else: s['player']['motion'] = 11
+        F.apply(bot, s, {'hold': ('zl',)}, .1)
+        assert bot._feedback_at is None
+        F.apply(bot, scene(heading=.8), {'hold': ('zl',)}, .15)
+        assert writes[-1][1] == pytest.approx(.8)
 
 
 def test_ram_write_is_not_proof_a_shot_is_aligned():

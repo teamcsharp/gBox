@@ -108,6 +108,136 @@ def test_no_writer_without_an_adapter_or_with_modifications_off():
     assert A.aim_writer(s) is None
 
 
+def test_camera_sample_age_starts_before_its_first_read(monkeypatch):
+    g, clock = guest(), [1.]
+    monkeypatch.setattr(A.time, 'monotonic', lambda: clock[0])
+    rd = g.rd
+    def delayed(addr, size):
+        result = rd(addr, size)
+        clock[0] += .02
+        return result
+    g.rd = delayed
+    st = A.aim_state(g, BASE, PLAYER)
+    assert st['sampled_at'] == 1.
+    assert st['sample_completed_at'] - st['sampled_at'] > A.MAX_SAMPLE_AGE
+    assert not A.aim_writer(Session(g))(st, .1, .2)
+    assert not g.writes
+
+
+def test_writer_refuses_if_ownership_validation_itself_uses_freshness_budget(monkeypatch):
+    g, clock = guest(), [1.]
+    monkeypatch.setattr(A.time, 'monotonic', lambda: clock[0])
+    st = A.aim_state(g, BASE, PLAYER)
+    lookup = A.player_qfps
+    def delayed(*args):
+        clock[0] += .2
+        return lookup(*args)
+    monkeypatch.setattr(A, 'player_qfps', delayed)
+    assert not A.aim_writer(Session(g))(st, .1, .2)
+    assert not g.writes
+
+
+def final_read_scene(monkeypatch):
+    g = guest(pitch=.1, heading=.2)
+    enemy, sp, se, arr, main, gs, item = (0x5D40000000 + i*0x10000 for i in range(7))
+    g.q(BASE + R.S_PLAYER, sp); g.q(sp + R.P_FIRST, PLAYER)
+    g.q(BASE + R.S_ENEMY, se); g.q(se + R.E_ARRAY, arr)
+    g.put(se + R.E_COUNT, struct.pack('<I', 1)); g.q(arr, enemy)
+    g.q(BASE + R.S_MAIN, main); g.q(main + R.MAIN_GAMESYS, gs)
+    g.put(gs + R.GS_PHASE, struct.pack('<i', R.PHASE_PLAYING))
+    g.q(PLAYER + 0x1A00, 12); g.q(enemy + 0x1A00, 42); g.q(enemy, BASE+0x1234)
+    g.put(PLAYER + R.P_POS, struct.pack('<4f', 20., 10., 30., 0.))
+    g.put(PLAYER + R.P_HP, struct.pack('<hh', 800, 1000))
+    g.put(PLAYER + R.P_MOTION, bytes([R.MOTION_AIMED]))
+    g.put(enemy + R.E_POS, struct.pack('<3f', 40., 10., 330.))
+    g.put(enemy + R.E_HP, struct.pack('<hh', 700, 800))
+    g.put(enemy + R.E_MOTION, bytes([4]))
+    slot_addr = PLAYER + R.P_INV
+    g.put(slot_addr + R.INV_ID, struct.pack('<I', 0x11b))
+    g.put(slot_addr + R.INV_HAND, struct.pack('<i', 1))
+    g.q(slot_addr + R.INV_OBJ, item)
+    current_ray = {'up': True, 'from': (20., 150., 30.), 'at': (40., 120., 330.)}
+    monkeypatch.setattr(R, 'enemy_class', lambda *a: 'uEm10')
+    monkeypatch.setattr(R, 'laser', lambda *a: dict(current_ray))
+    old = {'module_base': BASE, 'mercenaries_phase': R.PHASE_PLAYING,
+           'player': {'ptr': PLAYER, 'generation': 12, 'pos': (0., 0., 0.), 'hp': 1000, 'motion': 26},
+           'enemies': [{'ptr': enemy, 'slot': 0, 'pos': (0., 0., 300.), 'hp': 800, 'motion': 4}],
+           'inventory': R.inventory(g, PLAYER), 'aim_cam': A.aim_state(g, BASE, PLAYER),
+           'laser': {'up': True, 'from': (0., 140., 0.), 'at': (0., 110., 300.)}}
+    return g, old, {'enemy': enemy, 'sp': sp, 'se': se, 'arr': arr, 'gs': gs, 'ray': current_ray}
+
+
+def test_final_read_refreshes_target_and_player_before_camera_and_laser(monkeypatch):
+    g, old, locations = final_read_scene(monkeypatch)
+    reads, rd = [], g.rd
+    def observe(addr, size):
+        reads.append(addr)
+        return rd(addr, size)
+    g.rd = observe
+    fresh, target, reason = A.refresh_target(g, old, old['enemies'][0])
+    assert reason is None
+    assert fresh['player']['pos'] == (20., 10., 30.) and fresh['player']['hp'] == 800
+    assert target['pos'] == (40., 10., 330.) and target['generation'] == 42 and target['hp'] == 700
+    assert fresh['aim_cam']['generation'] == 12
+    assert fresh['laser'] == locations['ray']
+    assert reads.index(PLAYER + R.P_POS) < reads.index(CTRL + A.CTRL_QFPS + A.QF_PITCH)
+    assert reads.index(locations['enemy'] + R.E_POS) < reads.index(CTRL + A.CTRL_QFPS + A.QF_PITCH)
+    assert old['player']['pos'] == (0., 0., 0.) and old['enemies'][0]['pos'] == (0., 0., 300.)
+
+
+@pytest.mark.parametrize('changed', ['player_life', 'player_slot', 'target_slot', 'target_count', 'target_life',
+                                     'phase', 'weapon', 'held_flag', 'dead_target', 'nonfinite', 'slow'])
+def test_final_read_rejects_reused_or_changed_actors_and_slow_reads(monkeypatch, changed):
+    g, old, where = final_read_scene(monkeypatch)
+    ray_reader = R.laser
+    clock = [1.]
+    monkeypatch.setattr(A.time, 'monotonic', lambda: clock[0])
+    if changed == 'dead_target': g.put(where['enemy'] + R.E_HP, struct.pack('<h', 0))
+    if changed == 'nonfinite': g.put(where['enemy'] + R.E_POS, struct.pack('<f', float('nan')))
+    def changing(*args):
+        result = ray_reader(*args)
+        if changed == 'player_life': g.q(PLAYER + 0x1A00, 13)
+        elif changed == 'player_slot': g.q(where['sp'] + R.P_FIRST, PLAYER+0x100000)
+        elif changed == 'target_slot': g.q(where['arr'], where['enemy']+0x100000)
+        elif changed == 'target_count': g.put(where['se'] + R.E_COUNT, struct.pack('<I', 0))
+        elif changed == 'target_life': g.q(where['enemy'] + 0x1A00, 43)
+        elif changed == 'phase': g.put(where['gs'] + R.GS_PHASE, struct.pack('<i', R.PHASE_OVER))
+        elif changed == 'weapon': g.put(PLAYER + R.P_INV + R.INV_ID, struct.pack('<I', 0x104))
+        elif changed == 'held_flag': g.put(PLAYER + R.P_INV + R.INV_HAND, struct.pack('<i', 0))
+        elif changed == 'slow': clock[0] += .2
+        return result
+    monkeypatch.setattr(R, 'laser', changing)
+    fresh, target, reason = A.refresh_target(g, old, old['enemies'][0])
+    assert fresh is target is None and reason
+    assert not g.writes
+
+
+def test_firing_gate_uses_the_refreshed_obstruction_not_the_old_clear_ray(monkeypatch):
+    from tests.test_re5_target_feedback import controller
+    g, old, where = final_read_scene(monkeypatch)
+    # The old ray ends on him; at the final gate a wall stops the new ray short.
+    where['ray']['at'] = (20., 150., 80.)
+    bot, writes = controller()
+    bot._m, bot.target = g, where['enemy']
+    out = A.apply(bot, old, {'hold': ('zl', 'zr')}, .15)
+    assert writes and 'zr' not in out['hold']
+    assert bot.stats['target_feedback_refresh_error'] is None
+    assert bot.stats['target_feedback_gate'] == 'ray misses or stops before target'
+
+
+def test_rejected_late_read_releases_fire_and_discards_correction_budget(monkeypatch):
+    from tests.test_re5_target_feedback import controller
+    g, old, where = final_read_scene(monkeypatch)
+    g.q(PLAYER + 0x1A00, 13)
+    bot, writes = controller()
+    bot._m, bot.target = g, where['enemy']
+    out = A.apply(bot, old, {'hold': ('zl', 'zr', 'rleft')}, .15)
+    assert out['hold'] == ('zl',) and not writes
+    assert bot._feedback_at is bot._feedback_context is None
+    assert bot.stats['target_feedback_refresh_rejections'] == 1
+    assert 'life' in bot.stats['target_feedback_refresh_error']
+
+
 # --- the bot -----------------------------------------------------------------------------------------------------------
 MUZZLE = (0.0, 140.0, 30.0)
 

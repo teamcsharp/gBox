@@ -60,7 +60,7 @@ RECOVER_NEVER_RAN_S = 60.0
 # parameterised spawn/detonate pair in native/re6_061d2a06/classes.py takes the class, so the ring *can* fire them
 # (`allow_unverified` on the controller, never on the queue); grenade_kinds() keeps advertising only the verified
 # ones until each has a receipt.
-RING_IMPLEMENTED_KINDS = ("flash",) + tuple(CLASSES.CLASSES) + tuple(CLASSES.SHELL_KINDS)
+RING_IMPLEMENTED_KINDS = tuple(CLASSES.CLASSES)
 RING_KIND_REFUSED = {
     "hand": "a hand-grenade ring is not yet verified on this build (uWp1091 is known; the compiled spawn image pins "
             "the flash's class)",
@@ -68,9 +68,9 @@ RING_KIND_REFUSED = {
                   "image pins the flash's class)",
 }
 for _k, _shell in CLASSES.SHELL_KINDS.items():
-    RING_KIND_REFUSED[_k] = (f"the {_shell} launcher round spawns (the parameterised class spawn takes its DTI) but "
-                             f"its own explosion is the launcher's path: the detonate wrapper refuses a shell's action "
-                             f"class with 0 - the ring reports the spawned shell, never a blast it did not make")
+    RING_KIND_REFUSED[_k] = (f"the {_shell} launcher round needs its native shell initialization and explosion path; "
+                             "the thrown-grenade initializer is incompatible, and spawning a shell does not "
+                             "confirm a blast")
 RING_KINDS = RING_VERIFIED_KINDS + tuple(RING_KIND_REFUSED)
 RING_COUNT_DEFAULT, RING_COUNT_MAX = 10, 16
 #: The grenade launcher's weapon type (uWp1080, item 0x112): its presence in the loadout is what loads the shell
@@ -585,22 +585,10 @@ class Controller:
         spec = CLASSES.class_for(kind)
         shell = CLASSES.SHELL_KINDS.get(kind)
         if shell is not None:
-            # The launcher's round: the same verified parameterised spawn image with the shell's DTI. The game's own
-            # projectile registration inside it carries the round; the wrapper's detonate refuses the shell's action
-            # class (0, a clean refusal), so the receipt names the spawned shell - the launcher's fire/explode path is
-            # the shell's own (operator 2026-11-11 18:12: the 360 launcher-shot ring).
-            unit = self.call(CLASSES.SPAWN_CLASS[0], self.player, self.base + spec.dti, timeout=CLASS_SPAWN_TIMEOUT_S)
-            if not R.ptr_ok(unit):
-                raise Unavailable(f"native {kind} allocation refused")
-            born = self.w(unit + 0x1308)
-            self.write(unit + RING_UNIT_POS, struct.pack("<3f", x, y, z))
-            try:
-                action = R.unit_action(self, unit)
-            except Exception:                          # noqa: BLE001 - the diagnosis never masks the spawn
-                action = "unreadable"
-            return {"index": index, "kind": kind, "projectile_generation": born, "action": action,
-                    "pos": [round(x, 1), round(y, 1), round(z, 1)],
-                    "explode": "the shell's own launcher projectile"}
+            # Native shell collision dispatch selects shell actions 0x11-0x13 (main+0xF45340).
+            # spawn_class is the bomb initializer and requests bomb throw action 7. Its constructor
+            # stores are not the shell's launch setup; a nonzero factory pointer proves no explosion.
+            raise Unavailable(RING_KIND_REFUSED[kind])
         if kind == "flash":
             unit = self.call(0x18F2880, self.player)
         else:
@@ -661,6 +649,10 @@ class Controller:
         kind = (kind or "flash").lower()
         if kind not in RING_KINDS:
             raise Unavailable(f"unknown grenade kind {kind!r}")
+        if kind not in RING_IMPLEMENTED_KINDS:
+            # Even a research probe must have a native implementation. Refuse before installing
+            # code or allocating an actor; allow_unverified only bypasses live-evidence gating.
+            raise Unavailable(RING_KIND_REFUSED.get(kind, "grenade kind not implemented"))
         if kind not in RING_VERIFIED_KINDS and not allow_unverified:
             raise Unavailable(RING_KIND_REFUSED.get(kind, "grenade kind not verified"))
         spec = CLASSES.class_for(kind)

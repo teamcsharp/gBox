@@ -184,9 +184,10 @@ class Controller(N.Controller):
     # RE6's inherited remote-bomb hook addresses do not belong to RE5.
     drop_bomb = None
 
-    def proximity_mines(self, count=1, *, allow_unverified=False, allowed=None):
+    def proximity_mines(self, count=1, *, allow_unverified=False, allowed=None, expected=None, wait_for_lock=True):
         from .re5_proximity_native import place
-        return place(self, count, allow_unverified=allow_unverified, allowed=allowed)
+        return place(self, count, allow_unverified=allow_unverified, allowed=allowed,
+                     expected=expected, wait_for_lock=wait_for_lock)
 
     def proximity_mine_status(self):
         from .re5_proximity_native import LIVE_VERIFIED, RADIUS_CM, RING_COUNT

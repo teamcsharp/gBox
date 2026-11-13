@@ -132,3 +132,43 @@ def test_prepared_unit_reuse_cannot_write_transform(monkeypatch):
     assert out['state'] == 'uncertain' and out['placed'] == 0
     assert not ctl.writes
 
+
+def test_new_life_rejects_queued_native_mine_before_mutation(monkeypatch):
+    ctl = mine_controller(monkeypatch)
+    with pytest.raises(N.AllocationLost, match='player changed'):
+        M.place(ctl, allow_unverified=True, expected=(ctl.player, ctl.generation + 1))
+    assert not ctl.native_calls and not ctl.writes
+
+
+def test_background_mine_refuses_busy_controller_without_waiting(monkeypatch):
+    ctl = mine_controller(monkeypatch)
+    class Busy:
+        def acquire(self, *, blocking):
+            assert blocking is False
+            return False
+        def release(self):
+            pytest.fail('an unacquired lock must not be released')
+    ctl.lock = Busy()
+    with pytest.raises(N.Unavailable, match='mine placement was not queued'):
+        M.place(ctl, allow_unverified=True, wait_for_lock=False)
+    assert not ctl.native_calls and not ctl.writes
+
+
+def test_mine_receipt_records_concurrent_movement_health_and_native_ground_position(monkeypatch):
+    ctl = mine_controller(monkeypatch)
+    ctl.put(ctl.player + N.R.P_HP, struct.pack('<h', 900))
+    original = ctl.call
+    def call(off, *args, **kw):
+        result = original(off, *args, **kw)
+        if off == 0x793AB0:
+            ctl.put(ctl.player + N.R.P_POS, struct.pack('<3f', 200, 200, 400))
+            ctl.put(ctl.player + N.R.P_HP, struct.pack('<h', 850))
+            ctl.put(args[0] + 0x60, struct.pack('<3f', 100, 190, 300))
+        return result
+    ctl.call = call
+    out = M.place(ctl, allow_unverified=True, expected=(ctl.player, ctl.generation), wait_for_lock=False)
+    assert out['hp_before'] == 900 and out['hp_after'] == 850
+    assert out['hp_loss_observed'] == 50 and out['damage_attribution'].startswith('unattributed')
+    assert out['player_pos_before'] == [100, 200, 300] and out['player_pos_after'] == [200, 200, 400]
+    assert out['mines'][0]['pos'] == [100, 190, 300]
+

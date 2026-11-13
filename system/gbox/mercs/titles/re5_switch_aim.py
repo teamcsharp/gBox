@@ -66,6 +66,7 @@ def player_qfps(m, base: int, player: int) -> int | None:
 
 def aim_state(m, base: int, player: int) -> dict | None:
     """{"qfps", "pitch" (rad, + = up), "heading" (rad, from the quaternion)}; None without the player's camera."""
+    started = time.monotonic()
     qf = player_qfps(m, base, player)
     if qf is None:
         return None
@@ -78,7 +79,8 @@ def aim_state(m, base: int, player: int) -> dict | None:
     if not (math.isfinite(pitch) and abs(pitch) <= PITCH_LIMIT + 1e-3 and math.isfinite(qy) and math.isfinite(qw)):
         return None
     return {"qfps": qf, "player": player, "pitch": pitch, "heading": wrap(2.0 * math.atan2(qy, qw)),
-            "base": base, "generation": generation, "sampled_at": time.monotonic()}
+            "base": base, "generation": generation, "sampled_at": started,
+            "sample_completed_at": time.monotonic()}
 
 
 def aim_writer(m):
@@ -94,9 +96,13 @@ def aim_writer(m):
             # A camera pointer from a previous life/raise is never a write capability.
             if any(v is not None and not math.isfinite(v) for v in (pitch, heading)):
                 return False
-            if not 0 <= time.monotonic() - st.get("sampled_at", -math.inf) <= 0.15 \
+            if not 0 <= time.monotonic() - st.get("sampled_at", -math.inf) <= MAX_SAMPLE_AGE \
                     or player_qfps(m, st["base"], st["player"]) != st["qfps"] \
                     or _q(m, st["player"] + 0x1A00) != st["generation"]:
+                return False
+            # Ownership reads can themselves stall. Age is measured from the
+            # first read, and checked again immediately before the mutation.
+            if time.monotonic() - st["sampled_at"] > MAX_SAMPLE_AGE:
                 return False
             if pitch is not None:
                 p = max(-PITCH_LIMIT, min(PITCH_LIMIT, float(pitch)))
@@ -119,6 +125,8 @@ def aim_writer(m):
                 delta = wrap(h - 2.0 * math.atan2(qy, qw)) / 2.0
                 c, s = math.cos(delta), math.sin(delta)
                 turned = (c*qx + s*qz, c*qy + s*qw, c*qz - s*qx, c*qw - s*qy)
+                if time.monotonic() - st['sampled_at'] > MAX_SAMPLE_AGE:
+                    return False
                 ad.write_memory(st["player"] + P_ROT, struct.pack("<4f", *turned))
                 _qx2, qy2, _qz2, qw2 = struct.unpack("<4f", ad.read_memory(st["player"] + P_ROT, 16))
                 if abs(wrap(2.0 * math.atan2(qy2, qw2) - h)) > LOCK_TOL:
@@ -133,7 +141,10 @@ def aim_writer(m):
 # track and reload both together, including before the first process restart.
 STICKS = frozenset({'rleft', 'rright', 'rup', 'rdown'})
 YAW_RATE, PITCH_RATE = math.radians(140), math.radians(90)
-MAX_DT = 0.05
+# Live decisions commonly arrive 100-150 ms apart. A 50 ms cap made a configured
+# 140 deg/s correction turn at only 47 deg/s at that cadence. Ordinary intervals
+# retain their elapsed time; a long stall starts a new acquisition budget.
+MAX_DT, MAX_GAP, MAX_SAMPLE_AGE = 0.15, 0.3, 0.15
 SEGMENT_PITCH_DIST_CM, SEGMENT_PITCH_MAX = 300., math.radians(9)   # a grazing close segment needs the pitch near
 # How long that grazing-pitch hold may keep the trigger off (see apply()). It is a correction window, not a state:
 # live 2026-11-12 a pitch error that never converged held fire for a whole round at 1.5 m.
@@ -260,6 +271,91 @@ def step(error, rate, dt):
     return max(-limit, min(limit, error))
 
 
+def refresh_target(m, snap, target):
+    """A bounded late read of the selected body and this player's actual aim.
+
+    The full snapshot also walks prompts, enemies, mines and navigation. Its
+    early camera can be too old by the final firing gate. Refresh the selected
+    target, pose and held weapon together, then read the camera and ray last.
+    Native identities and the playing phase must survive the entire read.
+    This is not an atomic engine snapshot; an interval over 150 ms is refused.
+    """
+    from . import re5_switch as R
+    started = time.monotonic()
+    try:
+        base, p, e = snap['module_base'], snap['player']['ptr'], target['ptr']
+        index = R.player_index(m)
+        slot = target.get('slot')
+        if not all(_ok(v) for v in (base, p, e)) or index is None \
+                or type(slot) is not int or not 0 <= slot < R.MAX_ENEMIES:
+            raise ValueError('invalid aim identity')
+        sp, se = _q(m, base + R.S_PLAYER), _q(m, base + R.S_ENEMY)
+        gs = R.game_sys(m, base)
+        if not all(_ok(v) for v in (sp, se, gs)):
+            raise ValueError('aim managers unavailable')
+        coop = index != 0 or bool(getattr(m, 'mercs_coop', False))
+        current_player = lambda: R.player_pointer(m, sp, index) if coop else _q(m, sp + R.P_FIRST)
+        arr = _q(m, se + R.E_ARRAY)
+        count = struct.unpack('<I', m.rd(se + R.E_COUNT, 4))[0]
+        if not _ok(arr) or not slot < count <= R.MAX_ENEMIES or _q(m, arr + 8*slot) != e:
+            raise ValueError('selected target left its native slot')
+        generation, enemy_generation, enemy_vt = _q(m, p + 0x1A00), _q(m, e + 0x1A00), _q(m, e)
+        if current_player() != p or generation != snap['player'].get('generation') \
+                or struct.unpack('<i', m.rd(gs + R.GS_PHASE, 4))[0] != R.PHASE_PLAYING:
+            raise ValueError('player life or playing phase changed')
+        if target.get('generation', enemy_generation) != enemy_generation:
+            raise ValueError('selected target generation changed')
+        pose = struct.unpack('<8f', m.rd(p + R.P_POS, 32))
+        hp, hp_max = struct.unpack('<hh', m.rd(p + R.P_HP, 4))
+        player = dict(snap['player'], pos=pose[:3], rot=R.heading_of(pose[4:]), hp=hp, hp_max=hp_max,
+                      motion=m.rd(p + R.P_MOTION, 1)[0])
+        foot = struct.unpack('<3f', m.rd(e + R.E_POS, 12))
+        ehp, ehp_max = struct.unpack('<hh', m.rd(e + R.E_HP, 4))
+        enemy = dict(target, pos=foot, hp=ehp, hp_max=ehp_max, generation=enemy_generation,
+                     motion=m.rd(e + R.E_MOTION, 1)[0], **{'class': R.enemy_class(m, e)})
+        if hp <= 0 or ehp <= 0 or not all(math.isfinite(v) for v in (*pose, *foot)):
+            raise ValueError('selected body is dead or unreadable')
+        inventory = R.inventory(m, p)
+        held = next((s for s in inventory if s.get('hand')), None)
+        old_held = next((s for s in snap.get('inventory') or () if s.get('hand')), {})
+        if held is None or any(held.get(k) != old_held.get(k) for k in ('slot', 'id', 'item', 'object')):
+            raise ValueError('held weapon changed during decision')
+        cam = aim_state(m, base, p)
+        ray = R.own_laser(m, p, index) if coop else R.laser(m, base)
+        # Repeat the capabilities, not the expensive stage/enemy traversal.
+        held_end = m.rd(held['addr'], R.INV_SLOT)
+        if (cam is None or cam['generation'] != generation or current_player() != p
+                or _q(m, base + R.S_PLAYER) != sp or _q(m, p + 0x1A00) != generation
+                or R.game_sys(m, base) != gs
+                or struct.unpack('<i', m.rd(gs + R.GS_PHASE, 4))[0] != R.PHASE_PLAYING
+                or _q(m, base + R.S_ENEMY) != se or _q(m, se + R.E_ARRAY) != arr
+                or not slot < struct.unpack('<I', m.rd(se + R.E_COUNT, 4))[0] <= R.MAX_ENEMIES
+                or _q(m, arr + 8*slot) != e or _q(m, e + 0x1A00) != enemy_generation or _q(m, e) != enemy_vt
+                or struct.unpack_from('<I', held_end, R.INV_ID)[0] != held['id']
+                or struct.unpack_from('<i', held_end, R.INV_HAND)[0] != 1
+                or struct.unpack_from('<Q', held_end, R.INV_OBJ)[0] != held['object']):
+            raise ValueError('aim identity changed during final read')
+        # Any newer animation is authoritative, especially a grab or reload.
+        player['motion'] = m.rd(p + R.P_MOTION, 1)[0]
+        finished = time.monotonic()
+        if not 0 <= finished - started <= MAX_SAMPLE_AGE:
+            raise ValueError('final aim read exceeded freshness budget')
+        # The oldest geometry, not merely the newest camera, bounds the writer.
+        cam = dict(cam, sampled_at=started, sample_completed_at=finished)
+        return dict(snap, player=player, enemies=[enemy], inventory=inventory,
+                    aim_cam=cam, laser=ray), enemy, None
+    except (*ERRORS, KeyError, TypeError) as exc:
+        return None, None, str(exc)
+
+
+def _feedback_context(p, cam, target, held):
+    # Recoil and steady aim share a controller; a new raise gets a new budget.
+    motion = 'raised' if p.get('motion') in (26, 29) else p.get('motion')
+    return (p.get('ptr'), p.get('generation'), cam.get('qfps'), motion,
+            target.get('ptr', target.get('slot')), target.get('generation'),
+            held.get('item'), held.get('object'))
+
+
 def visible_target(snap):
     """A reachable live body already in front of the raised gun wins over a turn."""
     from . import re5_switch as R, re5_weapons
@@ -293,9 +389,12 @@ def apply(bot, snap, act, now):
     bot.stats.update(target_feedback_on=False, target_feedback_ram=False,
                      target_feedback_gate='no verified target this tick',
                      target_feedback_target=None, target_feedback_yaw_deg=None,
-                     target_feedback_pitch_deg=None, target_feedback_block_why=None)
-    previous = getattr(bot, '_feedback_at', None)
-    bot._feedback_at = now
+                     target_feedback_pitch_deg=None, target_feedback_block_why=None,
+                     target_feedback_refresh_ms=None, target_feedback_refresh_error=None,
+                     target_feedback_dt_ms=0.)
+    previous, previous_context = getattr(bot, '_feedback_at', None), getattr(bot, '_feedback_context', None)
+    # Only an accepted correction below can keep the next interval alive.
+    bot._feedback_at = bot._feedback_context = None
     if bot.stats.get('operator_control') is True or 'zl' not in keys \
             or bot.doing not in ('aim', 'fire', 'raise', 'reraise', 'restale'):
         bot._feedback_at = None
@@ -306,6 +405,28 @@ def apply(bot, snap, act, now):
     if not spec or spec.family not in GUN_FAMILIES or not p.get('pos'):
         bot._feedback_contact = None
         return act
+    candidates = [e for e in snap.get('enemies') or () if (e.get('hp') or 0) > 0 and e.get('pos')]
+    target = visible_target(snap) or next((e for e in candidates if e.get('ptr', e.get('slot')) == bot.target), None)
+    if target is None:
+        bot._feedback_contact = None
+        bot._trigger(False, now)
+        return dict(act, hold=tuple(sorted(keys - STICKS - {'zr'})))
+    memory = getattr(bot, '_m', None)
+    if memory is not None and 'module_base' in snap:
+        started = time.monotonic()
+        fresh, target, reason = refresh_target(memory, snap, target)
+        bot.stats['target_feedback_refresh_ms'] = round(1000 * (time.monotonic()-started), 2)
+        bot.stats['target_feedback_refresh_error'] = reason
+        if fresh is None:
+            bot.stats['target_feedback_refresh_rejections'] = bot.stats.get('target_feedback_refresh_rejections', 0) + 1
+            bot._feedback_contact = None
+            bot._trigger(False, now)
+            bot.doing = 'aim'
+            bot.stats['target_feedback_gate'] = 'final aim read rejected'
+            return dict(act, hold=tuple(sorted(keys - STICKS - {'zr'})))
+        snap, p, cam = fresh, fresh['player'], fresh['aim_cam']
+        candidates = fresh['enemies']
+        held = next(s for s in fresh['inventory'] if s.get('hand'))
     if not cam:
         bot._feedback_contact = None
         # Production snapshots include this key even during camera transitions.
@@ -323,13 +444,6 @@ def apply(bot, snap, act, now):
         bot.doing = 'aim'
         bot.stats['target_feedback_gate'] = 'camera owner changed'
         return dict(act, hold=tuple(sorted(keys - STICKS - {'zr'})))
-    candidates = [e for e in snap.get('enemies') or () if (e.get('hp') or 0) > 0 and e.get('pos')]
-    target = visible_target(snap) or next((e for e in candidates if e.get('ptr', e.get('slot')) == bot.target), None)
-    if target is None:
-        bot._feedback_contact = None
-        bot._trigger(False, now)
-        return dict(act, hold=tuple(sorted(keys - STICKS - {'zr'})))
-
     px, py, pz = p['pos']
     foot = target['pos']
     dist = math.hypot(foot[0] - px, foot[2] - pz)
@@ -375,7 +489,15 @@ def apply(bot, snap, act, now):
             if p.get('motion') == R.MOTION_AIMED:
                 calibration = (R.wrap(ray_yaw-cam['heading']), ray_pitch-cam['pitch'])
 
-    dt = 0.0 if previous is None else now - previous
+    context = _feedback_context(p, cam, target, held)
+    # Contact continuity also applies to sessions without a RAM writer. Its
+    # identity is separate from the accepted-correction integration budget.
+    if getattr(bot, '_feedback_contact', None) and bot._feedback_contact.get('context') != context:
+        bot._feedback_contact = None
+    sample_time = cam.get('sampled_at', now)
+    elapsed = sample_time - previous if previous is not None else 0.0
+    dt = elapsed if context == previous_context and 0 <= elapsed <= MAX_GAP else 0.0
+    bot.stats['target_feedback_dt_ms'] = round(1000 * min(MAX_DT, dt), 2)
     writer = bot._writer()
     written = False
     if writer:
@@ -390,6 +512,7 @@ def apply(bot, snap, act, now):
             bot._feedback_contact = None
             bot._trigger(False, now)
             return dict(act, hold=tuple(sorted(keys - {'zr'})))
+        bot._feedback_at, bot._feedback_context = sample_time, context
     # The write above is an intention. Only this snapshot's actual aim can
     # authorize fire; it must be observed aligned on a later sample.
     body_contact = bool(valid_ray and bot._crowd_hit(origin, dot, foot, False))
@@ -549,6 +672,7 @@ def apply(bot, snap, act, now):
         bot.doing = 'fire'
         if not recoil and not auto and valid_ray:
             bot._feedback_contact = {'at': now, 'identity': (p.get('ptr'), p.get('generation')),
+                                     'context': context,
                                      'target': key, 'pos': tuple(p['pos']),
                                      'heading': cam['heading'], 'pitch': cam['pitch'], 'weapon': held.get('item'),
                                      'origin': tuple(origin), 'dot': tuple(dot),

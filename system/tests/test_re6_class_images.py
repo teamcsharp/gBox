@@ -161,7 +161,7 @@ def test_a_hand_ring_spawns_the_hand_class_and_detonates_the_class_it_carries():
     assert result["kind"] == "hand" and result["detonated"] == 2
     assert result["effect"] == "native_hand_ring"
     spawns = [c for c in ctl.calls if c[0] == C.SPAWN_CLASS[0]]
-    assert len(spawns) == 2 and all(args == (ctl.player, 0x2951490) for _off, args in spawns)
+    assert len(spawns) == 2 and all(args == (ctl.player, ctl.base + 0x2951490) for _off, args in spawns)
     detonations = [c for c in ctl.calls if c[0] == C.DETONATE_CLASS[0]]
     assert len(detonations) == 2
     for _off, args in detonations:
@@ -210,7 +210,7 @@ def test_only_the_verified_kinds_are_advertised():
     assert rows["flash"]["available"] is True
     for kind in ("hand", "incendiary"):
         assert rows[kind]["available"] is False and rows[kind]["reason"]
-    assert set(N.RING_IMPLEMENTED_KINDS) == {"flash", "hand", "incendiary", *C.SHELL_KINDS}
+    assert set(N.RING_IMPLEMENTED_KINDS) == {"flash", "hand", "incendiary"}
     for kind in C.SHELL_KINDS:
         assert rows[kind]["available"] is False and rows[kind]["reason"]
 

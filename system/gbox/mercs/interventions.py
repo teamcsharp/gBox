@@ -7,7 +7,9 @@ expire rather than affecting a later round. No latest-value command coalescing.
 from __future__ import annotations
 
 import json
+import hashlib
 import math
+from pathlib import Path
 import threading
 import time
 import uuid
@@ -32,6 +34,8 @@ GRENADE_RING_KINDS = ("flash", "hand", "incendiary", "launcher", "shell1302", "s
 GRENADE_SCATTER_KINDS = ("random",) + GRENADE_RING_KINDS
 TIMED_OPS = ("grenade_ring", "grenade_scatter", "remote_mines", "proximity_mine_drop", "proximity_mine_ring")
 GRENADE_RING_TTL = 25.0
+RECEIPT_LIMIT = 4096
+RECEIPT_ROOT = Path(__file__).resolve().parents[2] / 'gbox-data' / 'mercs' / 'native-intervention-receipts'
 
 _WAKE_LOCK = threading.Lock()
 _WAITERS = weakref.WeakValueDictionary()
@@ -217,7 +221,7 @@ class Queue:
             state = result.get("state")
             if state not in ("confirmed", "failed", "unavailable", "uncertain") or (state == "confirmed" and result.get("verified") is not True):
                 raise ValueError("completion needs an explicit verified result")
-            if len(json.dumps(result)) > 4096:
+            if len(json.dumps(result)) > RECEIPT_LIMIT:
                 raise ValueError("receipt too large")
         def done(d, now):
             out = []
@@ -384,7 +388,7 @@ def native_controller(ad):
     raise re6_switch_native.Unavailable("; ".join(dict.fromkeys(reasons)))
 
 
-def completion_receipt(result):
+def completion_receipt(result, *, session_id=None, request_id=None):
     """A returned native call is not proof that its in-game effect happened.
 
     Keep that evidence, but use the queue's uncertainty state. Otherwise one
@@ -395,6 +399,45 @@ def completion_receipt(result):
     if result.get('state') == 'confirmed' and result.get('verified') is not True:
         result.update(native_state='confirmed', state='uncertain', verified=False,
                       verification_reason='native call returned; in-game effect has not been verified')
+    if len(json.dumps(result)) > RECEIPT_LIMIT:
+        # A five-mine result includes both prepared and published actor details.
+        # Rejecting that payload at /results stranded the entire pending batch.
+        # Preserve the complete evidence locally and send a bounded summary;
+        # retries repeat only delivery, never the native operation.
+        from .follow_report_delivery import _write
+        full = json.dumps(result, allow_nan=False, sort_keys=True, separators=(',', ':'))
+        digest = hashlib.sha256(full.encode('utf-8')).hexdigest()
+        record = {'schema': 'gbox.mercs.intervention-receipt/1', 'session_id': session_id,
+                  'request_id': request_id, 'sha256': digest, 'result': result}
+        key = hashlib.sha256(json.dumps([session_id, request_id, digest]).encode('utf-8')).hexdigest()
+        summary = {k: result[k] for k in (
+            'state', 'verified', 'native_state', 'op', 'kind', 'effect', 'requested', 'placed', 'armed',
+            'triggered', 'detonated', 'completed', 'presses', 'item', 'enabled', 'consumed',
+            'inventory_consumed', 'weapon_before', 'weapon_after', 'weapon_unchanged', 'player_generation',
+            'hp_before', 'hp_after', 'self_damage', 'elapsed_ms', 'placement_span_ms', 'radius_cm', 'probe')
+            if k in result and (result[k] is None or type(result[k]) in (bool, int, float, str))}
+        for k in ('reason', 'verification_reason', 'detach_error'):
+            if k in result:
+                summary[k] = str(result[k])[:300]
+        for k in ('mines', 'prepared', 'grenades'):
+            if isinstance(result.get(k), (list, tuple)):
+                summary[k + '_records'] = len(result[k])
+        summary.update(receipt_compacted=True, receipt_sha256=digest)
+        try:
+            _write(RECEIPT_ROOT / (key + '.json'), record)
+            summary['receipt_archive'] = 'mercs/native-intervention-receipts/' + key + '.json'
+        except (OSError, ValueError) as exc:
+            summary['receipt_archive_error'] = f'{type(exc).__name__}: {exc}'[:240]
+        # Native receipts use short names, but retain a fixed bound even if a
+        # future backend puts a large string into a scalar evidence field.
+        for k, v in list(summary.items()):
+            if isinstance(v, str):
+                summary[k] = v[:300]
+        if len(json.dumps(summary)) > RECEIPT_LIMIT:
+            summary = {k: summary[k] for k in ('state', 'verified', 'native_state', 'op', 'item', 'enabled',
+                'requested', 'completed', 'presses', 'receipt_compacted', 'receipt_sha256', 'receipt_archive',
+                'receipt_archive_error') if k in summary}
+        return summary
     return result
 
 
@@ -659,7 +702,8 @@ def _worker_loop(sid, server, headers, ad, stats_of, alive, event, game=None):
                                 result = {"state": "uncertain" if isinstance(exc, N.Uncertain) else "failed", "reason": str(exc)[:300]}
                                 if row['op'] == Q.OP:
                                     result.update(op=Q.OP, requested=4, completed=0, presses=0, verified=False)
-                        receipts.append((row["id"], {"claim": row["claim"], "result": completion_receipt(result)}))
+                        receipts.append((row["id"], {"claim": row["claim"], "result": completion_receipt(
+                            result, session_id=sid, request_id=row['id'])}))
                 flush()
             except Exception as exc:                      # noqa: BLE001 - the status loop outlives any one claim
                 # A worker that dies here leaves the PiP saying "worker not connected" for the rest of the round,

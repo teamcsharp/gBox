@@ -156,11 +156,23 @@ def test_kind_options_mark_only_flash_available():
     assert rows["flash"]["available"] is True and not rows["flash"]["reason"]
     assert rows["hand"]["available"] is False and rows["hand"]["reason"]
     assert rows["incendiary"]["available"] is False and rows["incendiary"]["reason"]
-    # the launcher's shell rounds are implemented research kinds: listed, refused (no live receipt yet) and with their
-    # own reason - the launcher ring reaches them through allow_unverified only
+    # Shell choices stay visible with an honest reason until their own native lifecycle is implemented.
     assert set(rows) == {"flash", "hand", "incendiary", "shell1302", "shell1303", "shell1304"}
     for kind in ("shell1302", "shell1303", "shell1304"):
         assert rows[kind]["available"] is False and "launcher" in rows[kind]["reason"]
+
+
+@pytest.mark.parametrize("kind", ("shell1302", "shell1303", "shell1304"))
+def test_shell_probe_cannot_run_bomb_initializer_or_claim_detonation(kind):
+    ctl = ring_controller()
+    calls = []
+    ctl.call = lambda *args, **kwargs: calls.append(args) or 0x230000000
+    ctl.ready = lambda: pytest.fail("unsupported shell must be refused before controller setup")
+    with pytest.raises(N.Unavailable, match="shell initialization and explosion"):
+        ctl.grenade_ring(kind, count=1, allow_unverified=True)
+    with pytest.raises(N.Unavailable, match="spawning a shell does not confirm a blast"):
+        ctl._ring_one(1000, 800, -2000, 0, kind)
+    assert calls == [] and ctl.writes == [] and ctl.spawns == []
 
 
 def test_ring_needs_a_living_player_and_flash_resources(monkeypatch):

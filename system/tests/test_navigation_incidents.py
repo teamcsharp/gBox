@@ -2,7 +2,7 @@ import json
 import math
 from types import SimpleNamespace
 
-from gbox.mercs.navigation_incidents import Monitor, ReportWriter
+from gbox.mercs.navigation_incidents import Monitor, ReportWriter, guard_started, guard_finished
 from gbox.mercs.run_capture import RunCapture
 
 
@@ -156,3 +156,57 @@ def test_storage_failure_is_visible_and_retry_keeps_the_report(tmp_path, monkeyp
     monkeypatch.setattr(run_capture, '_atomic', original)
     writer.submit(m.changes[0], 'stage', [])
     assert not writer.pending and status['navigation_reports_written'] == 1
+
+
+def test_short_measured_guard_stall_survives_recovery_and_phase_changes(tmp_path):
+    cap = RunCapture(tmp_path/'round_maps', '010018100CD46000', 'short', threaded=False)
+    stats = {'stage': 'Prison', 'round_evidence_id': 'short'}
+    bot = SimpleNamespace(stats=stats, doing='walk', why='time bonus')
+    player = {'ptr': 1, 'generation': 2, 'pos': [0, 0, 0], 'hp': 1000}
+    goal = {'id': 'bonus', 'kind': 'bonus', 'pos': [1000, 0, 0]}
+    route = [[500, 0, 0], [1000, 0, 0]]
+    cap.observe(0, 'playing', {'player': player}, bot, stats, controls={'keys': ['lup']})
+    guard_started(bot, 're5_wall_guard', player, .4, anchor=[0, 0, 0], effort_s=.4,
+                  threshold_s=.35, progress_limit_cm=15, commands=['lup'], goal=goal, route=route)
+    route.clear(); goal['pos'][0] = 9999  # the live route is discarded by the recovery
+    cap.input(.41, [{'key': 'ldown', 'down': True}], {'sent': 1})
+    bot.doing = 'aim'  # combat can preempt before the next capture sample
+    guard_finished(bot, player, .48, 'recovery_interrupted')
+    cap.observe(.6, 'playing', {'player': player}, bot, stats, controls={'keys': ['zl']})
+    report = json.loads(next((tmp_path/'round_maps').rglob('short-0001.json')).read_text())
+    assert report['outcome'] == 'recovery_interrupted' and report['collision_confirmed'] is None
+    assert report['goal']['pos'] == [1000, 0, 0] and report['waypoint'] == [500, 0, 0]
+    assert report['driver_witness']['commands'] == ['lup'] and report['input_events']
+    cap.observe(.8, 'playing', {'player': player}, bot, stats, controls={'keys': ['zl']})
+    assert cap.flight.navigation.sequence == 1
+    assert len((tmp_path/'lessons'/'010018100CD46000.jsonl').read_text().splitlines()) == 1
+
+
+def test_driver_witness_needs_measured_effort_identity_and_final_movement_commands():
+    from copy import deepcopy
+    bot = SimpleNamespace(stats={}, doing='walk', why='bonus')
+    player = {'ptr': 1, 'pos': [0, 0, 0]}
+    guard_started(bot, 're6_wall_guard', player, .4, anchor=[0, 0, 0], effort_s=.4,
+                  threshold_s=.4, progress_limit_cm=15, commands=['lup'])
+    for change in ({'commands': ['zl']}, {'effort_s': .2}, {'position_cm': [50, 0, 0]},
+                   {'player': 2}, {'source': 'remembered_wall'}, {'detected_at': -10}):
+        witness = deepcopy(bot.stats['navigation_obstruction_context']); witness.update(change)
+        r = row(.6, phase='aim'); r['navigation_obstruction'] = witness
+        m = Monitor(); m.observe(r)
+        assert not m.changes, change
+
+
+def test_guard_recovery_records_displacement_without_claiming_a_route_arrival():
+    bot = SimpleNamespace(stats={}, doing='walk', why='bonus')
+    player = {'ptr': 1, 'pos': [0, 0, 0]}
+    guard_started(bot, 're5_wall_guard', player, .4, anchor=[0, 0, 0], effort_s=.4,
+                  threshold_s=.35, progress_limit_cm=15, commands=['lup'])
+    m = Monitor(); r = row(.4); r['navigation_obstruction'] = bot.stats['navigation_obstruction_context']
+    m.observe(r)
+    player['pos'] = [0, 0, -25]
+    guard_finished(bot, player, .7, 'movement_restored')
+    r = row(.8, pos=player['pos']); r['navigation_obstruction'] = bot.stats['navigation_obstruction_context']
+    m.observe(r)
+    assert m.sequence == 1 and m.active is None
+    assert m.changes[-1]['outcome'] == 'movement_restored'
+    assert m.changes[-1]['driver_witness']['recovery_position_cm'] == [0, 0, -25]

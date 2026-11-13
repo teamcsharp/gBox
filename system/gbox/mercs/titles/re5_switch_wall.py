@@ -3,6 +3,8 @@ from __future__ import annotations
 
 import math
 
+from ..navigation_incidents import guard_started, guard_finished
+
 MAX_SAMPLE_GAP, MAX_TRAIL_STEP, MAX_FLOOR_CHANGE = .5, 100., 40.
 FACE = math.radians(25.)
 RECOVERY_S, RETRY_S = 2., 2.
@@ -55,12 +57,14 @@ def _observe(bot, player, now, config):
         at, before, actor = seen
         if not 0 <= now - at <= MAX_SAMPLE_GAP or player.get("ptr") != actor \
                 or _flat(pos, before) > MAX_TRAIL_STEP or abs(pos[1] - before[1]) > MAX_FLOOR_CHANGE:
+            guard_finished(bot, player, now, 'measurement_discontinuity')
             state["trail"], state["previous"], state["anchor"], state["effort"] = [], None, None, 0.
             bot._wall_rec = None
     if not state["trail"] or math.dist(pos, state["trail"][-1]) >= 5.:
         state["trail"] = (state["trail"] + [pos])[-64:]
     state["seen"] = now, pos, player.get("ptr")
     previous, state["previous"] = state["previous"], None
+    state['last_feedback'] = previous
     if previous is not None and 0 < now - previous[0] <= MAX_SAMPLE_GAP and previous[2] is not None:
         anchor = state["anchor"]
         if anchor is None or _flat(pos, anchor) >= config.WALL_MIN_CM:
@@ -142,12 +146,14 @@ def _recover(bot, action, player, now, config):
     complete = moved >= config.WALL_MIN_CM if rec["path"] is None else not rec["path"] and moved >= 5.
     if complete:
         bot.stats["wall_recoveries"] += 1
+        guard_finished(bot, player, now, 'movement_restored')
         bot._wall_rec = None
         state["retry_at"] = now + RETRY_S
         state["retry_head"] = rec["head"]
         return action if rec.get("route") else {**action, "hold": keys}   # (the route's own keys: on at once)
     if now >= rec["until"]:
         bot.stats["wall_recovery_failures"] = bot.stats.get("wall_recovery_failures", 0) + 1
+        guard_finished(bot, player, now, 'recovery_failed')
         bot._wall_rec = None
         state["retry_at"] = now + RETRY_S
         state["retry_head"] = rec["head"]
@@ -187,11 +193,13 @@ def apply(bot, action, snap, now):
     from . import re5_switch as config
     player, hold = snap.get("player"), action.get("hold")
     if not config.WALL_GOV or not player:
+        guard_finished(bot, player, now, 'guard_unavailable')
         bot._wall_guard, bot._wall_rec = None, None
         return action
     state = _observe(bot, player, now, config)
     if hold is None or bot.doing in PRIORITY or {"zl", "zr"} & set(hold) \
             or player.get("motion") == config.MOTION_SHOT or now < getattr(bot, "_shot_until", -math.inf):
+        guard_finished(bot, player, now, 'recovery_interrupted')
         state["previous"], state["effort"], state["anchor"] = None, 0., None
         bot._wall_rec = None
         return action
@@ -219,6 +227,17 @@ def apply(bot, action, snap, now):
     bot.stats[counter] += 1
     if stalled:
         bot.stats["wall_push_s"] = round(bot.stats["wall_push_s"] + state["effort"], 2)
+        feedback = state.get('last_feedback') or ()
+        bonus = getattr(bot, '_bonus', None)
+        goal = {'id': bonus.get('ptr'), 'kind': 'bonus', 'pos': bonus.get('pos')} if isinstance(bonus, dict) else None
+        if goal is None:
+            target = getattr(bot, 'target', None)
+            goal = next(({'id': target, 'kind': 'enemy', 'pos': e.get('pos')}
+                         for e in snap.get('enemies') or () if e.get('ptr', e.get('slot')) == target), None)
+        guard_started(bot, 're5_wall_guard', player, now, anchor=state['anchor'], effort_s=state['effort'],
+                      threshold_s=config.WALL_WINDOW_S, progress_limit_cm=config.WALL_MIN_CM,
+                      commands=feedback[3] if len(feedback) > 3 else (), goal=goal,
+                      route=(getattr(bot, '_mroute', None) or {}).get('pts') if route_steers(bot, now) else ())
     if routed:
         route_wall = getattr(bot, "_route_wall", None)
         if callable(route_wall):
@@ -235,4 +254,4 @@ def feedback(bot, action, snap, now):
     hold = action.get("hold") or ()
     travel_head = _travel_heading(player, hold) if player and not {"zl", "zr"} & set(hold) \
         and bot.doing not in PRIORITY and bot._wall_rec is None else None
-    state["previous"] = (now, tuple(player["pos"]), travel_head) if player else None
+    state["previous"] = (now, tuple(player["pos"]), travel_head, tuple(hold)) if player else None

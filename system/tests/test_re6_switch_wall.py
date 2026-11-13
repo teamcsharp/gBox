@@ -49,12 +49,18 @@ def test_navigation_turns_pass_through_the_spin_governor(monkeypatch):
 def test_final_forward_without_progress_is_released_and_failed_bonus_deferred(monkeypatch):
     bot, clock, state = setup(monkeypatch, doing="bonus")
     bot.run_target = 456
+    state['bonuses'] = [{'ptr': 456, 'pos': [0, 0, 1000]}]
+    bot.nav_path = [(0, 0, 500), (0, 0, 1000)]
     for k in range(8):
         clock[0] = k * .08
         out = bot.tick(state)
     assert "lup" not in out["hold"]
     assert bot.stats["movement_blocks"] == 1 and bot.bonus_skip[456] > clock[0]
     assert bot.run_target is None and bot.stats.get("movement_recoveries", 0) == 0
+    witness = bot.stats['navigation_obstruction_context']
+    assert witness['source'] == 're6_wall_guard' and witness['outcome'] == 'open'
+    assert witness['commands'] == ['lup'] and witness['goal']['id'] == 456
+    assert witness['route'] == [[0, 0, 500], [0, 0, 1000]] and bot.nav_path is None
 
 
 def test_boosted_action_suppression_does_not_count_as_wall_pressure(monkeypatch):
@@ -77,6 +83,7 @@ def test_emergency_or_combat_actions_interrupt_recovery(monkeypatch, doing, hold
     clock[0] += .08
     assert bot.tick(state) == {"hold": hold}
     assert bot.stats.get("movement_recoveries", 0) == 0
+    assert bot.stats['navigation_obstruction_context']['outcome'] == 'recovery_interrupted'
 
 
 def test_known_no_route_does_not_become_direct_forward_pursuit(monkeypatch):

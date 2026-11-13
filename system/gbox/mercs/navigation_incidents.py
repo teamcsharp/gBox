@@ -12,6 +12,42 @@ BUSY_PHASES = frozenset({'grabbed', 'held', 'case', 'dead', 'intro', 'results'})
 _WRITE_LOCK = threading.Lock()
 
 
+def guard_started(bot, source, player, now, *, anchor, effort_s, threshold_s,
+                  progress_limit_cm, commands, goal=None, route=()):
+    """Retain the title guard's measured stall before recovery erases its intent.
+
+    This is final-pad displacement evidence, not native collision attribution.
+    Short title recoveries often finish before the generic three-second monitor.
+    """
+    from .flight_recorder import safe
+    old = bot.stats.get('navigation_obstruction_context') or {}
+    points, prompt = [], False
+    for point in list(route or ())[:12]:
+        approach = getattr(point, 'approach', None)
+        if approach is not None:
+            points.append(list(approach))
+            prompt = True
+        points.append(list(point))
+    bot.stats['navigation_obstruction_context'] = safe({
+        'source': source, 'sequence': old.get('sequence', 0)+1,
+        'round_id': bot.stats.get('round_evidence_id'),
+        'player': player.get('ptr'), 'player_generation': player.get('generation', player.get('id')),
+        'detected_at': now, 'from_t': now-effort_s, 'updated_at': now,
+        'position_cm': player.get('pos'), 'anchor_cm': anchor,
+        'effort_s': effort_s, 'threshold_s': threshold_s, 'progress_limit_cm': progress_limit_cm,
+        'commands': list(commands), 'command_source': 'title_guard_final_pad_feedback',
+        'goal': goal, 'route': points[:12], 'route_requires_prompt': prompt,
+        'phase': getattr(bot, 'doing', None), 'reason': getattr(bot, 'why', None),
+        'outcome': 'open', 'recovery_position_cm': player.get('pos')})
+
+
+def guard_finished(bot, player, now, outcome):
+    witness = bot.stats.get('navigation_obstruction_context')
+    if isinstance(witness, dict) and witness.get('outcome') == 'open':
+        witness.update(outcome=outcome, updated_at=now,
+                       recovery_position_cm=list(player['pos']) if player and player.get('pos') else None)
+
+
 def waypoint(row):
     route = [p for p in row.get('route') or () if p]
     if route:
@@ -79,6 +115,61 @@ class Monitor:
         self.sequence = 0
         self.last_emit = -math.inf
         self.recovery_since = None
+        self.guard_seen = None
+
+    def _guard(self, row):
+        witness = row.get('navigation_obstruction')
+        if not isinstance(witness, dict) or witness.get('source') not in ('re5_wall_guard', 're6_wall_guard'):
+            return False
+        if (witness.get('player'), witness.get('player_generation')) != \
+                (row.get('player'), row.get('player_generation')):
+            return False
+        key = tuple(witness.get(k) for k in ('source', 'player', 'player_generation', 'round_id', 'sequence', 'detected_at'))
+        if key != self.guard_seen:
+            pos, anchor = witness.get('position_cm'), witness.get('anchor_cm')
+            effort, threshold = witness.get('effort_s'), witness.get('threshold_s')
+            limit, at = witness.get('progress_limit_cm'), witness.get('detected_at')
+            numbers = (effort, threshold, limit, at, witness.get('from_t'))
+            if (not all(type(v) in (int, float) and math.isfinite(v) for v in numbers)
+                    or not 0 < threshold <= effort <= 3 or not 0 <= row['t']-at <= 2
+                    or not pos or not anchor or len(pos) != 3 or len(anchor) != 3
+                    or not all(type(v) in (int, float) and math.isfinite(v) for v in pos+anchor)
+                    or not 0 < limit <= 100 or math.hypot(pos[0]-anchor[0], pos[2]-anchor[2]) >= limit
+                    or not set(witness.get('commands') or ()) & {'lup', 'ldown', 'lleft', 'lright'}):
+                return False
+            before = list(self.window)
+            self.close(row['t'], 'title_guard_recovery_started')
+            self.guard_seen = key
+            self.sequence += 1
+            route, goal = witness.get('route') or [], witness.get('goal')
+            dest = route[0] if route else goal.get('pos') if isinstance(goal, dict) else None
+            self.active = {
+                'id': self.sequence, 'state': 'open', 'outcome': 'unresolved',
+                'kinds': ['navigation_guard_no_progress'], 'from_t': witness['from_t'],
+                'to_t': row['t'], 'detected_at': at, 'player': row.get('player'),
+                'player_generation': row.get('player_generation'), 'position_cm': pos,
+                'waypoint': dest, 'goal': goal, 'distance_metric': 'active_waypoint_distance' if route
+                    else 'euclidean_goal_distance' if dest else 'unavailable',
+                'distance_at_open_cm': math.dist(pos, dest) if dest else None,
+                'goal_progress_cm': math.dist(anchor, dest)-math.dist(pos, dest) if dest else None,
+                'travel_cm': None, 'net_displacement_cm': round(math.dist(anchor, pos), 2),
+                'movement_command_coverage': None, 'turn_command_reversals': None,
+                'before': before+[row], 'collision_confirmed': None,
+                'cause': 'unknown; title guard observed commanded movement without sufficient displacement',
+                'analysis_state': 'needs_triage', 'learning_applied': False,
+                'driver_witness': deepcopy(witness), 'evidence_warnings': []}
+            self.window.append(row)
+            self.emit(row['t'])
+        elif not self.active or 'driver_witness' not in self.active:
+            return False
+        else:
+            self.window.append(row)
+            self.active['driver_witness'] = deepcopy(witness)
+        if witness.get('outcome') != 'open':
+            self.close(row['t'], witness.get('outcome') or 'guard_ended')
+        elif row['t']-self.last_emit >= 1:
+            self.emit(row['t'])
+        return True
 
     def emit(self, now):
         if self.active:
@@ -99,6 +190,8 @@ class Monitor:
 
     def observe(self, row):
         now = row['t']
+        if self._guard(row):
+            return
         previous = self.window[-1] if self.window else None
         if previous and not 0 < now-previous['t'] <= .6:
             self.close(now, 'telemetry_gap')

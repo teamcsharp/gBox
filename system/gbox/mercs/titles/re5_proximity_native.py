@@ -8,6 +8,7 @@ Live acceptance is deliberately separate from a successful native-call return.
 import math
 import struct
 import time
+from contextlib import contextmanager
 
 DTI, VTABLE, ITEM = 0x1D715A8, 0x1C5E478, 0x10A
 RADIUS_CM, RING_COUNT = 152.4, 5
@@ -33,21 +34,34 @@ def points(center, count):
             for i in range(count)]
 
 
-def place(ctl, count=1, *, allow_unverified=False, allowed=None):
+@contextmanager
+def mine_lock(lock, wait):
+    if not lock.acquire(blocking=wait):
+        from .re5_switch_native import Unavailable
+        raise Unavailable('native controller busy; mine placement was not queued')
+    try:
+        yield
+    finally:
+        lock.release()
+
+
+def place(ctl, count=1, *, allow_unverified=False, allowed=None, expected=None, wait_for_lock=True):
     from . import re5_switch as R
     from .re5_switch_native import Unavailable, Uncertain, AllocationLost
     if not LIVE_VERIFIED and not allow_unverified:
         raise Unavailable('RE5 direct proximity-mine placement is awaiting live validation')
     if type(count) is not int or count not in COUNTS:
         raise ValueError('one mine, five mines, or the legacy eight-mine ring')
+    started = time.monotonic()
     ctl.ready()
-    with ctl.lock:
+    with mine_lock(ctl.lock, wait_for_lock):
         player, generation = ctl.ready()
+        if expected is not None and tuple(expected) != (player, generation):
+            raise AllocationLost('mine request player changed before execution')
         ctl.sp = ctl.q(ctl.base + R.S_PLAYER)
         ctl.player, ctl.generation = player, generation
         ctl.original = ctl.q(player)
         prepared, deployed = [], []
-        started = time.monotonic()
         receipt = {'op': 'proximity_mine_ring' if count > 1 else 'proximity_mine_drop',
                    'effect': 'native_re5_proximity_mines', 'requested': count, 'placed': 0, 'armed': 0,
                    'radius_cm': RADIUS_CM if count > 1 else 0, 'inventory_consumed': False,
@@ -89,6 +103,8 @@ def place(ctl, count=1, *, allow_unverified=False, allowed=None):
             if len(existing) + count > 40:
                 raise Unavailable('active proximity-mine limit reached')
             receipt['weapon_before'] = ctl.current_weapon()
+            receipt['hp_before'] = struct.unpack('<h', ctl.rd(player + R.P_HP, 2))[0]
+            receipt['player_pos_before'] = list(struct.unpack('<3f', ctl.rd(player + R.P_POS, 12)))
             ctl.attach()
             for i in range(count):
                 current()
@@ -151,12 +167,17 @@ def place(ctl, count=1, *, allow_unverified=False, allowed=None):
                     row['armed'] = bool(R.ptr_ok(volume) and ctl.rd(volume + 0x14, 1) == b'\1')
                     row['armed_observed'] = row.get('armed_observed', False) or row['armed']
                     row['active'] = ctl.rd(unit + 0x27B9, 1) == b'\1'
+                    row['pos'] = list(struct.unpack('<3f', ctl.rd(unit + 0x60, 12)))
                     row['outcome'] = 'armed' if row['armed'] else 'arming'
                     pending |= not (row['active'] and row['armed'])
                 return not pending
             ctl.wait(armed, timeout=6)
             receipt['weapon_after'] = ctl.current_weapon()
             receipt['weapon_unchanged'] = receipt['weapon_after'] == receipt['weapon_before']
+            receipt['hp_after'] = struct.unpack('<h', ctl.rd(player + R.P_HP, 2))[0]
+            receipt['player_pos_after'] = list(struct.unpack('<3f', ctl.rd(player + R.P_POS, 12)))
+            receipt['hp_loss_observed'] = receipt['hp_before'] - receipt['hp_after']
+            receipt['damage_attribution'] = 'unattributed; enemies may attack during native placement'
             receipt.update(state='confirmed', verified=LIVE_VERIFIED)
         except Exception as exc:
             if prepared:

@@ -61,8 +61,8 @@ DEFAULTS = {
     # nitrous blast freezing the immediate enemies in the vicinity. If a boss is preparing to hit the character with a
     # kill animation, defend them with a 360 grenade nitrous blast." A chainsaw boss inside defend_cm, any boss inside
     # defend_close_cm, or a boss winding up inside defend_windup_cm earns the defensive ring at once (the kind is the
-    # freezing round where the title has one - RE6's Nitrogen shell1304 - and the flash, the stun every RE title has,
-    # on RE4/RE5: no RE4/RE5 build carries a Nitrogen round, and the flash is that game's own "frozen" state).
+    # verified freezing round when available, otherwise an explicitly recorded
+    # flash fallback. Flash stun is a different effect from nitrogen freezing.
     "defend": True,
     "defend_cm": 1000.0,           # a CHAINSAW boss this close: the kill animation is coming, ring now
     "defend_close_cm": 450.0,      # any boss this close: ring now
@@ -275,8 +275,8 @@ def chainsaw_row(enemy, title: str | None = None) -> bool:
     return any(word in text for word in ("chainsaw", "salvador", "bella", "ubistvo"))
 
 
-#: The launcher's freezing round (RE6's uWp1304 Nitrogen shell). A title that does not carry it defends with the
-#: flash: RE4/RE5 have no Nitrogen round, and the flash's stun is the game's own "frozen" state.
+#: Prefer the verified freezing shell; use an explicitly recorded defensive
+#: flash fallback while a title's native shell path remains unavailable.
 FREEZE_KINDS = ("shell1304",)
 
 
@@ -445,8 +445,8 @@ def pick_kind(target, decision: dict) -> str | None:
 
 
 def launcher_rounds(target) -> list:
-    """[(kind, available)] the launcher ring may draw for this title: the controller's own launcher_kinds() (RE6's
-    shell rounds) or its grenade kinds (RE5/RE4, whose launcher fires the same grenades). Operator 2026-11-11 18:30:
+    """[(kind, available)] the launcher ring may draw for this title: the controller's own launcher_kinds()
+    or its verified grenade fallback. RE5's native launcher shells have a separate lifecycle. Operator 2026-11-11 18:30:
     "I want to use the same everything across titles ... the same 360 grenade launcher blasts"."""
     try:
         try:
@@ -492,13 +492,13 @@ def fire(ad, decision: dict, stats: dict, now: float, *, ring=None, native_guard
                                    "flash's one-a-minute gate is closed)")
             return {"state": "refused", "reason": stats["ring_error"]}
     if str(kind).lower() in ("nitrous", "freeze"):
-        # DEFEND: the freezing round where the title has one (RE6's uWp1304 Nitrogen), else the flash - RE4/RE5 carry
-        # no Nitrogen round and the flash's stun is their own "frozen" state. Recorded as what actually fired.
+        # Prefer a verified freezing shell. RE5 also has nitrogen ammunition;
+        # its native ring still needs an independently verified shell path.
+        # A defensive flash fallback is recorded as flash, never as freezing.
         kind, available = defend_kind(target)
         if not available:
-            # A freeze round the controller cannot verify would stall the native shell spawn (RE6's state 2 on
-            # 2026-11-12) and lock every later ring for the round: the flash is the verified freeze-substitute and
-            # protects him NOW. The freeze round returns by itself the day its path reports available (a live receipt).
+            # An unverified shell cannot be used by the automatic defensive
+            # rule. Keep its refusal and the actual fallback kind observable.
             stats["ring_defend_shell_refused"] = str(kind)
             kind, available = "flash", True
         allow_unverified = not available
