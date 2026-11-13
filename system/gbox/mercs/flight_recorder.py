@@ -144,6 +144,8 @@ class FlightRecorder:
     'gun_animation_last', 'gun_animation_writes',
     'walk_final_guard', 'walk_final_vetoes', 'walk_stalled_headings', 'walk_failure',
     'nav_direct_refused', 'bonus_stage_invalidations',
+    'gun_rate_state', 'gun_rate_error', 'gun_rate_configured_x', 'gun_rate_applied_x',
+    'gun_rate_scaled_frames', 'gun_rate_restores', 'gun_rate_observation',
                    'shots', 'hits', 'aimbook_hits', 'aimbook_misses', 'heals', 'first_aid_last',
                    'bonuses_taken', 'bonus_approaches', 'bonus_unconfirmed', 'nav_stuck',
                    'fire_burst_goal', 'fire_burst_remaining', 'fire_burst_state', 'fire_burst_requests',

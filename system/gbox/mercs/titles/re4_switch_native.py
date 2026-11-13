@@ -325,6 +325,7 @@ class Controller(N.Controller):
         clone.extend(struct.pack("<Q", self.mailbox))
         clone.extend(struct.pack("<Q", self.base + original_tick))
         assets = ((self.base + CAVE_AT, verify_dispatch()),
+                  (self.base + CODE.WEAPON_RATE_AT, verify_dispatch(CODE.WEAPON_RATE)),
                   (self.base + CODE.FIRST_AID_AT, verify_dispatch(CODE.FIRST_AID)))
         clone_at = self.clone_address
         before = self.rd(clone_at, len(clone))
@@ -336,6 +337,10 @@ class Controller(N.Controller):
             self.write(clone_at, bytes(clone))
             if self.rd(clone_at, len(clone)) != clone:
                 raise Uncertain("private player clone did not read back")
+        # A fresh binding never inherits a predecessor's passive rate lease.
+        # Existing call requests and scratch storage remain untouched.
+        if any(self.rd(self.mailbox + 0x60, CODE.MAILBOX_SIZE - 0x60)):
+            self.write(self.mailbox + 0x60, bytes(CODE.MAILBOX_SIZE - 0x60))
         self.original = vt
         self.write(self.player, struct.pack("<Q", clone_at))
         if not self.attached():
@@ -347,7 +352,13 @@ class Controller(N.Controller):
         if self.player is None or self.original is None:
             return
         if self.q(self.player) == self.clone_address:
-            self.write(self.player, struct.pack("<Q", self.original))
+            from . import re4_weapon_rate
+            def release():
+                re4_weapon_rate.release_stopped(self)
+                self.write(self.player, struct.pack("<Q", self.original))
+            # Without this final restore, removing the callback while a gun is
+            # firing could leave its owned rate on subsequent movement.
+            self.stopped(release)
         if self.q(self.player) != self.original:
             raise Uncertain("the player's vtable was not restored")
         self.failed = False

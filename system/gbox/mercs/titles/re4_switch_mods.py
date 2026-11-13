@@ -476,9 +476,9 @@ def fire_rate(ad, multiplier, snap: dict | None = None) -> dict:
     base = (snap or {}).get("module_base")
     n = _apply_fire_rate(ad, base, st) if isinstance(base, int) else 0
     return {"fire_rate_x": st["fire_rate"], "verified": True, "tables": n, "trigger_gap_s": round(D.FIRE_GAP_S, 3),
-            "note": "every weapon's frames between shots / this (never under the shot gate's 3-frame floor); the bow "
-                    "and the grenades, which no table paces, play their weapon routine's motions this much faster "
-                    "(_motion_rate, every snapshot while one is in hand)"}
+            "note": "shot tables retain the native 3-frame gate; gun recoil/pump motion uses an expiring native "
+                    "per-frame guard up to 20x. Native rate observations are reported separately from shot counts. "
+                    "Bow and grenade animation settings are maintained separately."}
 
 
 # The bow / throwables' rate (re4_weapons.MOTION_RATE_CLASSES; the operator 2026-11-10 #9508: "fire the bow 20x
@@ -508,7 +508,7 @@ def _motion_rate(ad, snap: dict, st: dict) -> int:
             st["motion_rate_class"] = snap.get("weapon_class")
             st["motion_rate_routine"] = list(routine)    # why the rate is or is not on: the live class + routine
             kind = W.motion_rate_kind(snap.get("weapon_class"), routine)
-            if kind is None and snap.get("equipped_id") == W.BOW_ITEM:
+            if kind is None and snap.get("equipped_id") == W.BOW_ITEM and routine[:2] == (0, W.ROUTINE_WEAPON):
                 # The item id is the second witness for the class byte (the same fix _bow_in_hand took). Without it a
                 # misread class leaves the 40x motion rate off and Krauser's arrows at the game's own pace - which is
                 # exactly the "the bow isn't 20x" report. The routine gate still applies to the grenades.
@@ -533,6 +533,7 @@ def _motion_rate(ad, snap: dict, st: dict) -> int:
                 addrs.append(obj + W.OBJ_MOTION_SPEED)
         if on is None or on.get("ptr") != ptr:
             on = st["motion_rate"] = {"kind": kind, "ptr": ptr, "addrs": {}, "speed": mult}
+        previous_speed = on["speed"]
         on["speed"], on["kind"] = mult, kind
         lo, hi = W.MOTION_SPEED_SANE
         for addr in addrs:
@@ -543,7 +544,13 @@ def _motion_rate(ad, snap: dict, st: dict) -> int:
                 continue
             if abs(cur - mult) <= 1e-3:
                 continue                                 # ours already
-            on["addrs"][addr] = cur                      # the game's own (set since or not): what goes back at the end
+            if abs(cur - 1.0) > 1e-3 and (addr not in on["addrs"] or abs(cur - previous_speed) > 1e-3):
+                # A gun's native guard may still own its last frame during a
+                # weapon swap. Wait for its baseline restore: capturing that
+                # boosted rate as our "original" would leak it onto walking.
+                on["addrs"].pop(addr, None)
+                continue
+            on["addrs"].setdefault(addr, cur)
             ad.write_memory(addr, struct.pack("<f", mult))
             if abs(struct.unpack("<f", rd(addr, 4))[0] - mult) <= 1e-4:
                 n += 1
@@ -1463,6 +1470,11 @@ def maintain(ad, snap: dict | None = None, *, release_inputs=None) -> dict:
             n = _motion_rate(ad, snap, st)                   # the bow / throwables: their motion x fire_rate
             if n:
                 out["motion_rate_writes"] = n
+        # Regular guns need their native recoil/pump cycle accelerated as well
+        # as the fire table. The per-frame guard owns/restores that rate; the
+        # Python snapshot must not leave a gun boost on movement or damage.
+        from . import re4_weapon_rate
+        re4_weapon_rate.maintain(ad, snap, st)
         # The random (or chosen) weapon: in his hand by data writes once the round is live, every round
         # (_round_weapon). The loadout code patch is off (LOADOUT_CODE_PATCH: it hung every stage load).
         given_round_weapon = False
@@ -1582,6 +1594,12 @@ def status(ad, snap: dict | None = None) -> dict:
            "motion_rate_on": (st.get("motion_rate") or {}).get("kind"), "motion_rate_kind": st.get("motion_rate_kind"),
            "motion_rate_writes": st.get("motion_rate_writes", 0), "motion_rate_restores": st.get("motion_rate_restores", 0),
            "motion_rate_refused": st.get("motion_rate_refused", 0), "arrow_refills": st.get("arrow_refills", 0),
+           "gun_rate_state": st.get("gun_rate_state"), "gun_rate_error": st.get("gun_rate_error"),
+           "gun_rate_configured_x": st.get("gun_rate_configured_x", 1.0),
+           "gun_rate_applied_x": st.get("gun_rate_applied_x", 1.0),
+           "gun_rate_scaled_frames": st.get("gun_rate_scaled_frames", 0),
+           "gun_rate_restores": st.get("gun_rate_restores", 0),
+           "gun_rate_observation": st.get("gun_rate_observation"),
            "capabilities": {
                "enemy_health": {"available": True}, "one_hit": {"available": True},
                "kill_time": {"available": True, "clock_found": bool((snap or {}).get("clock_addr")),

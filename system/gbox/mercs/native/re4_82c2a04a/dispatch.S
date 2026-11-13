@@ -45,6 +45,9 @@
     str     w9, [x20, #0x00]
 .Loriginal:
     mov     x0, x19
+    mov     x1, x20
+    bl      0x655920                     // passive firearm-rate guard, main+CAVE_AT+0xa0
+    mov     x0, x19
     ldr     x9, [x19]                    // each character keeps its own original callback
     ldr     x9, [x9, #0x108]             // pinned original stored after the mailbox pointer
     ldp     x19, x20, [sp, #0x10]

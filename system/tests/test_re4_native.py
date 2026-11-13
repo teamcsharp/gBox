@@ -133,7 +133,7 @@ def test_install_outside_the_cave_is_refused(monkeypatch):
 def test_attach_installs_dispatch_and_clone_and_writes_only_the_vtable_pointer(monkeypatch):
     ctl = fake_controller(monkeypatch)
     ctl.attach()
-    assert [at for at, _data in ctl.installed] == [CAVE, BASE + CODE.FIRST_AID_AT]
+    assert [at for at, _data in ctl.installed] == [CAVE, BASE + CODE.WEAPON_RATE_AT, BASE + CODE.FIRST_AID_AT]
     assert ctl.installed[0][1] == CODE.IMAGES["dispatch"]
     clone = get(ctl.mem, CLONE, CODE.CLONE_SIZE)
     assert len(clone) == CODE.CLONE_SIZE
@@ -151,7 +151,7 @@ def test_attaching_again_is_a_no_op(monkeypatch):
     ctl = fake_controller(monkeypatch)
     ctl.attach()
     ctl.attach()
-    assert len(ctl.installed) == 2 and len(ctl.writes) == 2
+    assert len(ctl.installed) == 3 and len(ctl.writes) == 2
 
 
 def test_snapshot_retains_only_the_attached_player_generation(monkeypatch):
@@ -228,7 +228,7 @@ def test_character_change_reuses_code_and_keeps_separate_data_clones(monkeypatch
     assert ctl.clone_address != old_clone and ctl.rd(old_clone, CODE.CLONE_SIZE) == previous_bytes
     assert ctl.q(PLAYER) == PLAYER_VT
     assert ctl.q(next_player) == ctl.clone_address
-    assert len(ctl.installed) == 2
+    assert len(ctl.installed) == 3
 
 
 def test_attach_refuses_a_cave_that_is_not_empty(monkeypatch):
