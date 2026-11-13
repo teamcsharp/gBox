@@ -378,12 +378,25 @@ def run(mode: str, args) -> int:
             deadline = time.monotonic() + float(args.per_point)
             while time.monotonic() < deadline:
                 current = ((world.observe(player_only=True) or {}).get("player")) or {}
-                if current.get("room") != room:
+                # room 0 / None is a loading transition, not an exit: the sweep reported "EXIT: room 10 -> 0" for one.
+                if current.get("room") not in (None, 0) and current.get("room") != room:
                     log(f"  EXIT: room {room} -> {current.get('room')} near {point}")
                     world.release()
                     release_ownership()
                     return 0
                 here = (float(current.get("x") or 0), float(current.get("z") or 0))
+                if args.press_at:
+                    pad = (float(args.press_at[0]), float(args.press_at[1]))
+                    if math.dist(here, pad) <= 12.0:
+                        log(f"  pressing A at {tuple(round(v) for v in here)} ({math.dist(here, pad):.0f} units from the pad)")
+                        world.act(B.press("a", "activate the pad"), time.monotonic() + 3.0)
+                        clock2.sleep(0.6)
+                        after = ((world.observe(player_only=True) or {}).get("player")) or {}
+                        if after.get("room") not in (None, 0) and after.get("room") != room:
+                            log(f"  WARPED: room {room} -> {after.get('room')}")
+                            world.release()
+                            release_ownership()
+                            return 0
                 if math.dist(here, point) <= 15.0:
                     break
                 action = motion.step({"x": here[0], "z": here[1]}, point, "sweep")
@@ -605,6 +618,8 @@ def main(argv=None) -> int:
     sweep.add_argument("--half", type=float, default=150.0)
     sweep.add_argument("--center", type=float, nargs=2, metavar=("X", "Z"),
                        help="centre of the box (default: the character's position)")
+    sweep.add_argument("--press-at", type=float, nargs=2, metavar=("X", "Z"),
+                       help="press A when this close to the point (a warp pad)")
     sweep.add_argument("--spacing", type=float, default=45.0)
     sweep.add_argument("--per-point", type=float, default=18.0)
     sweep.add_argument("--session", default="")
