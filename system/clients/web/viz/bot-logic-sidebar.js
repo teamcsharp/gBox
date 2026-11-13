@@ -5,7 +5,7 @@
   const ESC = s => String(s ?? "").replace(/[&<>"']/g, c => `&#${c.charCodeAt(0)};`);
   const RE5 = root.GBoxRE5Modifiers || (typeof require === "function" ? require("./re5-modifiers.js") : null);
   const RE6 = root.GBoxRE6Modifiers || (typeof require === "function" ? require("./re6-modifiers.js") : null);
-  const PSO = root.GBoxPsoControls || (typeof require === "function" ? (() => { try { return require("./pso-controls.js"); } catch { return null; } })() : null);
+  const PSO = root.GBoxPsoLivePanel || (typeof require === "function" ? (() => { try { return require("./pso-live-panel.js"); } catch { return null; } })() : null);
   // the blueprint look: a MercMode setting of the PC (blueprint-look.js), shown among the live mods, next round
   const BLUEPRINT = root.GBoxBlueprintLook || (typeof require === "function" ? (() => { try { return require("./blueprint-look.js"); } catch { return null; } })() : null);
   const TITLES = { "52d15709be0fda1a": "re5", "115f9cdbba115432": "re6", "436e0bb84d5337d1": "pso" };
