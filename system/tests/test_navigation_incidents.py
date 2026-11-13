@@ -55,6 +55,113 @@ def test_combat_and_telemetry_gaps_are_not_wall_evidence():
     assert m.changes[-1]['outcome'] == 'telemetry_gap' and m.active is None
 
 
+def escape_row(t):
+    r = row(t, (-2970.98, 500.11, 3914.22), phase='bomb', route=())
+    r.update(native_action='cPlAction_pl_act_walk',
+             controls={'keys': ['ldown', 'lleft'], 'source': 'transport_tracked_held_state'},
+             diagnostics={'mine_escape_required': True, 'mine_clearance_cm': 721.1,
+                          'bomb_escape_output': {'at': t-.1, 'act': 'bomb_escape',
+                                                 'final_hold': ['ldown', 'lleft']}})
+    return r
+
+
+def test_remote_bomb_escape_stall_is_reported_and_native_catch_ends_navigation():
+    m = Monitor()
+    for k in range(17):
+        m.observe(escape_row(k*.2))
+    assert m.sequence == 1 and m.active['kinds'] == ['navigation_no_progress']
+    assert m.active['collision_confirmed'] is None
+    assert m.active['before'][-1]['diagnostics']['mine_clearance_cm'] == 721.1
+    caught = escape_row(3.4)
+    caught['native_action'] = 'cEm1000ActAtkFlyCatchHit_PL'
+    m.observe(caught)
+    assert m.active is None and m.changes[-1]['outcome'] == 'navigation_interrupted'
+
+
+def test_blocked_walk_to_wait_is_still_a_commanded_escape_attempt():
+    m = Monitor()
+    for k in range(17):
+        r = escape_row(k*.2)
+        r['native_action'] = 'cPlAction_pl_act_walk_to_wait'
+        m.observe(r)
+    assert m.sequence == 1 and m.active['collision_confirmed'] is None
+
+
+def test_bomb_placement_grabs_stale_plans_and_uncommanded_waits_are_not_escape_stalls():
+    for invalid in ('placement', 'grab', 'dying', 'stale', 'future', 'no_pending', 'no_movement'):
+        m = Monitor()
+        for k in range(17):
+            r = escape_row(k*.2)
+            if invalid == 'placement': r['diagnostics']['bomb_escape_output']['act'] = 'bomb_place'
+            elif invalid == 'grab': r['native_action'] = 'cEm5000ActNeckHangCS_PL'
+            elif invalid == 'dying': r['native_action'] = 'cPlAction_pl_act_dying_loop'
+            elif invalid == 'stale': r['diagnostics']['bomb_escape_output']['at'] = r['t']-1.
+            elif invalid == 'future': r['diagnostics']['bomb_escape_output']['at'] = r['t']+.1
+            elif invalid == 'no_pending': r['diagnostics']['mine_escape_required'] = False
+            else: r['controls']['keys'] = []
+            m.observe(r)
+        assert m.sequence == 0 and not m.changes, invalid
+
+
+def oscillating_escape_row(k):
+    r = escape_row(k*.2)
+    r.update(player_generation=3, pos=[20*math.sin(k*math.pi/4), 0, 0],
+             throwables=[{'unit': 7, 'generation': 12, 'kind': 'remote'}])
+    # Final floor vetoes alternate with actual movement; neither is a collision receipt.
+    r['controls']['keys'] = ['lup'] if k % 2 else []
+    r['diagnostics'].update(mine_deadline_at=-10., mine_deadline_pending=1,
+                            mine_timing_source='native_placed_armed', mine_clearance_cm=800.)
+    r['diagnostics']['bomb_escape_output']['requested_hold'] = ['lup']
+    return r
+
+
+def test_remote_escape_oscillation_and_floor_vetoes_report_actual_and_requested_inputs():
+    m = Monitor()
+    for k in range(32):
+        m.observe(oscillating_escape_row(k))
+    report = m.active
+    assert report['kinds'] == ['remote_bomb_escape_without_progress']
+    assert report['distance_metric'] == 'nearest_pending_bomb_clearance'
+    assert report['goal_progress_cm'] == 0
+    assert .4 < report['movement_command_coverage'] < .6
+    assert report['movement_intent_coverage'] == 1.
+    assert report['collision_confirmed'] is None and report['learning_applied'] is False
+    for k in range(32, 39):
+        r = oscillating_escape_row(k)
+        r['diagnostics']['mine_clearance_cm'] = 910.
+        m.observe(r)
+    assert m.active is None and m.changes[-1]['outcome'] == 'clearance_progress_restored'
+
+
+def test_escape_oscillation_requires_stable_bombs_player_intent_and_no_detour_progress():
+    for mode in ('new_bomb', 'new_player', 'unknown_generation', 'no_intent',
+                 'no_clearance', 'progress', 'detour', 'stairs', 'non_native_timing'):
+        m = Monitor()
+        for k in range(32):
+            r = oscillating_escape_row(k)
+            if mode == 'new_bomb': r['throwables'][0]['generation'] = k
+            elif mode == 'new_player': r['player_generation'] = k
+            elif mode == 'unknown_generation': r['throwables'][0].pop('generation')
+            elif mode == 'no_intent': r['diagnostics']['bomb_escape_output']['requested_hold'] = []
+            elif mode == 'no_clearance': r['diagnostics']['mine_clearance_cm'] = None
+            elif mode == 'progress': r['diagnostics']['mine_clearance_cm'] += k*5
+            elif mode == 'detour': r['pos'][0] = k*10
+            elif mode == 'stairs': r['pos'][1] = k*5
+            else: r['diagnostics']['mine_timing_source'] = 'request'
+            m.observe(r)
+        assert not m.changes, mode
+
+
+def test_escape_report_does_not_join_a_replacement_bomb_to_the_old_episode():
+    m = Monitor()
+    for k in range(32):
+        m.observe(oscillating_escape_row(k))
+    r = oscillating_escape_row(32)
+    r['throwables'][0]['generation'] = 13
+    m.observe(r)
+    assert m.active is None and m.changes[-1]['outcome'] == 'escape_hazards_changed'
+
+
 def churn_row(k, pos=(0, 0, 0)):
     r = row(k*.2, pos, route=([(500, 0, 100)] if k % 2 else [(500, 0, -100)]))
     r.update(goal={'id': 'time-bonus'}, route_endpoint=[1000, 0, 0])

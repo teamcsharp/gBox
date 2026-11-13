@@ -332,9 +332,11 @@ prompt remained null while the controller continued aim/turn decisions.
 This identifies native held-action recognition and emergency response as
 remaining work, not a proven QTE fix or proof that a bomb caused the death.
 During this final sequence, the player and enemy coordinates collapse near
-the origin. The raw 380.2-meter travel and 112.4-meter maximum spawn distance
-therefore include invalid terminal travel and must not be credited as level
-exploration. The full trace is preserved in
+the origin. The 112.4-meter maximum spawn distance, final cell and extent
+include that invalid terminal position. The distance calculation already
+excludes individual jumps over 15 meters, so the large origin jump itself is
+not part of the reported 380.2 meters; smaller cinematic movement can remain.
+These positions must not establish level exploration. The full trace is preserved in
 `post-c1a97781-3f1ddd4fb29049faad298f89c5ba52f1-audit.json` beside the JSONL.
 
 Revision `4b7b12cc20723e379762024c411a4e73e255b8cd` activated at the closed
@@ -347,3 +349,128 @@ from the old RE6 evidence above. Post-activation observations are in
 `post-4b7b12cc-round-audit.jsonl`. RE4 ladder descent and the repaired RE6
 escape priority still require fresh title-specific live evidence; activation
 alone does not establish either behavior or S-rank consistency.
+
+## Closed rounds after activation and remaining causes
+
+The first `4b7b12cc` RE5 round, `7bceb6173a6e480f81fa08ca20908eec`,
+died after 63.9 sampled seconds with 15 kills and 10,440 points. It spent 48.9 seconds
+stationary and collected zero of seven bonuses. During its 27-second blocked
+mine escape, accepted controls held aim alone for 21.69 seconds and aim plus
+trigger for 1.31 seconds. At 1794582782–2785 the selected living prone enemy had
+HP 800; yaw aligned, but the laser passed about 134–138 cm above the native spine
+point. Accepted pitch writes did not establish persistent native aim. The
+following RE5 round, `0730e6d7`, died after 113.5 seconds with 46 kills and 33,420
+points, 90 seconds stationary and zero of seven bonuses.
+
+The first round also exercised floor-before-arm: one distance mine retained
+the M3 shotgun and HP 1000, was armed on the intended floor, and later exposed
+the native explosion-trigger latch at 1794582800.493717. The avoidance reference
+then retired; no enemy-specific damage or visible explosion is claimed. A
+five-unit hit ring was refused before activation because one native ground
+projection was 368.993 cm below its requested floor. All five remained inactive
+with both collision volumes disabled. The recorder's historical `ground_mines`
+field includes inactive observations and must not be mistaken for the planner's
+active hazard list. Exact replay of the original five-floor/three-mine vetoes
+uses only the single active mine; the refused ring did not cause that stall.
+
+Revision `dd05a9ef47904557a6ac2afc987c9a64c5d9fe0c` activated after the
+closed RE5 death at 1794583031.2073035, service PID 2051890, worker
+`72ef45b1aadb48d7`. Its first RE5 round, `45d5f7f8`, Ship Deck, died after
+95.8 seconds with 23 kills and 8,900 points, 63.8 seconds stationary and zero of
+eleven bonuses. Three mines were placed; one native trigger and two identity
+retirements were observed. Those retirement categories remain distinct.
+
+The first fresh RE6 round, `e7f8a11751c8454c8e86433dbc7c6b68`, Requiem
+for War, died after 195.4 sampled/200.6 wall seconds with 54 kills and 47,140 points.
+It spent 141.4 seconds stationary, 82.9 seconds in bomb decisions, and collected
+zero of eight bonuses. The first 15-unit ring received a native detonation flag
+6.06–6.46 seconds after individual placements, an improvement over the earlier
+50-second stalls but still outside the requested five seconds. Disappearance
+after a flag is not a witnessed explosion. The final bomb remained pending for
+30.76 seconds at 1042.8 cm clearance. Floor redirects preceded repeated native
+`cEm5000ActNeckHangCS_PL` holds and the final dying action. New final-output
+traces show no kick preemption; they do not establish reliable escape or rank.
+
+Full round and receipt evidence remains under Spark
+`gbox-data/analysis/merc-tuning-20261113/`, including
+`re5-7bce-defense-window.json`,
+`re5-floor-before-arm-7bceb6173a6e480f81fa08ca20908eec.json`,
+`post-dd05a9ef-e7f8-early-receipts.json`, and
+`re6-e7f8-final-30s-full-flight.json`.
+
+The next recorder revision retains separate native player action/state/motion,
+nearby enemy generation/action/state, QTE grant/escape/flash receipts, pitch integration and source diagnostics,
+and the actual planner hazard identities alongside the labeled full mine census.
+This closes evidence gaps exposed by these failures; it does not retroactively
+recover the absent signals or change combat behavior.
+
+## Escape alignment and reports from subsequent rounds
+
+Two native RE5 floor replays explain why checking only eight stick axes could
+leave the bot defending indefinitely. In Public Assembly, a verified local
+departure exists at 284-286 degrees, between those axes; Ship Deck also has a
+departure that its current axes miss. Turning in whole 200-300 ms input ticks
+can overshoot such a narrow lane repeatedly. The revised controller checks a
+world heading, releases input, confirms native gun-down locomotion, and uses
+the existing owned yaw writer for the small residual rotation. It requires a
+later observed pose and rechecks floor and every active mine before moving.
+Translation carries no concurrent turn. This validates a local departure,
+not an entire escape route or live survival improvement. A bounded fallback
+retains combat when alignment cannot establish a safe step.
+
+The focused alignment checks passed 135 tests with six asset-dependent skips;
+37 isolated Spark checks passed, including both exact native floor incidents
+through the complete bot tick at 100, 200 and 300 ms. Extracted geometry remains
+only on Spark in `re5-s404-exact-nav.json` and `re5-s406-exact-nav.json`.
+
+The next RE6 attempt, `8920796d26f54007aa74d531f3863bfb`, died after
+252.9 seconds with 95 kills and 83,420 points. Its final escape stopped about
+721 cm from a pending bomb before `cEm1000ActAtkFlyCatchHit_PL` appeared;
+HP remained 900 at the terminal native state. The following `ccb6df428ce04e449529e4fd5195de43`
+completed by timeout with 77 kills and 92,220 points, but spent 448.2 of 533.1
+sampled seconds stationary and collected no time bonuses. Its final bomb was
+pending for 292 seconds. The selected-stage label said High Seas Fortress,
+while the cached resource was `s1211`; the source of this discrepancy remains
+unresolved. Stage labels come from the selector and must not establish native
+resource ownership. The mesh does fit the captured player floor closely.
+
+Liquid Fire round `8d0e5e903018493e949a3b0fb98b9b20` also completed by timeout:
+35 kills, 44,840 points, HP 900, zero bonuses, and 253.2 of 298.9 sampled seconds
+stationary. It stayed within 10 meters of spawn throughout. A fresh native
+resource census found only `s1219`, matching the selected stage and player
+floor. Its final bomb remained pending for 202.6 seconds. This establishes
+that the escape failure also occurs with a matching stage resource. Neither
+completed round has a visually verified rank.
+
+The automatic navigation monitor formerly excluded the entire `bomb` phase.
+It now accepts fresh escape decisions only during native free locomotion,
+excluding placement, grabs and dying animations. A separate six-second
+check reports bounded oscillation or floor-vetoed movement when one player
+life and the same native bomb identities persist without clearance progress.
+Reports retain intended and actual movement coverage separately and never
+claim wall contact or apply an inferred obstacle to learned navigation.
+Actual archived replay detected the `ccb6` stall at 1794584473.030: 148.24 cm
+of travel but only 33.27 cm net displacement, -1.9 cm clearance progress,
+100% movement intent and 65.7% applied movement. It also detected four `8d0e`
+episodes separated by telemetry gaps, with 100% intent and zero applied
+movement. The earlier `e7f8` terminal tail produced no false report during its
+held/dying sequence. Evidence is `re6-bomb-navigation-report-replay-v2.json`;
+the local recorder/navigation/run-capture checks passed 45 tests.
+
+Round `51d2ee83f4cd4e798cc388b813a4a6e2` then died after 48.2 seconds with
+21 kills and 6,300 points. A 10 Hz native capture records HP 738 to 1 during
+`damage_common`, followed by lying-down/dying actions and a later neck catch.
+No action-button or shown prompt was available during that catch. This was
+an attacker finishing an already downed player, not evidence of a solvable
+QTE being missed. The severe preceding damage is unattributed. The full
+600-sample context is `re6-51d2-native-death-context.json`. These rounds ran
+under worker `72ef45b1aadb48d7` with the earlier loaded policy, even after
+collaborator revision `c3f98f62` reached deployment disk; they are not evidence
+for the next unactivated fixes.
+
+The complete five-attempt RE6 cycle is preserved in
+`re6-dd05-five-round-cycle-audit.json`: three deaths and two timer completions,
+followed by a title switch to RE5. Every completed attempt counted, including
+deaths. Across 1,309.6 sampled seconds, 78.6% were stationary and 58.6% were
+bomb phases; the bot made 282 kills and collected zero time bonuses. This is
+the measured baseline, not S-rank success.
