@@ -361,6 +361,8 @@ def run(mode: str, args) -> int:
         motion = B.CommitMotion(arrive=15.0)
         player = (world.observe(player_only=True) or {}).get("player") or {}
         px, pz = float(player.get("x") or 0), float(player.get("z") or 0)
+        if args.center:
+            px, pz = float(args.center[0]), float(args.center[1])
         room = player.get("room")
         half, step = float(args.half), float(args.spacing)
         rows, z = [], pz - half
@@ -601,6 +603,8 @@ def main(argv=None) -> int:
     sub = parser.add_subparsers(dest="mode", required=True)
     sweep = sub.add_parser("sweep", help="serpentine the current room to find its exits")
     sweep.add_argument("--half", type=float, default=150.0)
+    sweep.add_argument("--center", type=float, nargs=2, metavar=("X", "Z"),
+                       help="centre of the box (default: the character's position)")
     sweep.add_argument("--spacing", type=float, default=45.0)
     sweep.add_argument("--per-point", type=float, default=18.0)
     sweep.add_argument("--session", default="")
