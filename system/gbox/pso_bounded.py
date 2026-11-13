@@ -1059,6 +1059,11 @@ class ProgressionPolicy:
                         continue                              # verified this session: a flag bit changed for it
                     candidates.append(Objective(2, "switch", (float(entity["x"]), float(entity["z"])),
                                                 distance, cls, ptr, None, "switch for the way on"))
+                elif cls == "TObject":
+                    # Warp pads are TObjects with no room: (360,26) in Pioneer 2 is the Forest 1 pad, verified by two
+                    # floor 0 -> 1 transitions after an A press.
+                    candidates.append(Objective(0, "warp", (float(entity["x"]), float(entity["z"])),
+                                                distance, cls, ptr, None, "warp pad"))
                 elif cls in DOOR_CLASSES:
                     # A door is a passage, not a destination. Carved routes already cross open doorways, and making a
                     # door an objective produced a ping-pong through it: the character crossed, the aim-past point was
@@ -1590,6 +1595,11 @@ class Automaton:
             point = self._through_point(player, target, 16.0) if objective.distance <= arrive else target
             return self.motion.step(player, point, f"door {objective.cls}")
         if objective.kind == "warp":
+            # A warp pad is activated by standing on it and pressing A: measured in Pioneer 2, the bot walked to
+            # (360,26) - within 2.9 units of the pad - and nothing happened until A was pressed, after which the floor
+            # went 0 -> 1. Contact alone is not enough.
+            if reach <= 10.0:
+                return press("a", f"activate the warp {objective.cls} at {reach:.0f} units")
             point = self._through_point(player, target, 12.0) if objective.distance <= arrive else target
             return self.motion.step(player, point, f"warp {objective.cls}")
         if objective.kind == "container":
@@ -1637,6 +1647,11 @@ class Automaton:
             progressed, kind = True, "arrived"
         if progressed:
             self.watchdog.note_progress(now, kind)
+        if objective is not None and objective.kind == "warp" and kind == "room":
+            # A warp that just changed the room took the character where it was going. Target it again immediately and
+            # the policy can loop between two areas: measured, a Forest run stepped onto a warp and came back to
+            # Pioneer 2, then spent the run walking to the warp door it had just used. Leave it alone for a while.
+            self.avoid[objective.ptr] = now
         failure = ""
         if objective is not None:
             self.policy.note(objective.kind, progressed)

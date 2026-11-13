@@ -375,7 +375,11 @@ def run(mode: str, args) -> int:
         automaton = B.Automaton(
             world, ledger=ledger, clock=clock, operator=operator, mode=bound_mode,
             motion=motion, policy=walk_policy,
-            bounds=B.Bounds(max_objective_ticks=10_000), watchdog=B.Watchdog(stall_s=20.0, max_recoveries=4),
+            # A walk may have to go around a plaza railing for a minute before the distance improves; the 20 s
+            # default ended runs mid-detour ("walk coordinate not closed for 20s" at (190,322) while still moving).
+            # The watchdog's net-stall detector is what catches a genuinely stuck character now.
+            bounds=B.Bounds(max_objective_ticks=10_000, max_no_close_s=60.0),
+            watchdog=B.Watchdog(stall_s=20.0, max_recoveries=4),
             flag_address=None)
     else:
         play_policy = policy if router is None else B.RoutedPolicy(policy, router, arrive=10.0)
