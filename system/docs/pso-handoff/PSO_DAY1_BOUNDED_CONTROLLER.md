@@ -388,6 +388,26 @@ boundary, and the door's actual state stays a runtime question.
 **10 → 11**, 70 ticks, 0 overruns, 0 failures, ending 5.9 units from its target. That is the first time the controller
 has left a room through a door on its own.
 
+**Doors are learned by attempting them** (round 7). Since no door exposes its state, the runner now records what
+happened: a crossing through a door's position marks it **open**, a no-close failure on it marks it **closed**, both in
+`door-state.json` and both backed by a ledger event. The policy then ranks a door known open **above any switch** (it
+leads on) and a door known closed out of the candidate list, so the bot stops walking past a known exit to reach a key
+three rooms away. Live proof of the learning loop:
+
+```
+crossed the doorway at (-133.8, 271.7): room 10 -> 11 after 7 ticks
+door 80DB57E0 marked open (room 10 -> 11, at 13 units)
+```
+
+Crossing detection needs **both** signals — the room changed *and* the character is within 15 units of the door — because
+the profile's `room` value flickers at boundaries with no movement at all (measured: room 10 → 5 in one tick, 215 units
+from the door).
+
+**The calibration was moving the character before every run.** Calibration taps are real input: eight taps displace the
+character up to ~60 units, so each run started somewhere other than where the last ended, sometimes against a wall. The
+result is cached per session for 15 minutes (`calibration-cache.json`) and reused, which also cuts the start-up cost
+from ~5 s to nothing.
+
 **Still open:** the door→flag map (which bit opens which door) still needs the test-only experiment, and the policy
 still ranks any unverified switch above "leave the room", so the bot will walk past an open exit if another key on the
 floor is unpressed.

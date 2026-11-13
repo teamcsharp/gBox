@@ -866,7 +866,7 @@ class ProgressionPolicy:
 
     def __init__(self, *, engage: float = 40.0, reach: float = 400.0, press_range: float = 14.0,
                  attack_range: float = 30.0, avoid_s: float = 30.0, optional_limit: int = 3,
-                 switch_demote_s: float = 60.0) -> None:
+                 switch_demote_s: float = 60.0, door_state: dict | None = None) -> None:
         self.engage = float(engage)
         self.reach = float(reach)
         self.press_range = float(press_range)
@@ -876,6 +876,8 @@ class ProgressionPolicy:
         self.switch_demote_s = float(switch_demote_s)
         self.optional_streak = 0
         self.current_key = None
+        # ptr -> "open" | "closed", learned by attempting a crossing (there is no readable door state).
+        self.door_state = dict(door_state or {})
 
     def choose(self, snap: dict, now: float, *, pressed=None, avoid=None) -> Objective | None:
         pressed = pressed or {}
@@ -907,8 +909,15 @@ class ProgressionPolicy:
                     candidates.append(Objective(2, "switch", (float(entity["x"]), float(entity["z"])),
                                                 distance, cls, ptr, None, "switch for the way on"))
                 elif cls in DOOR_CLASSES:
-                    candidates.append(Objective(3, "door", (float(entity["x"]), float(entity["z"])),
-                                                distance, cls, ptr, None, "door on the way on"))
+                    state = self.door_state.get(ptr)
+                    if state == "closed":
+                        continue                          # attempted and blocked: not this way until something changes
+                    # A door known to be open outranks any switch: it leads on, and a switch three rooms away does
+                    # not. An unknown door still ranks below switches, so keys are explored first.
+                    rank = 2 if state == "open" else 4
+                    candidates.append(Objective(rank, "door", (float(entity["x"]), float(entity["z"])),
+                                                distance, cls, ptr, None,
+                                                "open door on the way on" if state == "open" else "door on the way on"))
                 elif kind == "object" and any(hint in cls for hint in CONTAINER_HINTS):
                     if self.optional_streak < self.optional_limit:
                         candidates.append(Objective(4, "container", (float(entity["x"]), float(entity["z"])),

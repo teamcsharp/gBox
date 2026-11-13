@@ -440,6 +440,27 @@ def test_a_verified_switch_is_never_targeted_again(workdir):
     assert later is None, "a switch whose flag changed is done, however long ago that was"
 
 
+def test_an_open_door_outranks_a_switch_and_a_closed_one_is_not_a_candidate(workdir):
+    """There is no readable door state (`+0xAC` is 0 either way), so the controller learns it by attempting crossings.
+
+    A door that has been crossed ranks above any switch - it leads on. A door that has been tried and blocked is not a
+    candidate at all until something changes. An unknown door still ranks below switches, so keys are explored first.
+    """
+    world = FakeWorld(FakeClock())
+    world.entities = [entity("TObjDoor", "doorA", 40.0, 0.0),
+                      entity("TObjDoorKey", "keyA", 300.0, 0.0)]
+    snapshot = B.snapshot(world.observe())
+
+    unknown = B.ProgressionPolicy().choose(snapshot, 1000.0)
+    assert unknown.kind == "switch", "an unknown door does not outrank a key"
+
+    opened = B.ProgressionPolicy(door_state={"doorA": "open"}).choose(snapshot, 1000.0)
+    assert (opened.kind, opened.ptr) == ("door", "doorA"), "a door known to be open leads on"
+
+    blocked = B.ProgressionPolicy(door_state={"doorA": "closed"}).choose(snapshot, 1000.0)
+    assert blocked.kind == "switch" and blocked.ptr == "keyA", "a blocked door is not a candidate"
+
+
 def test_a_switch_outranks_a_nearer_container(workdir):
     clock = FakeClock()
     world = FakeWorld(clock)
