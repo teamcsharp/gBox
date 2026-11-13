@@ -91,13 +91,14 @@ def test_slow_idle_inspection_cannot_stop_after_parent_request_expires():
 
 
 def test_read_only_disk_inspection_rejects_owned_and_pending_records(tmp_path, monkeypatch):
-    from gbox import config
+    from gbox import config, worker_results
     source = tmp_path / 'gbox.toml'; source.write_text('')
     runtime = tmp_path / 'runtime'
     monkeypatch.setattr(config, 'load', lambda _: SimpleNamespace(runtime=runtime))
     assert C.inspect_disk(source)['reason'] is None and not runtime.exists()
     runtime.mkdir(); manifest = runtime / 'gbox-running.json'
     manifest.write_text('{"owned": {"pid": 123}}')
+    monkeypatch.setattr(worker_results, '_pid_alive', lambda *a, **kw: True)
     assert C.inspect_disk(source)['reason']
     manifest.write_text('{}')
     result = runtime / 'worker-results' / 'namespace' / 'result.json'
@@ -137,7 +138,9 @@ import threading,time
 c=from_environment(); stop=threading.Event()
 while not c.check(lambda: None, stop): time.sleep(.01)
 '''
-    proc = subprocess.Popen([sys.executable, '-c', script], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+    # Windows venv python.exe is a launcher, so its PID can differ from the
+    # Python process publishing the pipe message. Exercise the direct child.
+    proc = subprocess.Popen([getattr(sys, '_base_executable', sys.executable), '-c', script], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                             stderr=subprocess.PIPE, text=True, env=os.environ | {'GBOX_CLIENT_CONTROL': SECRET})
     try:
         ready = json.loads(proc.stdout.readline().removeprefix(C.PREFIX))

@@ -1,5 +1,6 @@
 """Optional desktop parent-pipe control; shutdown decisions run between claims only."""
 import json
+import hashlib
 import os
 import queue
 import re
@@ -121,11 +122,36 @@ def inspect_disk(config_path):
         raise RuntimeError('The local worker configuration is unavailable.')
     runtime = load(source).runtime.resolve()
     manifest = runtime / 'gbox-running.json'
-    if manifest.exists():
-        records = json.loads(manifest.read_text(encoding='utf-8'))
-        # Even a stale record needs ownership reconciliation; never infer idle.
-        if not isinstance(records, dict) or records:
+    def ownership_bytes():
+        try:
+            with manifest.open('rb') as stream:
+                raw = stream.read(4 * 1024 * 1024 + 1)
+        except FileNotFoundError:
+            return None
+        if len(raw) > 4 * 1024 * 1024:
+            raise RuntimeError('The local ownership store could not be verified.')
+        return raw
+
+    before = ownership_bytes()
+    digest = hashlib.sha256(before).digest() if before is not None else None
+    stale = 0
+    if before is not None:
+        records = json.loads(before.decode('utf-8'))
+        if not isinstance(records, dict) or len(records) > 10000:
             return dict(runtime=str(runtime), reason='Local native-game ownership still needs reconciliation.')
+        from .worker_results import _pid_alive
+        for sid, record in records.items():
+            if not isinstance(sid, str) or not sid or not isinstance(record, dict):
+                return dict(runtime=str(runtime), reason='Local native-game ownership still needs reconciliation.')
+            # Query-only identity checks are shared with worker activation.
+            # Only positive absence/reuse can release stale protection; denied
+            # or legacy/unknown identities remain protected. Never delete the
+            # record or invoke orphan cleanup (which can terminate processes).
+            alive = _pid_alive(record.get('pid'), recorded_at=record.get('ts'),
+                               recorded_identity=record.get('linux_identity'))
+            if alive is not False:
+                return dict(runtime=str(runtime), reason='Local native-game ownership still needs reconciliation.')
+            stale += 1
     results = runtime / 'worker-results'
     if results.exists():
         # pathlib glob may silently skip unreadable directories. An unreadable
@@ -146,7 +172,11 @@ def inspect_disk(config_path):
                             with os.scandir(entry.path) as rejected:
                                 if any(item.name.endswith('.json') for item in rejected):
                                     return dict(runtime=str(runtime), reason='Finished local worker results still need reconciliation.')
-    return dict(runtime=str(runtime), reason=None)
+    after = ownership_bytes()
+    after_digest = hashlib.sha256(after).digest() if after is not None else None
+    if digest != after_digest:
+        return dict(runtime=str(runtime), reason='Local native-game ownership changed during inspection.')
+    return dict(runtime=str(runtime), reason=None, stale_ownership_records=stale)
 
 
 if __name__ == '__main__':
