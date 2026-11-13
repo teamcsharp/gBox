@@ -845,3 +845,22 @@ queue. A GET that empties the queue under a running bot is a plausible contribut
 The `dead_input` counter added for the wrong reason is harmless (a POST never returns a list), but its comment now says
 what it actually detects: an answer no POST should ever give.
 
+
+
+## 27. Third gate chain: the key on the ledge opened the room-10 door
+
+| step | measured |
+|---|---|
+| key | `TObjDoorKey` at `(-95, 33.5, 214)`, `+0xC8` low16 = **6** |
+| press | flags `[7]` -> `[7, 6]`: bit 6 added by an A press at 18 units, on the ledge above the doors |
+| door | `TObjDoor` at `(-134, 272)`: **crossed** - "crossed the doorway at (-134,300): room 10 -> 11 after 56 ticks" |
+| after | room 11, 13 units from the crossing point, flags `[6]` (the bit-7 press was lost with the previous restart) |
+
+That is the third complete switch -> flag -> gate chain in normal play, and the second one this project has driven
+entirely from the bot's own decisions about where the key was.
+
+It also explains the ledge: the character had climbed to `y 33.2` (the doors sit at `y 20.9` and `22.9`), and the key
+that matters is on that ledge, not on the door's level. The height filter had been excluding the doors (12-20 units
+below) - correctly, while the character stood above them - and the way down was a walk of 50 units that crossed the
+door the moment it was open.
+
