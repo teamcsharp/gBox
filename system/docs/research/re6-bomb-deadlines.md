@@ -99,3 +99,11 @@ Live placement-to-blast timing and successful physical escape remain required.
 Raw evidence stays on Spark under `gbox-data/analysis/merc-tuning-20261113/`:
 `pre-c1-re6-first-bomb-window.json`, `pre-c1a97781-round-summary.json`, and the
 per-round audit files. No extracted model, executable or game data is added here.
+
+The follow-up traversal regression also reproduced three independent input
+rewrites during an already-active native climb: the early mesh guard, wall
+recovery, and the later stand/turn governors. All now use the existing exact
+native traversal-action set. Tests run every admitted action past the stand
+timeout, including native facing changes, and confirm that normal floor/bomb
+guards resume on its grounded exit. Eighty relevant checks passed. These are
+controller-policy checks; successful live traversal still needs observation.

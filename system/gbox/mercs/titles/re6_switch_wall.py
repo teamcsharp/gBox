@@ -4,6 +4,7 @@ from __future__ import annotations
 import math
 
 from ..navigation_incidents import guard_started, guard_finished
+from ..re6_traversal import TRAVERSAL_ACTIONS
 
 WINDOW, PROGRESS, GAP = .4, 15., .5
 PROBE_S, RECOVERY_S, SKIP_S = .25, 1.2, 12.
@@ -34,6 +35,7 @@ def _eligible(bot, snap, action):
     return (snap.get("mercenaries_phase") == R.PHASE_PLAYING and navigating
             and hold is not None and not {"zl", "zr"} & set(hold)
             and not bot.in_hold and not bot.down and (p.get("hp") or 0) > 0
+            and p.get("action") not in TRAVERSAL_ACTIONS
             and p.get("action") not in R.BOOSTED_ACTIONS
             and not (p.get("action") == "cPlAction_pl_act_weapon_fire" and p.get("weapon_id") in R.MAGNUM_IDS))
 
@@ -148,6 +150,9 @@ def mesh_guard(bot, snap, action):
     hold, p, mesh = action.get("hold"), snap.get("player") or {}, snap.get("navmesh")
     if (mesh is None or not hold or {"zl", "zr"} & set(hold) or not p.get("pos") or bot.in_hold or bot.down
             or bot.stats.get('act') == 'prompt_stick'
+            # A native climb/jump already owns locomotion across this floor
+            # boundary. Preserve its input; free walking resumes normal guards.
+            or p.get('action') in TRAVERSAL_ACTIONS
             or snap.get("mercenaries_phase") != R.PHASE_PLAYING):
         return action
     yaw = (snap.get("camera") or {}).get("yaw", p.get("rot") or 0.0)

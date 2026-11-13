@@ -13,14 +13,35 @@ Image: Switch RE4 `c8e8f22f`; existing local ELF `.scratch-merc-recovery/re4-exi
 
 ## Native discharge boundary
 
-The current weapon routine handler pointer is global RVA `0x1265a28` (GOT slot `0xb27d90`). Two verified handlers are admitted:
+The current weapon routine handler pointer is global RVA `0x1265a28` (GOT slot `0xb27d90`). Three verified handlers are admitted:
 
 | Family | Handler | r2 table entry 2 | r3 table entry 0 | Native fire routine |
 | --- | --- | --- | --- | --- |
 | Shotgun | `3351a0` | `b0a100[2] = 3355e0` | `b0a168[0] = 336510` | `336510` |
 | Magnum | `3270f0` | `b09ce8[2] = 3274d0` | `b09d68[0] = 328190` | `328190` |
+| Killer7 (class6 only, magnum aim family) | `31cc60` | `b09758[2] = 31cfe0` | `b097c8[0] = 31ddd0` | `31ddd0` |
 
-Both fire routines call native weapon trace/emission `0033b770` before storing `player+0x117 = 1`. The reader requires a double-read coherent player ID, weapon chain/object ID, exact held item, native weapon class, active handler, and routine. Only an observed same-identity `[0,6,2,0]` to `[0,6,2,1]` transition with object state 3 confirms a recent matching request. Missing reads, owner/weapon changes, long gaps, and mere fire entry do not confirm. Host sampling can miss complete rapid-fire cycles and will undercount; this is not a complete bullet counter or proof of an impact.
+All three fire routines call native weapon trace/emission `0033b770` before storing `player+0x117 = 1`. The reader requires a double-read coherent player ID, weapon chain/object ID, exact held item, native weapon class, active handler, and routine. Only an observed same-identity `[0,6,2,0]` to `[0,6,2,1]` transition with object state 3 confirms a recent matching request. Missing reads, owner/weapon changes, long gaps, and mere fire entry do not confirm. Host sampling can miss complete rapid-fire cycles and will undercount; this is not a complete bullet counter or proof of an impact.
+
+The later HUNK/Base round `b96ab13521f44b0ba3753d1bd5afbe7b` measured
+Killer7 item42/class6 with handler `31cc60`. The original two-handler reader
+therefore rejected it even after allowing the owned native-hook vtable.
+Handler admission is now class-specific: this additional handler admits only
+class6, retaining magnum aim partitioning. It does not authorize other
+handguns merely because they share that handler.
+
+For Killer7, the exact pinned ELF calls trace/emission at `31dfe4`, writes
+weapon object state3 at `31e000`, then writes fire step1 at `31e03c`.
+The optional asset regression executes this actual fire00 routine with
+external callees stubbed and checks that order, plus the two real dispatch
+tables. It proves native invocation and state ordering, not an impact or
+live fire rate. The binary is read from `RE4_MAIN_ELF`; no game bytes are
+included in the tests. Spark proof archive:
+`gbox-data/mercs/analysis/re4-killer7-discharge-native-20261113.json`.
+Follow-up validation: 119 behavior/aim regressions passed locally, with the
+asset test skipped there. The native asset test then passed separately on
+Spark using the exact `c8e8f22f` ELF and isolated Unicorn 2.1.4. Its log is
+`gbox-data/mercs/analysis/re4-killer7-native-proof-test-20261113.txt`.
 
 ## Behavior and validation
 

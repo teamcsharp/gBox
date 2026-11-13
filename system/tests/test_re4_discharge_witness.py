@@ -38,7 +38,9 @@ def world(kind='shotgun'):
     m.put(P+0x938, '<Q', WEAPON)
     m.put(WEAPON+0x38, '<Q', OBJ)
     m.put(OBJ+0x110, '<I', 7)
-    cls, item, handler = (7, 0x2C, 0x3351A0) if kind=='shotgun' else (5, 0x29, 0x3270F0)
+    cls, item, handler = {'shotgun': (7, 0x2C, 0x3351A0),
+                          'magnum': (5, 0x29, 0x3270F0),
+                          'killer7': (6, 0x2A, 0x31CC60)}[kind]
     m.put(OBJ+0x400, '<HB', item, 3)
     m.put(BASE+W.GAME_OBJ+W.G_CLASS, '<B', cls)
     m.put(BASE+W.ITEM_MGR+W.M_EQUIPPED_ID, '<H', item)
@@ -47,11 +49,11 @@ def world(kind='shotgun'):
     return m, s
 
 
-@pytest.mark.parametrize('kind', ['shotgun', 'magnum'])
+@pytest.mark.parametrize('kind', ['shotgun', 'magnum', 'killer7'])
 def test_actual_handler_identity_and_completion_edge(kind):
     m,s = world(kind)
     before = D.read(m, BASE, s, 10.)
-    assert before['family'] == kind and before['identity'][4] == 7
+    assert before['family'] == ('magnum' if kind=='killer7' else kind) and before['identity'][4] == 7
     m.put(P+0x117, '<B', 1)
     after = D.read(m, BASE, s, 10.05)
     assert D.edge(before, after, 10.05)
@@ -115,12 +117,13 @@ def test_ongoing_explosive_action_blocks_learning(key):
     assert not D.unconfounded(bot,{},10.)
 
 
-def test_confirmation_before_ledger_resolution_never_labels_blast_damage_a_gun_hit(tmp_path):
+@pytest.mark.parametrize('kind', ['shotgun', 'killer7'])
+def test_confirmation_before_ledger_resolution_never_labels_blast_damage_a_gun_hit(tmp_path,kind):
     core=A.AimCore(R.combat_profile(),{},root=tmp_path,log=False,verified_only=True)
-    m,s=world();before=D.read(m,BASE,s,10.)
+    m,s=world(kind);before=D.read(m,BASE,s,10.)
     enemy={'ptr':20,'pos':(0,0,5000),'hp':100,'class':0xAE7050}
     s['enemies']=[enemy]
-    origin=(0,1100,0);plan=core.plan(enemy,origin,'shotgun',10.,weapon=0x2C)
+    origin=(0,1100,0);plan=core.plan(enemy,origin,before['family'],10.,weapon=before['identity'][5])
     identity=before['identity']
     core.shot(10.,enemy,plan,origin=origin,at=(0,1100,5000),contact=True,los=True,
         extra={'fire_identity':identity,'aim_settled':True,'unconfounded':True})
@@ -203,3 +206,99 @@ def test_clone_process_change_and_torn_original_class_are_unknown():
 def test_known_character_vtables_share_the_verified_weapon_emission_handler(cls):
     m,s=world('magnum');m.put(P,'<Q',BASE+cls)
     assert D.read(m,BASE,s,10.)['family']=='magnum'
+
+
+@pytest.mark.parametrize('cls,item',[(1,0x21),(5,0x29),(7,0x2C),(15,0x37)])
+def test_killer7_handler_does_not_authorize_other_classes(cls,item):
+    assert W.CLASS_OF[item]==cls
+    m,s=world('killer7')
+    m.put(BASE+W.GAME_OBJ+W.G_CLASS,'<B',cls)
+    m.put(BASE+W.ITEM_MGR+W.M_EQUIPPED_ID,'<H',item)
+    m.put(OBJ+0x400,'<H',item)
+    assert D.read(m,BASE,s,10.) is None
+
+
+def test_same_family_handler_change_is_not_a_completed_killer7_discharge():
+    m,s=world('killer7');before=D.read(m,BASE,s,10.)
+    m.put(BASE+D.HANDLER,'<Q',BASE+0x3270F0)
+    m.put(P+0x117,'<B',1)
+    after=D.read(m,BASE,s,10.05)
+    assert after is not None and after['family']==before['family']=='magnum'
+    assert not D.edge(before,after,10.05)
+
+
+def test_pinned_native_killer7_dispatch_and_emission_order():
+    """Optional Spark asset check: execute fire00, stubbing external callees.
+
+    The game binary stays outside Git. This proves native call/step ordering,
+    not a simulated bullet impact or live cadence.
+    """
+    import hashlib
+    import os
+    from pathlib import Path
+    path=os.environ.get('RE4_MAIN_ELF')
+    if not path:
+        pytest.skip('set RE4_MAIN_ELF to the existing pinned Spark executable')
+    raw=Path(path).read_bytes()
+    assert hashlib.sha256(raw).hexdigest()=='c8e8f22f9996b7d6de8913133c791579dc0e6df43d32ef9478dd13781c303433'
+    phoff=struct.unpack_from('<Q',raw,32)[0]
+    size,count=struct.unpack_from('<HH',raw,54)
+    segments=[]
+    for i in range(count):
+        kind,flags,offset,va,pa,filesz,memsz,align=struct.unpack_from('<II6Q',raw,phoff+i*size)
+        if kind==1:segments.append((va,offset,filesz))
+    def read(at,n):
+        for va,offset,size in segments:
+            if va<=at and at+n<=va+size:return raw[offset+at-va:offset+at-va+n]
+        raise AssertionError('unmapped executable address')
+    assert struct.unpack('<Q',read(0xB09768,8))[0]==0x31CFE0
+    assert struct.unpack('<Q',read(0xB097C8,8))[0]==0x31DDD0
+    cap=pytest.importorskip('capstone')
+    dis=cap.Cs(cap.CS_ARCH_ARM64,cap.CS_MODE_ARM)
+    for start,table in ((0x31CC60,0x758),(0x31CFE0,0x7C8)):
+        ins=[(i.mnemonic,i.op_str) for i in dis.disasm(read(start,0x24),start)]
+        assert ('adrp','x8, #0xb09000') in ins
+        assert ('add',f'x8, x8, #{table:#x}') in ins
+        assert ('ldr','x8, [x8, x9, lsl #3]') in ins
+        assert ('blr','x8') in ins
+    uc=pytest.importorskip('unicorn')
+    from unicorn import arm64_const as A
+    u=uc.Uc(uc.UC_ARCH_ARM64,uc.UC_MODE_ARM)
+    u.mem_map(0,0x1300000)
+    for va,offset,size in segments:u.mem_write(va,raw[offset:offset+size])
+    game,player,wep,obj,misc,resource,stack=(0x2000000+i*0x10000 for i in range(7))
+    for at in (game,player,wep,obj,misc,resource,stack):u.mem_map(at,0x10000)
+    def put(at,fmt,*values):u.mem_write(at,struct.pack(fmt,*values))
+    put(0xB25D78,'<Q',misc);put(misc,'<Q',game)
+    put(0xB27DC0,'<Q',misc+0x100);put(0xB27D00,'<Q',misc+0x200)
+    put(misc+0x200,'<3f',1.,1.,0.)
+    put(0xB25DD0,'<Q',misc+0x300)
+    put(game+0x58,'<Q',resource);put(game+0x5034,'<B',6)
+    put(player+0x938,'<Q',wep);put(wep+0x38,'<Q',obj)
+    put(player+0x948,'<Q',misc+0x100);put(player+0x950,'<Q',misc+0x100)
+    put(player+0x114,'<4B',0,6,2,0)
+    calls={i.address:int(i.op_str.lstrip('#'),16)
+           for i in dis.disasm(read(0x31DDD0,0x28C),0x31DDD0) if i.mnemonic=='bl'}
+    events=[]
+    def instruction(machine,at,size,_):
+        if at not in calls:return
+        target=calls[at]
+        if target==0x33B770:
+            assert at==0x31DFE4
+            assert machine.reg_read(A.UC_ARM64_REG_X0)==player
+            assert machine.reg_read(A.UC_ARM64_REG_W3)==6
+            assert bytes(machine.mem_read(player+0x117,1))==b'\0'
+            events.append('native_trace_called')
+        machine.reg_write(A.UC_ARM64_REG_X0,misc+0x400 if target==0x2B4F90 else 0)
+        machine.reg_write(A.UC_ARM64_REG_PC,at+4)
+    def written(machine,access,at,size,value,_):
+        if at==obj+0x402:events.append(('object_state',value))
+        if at==player+0x117:events.append(('fire_step',value))
+    u.hook_add(uc.UC_HOOK_CODE,instruction)
+    u.hook_add(uc.UC_HOOK_MEM_WRITE,written)
+    u.reg_write(A.UC_ARM64_REG_X0,player)
+    u.reg_write(A.UC_ARM64_REG_SP,stack+0x8000)
+    u.reg_write(A.UC_ARM64_REG_X30,0x1000)
+    u.emu_start(0x31DDD0,0x1000,count=500)
+    assert u.reg_read(A.UC_ARM64_REG_PC)==0x1000
+    assert events==['native_trace_called',('object_state',3),('fire_step',1)]

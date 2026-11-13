@@ -40,6 +40,7 @@ from ..core import combat                  # the universal fight (UNIVERSAL_CORE
 from ..core import respond                 # the doctrine's answer to a threat (RESPOND): at import, for the hot reload
 from ..core import aim_book                # the per-shot truth and the learning on every miss (AIM_BOOK)
 from ..core import flash_window            # the one flash clock and the tight-situation rule (FLASH_MIN_GAP_S, FLASH_TIGHT)
+from ..re6_traversal import TRAVERSAL_ACTIONS
 
 TITLE_ID = "01002A000CD48000"
 MAP_ID = TITLE_ID                       # profiles/gamedata/01002A000CD48000-ram.json
@@ -3722,9 +3723,9 @@ class Bot:
             if self._run_d is not None and self._run_d[0] == self.run_target and d > self._run_d[1] + 5.0:
                 self.stats["backtrack_m"] = round(self.stats["backtrack_m"] + (d - self._run_d[1]) / 100.0, 2)
             self._run_d = (self.run_target, d)
-        if not hold or self.in_hold or self.stats.get("act") in ("break_free", "held_auto_qte", "grab_detonate",
+        if not hold or self.in_hold or p.get('action') in TRAVERSAL_ACTIONS or self.stats.get("act") in ("break_free", "held_auto_qte", "grab_detonate",
                                                                 "quick_turn", "quick_turn_settle", "prompt_stick"):
-            return out                                           # (a grab's escape and the quick turn: exempt)
+            return out  # Native traversal owns facing; its animation turn must not cancel its controls.
         boosted = p.get("action") in BOOSTED_ACTIONS or (p.get("action") == "cPlAction_pl_act_weapon_fire"
                                                           and p.get("weapon_id") in MAGNUM_IDS)
         if (spin > SPIN_DEG_S or boosted) and set(hold) & STICK_KEYS:
@@ -4285,6 +4286,7 @@ class Bot:
         st = self.__dict__.setdefault("_stand", {"pos": None, "at": now, "until": -1e9, "keys": (), "n": 0})
         busy = (not NEVER_STAND or not pos or (p.get("hp") or 0) <= 0 or "zl" in hold or "tap" in act
                 or self.in_hold or self.down or self.doing in STAND_BUSY or self.stats.get("act") in STAND_BUSY_ACTS
+                or p.get('action') in TRAVERSAL_ACTIONS
                 or snap.get("mercenaries_phase") not in (None, PHASE_PLAYING))
         if busy:
             st["pos"], st["at"], st["until"] = (tuple(pos) if pos else None), now, -1e9
