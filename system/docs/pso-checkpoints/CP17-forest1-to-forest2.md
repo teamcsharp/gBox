@@ -115,3 +115,42 @@ tap planner and the control loop.
 **What is left for CP17's accept is now only the live part:** a session with a character in Forest 1 (CP5's state), the pad
 (round 104), `pso_ram.floor` watched for the change, and the target cell taken from `pso_walk.path` to the next floor's
 entrance. The three offline layers are done and tested.
+
+## Round 175 (2026-11-11 00:30): status **partial** - the walk works, the floor change does not yet
+
+The live half progressed further than a plan: the walker was wired to a working input path and driven over the extracted collision
+route, but **CP17's accept is not met** and this section says so plainly.
+
+**Measured**
+
+- Dolphin's own command line names the image: `D:\gBox\cache\436e0bb84d5337d1\Phantasy Star Online Episode I & II Plus (USA).gcz`.
+  `gbox.gcz.GCZ.read` gives random access; the FST (offset at header `0x424`, entry count at `fst+8`, **type 1 = directory, 0 = file**)
+  yields `Scene/map_forest01c.rel` = 72,096 bytes.
+- `pso_walk.describe(map_forest01c.rel)` = `{floors: 6463, walls: 2599, walkable: 5701}`.
+- `pso_walk.path` from the live actor position: 24 waypoints / 231 units for a 174-unit straight line (it routes around walls).
+- `pso_kbwalk` calibrated on open ground: `up (-1.00, 0.07) 35.7 u/s`, `down (1.00, -0.08) 33.6`, `left (0.11, 0.99) 36.3`,
+  `right (-0.20, -0.98) 30.8` - orthogonal, opposites exact, and rotated from the naive axis assumption.
+- Receding-horizon navigation (`pso_walk.path` re-planned from the current position each round, five-waypoint horizon, sidestep on a
+  stall): remaining distance `229 -> 218 -> 174 -> 131 -> 87 -> 51 -> 30 -> [stall] -> 10 -> 8 -> arrived` in Forest 1.
+  Actor `0x80da62a0`, session `75cf966f35164149-4ec5d512e3484b02`, floor byte `0x805D5FC0` read `1` throughout.
+- The input path that works on this machine: focus the gBox window, then `win_send_keys(pid, events)` (the adapter's keyboard branch).
+  The virtual pad exists as an object but its device does not report, which is why every earlier press was acknowledged and dropped.
+
+**What is missing for the accept**
+
+The accept needs the **floor id to change by walking, with no warp**. That needs the *target cell*: Forest 1's exit to Forest 2. The
+collision graph gives walkability, not the warp's position. `pso_rooms` parses only room footprints, and the room rel's object
+placements are present but not yet decoded (float triples in `map_forest01r.rel` include both the footprint and unidentified
+positions). Two concrete routes to the warp cell:
+
+1. decode the object-placement table of `map_forest01<room>r.rel` until the warp object's position falls out (the extractor and the
+   FST reader are in `docs/research/pso-extract-rel.py`);
+2. scan RAM for the scene's object list and match the warp entity by type, then read its position.
+
+**Live:** session `75cf966f35164149-4ec5d512e3484b02`, character in Forest 1 reached by `floor_warp` (dev) - the dev warp is exactly
+what the accept forbids for the floor change, so it cannot be part of the accepting run. The accepting run must start from CP5's state
+and end with `pso_ram.floor` reading a different id after walking.
+
+**Needs:** the warp cell (either route above), then one run: navigate to it, press the action key on the pad, and watch
+`0x805D5FC0` change with no `floor_warp` in the session log.
+

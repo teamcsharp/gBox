@@ -281,11 +281,76 @@ def scan(roots: list[Path], runtimes: dict[str, str], hash_cache: dict | None = 
                 fnmatch(Path(dirpath, n).relative_to(root).as_posix().lower(), pattern.lower())
                 for pattern in (exclude_files or []))]
     sheets = [f for f in files if f.suffix.lower() in (".cue", ".gdi")]
+    # A materialised NUP is one deconstructed title (exefs/ + romfs/ + .gbox-nup.json), not 186,000 RomFS files: the
+    # folder becomes the catalog row and its files are not scanned separately.
+    nup_roots = {f.parent: f for f in files if f.name == ".gbox-nup.json"}
+    if nup_roots:
+        files = [f for f in files if not any(str(f).startswith(str(r) + os.sep) for r in nup_roots)]
+    # An extracted Switch dump is a game too (base/exefs/main + base/romfs, or exefs/main at the root): the shape the
+    # NUP extractor and the Lichii build use (the share's DonkeyKongBananza folder). One game, not a file per asset.
+    dump_roots: dict[Path, Path] = {}
+    for f in files:
+        if f.name != "main" or f.parent.name.lower() != "exefs":
+            continue
+        root = f.parent.parent
+        if root.name.lower() == "base":
+            root = root.parent
+        elif root.parent.name.lower() == "updates":        # updates/<version>/exefs: part of the base game's folder
+            root = root.parent.parent
+        if root in nup_roots or root in dump_roots:
+            continue
+        if (root / "romfs").is_dir() or (root / "base" / "romfs").is_dir() or (root / "exefs" / "main").is_file():
+            dump_roots[root] = f
+    if dump_roots:
+        files = [f for f in files if not any(str(f).startswith(str(r) + os.sep) for r in dump_roots)]
     lsts = [f for f in files if f.suffix.lower() == ".lst" and is_gd_list(f)]
     tracks = set().union(*(_referenced_tracks(s) for s in sheets), *(_lst_tracks(s) for s in lsts)) \
         if sheets or lsts else set()
 
     by_hash: dict[str, CatalogEntry] = {}
+    for folder, marker_path in nup_roots.items():
+        try:
+            marker = json.loads(marker_path.read_text(encoding="utf-8"))
+            if marker.get("kind") != "nup-materialized":
+                continue
+            root = next(Path(r) for r in roots if folder.is_relative_to(r))
+        except (OSError, ValueError, StopIteration):
+            continue
+        rel = folder.relative_to(root).as_posix()
+        tid = str(marker.get("title_id") or "").upper() or None
+        title, region = title_from_name(folder.name)
+        title = marker.get("title") or title
+        gid = hashlib.sha1(f"{lib_id}:{rel}".encode()).hexdigest()[:16]
+        if gid in by_hash:
+            continue
+        generation = 2 if (tid or "").startswith("04") else 1
+        by_hash[gid] = CatalogEntry(
+            game_id=gid, title=title, platform="switch", platform_confidence="manifest", region=region, serial=tid,
+            source_paths=[str(folder)], library=lib_id, rel_path=rel, system="switch",
+            collections=[lib_id] if lib_id else [], core=None, hashes={}, size=int(marker.get("bytes") or 0),
+            format="nup_folder", runtimes={"switch": runtimes["switch"]} if "switch" in runtimes else {},
+            launch={"kind": "emulator", "platform": "switch", "path": str(folder), "title_id": tid,
+                    "nup_folder": True, "nup_source": marker.get("source"), "switch_generation": generation},
+            profile_id=gid)
+    from . import switch_nup
+    for folder, main in dump_roots.items():
+        try:
+            root = next(Path(r) for r in roots if folder.is_relative_to(r))
+        except StopIteration:
+            continue
+        rel = folder.relative_to(root).as_posix()
+        title, region = title_from_name(folder.name)
+        tid = switch_nup.npdm_title_id(main.parent / "main.npdm") if (main.parent / "main.npdm").is_file() else None
+        gid = hashlib.sha1(f"{lib_id}:{rel}".encode()).hexdigest()[:16]
+        if gid in by_hash:
+            continue
+        by_hash[gid] = CatalogEntry(
+            game_id=gid, title=title, platform="switch", platform_confidence="layout", region=region, serial=tid,
+            source_paths=[str(folder)], library=lib_id, rel_path=rel, system="switch",
+            collections=[lib_id] if lib_id else [], core=None, hashes={}, size=0, format="switch_dump",
+            runtimes={"switch": runtimes["switch"]} if "switch" in runtimes else {},
+            launch={"kind": "emulator", "platform": "switch", "path": str(folder), "exefs": str(main),
+                    "title_id": tid, "switch_generation": 2}, profile_id=gid)
     ps3 = {f.parents[2] for f in files if f.name.upper() == "EBOOT.BIN" and f.parent.name.upper() == "USRDIR"
            and f.parents[1].name.upper() == "PS3_GAME"}           # extracted PS3 disc folders (JB format)
     ps4_sfos = {f.parent.parent: f for f in files
@@ -463,11 +528,14 @@ def scan(roots: list[Path], runtimes: dict[str, str], hash_cache: dict | None = 
                 serial_, nsp_launch = switch_nsp.catalog_fields(f)
                 if serial_:
                     meta = {**meta, "serial": serial_}
-            elif ext == ".nup":                           # Switch 2 package: title id from the filename/header
+            elif ext == ".nup":                           # Switch 1/2 NUP: title, version and build id from the container
                 from . import switch_nup
                 serial_, nsp_launch = switch_nup.catalog_fields(f)
                 if serial_:
                     meta = {**meta, "serial": serial_}
+                if nsp_launch.get("nup_title"):
+                    title = nsp_launch["nup_title"]
+                    meta = {**meta, "title": title}
             by_hash[gid] = CatalogEntry(
                 game_id=gid, title=title, alt_title=meta.get("title") if meta.get("title", "").lower() != title.lower() else None,
                 platform=platform_, platform_confidence=conf,

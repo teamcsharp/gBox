@@ -86,8 +86,10 @@ def test_the_main_menu_confirms_only_on_extras(cur, tgt, key):
     assert D.step({"where": "main_menu", "cursor": cur, "target": tgt}) == key
 
 
-def test_an_unread_cursor_is_not_confirmed():
-    assert D.step({"where": "main_menu", "cursor": None, "target": 5}) is None
+def test_an_unread_cursor_steps_toward_the_target():
+    """The menu is a fixed list whose target the reader still names: a frame the reader half-got steps rather than
+    parking the title (live 2026-11-11 22:43: RE4 sat on extras_menu at 0 rounds for the whole block)."""
+    assert D.step({"where": "main_menu", "cursor": None, "target": 5}) == D.DPAD["down"]
 
 
 def test_a_confirm_is_not_repeated_while_the_screen_fades():

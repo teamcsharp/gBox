@@ -1683,6 +1683,8 @@ def _pump(sid: str, ad, server: str, headers: dict, ctx=None):
             padstate.CHORD[sid] = lambda: autoplay_chord(sid, ctx)   # hold Select/View + press A: autoplay on/off
         # When Dolphin reads gBox's own virtual pad, the operator's physical pad reaches the game only if we relay it.
         padstate.RELAY[sid] = getattr(ad, "vpad", None) is not None
+        # the mirror must never watch the session's own virtual pad: its presses are not the operator's
+        padstate.VPAD_SLOT[sid] = getattr(getattr(ad, "vpad", None), "slot", None)
         padstate.ANCHOR[sid] = lambda at: _save_anchor(sid, ad, ctx, at)  # replay waits for these screens
         threading.Thread(target=padstate.watch_xinput, args=(server, headers, sid, lambda: sid in SESSIONS), daemon=True).start()
     with httpx.Client(base_url=server, headers=headers, timeout=10) as c:
@@ -1806,6 +1808,8 @@ def session_rpc(sid: str, op: str, args: dict, ctx=None):
                 "fast_forward": rewind.fast_forward_status(sid, ad), "time_controls": rewind.status(sid)}
     if op == "normal_speed":
         return rewind.set_fast_forward(sid, ad, on=False, recover=True)
+    if op == "fast_forward":                           # the speed-run control: hold the no-speed-limit hotkey
+        return rewind.set_fast_forward(sid, ad, on=bool(args.get("on", True)))
     if op.startswith("debug_"):
         return _debug_rpc(ad, g, op[6:], args)
     if op == "state":

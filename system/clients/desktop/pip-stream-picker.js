@@ -167,7 +167,8 @@
     });
   }
   function html(entries, sid, title = row => row.title || row.game_title || row.game_id || 'Game', broadcast = false) {
-    return '<div class="pip-stream-heading"><strong>Streams</strong><span>View another instance</span>' +
+    return '<div class="pip-stream-recent" data-stream-recent aria-label="Recently launched games"></div>' +
+      '<div class="pip-stream-heading"><strong>Streams</strong><span>View another instance</span>' +
       (broadcast ? '<button type="button" data-stream-broadcast="auto" title="Let the broadcast follow the active game again">Broadcast: Auto</button>' : '') + '</div>' +
       '<div class="pip-stream-carousel"><button type="button" data-stream-step="-1" aria-label="Previous stream" title="Previous stream">‹</button>' +
       '<div class="pip-stream-cards" role="group" aria-label="Running game streams">' + (entries.length ? entries.map(({row,status:state}) =>
@@ -175,19 +176,271 @@
         `<span class="pip-stream-picture"><img alt="" data-stream-preview="${esc(row.session_id)}"><span data-stream-state>${esc(labels[state])}</span>${row.session_id === sid ? '<b class="pip-stream-selected">Watching</b>' : ''}</span>` +
         `<strong>${esc(name(row) || identity(row).workerId || 'Instance')}</strong><span>${esc(title(row))}</span></button>` +
         (broadcast ? `<button type="button" class="pip-stream-broadcast" data-stream-broadcast="${esc(row.session_id)}" ${state === 'ready' ? '' : 'disabled'} aria-label="Broadcast ${esc(title(row))} on ${esc(name(row))}">Broadcast</button>` : '') + '</div>').join('') :
-        '<p class="pip-stream-empty">No active streams. Waiting for a game to be ready.</p>') + '</div>' +
+        '<p class="pip-stream-empty">No active streams. Waiting for a game to be ready.</p>') + '<button type="button" class="pip-stream-card pip-stream-add-tile" data-stream-add title="Start a recent game into the PiP" aria-label="Add a game">' + '<span class="pip-stream-picture" style="display:flex;align-items:center;justify-content:center;font-size:34px;font-weight:300;line-height:1">+</span>' + '<strong>Add game</strong><span>Recent launches</span></button>' + '</div>' +
       '<button type="button" data-stream-step="1" aria-label="Next stream" title="Next stream">›</button></div>' +
       '<p class="pip-stream-status" role="status">Switching views keeps every game running.</p>';
   }
   function mount(root, io) {
     let stopped = false, entries = [], preview = null, busy = false;
-    root.innerHTML = '<p class="pip-stream-empty" role="status">Loading streams…</p>';
+    // Draw the panel at once so the menu is usable immediately; refresh() fills the carousel when the data lands.
+    root.innerHTML = html([], io.current ? io.current() : '', io.title, !!io.broadcast);
     const valid = () => !stopped && io.valid?.() !== false;
+    // The last five launched games, as squares you can click to launch again.
+    const initials = title => String(title || '')
+      .replace(/\([^)]*\)/g, '')
+      .split(/[\s:—-]+/).filter(Boolean).slice(0, 2).map(word => word[0]).join('').toUpperCase() || '?';
+    const tint = id => {
+      let hash = 0;
+      for (const char of String(id || '')) hash = (hash * 31 + char.charCodeAt(0)) % 360;
+      return `hsl(${hash} 34% 26%)`;
+    };
+    async function recentStrip() {
+      const host = root.querySelector('[data-stream-recent]');
+      if (!host) return;
+      let games = [];
+      try {
+        const [sessionAnswer, catalogAnswer] = await Promise.all([
+          io.api ? io.api('/api/sessions') : null,
+          io.api ? io.api('/api/catalog') : null,
+        ]);
+        const sessions = Array.isArray(sessionAnswer) ? sessionAnswer : (sessionAnswer?.items || []);
+        const catalog = (Array.isArray(catalogAnswer) ? catalogAnswer
+          : (catalogAnswer?.items || catalogAnswer?.games || [])).filter(game => game && (game.game_id || game.id));
+        const byId = new Map(catalog.map(game => [String(game.game_id || game.id), game]));
+        const seen = new Set();
+        for (const row of (sessions || []).filter(item => item && (item.agent_owned === false || item.agent_owned === 'false') && item.game_id)
+          .sort((a, b) => Number(b.started || 0) - Number(a.started || 0))) {
+          const id = String(row.game_id);
+          if (seen.has(id)) continue;
+          const entry = byId.get(id) || { game_id: id, title: row.title || id };
+          if (/mercenar/i.test(String(entry.title || entry.alt_title || row.title || ''))) continue;
+          seen.add(id);
+          games.push(entry);
+          if (games.length >= 5) break;
+        }
+      } catch { games = []; }
+      if (!valid()) return;
+      if (!games.length) { host.style.display = 'none'; return; }
+      host.style.cssText = 'display:flex;gap:6px;overflow-x:auto;padding:2px 2px 8px;scrollbar-width:thin';
+      host.innerHTML = games.map((game, index) => {
+        const title = String(game.title || game.alt_title || game.game_id);
+        return '<button type="button" data-recent-tile="' + index + '" title="Launch ' + esc(title) + '" ' +
+          'style="flex:none;width:64px;height:64px;border-radius:6px;border:1px solid #3a4152;cursor:pointer;' +
+          'background:' + tint(game.game_id) + ';color:#e6edf3;font:600 18px system-ui;display:flex;' +
+          'align-items:center;justify-content:center;letter-spacing:.5px">' + esc(initials(title)) + '</button>';
+      }).join('');
+      host.querySelectorAll('[data-recent-tile]').forEach(buttonEl => {
+        buttonEl.addEventListener('click', () => {
+          const game = games[Number(buttonEl.dataset.recentTile)];
+          if (!game) return;
+          message('Starting ' + String(game.title || game.game_id) + '…');
+          const id = String(game.game_id || game.id || '');
+          const go = call('/api/games/' + encodeURIComponent(id) + '/launch?node=auto', {});
+          Promise.resolve(go).catch(error => message('Could not start it: ' + String(error?.message || error)));
+        });
+      });
+      console.log('pip recent: drew', games.length);
+    }
     const message = value => { if (valid()) root.querySelector('.pip-stream-status').textContent = value; };
     // Right-click a stream entry to close that game. The stop itself is the operator's own action,
     // provided by the host as io.close(sid, row) (it confirms, then stops the session); this component
     // only draws the menu. Closing a game here is how the operator frees a worker (e.g. for MercMode).
     let menuEl = null;
+    // Recently played games, for the + button: launch one into the PiP without leaving it.
+    let addMenu = null;
+    function dismissAdd() {
+      if (addMenu) {
+        addMenu.remove(); addMenu = null;
+        try { window.gboxPipCover?.(false); } catch {}
+      }
+    }
+    async function openAdd(event) {
+      // No gate may return quietly: launching a game does not depend on which session this menu belongs to.
+      const button = event.target.closest?.('[data-stream-add]');
+      console.log('pip add: click', !!button);
+      if (!button) return;
+      event.preventDefault(); event.stopPropagation();
+      dismissAdd(); dismissMenu();
+      const rect = button.getBoundingClientRect();
+      addMenu = document.createElement('div');
+      addMenu.className = 'pip-stream-menu pip-stream-add';
+      addMenu.setAttribute('role', 'dialog');
+      addMenu.style.cssText = 'position:fixed;z-index:9999;width:min(360px,86vw);padding:8px;' +
+        'background:#1b1f2a;border:1px solid #3a4152;border-radius:8px;box-shadow:0 8px 28px rgba(0,0,0,.55);' +
+        'left:' + Math.round(Math.max(8, Math.min(rect.left, window.innerWidth - 372))) + 'px;' +
+        'top:' + Math.round(Math.min(rect.bottom + 6, window.innerHeight - 120)) + 'px;';
+      addMenu.innerHTML = '<div style="padding:2px 2px 6px;font-size:11px;color:#9aa3b4">Start a game</div>' +
+        '<input data-add-search type="search" placeholder="Search title or system…" autocomplete="off" ' +
+        'style="width:100%;box-sizing:border-box;padding:6px 8px;margin-bottom:6px;background:#0d1117;color:#e6edf3;' +
+        'border:1px solid #30363d;border-radius:5px;font:inherit">' +
+        '<div data-add-list style="max-height:50vh;overflow:auto">' +
+        '<div style="padding:8px;font-size:12px;color:#9aa3b4">Loading your games…</div></div>';
+      document.body.appendChild(addMenu);
+      // The game is a GPU surface above the page: take it down while this panel is up.
+      try { window.gboxPipCover?.(true); } catch {}
+      console.log('pip add: panel appended');
+
+      const call = async (path, init) => {
+        if (typeof io.api === 'function') return io.api(path, init);
+        const helper = globalThis.gbox && globalThis.gbox.api;
+        if (!helper) throw new Error('no api helper');
+        const answer = await helper(path, init);
+        if (answer && answer.ok === false) throw new Error(answer.error || 'request failed');
+        return answer && typeof answer === 'object' && 'data' in answer ? answer.data : answer;
+      };
+
+      let recent = [], catalog = [];
+      try {
+        const [sessionAnswer, catalogAnswer] = await Promise.all([
+          call('/api/sessions').catch(() => null),
+          call('/api/catalog').catch(() => null),
+        ]);
+        const sessions = Array.isArray(sessionAnswer) ? sessionAnswer : (sessionAnswer?.items || []);
+        catalog = (Array.isArray(catalogAnswer) ? catalogAnswer
+          : (catalogAnswer?.items || catalogAnswer?.games || [])).filter(game => game && (game.game_id || game.id));
+        const byId = new Map(catalog.map(game => [String(game.game_id || game.id), game]));
+        const seen = new Set();
+        for (const row of (sessions || []).filter(item => item && item.agent_owned === false && item.game_id)
+          .sort((a, b) => Number(b.started || 0) - Number(a.started || 0))) {
+          const id = String(row.game_id);
+          if (seen.has(id)) continue;
+          seen.add(id);
+          const entry = byId.get(id) || { game_id: id, title: row.title || id };
+          if (!/mercenar/i.test(String(entry.title || entry.alt_title || row.title || ''))) recent.push(entry);
+        }
+        console.log('pip add: sessions', (sessions || []).length, 'catalog', catalog.length, 'recent', recent.length,
+          'owned', (sessions || []).filter(item => item && (item.agent_owned === false || item.agent_owned === 'false')).length);
+      } catch (error) {
+        console.log('pip add: read failed', String(error && error.message || error));
+      }
+      if (!addMenu) { console.log('pip add: panel went away during the read'); return; }
+
+      const all = [];
+      const push = (game, tag) => {
+        const id = String(game.game_id || game.id);
+        if (all.some(item => item.id === id)) return;
+        all.push({ id, game, tag });
+      };
+      for (const game of recent) push(game, 'recent');
+      for (const game of catalog) {
+        if (/mercenar/i.test(String(game.title || game.alt_title || ''))) continue;
+        push(game, 'catalog');
+      }
+
+      // Most recently opened first: the operator's own sessions, then everything else by last_played.
+      all.sort((a, b) => {
+        if ((a.tag === 'recent') !== (b.tag === 'recent')) return a.tag === 'recent' ? -1 : 1;
+        return Number(b.game.last_played || 0) - Number(a.game.last_played || 0);
+      });
+      const list = addMenu.querySelector('[data-add-list]');
+      const rowHTML = (item, index) => {
+        const game = item.game;
+        const label = String(game.title || game.alt_title || game.game_id);
+        const system = String(game.platform || (game.collections && game.collections[0]) || '');
+        return '<button type="button" role="option" data-add-index="' + index + '" ' +
+          'style="display:block;width:100%;text-align:left;padding:7px 8px;background:transparent;border:0;border-radius:5px;' +
+          'color:#e6edf3;font:inherit;cursor:pointer">' + esc(label) +
+          '<span style="display:block;font-size:11px;color:' + (item.tag === 'recent' ? '#8fb6ff' : '#9aa3b4') + '">' +
+          esc(system) + (item.tag === 'recent' ? ' · recent' : '') + '</span></button>';
+      };
+      const draw = query => {
+        const needle = String(query || '').trim().toLowerCase();
+        const matches = all.filter(item => {
+          if (!needle) return true;
+          const game = item.game;
+          const text = (String(game.title || game.alt_title || game.game_id) + ' ' +
+            String(game.platform || (game.collections && game.collections[0]) || '')).toLowerCase();
+          return text.includes(needle);
+        });
+        list.innerHTML = matches.length
+          ? matches.slice(0, 60).map((item) => rowHTML(item, all.indexOf(item))).join('')
+          : '<div style="padding:8px;font-size:12px;color:#9aa3b4">' +
+            (all.length ? 'No games match' : 'No games available') + '</div>';
+        list.querySelectorAll('[data-add-index]').forEach(buttonEl => {
+          buttonEl.addEventListener('click', () => start(all[Number(buttonEl.dataset.addIndex)]?.game));
+        });
+        console.log('pip add: drew', matches.length, 'of', all.length);
+      };
+      const start = async game => {
+        if (!game) return;
+        // The app's own launch route builds the full LaunchIn from the stored catalogue entry; sending a
+        // hand-built entry to launch_game was rejected with "game_platform / game_source_paths / game_format /
+        // game_profile_id Field required" because the list entry does not carry them.
+        const appLaunch = async target => {
+          const id = String((target && (target.game_id || target.id)) || '');
+          if (!id) throw new Error('no game id');
+          const answer = await call('/api/games/' + encodeURIComponent(id) + '/launch?node=auto', {});
+          return answer;
+        };
+        const label = String(game.title || game.game_id);
+        try { globalThis.gboxRememberGame?.(game); } catch {}
+        dismissAdd();
+        if (valid()) message('Starting ' + label + '…');
+        try {
+          await appLaunch(game);
+        } catch (error) {
+          console.log('pip add: launch failed', String(error && error.message || error));
+          if (valid()) message('Could not start it: ' + String(error?.message || error));
+        }
+      };
+      draw('');
+      const search = addMenu.querySelector('[data-add-search]');
+      if (search) {
+        let timer = null;
+        search.addEventListener('input', () => {
+          const value = search.value;
+          draw(value);                                  // local matches, immediately
+          const needle = String(value || '').trim();
+          clearTimeout(timer);
+          if (needle.length < 2) return;
+          timer = setTimeout(async () => {
+            try {
+              const answer = await call('/api/catalog/best?q=' + encodeURIComponent(needle) + '&limit=30');
+              const rows = Array.isArray(answer) ? answer : (answer && (answer.items || answer.games)) || [];
+              let found = (rows || []).filter(game => game && (game.game_id || game.id));
+              const owned = new Set(all.filter(item => item.tag === 'recent')
+                .map(item => String(item.game.game_id || item.game.id || '')));
+              // What you actually launched comes first; never-launched titles keep the server's order below.
+              found = found.slice().sort((a, b) => Number(b.last_played || 0) - Number(a.last_played || 0));
+              console.log('pip add: server search', JSON.stringify(needle), '->', found.length);
+              if (addMenu && found.length) {
+                addMenu.querySelector('[data-add-list]').innerHTML = found.map((game, index) => {
+                  const label = String(game.title || game.alt_title || game.game_id);
+                  const system = String(game.platform || (game.collections && game.collections[0]) || '');
+                  const id = String(game.game_id || game.id || '');
+                  const launched = Number(game.last_played || 0) > 0 || owned.has(id);
+                  const mine = owned.has(id);
+                  // A launched title is framed and tinted so an obscure neighbour cannot be clicked by accident.
+                  const style = 'display:block;width:100%;text-align:left;padding:7px 8px;border-radius:5px;font:inherit;' +
+                    'cursor:pointer;color:#e6edf3;' +
+                    (mine ? 'background:#1b2b45;border:1px solid #4a7fd4;'
+                          : launched ? 'background:#182130;border:1px solid #35507a;'
+                                     : 'background:transparent;border:1px solid transparent;');
+                  const when = Number(game.last_played || 0);
+                  const age = when ? Math.max(0, Math.round((Date.now() / 1000 - when) / 86400)) : null;
+                  const note = mine ? 'recent' : launched ? (age === 0 ? 'launched today' : age === 1 ? 'launched yesterday'
+                    : age !== null ? 'launched ' + age + 'd ago' : 'launched') : '';
+                  return '<button type="button" data-add-found="' + index + '" style="' + style + '">' +
+                    esc(label) + '<span style="display:block;font-size:11px;color:' +
+                    (launched ? '#8fb6ff' : '#9aa3b4') + '">' + esc(system) +
+                    (note ? ' · ' + esc(note) : '') + '</span></button>';
+                }).join('');
+                addMenu.querySelectorAll('[data-add-found]').forEach(buttonEl => {
+                  buttonEl.addEventListener('click', () => start(found[Number(buttonEl.dataset.addFound)]));
+                });
+              }
+            } catch (error) { console.log('pip add: server search failed', String(error && error.message || error)); }
+          }, 180);
+        });
+        setTimeout(() => search.focus(), 30);
+      }
+    }
+
+    function onAddAway(event) {
+      if (event.target.closest?.('[data-stream-add]')) return;   // that press is opening it, not dismissing it
+      if (!addMenu || !addMenu.contains(event.target)) dismissAdd();
+    }
+    document.addEventListener('pointerdown', onAddAway, true);
     function onAway(event) { if (!menuEl || !menuEl.contains(event.target)) dismissMenu(); }
     function onKey(event) { if (event.key === 'Escape') dismissMenu(); }
     function dismissMenu() {
@@ -257,6 +510,7 @@
       } catch (error) { if (valid()) root.textContent = 'Streams unavailable: ' + error.message; }
     }
     async function click(event) {
+      if (event.target.closest?.('[data-stream-add]')) { openAdd(event); return; }
       const button = event.target.closest?.('[data-stream-sid], [data-stream-step], [data-stream-broadcast]');
       if (!button || !valid() || busy || button.disabled) return;
       event.stopPropagation();
@@ -279,6 +533,7 @@
     }
     root.addEventListener('click', click);
     root.addEventListener('contextmenu', contextMenu);
+    recentStrip().catch(() => {});
     const ready = refresh();
     return {ready, stop() { stopped = true; preview?.stop(); dismissMenu(); root.removeEventListener('click',click);
       root.removeEventListener('contextmenu',contextMenu);

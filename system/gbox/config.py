@@ -330,6 +330,20 @@ class Config(BaseModel):
     switch_citron_appimage: str | None = None   # linux Switch sessions in Citron NEO (gbox.adapters.CitronLinuxAdapter):
                                           # its AppImage (extracted once), extracted AppRun or citron binary
     switch_linux_emulator: str = "auto"   # eden | citron | auto: auto = Citron for SWITCH_CITRON_TITLES when configured
+    # Switch 2 (gbox/switch2.py): NUP/NSP/dump titles run in Fritchii or the operator's Lichii (Windows x64) or in
+    # Hookshot's native Ocarina of Time build (Windows x64 / Linux x86_64). See docs/switch2.md.
+    switch2_engine: str = "auto"          # auto | fritchii | lichii | hookshot; auto = Hookshot for OoT once built,
+                                          # else Fritchii when installed, else Lichii
+    switch2_root: str | None = None       # runtime folder (unset: <runtime>/switch2); point it at a local SSD
+    switch2_fritchii: str | None = None   # Fritchii folder (or its lichii.exe); unset = <switch2_root>/fritchii,
+                                          # installed from the pinned v5.8.4 Windows x64 release
+    switch2_lichii: str | None = None     # the operator's Lichii folder (or lichii.exe), e.g. the share's custom OoT build
+    switch2_hookshot: str | None = None   # HookshotBuilder.exe (or its portable home); the game builds into <home>/Games/Hookshot
+    switch2_hookshot_game: str | None = None   # the built game folder (unset: the Builder's saved Out in builder-settings.json)
+    switch2_keys: str | None = None       # prod.keys for Switch 2 (unset: prod.keys at a switch library's root)
+    switch2_firmware: str | None = None   # an explicit firmware ZIP for the portable engine's nand (unset: none)
+    switch2_materialize_nup: bool = False # true: extract a NUP to <switch2_root>/games/<title> before an Eden-fork launch
+    switch2_hookshot_mem: str = "rw"      # HOS_CONTROL_MEM for Hookshot's control bridge: off | ro | rw (live swaps need rw)
     decomp_me_enabled: bool = False       # opt-in: the `decomp_me` tool only talks to the network when true
     decomp_me_url: str = "https://decomp.me/api"
     ninja_ripper: dict = {}               # path, dll, launcher_args, hotkey, output_dir (docs/rip_and_decomp_tools.md)

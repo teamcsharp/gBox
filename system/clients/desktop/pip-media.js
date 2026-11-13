@@ -89,7 +89,7 @@
       toggling=true;state.error=false;state.message='Autobot: asking the PC that runs this game…';paint();
       let out;
       try{
-        out=await autobot(api,sid,{op:'toggle',source:'F3'},{delay,now,limit:STATUS_JOB_MS*5});
+        out=await autobot(api,sid,{op:'start',source:'F3'},{delay,now,limit:STATUS_JOB_MS*5});
         if(!stopped){state.message=out.message;paint();await poll();}
       }catch(error){out={ok:false,message:readable(error)};state.error=true;state.message=out.message;paint();}
       finally{

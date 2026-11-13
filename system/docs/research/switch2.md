@@ -1,5 +1,13 @@
 # Nintendo Switch 2 — decryption and boot investigation
 
+> **Correction 2026-11-11: `.nup` is not NCZ, and its TOC is at 0x80.** Reading the two real containers on the share
+> (StarFox, Zelda OoT) showed both are NUP **v1** exactly as [SPIN0ZAi/nup-extractor](https://github.com/SPIN0ZAi/nup-extractor/blob/main/docs/SPEC.md)
+> documents: `NUP\x01` + a 0x80-byte superblock, `TOC\x01` at **0x80**, package records, a directory tree of 601 dirs
+> and 186,592 files in OoT's case, and raw/Zstandard extents. There is no `NCZ` block layer and no page at 0x90; the
+> earlier "TOC at 0x90 / NCZ" reading came from scanning the wrong bytes. The containers are plaintext, so no master
+> keys are needed to extract them. gBox now has the reader (`gbox/nup.py`, docs/nup.md), extraction, materialisation
+> and model-source extraction; the Switch 2 *emulator* and live-hook work below is unchanged.
+
 The operator's `\\10.89.1.125\QuickSwap2\Emulation\switch2` (mounted at `/mnt/gbox/quickswap2/Emulation/switch2`)
 holds two Switch 2 titles, measured 2026-11-05:
 
@@ -25,20 +33,24 @@ The NCAs inside are Switch 2 (title id prefix `04`, keygen 3+). Decrypting them 
 and title keys. The Spark's `prod.keys` has `key_area_key_application_03..09` but **no `master_key_0X` for keygen
 3+**, so the title key cannot be derived yet — the emulator projects say "bring your own keys".
 
-### `.nup` (Zelda: Ocarina of Time)
+### `.nup` (Zelda: Ocarina of Time / StarFox)
 
-New packaging, not the Switch 1 NSP. Header walk (offsets observed, still being pinned down):
+Corrected 2026-11-11 from the real files: NUP **v1**, not a new NCZ packaging. The header walk is exactly the format
+documented by [SPIN0ZAi/nup-extractor](https://github.com/SPIN0ZAi/nup-extractor/blob/main/docs/SPEC.md):
 
 ```
-0x00  "NUP" + version byte
-0x90  "TOC\x01"   (a table-of-contents sub-header)
-0xb8  a title id (0x04xxxxxxxxxxxxx)
-...   "NCZ" magic at 0x368bb2, 0x754db2, 0xcc7da6  (NCZ = Switch 2's native compressed block format)
+0x00  "NUP\x01" + 0x80-byte superblock (TOC offset/size/SHA-256, blob offset, file size, package count, UUID)
+0x80  "TOC\x01" (package records, directory tree, file records, children array, string pool)
+blob  raw and Zstandard file extents (no NCZ layer)
 ```
 
-`NCZ` is the key new piece: the equivalent of NSZ's block compression, but native to Switch 2 cartridges/updates.
-Fully reading the RomFS requires an NCZ decompressor; this is the "how it is being done online" the operator
-asked about, and it lives in the emulator sources below.
+Zelda OoT is a single **standalone update** package (601 dirs, 186,592 files, 21.16 MB TOC, `flags=1`); StarFox has a
+base and an update (6 dirs, 21 files). Both parse and extract key-free. gBox's reader (`gbox/nup.py`), extraction,
+materialisation and model-source hand-off are documented in `docs/nup.md`.
+
+> Historical note (now disproven): an earlier 2026-11-05 walk put `TOC\x01` at 0x90 and found `NCZ` magic inside the
+> OoT file, and inferred an NCZ decompressor was required. The `TOC` bytes at 0x90 and the `NCZ` hits were coincidental
+> content bytes; the real TOC is at 0x80. No NCZ decompressor is needed for these containers.
 
 ## The emulator landscape (from the operator's links)
 
@@ -53,6 +65,24 @@ All four are **x64 Windows** builds (`.exe`/`.dll`, MSVC runtime). The aarch64 L
 booting Switch 2 on the Spark directly is not currently possible — gBox would drive one of these emulators on a
 **Windows x64 worker** (the operator's Windows PCs are already gBox workers), exactly like the existing
 `preferred_launch_workers` / remote-launch path.
+
+## Progress log (2026-11-11)
+
+* **NUP is plaintext NUP v1, and gBox reads it.** `gbox/nup.py` validates the superblock/TOC, verifies the TOC
+  SHA-256, extracts raw and Zstandard extents, materialises a bootable `exefs/` + `romfs/` folder and pulls model
+  sources. The share's five listings now come through `gbox.catalog` as Switch 2 rows: Donkey Kong Bananza (extracted
+  dump, `040074A01BF12000`), its update, Mario Kart World (NSP), StarFox and Zelda OoT (NUPs). See `docs/nup.md`.
+* **Fritchii boots a NUP.** Fritchii v5.8.4 (pinned Windows x64 release) was installed on the i9-NUC; the share's
+  `prod.keys`/`title.keys` were copied to its portable `user/keys`. `lichii.exe -g "<OoT.nup>"` started the game from
+  the share — window title `Fritchii | v5.8.4 | … | The Legend of Zelda Ocarina of Time (64-bit) | Nvidia`, 2.6 GB
+  RAM, loading screen. No extraction step was needed. Evidence: `docs/images/switch2-oot-fritchii.png`.
+* **gBox integration.** `Switch2Adapter` routes generation-2 rows to Fritchii/Lichii; NUP launches skip the Switch 1
+  "extract first" preflight and the 25–30 GB cache staging. Hookshot is integrated as the native OoT engine: pinned
+  setup, `--cli --prepare --game <nup>` job, `--play`, and `HOS_CONTROL`/`HOS_CONTROL_MEM` for its local control
+  bridge (guest memory read/write — the eventual live-swap surface). Code `gbox/switch2.py`, docs `docs/switch2.md`.
+* **Host reality.** Fritchii and Lichii are Windows x64; Hookshot ships Windows x64 and Linux x86_64. The aarch64 Spark
+  cannot execute any of the three releases, so Switch 2 sessions run on a Windows worker (the i9-NUC) and are played
+  there or streamed. The Spark keeps the library, NUP extraction and model pipeline.
 
 ## Progress log (2026-11-05)
 

@@ -222,7 +222,14 @@ def reset_slot_memory() -> None:
     _LAST_SLOT = None
 
 
-def operator_slot(get_state, st, *, samples: int = 12, gap: float = 0.05, read=None) -> int:
+# The slot this session's own virtual pad occupies. It must never be mistaken for the operator's pad: the
+# mirror would read gBox's own presses as the operator grabbing the pad, claim the takeover lease, and then
+# pad_takeover drops the bot's events - the bot taking the pad from itself.
+VPAD_SLOT: dict = {}
+
+
+def operator_slot(get_state, st, *, samples: int = 12, gap: float = 0.05, read=None,
+                  exclude: int | None = None) -> int:
     """The XInput slot the operator's own pad is on.
 
     Slot 0 is not safe to assume. A leftover virtual pad from an earlier session holds slot 0 on this PC and
@@ -244,10 +251,13 @@ def operator_slot(get_state, st, *, samples: int = 12, gap: float = 0.05, read=N
     if read is None:
         from . import xinput as _xinput
         read = _xinput.read
-    if _LAST_SLOT is not None and read(get_state, _LAST_SLOT, st) is not None:
+    if (_LAST_SLOT is not None and _LAST_SLOT != exclude
+            and read(get_state, _LAST_SLOT, st) is not None):
         return _LAST_SLOT
     for _ in range(max(1, samples)):
         for s in range(4):
+            if s == exclude:
+                continue
             if read(get_state, s, st) is None:
                 continue
             g = st.gamepad
@@ -255,7 +265,16 @@ def operator_slot(get_state, st, *, samples: int = 12, gap: float = 0.05, read=N
                 _LAST_SLOT = s
                 return s
         time.sleep(gap)
-    return _LAST_SLOT if _LAST_SLOT is not None else 0
+    # Nothing moved, but a slot that answers is still a pad this PC has (a controller at rest). Prefer it over the
+    # fallback to 0, which is the virtual pad this fix exists to exclude - otherwise the operator's relay goes silent
+    # the moment their controller is plugged in but not yet touched.
+    for s in range(4):
+        if s == exclude:
+            continue
+        if read(get_state, s, st) is not None:
+            _LAST_SLOT = s
+            return s
+    return -1                      # no operator pad on this PC: nothing to mirror
 
 
 def watch_xinput(server: str, headers: dict, sid: str, alive) -> None:
@@ -267,7 +286,11 @@ def watch_xinput(server: str, headers: dict, sid: str, alive) -> None:
     if get_state is None:
         return
     st, held, last_pkt, last_stick, chording = xinput.XInputState(), set(), -1, (0.0, 0.0, 0.0, 0.0), False
-    slot = operator_slot(get_state, st)          # the operator's pad: not always XInput slot 0
+    exclude = VPAD_SLOT.get(sid)                 # gBox's own pad is not the operator's
+    slot = operator_slot(get_state, st, exclude=exclude)   # the operator's pad: not always XInput slot 0
+    if slot < 0 or (exclude is not None and slot == exclude):
+        print(f"padstate: no operator pad to mirror (virtual pad on slot {exclude}) - the bot drives alone", flush=True)
+        return
     print(f"padstate: mirroring the operator's pad on XInput slot {slot}", flush=True)
     last_active = 0.0
     ax = lambda v: 0.0 if abs(v) < 7849 else round(max(-1.0, v / 32767), 2)      # XInput's recommended deadzone

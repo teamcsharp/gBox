@@ -1,0 +1,75 @@
+{
+ "name": "pso-boot-from-title-a",
+ "game_id": "436e0bb84d5337d1",
+ "objective": "Break the attract loop and reach the field from a cold title (deterministic, no model)",
+ "policy": "boot-from-title",
+ "steps": [
+  {
+   "op": "wait",
+   "secs": 1.0
+  },
+  {
+   "op": "press",
+   "key": "start",
+   "n": 1
+  },
+  {
+   "op": "wait",
+   "secs": 3.0
+  },
+  {
+   "op": "press",
+   "key": "ddown",
+   "n": 1
+  },
+  {
+   "op": "wait",
+   "secs": 0.4
+  },
+  {
+   "op": "press",
+   "key": "a",
+   "n": 1
+  },
+  {
+   "op": "wait",
+   "secs": 5.0
+  },
+  {
+   "op": "press",
+   "key": "a",
+   "n": 1
+  },
+  {
+   "op": "wait",
+   "secs": 4.0
+  },
+  {
+   "op": "press",
+   "key": "a",
+   "n": 1
+  },
+  {
+   "op": "wait",
+   "secs": 4.0
+  },
+  {
+   "op": "press",
+   "key": "a",
+   "n": 1
+  },
+  {
+   "op": "wait",
+   "secs": 6.0
+  },
+  {
+   "op": "press",
+   "key": "a",
+   "n": 1
+  },
+  {
+   "op": "wait",
+   "secs": 3.0
+  }
+ ]
+}
