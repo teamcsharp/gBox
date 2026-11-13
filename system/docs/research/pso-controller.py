@@ -41,6 +41,11 @@ OPERATOR_FLAG = pathlib.Path(r"D:\gBox\pso-ds\operator-playing.flag")
 # every --idle-seconds for minutes - input the operator never made, which kept the bot standing down for the whole
 # session. With the relays stopped the pad was silent for 35 s, so the duplicates were the source.
 RELAY_LOCK = pathlib.Path(r"D:\gBox\pso-ds\pso-controller.lock")
+# While the bounded runner holds its lock, the pad's state includes the BOT's own virtual pad. Reading it and forwarding
+# it back is a closed loop: the relay saw the bot's taps as "operator input", claimed the pad, and preempted the run that
+# produced them - measured as single key presses exactly every --idle-seconds for minutes, which is the bot's own
+# cadence. The operator's pad can wait one run.
+BOT_LOCK = pathlib.Path(r"D:\gBox\pso-ds\bounded\bounded.lock")
 
 # XInput button bits (xinput.h).
 BUTTONS = ((0x1000, "a"), (0x2000, "b"), (0x4000, "x"), (0x8000, "y"),
@@ -200,6 +205,17 @@ def main(argv=None) -> int:
     last_activity = 0.0
     flagged = False
     while time.monotonic() - started < args.seconds:
+        if BOT_LOCK.exists():
+            # The bot owns the pad: anything on it may be the bot's own input, so forward nothing.
+            if flagged:
+                try:
+                    OPERATOR_FLAG.unlink()
+                except OSError:
+                    pass
+                flagged = False
+                log("bot is driving - relay paused")
+            time.sleep(0.05)
+            continue
         try:
             state = read(slot)
         except Exception as exc:                                   # noqa: BLE001 - a pad read must never end the relay
