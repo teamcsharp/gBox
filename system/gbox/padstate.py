@@ -277,6 +277,92 @@ def operator_slot(get_state, st, *, samples: int = 12, gap: float = 0.05, read=N
     return -1                      # no operator pad on this PC: nothing to mirror
 
 
+
+def watch_sdl(server: str, headers: dict, sid: str, alive) -> None:
+    """Mirror the operator's SDL/HID controller into the session, the way watch_xinput does for real XInput pads.
+
+    An Xbox 360 pad that enumerates as HID (measured on this PC) never answers XInputGetState, so the XInput mirror
+    finds no operator pad at all. SDL does see it, and this reads the same state from there: buttons by index, the
+    left stick for movement, the triggers for L2/R2, then the identical relay logic.
+    """
+    try:
+        import pygame
+    except ImportError:
+        print("padstate: pygame/SDL not available - cannot mirror a HID controller", flush=True)
+        return
+    import httpx
+
+    pygame.init()
+    pygame.joystick.init()
+    if pygame.joystick.get_count() <= 0:
+        print("padstate: SDL reports no joystick - nothing to mirror", flush=True)
+        return
+    joy = pygame.joystick.Joystick(0)
+    joy.init()
+    print(f"padstate: mirroring the operator's SDL pad '{joy.get_name()}' "
+          f"({joy.get_numaxes()} axes, {joy.get_numbuttons()} buttons)", flush=True)
+
+    # SDL button index -> gBox key name. The A/B swap mirrors _XI: XInput 0x1000 ("A") is "b" here and 0x2000 is "a".
+    BUTTONS = {0: "b", 1: "a", 2: "y", 3: "x", 4: "l", 5: "r", 6: "select", 7: "start", 8: "l3", 9: "r3"}
+    held, last_stick, chording, last_active = set(), (0.0, 0.0, 0.0, 0.0), False, 0.0
+
+    with httpx.Client(base_url=server, headers=headers, timeout=3) as c:
+        while alive():
+            time.sleep(1 / 30)
+            try:
+                pygame.event.pump()
+            except Exception:                                              # noqa: BLE001 - never kill the mirror
+                continue
+            now = {name for index, name in BUTTONS.items() if index < joy.get_numbuttons() and joy.get_button(index)}
+            if joy.get_numaxes() > 4 and joy.get_axis(4) > 0.5:            # left trigger
+                now.add("l2")
+            if joy.get_numaxes() > 5 and joy.get_axis(5) > 0.5:            # right trigger
+                now.add("r2")
+
+            def axis(index):
+                value = joy.get_axis(index) if index < joy.get_numaxes() else 0.0
+                return 0.0 if abs(value) < 0.24 else max(-1.0, min(1.0, value))   # same deadzone idea as the XInput path
+
+            stick = (axis(0), -axis(1), axis(2) if joy.get_numaxes() > 2 else 0.0,
+                     -axis(3) if joy.get_numaxes() > 3 else 0.0)
+            if not now and stick == last_stick:
+                continue
+            ev = [{"key": k, "down": True} for k in now - held] + [{"key": k, "down": False} for k in held - now]
+            before, held, last_stick = held, now, stick
+            moved = any(abs(v) > 0.3 for v in stick)
+            fire, chording = chord_step(sid, before, now, moved, chording)
+            if not chording:
+                pad_lease(sid, now | stick_keys(stick))
+            if fire and CHORD.get(sid):
+                threading.Thread(target=CHORD[sid], daemon=True).start()
+            if now or moved:
+                t = time.time()
+                if t - last_active >= 0.7 and not chording and ANCHOR.get(sid):
+                    threading.Thread(target=ANCHOR[sid], args=(t,), daemon=True).start()
+                last_active = t
+            if RELAY.get(sid) and ev and (now or moved):
+                # The operator is playing. Sticks only past a real deflection, so resting drift cannot starve the bot.
+                relay_events = [e for e in ev if not e["key"].endswith(("left", "right", "up", "down"))] or ev
+                # Apply straight through the virtual pad when we are in the worker process: that is the route measured
+                # to actually move the character (211 units through a gate), while the /input queue is drained by a
+                # pump that reports steps without moving it.
+                applied = False
+                try:
+                    from . import tools as _tools
+                    adapter = (_tools.SESSIONS or {}).get(sid)
+                    vpad = getattr(adapter, "vpad", None)
+                    if vpad is not None:
+                        vpad.apply(relay_events)
+                        applied = True
+                except Exception:                                          # noqa: BLE001
+                    applied = False
+                if not applied:
+                    try:
+                        for event in relay_events:
+                            c.post(f"/api/sessions/{sid}/input", json=event)
+                    except Exception:                                      # noqa: BLE001
+                        pass
+
 def watch_xinput(server: str, headers: dict, sid: str, alive) -> None:
     """Windows worker: stream the operator's own controller (pad 0) to the controller glyph while the session lives.
     The game reads the pad itself; this only mirrors it (XInput works whatever window has focus)."""
