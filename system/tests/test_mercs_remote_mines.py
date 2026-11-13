@@ -124,7 +124,7 @@ def settled(step, snapshot, live, now):
 def test_the_rule_drops_a_ring_then_detonates_the_set_through_the_flag(monkeypatch):
     calls = []
 
-    def ring_now(ad, count=4, radius_cm=200.0, **kw):
+    def ring_now(ad, owner, cancelled, count, radius_cm):
         calls.append(("ring", count, radius_cm))
         return {"op": "bomb_ring", "state": "confirmed", "placed": count, "requested": count}
 
@@ -132,13 +132,13 @@ def test_the_rule_drops_a_ring_then_detonates_the_set_through_the_flag(monkeypat
         calls.append(("detonate",))
         return {"op": "bomb_detonate", "verified": True, "count": 1, 'detonated': [10]}
 
-    monkeypatch.setattr(N, "bomb_ring_now", ring_now)
+    monkeypatch.setattr(C, "emergency_ring_now", ring_now)
     monkeypatch.setattr(N, "bomb_detonate_now", detonate_now)
     step = RM.control(None, {"map_id": TITLE})
-    live = stats(remote_mines={"drop_jitter_s": 0, "rings_before_detonate": 4, "detonate_after_s": 75})
+    live = stats(remote_mines={"drop_jitter_s": 0, "rings_before_detonate": 4, "detonate_after_s": 75}, ring_flash_at=100.)
     first = step(snap(), live, 100.0, lambda keys: True)
     settled(step, snap(), live, 100.1)
-    assert first['pending'] and not first['fired'] and calls[0] == ("ring", 6, 200.0)
+    assert first['pending'] and not first['fired'] and calls[0] == ("ring", 15, 200.0)
     assert live["mine_rings_dropped"] == 1
     # A complete native census, not a request counter, starts the fuse.
     def lying(at):
@@ -179,7 +179,7 @@ def test_a_flashbang_earns_the_fifteen_mine_ring_combo(monkeypatch):
     """Operator 2026-11-11 18:02: a flashbang deployed -> a ring of up to 15 remote mines right away, then detonated."""
     calls = []
 
-    def ring_now(ad, count=6, radius_cm=200.0, **kw):
+    def ring_now(ad, owner, cancelled, count, radius_cm):
         calls.append(("ring", count, radius_cm))
         return {"op": "bomb_ring", "state": "confirmed", "placed": count, "requested": count}
 
@@ -187,7 +187,7 @@ def test_a_flashbang_earns_the_fifteen_mine_ring_combo(monkeypatch):
         calls.append(("detonate",))
         return {"op": "bomb_detonate", "verified": True, "count": 15}
 
-    monkeypatch.setattr(N, "bomb_ring_now", ring_now)
+    monkeypatch.setattr(C, "emergency_ring_now", ring_now)
     monkeypatch.setattr(N, "bomb_detonate_now", detonate_now)
     step = RM.control(None, {"map_id": TITLE})
     live = stats(remote_mines={"drop_jitter_s": 0}, ring_flash_at=100.0)
@@ -228,11 +228,11 @@ def test_a_surround_earns_the_massive_mine_ring(monkeypatch):
     15-mine ring on its own 10 s cadence, no flash needed."""
     calls = []
 
-    def ring_now(ad, count=6, radius_cm=200.0, **kw):
+    def ring_now(ad, owner, cancelled, count, radius_cm):
         calls.append(("ring", count))
         return {"op": "bomb_ring", "state": "confirmed", "placed": count, "requested": count}
 
-    monkeypatch.setattr(N, "bomb_ring_now", ring_now)
+    monkeypatch.setattr(C, "emergency_ring_now", ring_now)
     step = RM.control(None, {"map_id": TITLE})
     crowd = [enemy(100 + i * 50) for i in range(4)]
     live = stats(remote_mines={"drop_jitter_s": 0})

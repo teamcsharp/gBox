@@ -5,6 +5,18 @@ require the player's native position to be at least 1,100 cm from **every** owne
 bomb, with valid allocations, a living player, and no held state. A missed escape
 deadline is reported; it never authorizes self-detonation or changes health.
 
+The next travel-drop revision replaces stationary timer rings with one native
+armed bomb after 609.6 cm (20 feet) of measured horizontal locomotion. Wall input,
+warps, duplicate snapshots and stationary aim do not accrue travel. The held gun
+does not change. Flash/surrounded emergency rings retain priority. A shared native
+controller lock rereads the actual bomb census before either allocation, preventing
+an old empty snapshot from placing another bomb over a concurrent manual request.
+Native placement receipts preserve their deadline when a delayed census still
+shows an empty field, the initial throw action, or an already-started explosion.
+An uncertain allocation blocks further automatic allocation for that player life.
+The focused travel/deadline/native-drop suite passed 107 tests; live movement/drop
+and five-second explosion acceptance remain pending deployment.
+
 The old remote-ring rule returned before checking detonation whenever the bot's
 own `bomb_phase` or grenade state was active. It recorded the request's timestamp,
 discarded per-bomb placement timestamps, and synchronously allocated up to 15

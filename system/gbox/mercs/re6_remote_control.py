@@ -1,17 +1,140 @@
-"""Nonblocking RE6 remote rings and deadline-first native detonation."""
+"""RE6 travel drops, emergency rings and deadline-first native detonation."""
 from __future__ import annotations
 
 import math
 from pathlib import Path
-import random
 import threading
 import time
 import uuid
 
-from .re6_bomb_deadlines import Deadlines, finite
+from .re6_bomb_deadlines import Deadlines, finite, record_placement
 from .follow_report_delivery import _write
 
 ROOT = Path(__file__).resolve().parents[2] / 'gbox-data' / 'mercs' / 'native-remote-receipts'
+TRAVEL_CM, REQUEST_GAP_S = 609.6, 3.0
+TRAVEL_ACTIONS = frozenset('cPlAction_pl_act_' + name for name in (
+    'walk', 'run', 'dash', 'weapon_ready_move', 'weapon_fire'))
+
+
+def position(value):
+    return isinstance(value, (tuple, list)) and len(value) == 3 and all(finite(v) for v in value)
+
+
+class Travel:
+    """Credit observed locomotion, never stick input, wall pushing or warps."""
+    def __init__(self):
+        self.owner, self.previous = None, None
+        self.distance, self.last_move, self.last_request = 0., -math.inf, -math.inf
+        self.moving = False
+
+    def observe(self, owner, snap, stats, now, enabled):
+        p = snap.get('player') or {}
+        if owner != self.owner:
+            self.__init__()
+            self.owner = owner
+        valid = (enabled and bool(owner[0]) and all(type(v) is int for v in owner[1:])
+                 and not stats.get('operator_control') and not stats.get('round_evidence_closed')
+                 and stats.get('screen') in (None, 'playing') and (p.get('hp') or 0) > 0
+                 and position(p.get('pos')) and p.get('state') in (0, 2)
+                 and type(p.get('equipped')) is int and 0 <= p['equipped'] < 7
+                 and p.get('action') in TRAVEL_ACTIONS)
+        self.moving = False
+        if valid:
+            if self.previous is not None:
+                then, old = self.previous
+                dt = now - then
+                distance = math.hypot(p['pos'][0] - old[0], p['pos'][2] - old[2])
+                if 0 < dt <= 1. and distance <= 1200. * dt + 30.:
+                    if distance >= 1.:
+                        self.distance = min(TRAVEL_CM, self.distance + distance)
+                        self.last_move = now
+                    # The engine observes deadlines before and after its input
+                    # decision using the same snapshot. Do not erase a real
+                    # movement sample on that second observation.
+                    self.moving = 0 <= now - self.last_move <= .25
+                elif dt == 0 and distance == 0:
+                    self.moving = 0 <= now - self.last_move <= .25
+                else:
+                    self.distance, self.last_move = 0., -math.inf
+            self.previous = now, tuple(p['pos'])
+        else:
+            self.previous = None
+        if not enabled or stats.get('operator_control'):
+            self.distance = 0.
+        stats.update(mine_travel_cm=round(self.distance, 1), mine_travel_interval_ft=20,
+                     mine_travel_moving=self.moving)
+
+    def due(self, now):
+        return self.moving and self.distance >= TRAVEL_CM and now - self.last_request >= REQUEST_GAP_S
+
+    def claimed(self, now):
+        self.distance, self.last_request = 0., now
+
+
+def single_drop_now(ad, owner, cancelled):
+    """One body-position drop with an atomic all-bomb and held-gun preflight."""
+    from .titles import re6_switch_native as native
+    result = {'op': 'bomb_trail', 'state': 'unavailable', 'verified': False,
+              'requested': 1, 'placed': 0, 'units': [], 'radius_cm': 0.}
+    allocation_started = False
+    try:
+        with native._CREATE_LOCK:
+            ctl = getattr(ad, '_re6_native_flash', None)
+            if ctl is None:
+                ctl = ad._re6_native_flash = native.Controller(ad)
+        with ctl.lock:
+            if not ctl.recover_completed_call() and ctl.failed:
+                raise native.Unavailable('native controller awaits recovery after an uncertain operation')
+            if cancelled() or ctl.ready() != tuple(owner[1:]):
+                raise native.Unavailable('travel drop no longer belongs to a moving bot in this round')
+            units = native.R.owned_throwables(ctl, ctl.base, owner[1])
+            if not isinstance(units, list):
+                raise native.Unavailable('live native bomb census is unavailable')
+            if any(u.get('kind') == 'remote' for u in units):
+                raise native.Unavailable('existing native remote bomb must resolve before a travel drop')
+            before = ctl.current_weapon()
+            if before is None:
+                raise native.Unavailable('travel drop requires a gun already held')
+            result['weapon_before'] = before
+            if cancelled():
+                raise native.Unavailable('travel ended before native allocation')
+            allocation_started = True
+            receipt = ctl.drop_bomb(expected_player=owner[1], expected_generation=owner[2], cancelled=cancelled)
+            if not (receipt.get('verified') is True and receipt.get('armed') is True
+                    and type(receipt.get('unit')) is int and type(receipt.get('generation')) is int
+                    and finite(receipt.get('placed_at')) and position(receipt.get('pos'))):
+                raise native.Uncertain('travel drop lacks native placed-and-armed evidence; not replayed')
+            result.update(placed=1, units=[receipt], placed_at=receipt['placed_at'])
+            after = ctl.current_weapon()
+            result.update(weapon_after=after, weapon_unchanged=before == after)
+            if before != after:
+                raise native.Uncertain('gun changed during travel drop; placement retained for escape')
+            result.update(state='confirmed', verified=True)
+    except Exception as exc:
+        result.update(state='uncertain' if allocation_started else 'unavailable', verified=False,
+                      reason=f'{type(exc).__name__}: {exc}'[:250])
+    return result
+
+
+def emergency_ring_now(ad, owner, cancelled, count, radius):
+    """Serialize the live all-bomb preflight with the existing ring operation."""
+    from .titles import re6_switch_native as native
+    try:
+        with native._CREATE_LOCK:
+            ctl = getattr(ad, '_re6_native_flash', None)
+            if ctl is None:
+                ctl = ad._re6_native_flash = native.Controller(ad)
+        with ctl.lock:
+            if cancelled() or ctl.ready() != tuple(owner[1:]):
+                raise native.Unavailable('emergency ring belongs to an ended player life')
+            units = native.R.owned_throwables(ctl, ctl.base, owner[1])
+            if not isinstance(units, list) or any(u.get('kind') == 'remote' for u in units):
+                raise native.Unavailable('existing native bomb must resolve before an emergency ring')
+            return native.bomb_ring_now(ad, count=count, radius_cm=radius, expected_player=owner[1],
+                                       expected_generation=owner[2], cancelled=cancelled)
+    except Exception as exc:
+        return {'op': 'bomb_ring', 'state': 'unavailable', 'verified': False, 'placed': 0,
+                'reason': f'{type(exc).__name__}: {exc}'[:250]}
 
 
 class RingFlight:
@@ -71,29 +194,77 @@ def control(ad, prof, bot_getter=None):
     from .titles import re6_switch_native as native
     if str((prof or {}).get('map_id') or '') not in rules.TITLES:
         return None
-    book, flight = Deadlines(), RingFlight()
+    book, flight, travel = Deadlines(), RingFlight(), Travel()
     last_attempt = -math.inf
+    blocked_owner, receipt_owner, awaiting_census, last_census = None, None, {}, None
+    live_view = {}
 
     def owner_of(snap, stats):
         p = snap.get('player') or {}
         return stats.get('round_evidence_id'), p.get('ptr'), p.get('generation')
 
     def observe(snap, stats, now):
-        nonlocal last_attempt
+        nonlocal last_attempt, blocked_owner, receipt_owner, last_census
         owner = owner_of(snap, stats)
+        travel.observe(owner, snap, stats, now, rules.policy(stats)['enabled'])
+        p = snap.get('player') or {}
+        live_view.update(owner=owner, seen=time.monotonic(), moving=travel.moving,
+                         allowed=rules.policy(stats)['enabled'] and not stats.get('operator_control')
+                         and not stats.get('round_evidence_closed')
+                         and (p.get('hp') or 0) > 0 and stats.get('screen') in (None, 'playing'))
+        if receipt_owner != owner:
+            awaiting_census.clear()
+            receipt_owner, last_census = owner, None
+            stats.pop('mine_allocation_blocked_reason', None)
         if stats.get('operator_control'):
             flight.close()
         receipt = flight.poll(owner)
+        new_placements = []
         stats['mine_ring_pending'] = flight.busy
         if receipt is not None:
             placed = int(receipt.get('placed') or 0)
             stats['mine_ring_last'] = receipt
             stats['mine_ring_bombs'] = int(stats.get('mine_ring_bombs', 0)) + placed
-            stats['mine_rings_dropped'] = int(stats.get('mine_rings_dropped', 0)) + bool(placed)
+            trail = receipt.get('op') == 'bomb_trail'
+            field = 'mine_trail_drops' if trail else 'mine_rings_dropped'
+            stats[field] = int(stats.get(field, 0)) + bool(placed)
+            if trail:
+                stats['mine_trail_last'] = receipt
+            for unit in receipt.get('units') or ():
+                key = unit.get('unit'), unit.get('generation')
+                if (unit.get('armed') is True and all(type(v) is int for v in key)
+                        and finite(unit.get('placed_at')) and position(unit.get('pos'))):
+                    record_placement(owner[1], owner[2], unit)
+                    awaiting_census[key] = {**unit, 'kind': 'remote',
+                        'action': 'cWpAction_wp_act_setting', 'evidence': 'native_placed_receipt'}
+                    new_placements.append(awaiting_census[key])
+            if receipt.get('state') == 'uncertain':
+                blocked_owner = owner
+                stats['mine_allocation_blocked_reason'] = 'uncertain native allocation; no further automatic bombs in this life'
             if receipt.get('state') != 'confirmed':
                 field = 'mine_partial_rings' if placed else 'mine_ring_failures'
                 stats[field] = int(stats.get(field, 0)) + 1
-        active = book.observe(snap, stats, now)
+        # A pre-allocation snapshot can still be in the input loop when the
+        # native receipt arrives. Preserve its placed proof until the census
+        # catches that allocation; an old empty list cannot erase its deadline.
+        census = snap.get('throwables')
+        if isinstance(census, list):
+            last_census = census
+            for unit in census:
+                if unit.get('action') in ('cWpAction_wp_act_setting', 'cWpAction_wp_act_bomb'):
+                    awaiting_census.pop((unit.get('unit'), unit.get('generation')), None)
+        if new_placements:
+            # Seed confirmed placement before processing the newest snapshot:
+            # it may already show the blast, which still needs its original
+            # five-second start time and an observed-explosion receipt.
+            known = {(u.get('unit'), u.get('generation')): u for u in last_census or ()}
+            known.update({(u['unit'], u['generation']): u for u in new_placements})
+            book.observe(dict(snap, throwables=list(known.values())), stats, now)
+        # An unreadable census also preserves older hazards, including moving
+        # bombs which have not reached their placed action yet.
+        observed = dict(snap, throwables=list(last_census or ()) + list(awaiting_census.values())) \
+            if awaiting_census else snap
+        active = book.observe(observed, stats, now)
         out = {'fire': False, 'fired': False, 'op': 'remote_mines', 'reason': ''}
         if not stats.get('mine_deadline_pending'):
             return out
@@ -144,10 +315,13 @@ def control(ad, prof, bot_getter=None):
         if result.get('fired'):
             return result
         policy = rules.policy(stats)
-        if not policy['enabled'] or stats.get('operator_control'):
+        if (not policy['enabled'] or stats.get('operator_control') or stats.get('round_evidence_closed')
+                or stats.get('screen') not in (None, 'playing')):
             return dict(result, reason='automatic remote rings are switched off')
         if flight.busy or stats.get('mine_deadline_pending'):
             return dict(result, reason=result.get('reason') or 'existing bombs: escape and detonate before another ring')
+        if blocked_owner == owner_of(snap, stats):
+            return dict(result, reason=stats.get('mine_allocation_blocked_reason'))
         p = snap.get('player') or {}
         if not p.get('pos') or (p.get('hp') or 0) <= 0:
             return dict(result, reason='no living player in a round')
@@ -168,21 +342,32 @@ def control(ad, prof, bot_getter=None):
         flash = (finite(flash_at) and 0 <= now - flash_at <= (5 if recovery else rules.FLASH_COMBO_S)
                  and stats.get('mine_flash_combo_at') != flash_at)
         surrounded = near >= rules.SURROUND_N and now - float(stats.get('mine_surround_at') or 0) >= rules.SURROUND_S
-        next_at = stats.get('mine_next_drop_at')
-        if not flash and not surrounded and finite(next_at) and now < next_at:
-            return dict(result, reason=f'{next_at-now:.1f} s to next ring')
-        count = rules.FLASH_COMBO_MINES if flash or surrounded else policy['count']
+        emergency = flash or surrounded
+        if not emergency and not travel.due(now):
+            return dict(result, reason=f'measured travel {travel.distance:.0f}/{TRAVEL_CM:.0f} cm; no stationary timer drops')
+        count, radius = (rules.FLASH_COMBO_MINES, policy['radius_cm']) if emergency else (1, 0.)
         owner = owner_of(snap, stats)
         if not owner[0] or any(type(v) is not int for v in owner[1:]):
             return dict(result, reason='native ring needs a verified round and player identity')
-        flight.submit(owner, lambda cancelled: native.bomb_ring_now(ad, count=count,
-            radius_cm=policy['radius_cm'], expected_player=p.get('ptr'),
-            expected_generation=p.get('generation'), cancelled=cancelled),
-            {'count': count, 'radius_cm': policy['radius_cm'], 'session': stats.get('source_session_id')})
+        def operation(cancelled):
+            def stopped():
+                return (cancelled() or live_view.get('owner') != owner or not live_view.get('allowed')
+                        or time.monotonic() - live_view.get('seen', -math.inf) > 1.
+                        or not emergency and not live_view.get('moving'))
+            if not emergency:
+                return single_drop_now(ad, owner, stopped)
+            return emergency_ring_now(ad, owner, stopped, count, radius)
+        if not flight.submit(owner, operation,
+                {'count': count, 'radius_cm': radius, 'reason': 'flash' if flash else 'surrounded' if surrounded else 'travel',
+                 'travel_cm': round(travel.distance, 1), 'player_pos': list(pos),
+                 'session': stats.get('source_session_id')}):
+            return dict(result, reason='native bomb allocation already in progress')
+        travel.claimed(now)
         stats['mine_ring_pending'] = True
         stats['mine_ring_requests'] = int(stats.get('mine_ring_requests', 0)) + 1
-        stats['mine_next_drop_at'] = now + policy['drop_every_s'] + random.uniform(
-            -policy['drop_jitter_s'], policy['drop_jitter_s'])
+        if not emergency:
+            stats['mine_trail_requests'] = int(stats.get('mine_trail_requests', 0)) + 1
+        stats.pop('mine_next_drop_at', None)
         if surrounded:
             stats['mine_surround_at'] = now
             stats['mine_surround_rings'] = int(stats.get('mine_surround_rings', 0)) + 1
@@ -190,8 +375,8 @@ def control(ad, prof, bot_getter=None):
             stats['mine_flash_combo_at'] = flash_at
             stats['mine_flash_combos'] = int(stats.get('mine_flash_combos', 0)) + 1
             stats.pop('qte_escape_mines_due', None)
-        return dict(result, op='bomb_ring', pending=True,
-                    reason=f'native ring of up to {count} requested; movement remains active')
+        return dict(result, op='bomb_ring' if emergency else 'bomb_trail', pending=True,
+                    reason=f'native {"emergency ring of up to " + str(count) if emergency else "single travel bomb"} requested; movement remains active')
 
     step.observe, step.close = observe, flight.close
     return step

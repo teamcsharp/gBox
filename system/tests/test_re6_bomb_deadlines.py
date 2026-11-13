@@ -137,9 +137,9 @@ def test_ring_worker_never_releases_movement_or_waits_for_native_allocation(monk
         entered.set()
         assert release.wait(2)
         return {'state': 'confirmed', 'placed': 1, 'units': []}
-    monkeypatch.setattr(N, 'bomb_ring_now', ring)
+    monkeypatch.setattr(C, 'emergency_ring_now', ring)
     step = M.control(None, {'map_id': TITLE})
-    st = stats()
+    st = stats(ring_flash_at=100.)
     try:
         out = step(snap(), st, 100, lambda _: pytest.fail('native ring must preserve pad input'))
         assert out['pending'] and not out['fired'] and entered.wait(1)
