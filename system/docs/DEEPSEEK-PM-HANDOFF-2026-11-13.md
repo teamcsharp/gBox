@@ -398,6 +398,9 @@ Only two travel drops had been recorded, no automatic crowd ring, and native det
 Later samples reached 347 detonation failures, nine combo breaks, and only two travel drops. There was
 real progress (294 kills and one time bonus in the final sampled state), so this was not a stopped worker.
 The symptom was intermittent stationary combat and a starved bomb lane. Installed source was main `483ff9ba3`.
+Earlier native receipts independently confirm that this feature really worked: `78efc9568c254cc4b3d52def8532d002`
+and `43543581a42844d598f764a0a7677d00` each placed all 15 remote bombs in approximately 256/261 ms in
+session `cc17261888594ab1-6880cb8b09034b59`. Do not replace the proven native spawner; fix its admission and exit cycle.
 
 Four interacting gates explain the regression:
 
@@ -457,8 +460,9 @@ current travel trigger. Native RE6 remote bombs are separate from the RE5-only p
 
 ### Activation, validation, and remaining work
 
-The first focused batch passed 98 tests. Final combined verification and live activation results are recorded
-below when complete. The new cycle test requires an old pair to stop producing, reach clearance, detonate,
+The final combined verification passed **190 tests**, covering remote travel/landing, deadlines, native rings,
+aim alignment, fire commitment, movement safety and bonus priorities. Repair commit: `0257a5eb2`.
+The new cycle test requires an old pair to stop producing, reach clearance, detonate,
 show native blast observations, and then admit a 15-bomb crowd ring. Keep the no-census, uncertain-allocation,
 floor, aiming and bonus-priority tests alongside it.
 
@@ -467,6 +471,15 @@ admission check; a `playing` round or an unclosed capture must defer the reload.
 also exists for older unrelated service changes: it does not mean these bot fixes need a service restart.
 Do not kill the game or claim success merely because source was copied. Check loaded worker source hashes
 and the new live counters after activation, then observe several placement/escape/blast cycles.
+Many action counters accumulate across rounds in one autoplay run while kills/timer are current-round values.
+Compare deltas within the same `round_evidence_id`; do not compare an accumulated bomb counter against a new
+round's kills. The public telemetry endpoint may omit nested diagnostic objects; scalar reasons survive there,
+while full placement evidence is in the native receipts.
+
+Activation status at this entry: the tested repair is locally committed. Publication to `main` was rejected
+by automatic approval review because this turn lacks explicit push authorization; that approval was requested.
+Do not mistake this entry for proof that `0257a5eb2` is loaded on Spark. The live verification entry must replace
+this pending status once publication and the finalized-round hot reload have succeeded.
 
 Time-bonus policy remains: prioritize eligible time bonuses below a 300-second bank, with immediate threats,
 QTEs and bomb clearance first. Once the clock exceeds that bank, combat has priority. Improve route commitment
