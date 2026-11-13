@@ -249,6 +249,35 @@ assuming one.
 activate the warp and reach Forest 1 with controller input only. The switch→flag probe is ready for the first switch
 after that.
 
+### 6.1 The city grid, and a corner taps cannot leave
+
+The city collision mesh is now decoded by `docs/research/pso-citymap.py` from the owned disc image (identity pinned:
+`Scene/map_city00_00c.rel`, 70,144 bytes, sha256 `6d5f5d5d…`): **1,497 triangles → 50,933 walkable / 47,779 safe
+cells** at the same 2.5-unit cell the Forest router uses, written to `D:\gBox\pso-ds\city-map.json`. The same cell
+size matters: the first grid was built at 10 units and `MapRouter` (which assumes 2.5) reported "no route" through a
+component that obviously contained both endpoints.
+
+A route from the lobby to the warp door is **60 waypoints**, and following it moved the character from `(163,164)` to
+`(229,-9)` — past the railing that had stopped every straight-line attempt — in one 150-second run with 0 overruns and
+0 failures. The last stretch then wedged the character in a corner at `(349.6,-45.0)`, and that produced the most
+useful single measurement of the round:
+
+| escape attempt | result |
+|---|---|
+| 40 taps, every direction, three minutes | position moved **0.0 units** |
+| one `left` hold, 0.45 s | position moved **33 units**, out of the corner |
+
+So the watchdog recovery is a **hold**, not a tap. A hold's distance is non-deterministic (it depends on release
+latency) which is why movement uses taps — but for an escape, a large immediate displacement is exactly what is
+needed. The same reasoning applies when the character *is* moving but cannot close: the no-close budget now spends up
+to three hold escapes (`Bounds.max_escapes`) before it reports a failure, and each escape is a ledger line with the
+pocket's tick count.
+
+Live, that is the difference between stopping and progressing: the corner that ended one run at `(349.6,-45.0)` was
+left by the escapes, and the next run walked from `(300,-43)` through `(278,-20)` and `(323,-5)` — out of the pocket
+and into the warp area — ending 48 units from the pad with 0 overruns and 0 failures. It has not reached the pad yet;
+that is where the next round starts.
+
 ## 7. Reproduce
 
 ```

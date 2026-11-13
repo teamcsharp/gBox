@@ -141,10 +141,19 @@ def run(mode: str, args) -> int:
     if mode == "walk":
         target = tuple(args.to)
         # No policy: the objective is the point. The same bounded tick still issues the action, so the walk cannot
-        # hold the loop, and the watchdog still recovers a wedge one action at a time.
+        # hold the loop, and the watchdog still recovers a wedge one action at a time. With --map the point is
+        # pursued along the decoded collision grid's waypoints (the city railing is why a straight line is not enough).
+        walk_policy = _FixedTarget(policy, target)
+        if args.map:
+            sys.path.insert(0, r"C:\_tools\gBox\.tmp")
+            from forest_route import MapRouter
+            grid = json.loads(pathlib.Path(args.map).read_text(encoding="utf-8"))
+            row = next(iter(grid.values()))
+            walk_policy = B.RoutedPolicy(walk_policy, MapRouter(row["cells"]), arrive=max(arrive, 10.0))
+            log(f"routed walk over {len(row['cells'])} safe cells from {args.map}")
         automaton = B.Automaton(
             world, ledger=ledger, clock=clock, operator=operator, mode=bound_mode,
-            motion=motion, policy=_FixedTarget(policy, target),
+            motion=motion, policy=walk_policy,
             bounds=B.Bounds(max_objective_ticks=10_000), watchdog=B.Watchdog(stall_s=20.0, max_recoveries=4),
             flag_address=None)
     else:
@@ -229,6 +238,7 @@ def main(argv=None) -> int:
     sub = parser.add_subparsers(dest="mode", required=True)
     walk = sub.add_parser("walk", help="drive to one coordinate with bounded controller input")
     walk.add_argument("--to", type=float, nargs=2, required=True, metavar=("X", "Z"))
+    walk.add_argument("--map", default="", help="decoded collision grid to route over (e.g. city-map.json)")
     play = sub.add_parser("play", help="run the progression policy")
     for name, item in (("walk", walk), ("play", play)):
         item.add_argument("--seconds", type=float, default=60.0)

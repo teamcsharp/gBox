@@ -267,6 +267,9 @@ def test_a_wedged_character_is_recovered_a_bounded_number_of_times_then_fixtured
     box = automaton(world, workdir, watchdog=B.Watchdog(stall_s=2.0, max_recoveries=2),
                     bounds=B.Bounds(max_recoveries=2, max_objective_ticks=60))
     ticks = box.run_for(120.0)
+    recoveries = [action for action in world.actions if "watchdog recovery" in action.reason]
+    assert recoveries and all(action.kind == "hold" for action in recoveries), \
+        "the escape must be a hold: 40 taps moved 0.0 units in a corner where one 0.45 s hold moved 33"
 
     assert box.stopped, "a wedge must end in a reported failure, not a silent loop"
     assert box.watchdog.stalls >= 1
@@ -290,7 +293,7 @@ class DriftingWorld(FakeWorld):
         super().act(action, deadline)
         self.side = -self.side
         self.pos[0] += 4.0 * self.side
-        self.pos[1] += 2.0
+        self.pos[1] += 6.0          # always away from the origin, so the (0,0) target is never closed
 
 
 class _FixedWalk:
@@ -312,7 +315,7 @@ class _FixedWalk:
 def test_a_walk_that_moves_without_closing_escalates(workdir):
     clock = FakeClock()
     world = DriftingWorld(clock)
-    box = automaton(world, workdir, policy=_FixedWalk((500.0, 500.0)),
+    box = automaton(world, workdir, policy=_FixedWalk((0.0, 0.0)),
                     bounds=B.Bounds(max_no_close_ticks=10))
     box.run_for(60.0)
 
@@ -537,6 +540,51 @@ def test_a_door_is_walked_through_and_the_room_change_is_the_progress(workdir):
     assert any(entry["kind"] == "tick" and entry["delta"]["room"] == [1, 2] for entry in _entries(box))
     presses = [action for action in world.actions if action.kind == "press"]
     assert presses == [], "a door is not an A-press interaction"
+
+
+class StraightRouter:
+    """A router that places a waypoint every 5 units along the line: enough to exercise following and re-planning."""
+
+    def __init__(self, *, offset=0.0):
+        self.calls = []
+        self.offset = offset
+
+    def route(self, start, goal):
+        self.calls.append((tuple(start), tuple(goal)))
+        dx, dz = goal[0] - start[0], goal[1] - start[1]
+        length = math.hypot(dx, dz)
+        steps = max(2, int(length / 5.0))
+        return [(start[0] + dx * i / steps + self.offset, start[1] + dz * i / steps) for i in range(1, steps + 1)]
+
+
+def test_a_routed_policy_follows_waypoints_instead_of_a_straight_line(workdir):
+    clock = FakeClock()
+    world = FakeWorld(clock, mode="vector")
+    router = StraightRouter()
+    box = automaton(world, workdir, policy=B.RoutedPolicy(_FixedWalk((80.0, 0.0)), router, arrive=6.0),
+                    motion=B.VectorMotion(arrive=6.0, primitive="tap"),
+                    bounds=B.Bounds(max_objective_ticks=400))
+    box.run_for(40.0)
+
+    assert router.calls, "the policy must ask the router for a route"
+    assert math.hypot(80.0 - world.pos[0], world.pos[1]) <= 12.0, \
+        f"the follower should reach the goal (at {world.pos[0]:.0f},{world.pos[1]:.0f})"
+
+
+def test_a_blocked_leg_is_replanned_rather_than_pushed(workdir):
+    clock = FakeClock()
+    world = FakeWorld(clock, mode="vector")
+    router = StraightRouter()
+    follower = B.RouteFollower(router, arrive=6.0, replan_after=2)
+    player = {"x": 0.0, "z": 0.0}
+    follower.waypoint(player, (60.0, 0.0))
+    assert follower.plans == 1
+    follower.note_progress(False)
+    follower.note_progress(False)
+    assert follower.stalls >= 2, "the follower must notice that it is not closing"
+    follower.replan(player)
+    assert follower.plans == 2, "a blocked leg must produce a new route, not a longer push"
+    assert len(router.calls) == 2
 
 
 def test_motion_can_use_the_calibrated_tap_primitive_and_never_holds_a_key(workdir):

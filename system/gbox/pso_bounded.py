@@ -65,6 +65,7 @@ class Bounds:
     hard_progress_s: float = 300.0      # no room/HP/flag progress for this long is a failure, not a slow room
     max_objective_ticks: int = 150      # ticks one objective may consume without progress before escalating
     max_no_close_ticks: int = 40        # ticks a point objective may spend without getting measurably closer
+    max_escapes: int = 3                # hold-based escapes tried before a no-close failure is reported
     max_switch_attempts: int = 3        # presses of one switch with no flag change before it is a reported failure
 
 
@@ -240,16 +241,18 @@ class Watchdog:
     def recovery(self) -> Action:
         """One bounded recovery action, rotating. Never a nested unstick routine.
 
-        A tap: one job, self-releasing, ~8 units on this control plane (measured). A hold would be one more job whose
-        real duration depends on release latency, which is exactly the non-determinism the recovery is trying to
-        escape.
+        A **hold**, not a tap, and the difference is measured: in the city corner at (349.6, -45.0) forty taps of
+        every direction changed the position by 0.0 over three minutes, and a single 0.45 s hold of `left` moved the
+        character 33 units out of it. A hold's distance depends on release latency (~35 units because the release job
+        lands a second late), which is a defect for *movement* but exactly what an escape wants: a large, immediate
+        displacement out of whatever geometry the small steps cannot leave.
         """
         plan = (("down", "reverse out of the obstruction"),
                 ("left", "strafe away and probe"),
                 ("right", "strafe the other way and probe"),
                 ("up", "advance again after the sidestep"))
         key, why = plan[min(self.recoveries, len(plan)) - 1]
-        return press(key, f"watchdog recovery {self.recoveries}/{self.max_recoveries}: {why}")
+        return hold(key, 0.45, f"watchdog recovery {self.recoveries}/{self.max_recoveries}: {why}")
 
     def exhausted(self) -> bool:
         return self.recoveries > self.max_recoveries
@@ -364,6 +367,100 @@ class RelativeTapMotion:
 def _bearing_degrees(a: tuple, b: tuple) -> float:
     """Signed angle from `a` to `b` in the heading convention (0 = +z, 90 = +x): + is clockwise, i.e. right."""
     return ((math.degrees(math.atan2(b[0], b[1])) - math.degrees(math.atan2(a[0], a[1])) + 540.0) % 360.0) - 180.0
+
+
+class RouteFollower:
+    """Advance along a router's waypoints toward a goal, and re-plan when the current leg does not yield.
+
+    The city walk needed this: the plaza railing sits between the lobby and the warp door, and a point-to-point tap
+    controller bounces against it (measured: 95 taps between (105,154) and (131,160)). The decoded collision grid has
+    a 60-waypoint route between the same two points, so the controller follows the route instead of the straight line.
+    """
+
+    def __init__(self, router, *, arrive: float = 6.0, replan_after: int = 4) -> None:
+        self.router = router
+        self.arrive = float(arrive)
+        self.replan_after = int(replan_after)
+        self.route = None
+        self.index = 0
+        self.goal = None
+        self.plans = 0
+        self.stalls = 0
+
+    def waypoint(self, player: dict, goal: tuple):
+        """The point to walk toward now: the next unreached waypoint, or None when the goal itself is reached."""
+        position = (float(player.get("x") or 0), float(player.get("z") or 0))
+        if self.route is None or tuple(goal) != self.goal:
+            self._plan(position, goal)
+        if not self.route:
+            return tuple(goal)
+        # Advance when the waypoint is reached. A projection test ("already past it") was tried and is wrong: it
+        # consumes waypoints while the character is far off to the side, and the route then ends wherever it drifted
+        # (measured: a 60-waypoint route consumed while the character ended 118 units from the door). The arrival
+        # radius is larger than one tap so a single 8-unit step lands inside it.
+        while self.index < len(self.route) - 1 and math.dist(position, self.route[self.index]) <= self.arrive:
+            self.index += 1
+        if math.dist(position, tuple(goal)) <= self.arrive:
+            return None
+        return self.route[self.index]
+
+    def note_progress(self, progressed: bool) -> None:
+        if progressed:
+            self.stalls = 0
+            return
+        self.stalls += 1
+
+    def replan(self, player: dict) -> None:
+        """Called when a leg keeps failing: route again from where the character actually is."""
+        position = (float(player.get("x") or 0), float(player.get("z") or 0))
+        self._plan(position, self.goal or position, skip_first=True)
+
+    def _plan(self, position: tuple, goal: tuple, skip_first: bool = False) -> None:
+        try:
+            route = self.router.route(position, goal) or []
+        except Exception:                                    # noqa: BLE001 - a map is an aid, never a dependency
+            route = []
+        if skip_first and len(route) > 1:
+            route = route[1:]                                # the leg that just failed: start past it
+        self.route = [tuple(point) for point in route]
+        self.index = 0
+        self.goal = tuple(goal)
+        self.plans += 1
+        self.stalls = 0
+
+
+class RoutedPolicy:
+    """Wrap a policy so point objectives are pursued along the router's waypoints instead of in a straight line."""
+
+    POINT_KINDS = ("walk", "door", "warp", "switch", "container")
+
+    def __init__(self, base, router, *, arrive: float = 6.0) -> None:
+        self.base = base
+        self.follower = RouteFollower(router, arrive=arrive)
+
+    def choose(self, snap: dict, now: float, *, pressed=None, avoid=None):
+        objective = self.base.choose(snap, now, pressed=pressed, avoid=avoid)
+        if objective is None or objective.kind not in self.POINT_KINDS:
+            return objective
+        player = snap.get("player") or {}
+        if self.follower.stalls >= self.follower.replan_after:
+            # Several ticks without closing on this waypoint: it is blocked, so route around it from the current cell
+            # instead of pushing against it until the no-close budget ends the run.
+            self.follower.replan(player)
+        point = self.follower.waypoint(player, objective.point)
+        if point is None:
+            return objective                                 # the goal itself is reached
+        distance = math.hypot(float(player.get("x") or 0) - point[0], float(player.get("z") or 0) - point[1])
+        return Objective(objective.rank, objective.kind, point, distance, objective.cls, objective.ptr,
+                         objective.hp, objective.why)
+
+    def note(self, kind: str, progressed: bool) -> None:
+        self.base.note(kind, progressed)
+        self.follower.note_progress(progressed)
+
+    def progress_token(self) -> int:
+        """A re-plan is a new attempt: the no-close budget must start again rather than end the run mid-route."""
+        return self.follower.plans
 
 
 @dataclass
@@ -913,6 +1010,7 @@ class Automaton:
         self.objective_since = 0
         self.best_distance = None
         self.no_close = 0
+        self.escapes = 0
 
     # -- public -----------------------------------------------------------------------------------------------------
     def run_for(self, seconds: float) -> list:
@@ -957,6 +1055,12 @@ class Automaton:
         action = self._plan(objective, before, started)
         if action is None:
             action = WAIT if objective is not None else self._explore(player, started)
+        if objective is not None and self.no_close >= max(8, self.bounds.max_no_close_ticks // 3) \
+                and self.escapes < self.bounds.max_escapes:
+            # Moving but not closing: taps are the wrong size for this pocket. Try a hold before reporting failure.
+            action = self._escape()
+            self.no_close = 0
+            self.escapes += 1
         action = action.clipped(self.bounds)
 
         press_tick = objective is not None and objective.kind == "switch" and action.kind == "press"
@@ -1110,6 +1214,17 @@ class Automaton:
         player = self._player(after)
         if not player:
             return ""
+        token = None
+        getter = getattr(self.policy, "progress_token", None)
+        if callable(getter):
+            try:
+                token = getter()
+            except Exception:                              # noqa: BLE001 - a policy hook must never stop the loop
+                token = None
+        if token is not None and token != getattr(self, "_progress_token", None):
+            self._progress_token = token
+            self.best_distance = None
+            self.no_close = 0
         distance = math.hypot(float(player.get("x") or 0) - objective.point[0],
                               float(player.get("z") or 0) - objective.point[1])
         if self.best_distance is None or distance < self.best_distance - 1.0:
@@ -1118,9 +1233,25 @@ class Automaton:
             return ""
         self.no_close += 1
         if self.no_close > self.bounds.max_no_close_ticks:
-            return (f"{objective.kind} {objective.cls or objective.ptr} not closed for {self.no_close} ticks "
-                    f"(still {distance:.0f} units away); the character is moving without approaching it")
+            if self.escapes < self.bounds.max_escapes:
+                self.no_close = 0
+                return ""                                # the escape in tick() gets another budget
+            return (f"{objective.kind} {objective.cls or objective.ptr} not closed for {self.no_close} ticks after "
+                    f"{self.escapes} hold escapes (still {distance:.0f} units away); the character is moving without "
+                    f"approaching it")
         return ""
+
+    def _escape(self) -> Action:
+        """A hold in a rotating direction, used when the character moves but cannot close on the objective.
+
+        Measured: taps move ~8 units and a hold moves ~33, and pockets that swallow taps do not swallow holds. The
+        no-close budget therefore tries escapes before it reports a failure - three of them, each mirrored in the
+        ledger, and only then the fixture.
+        """
+        plan = ("down", "left", "right", "up")
+        key = plan[self.escapes % len(plan)]
+        return hold(key, 0.45, f"escape {self.escapes + 1}/{self.bounds.max_escapes}: hold {key} out of a pocket "
+                               f"that swallowed {self.bounds.max_no_close_ticks} taps")
 
     def _budget(self, objective: Objective, progressed: bool) -> str:
         """One objective may not consume the session: bounded attempts, then a fixture instead of a loop."""
@@ -1206,6 +1337,7 @@ class Automaton:
     def stats(self) -> dict:
         return {"ticks": self.ticks, "actions": self.actions, "overruns": self.overruns,
                 "stalls": self.watchdog.stalls, "recoveries": self.watchdog.recoveries,
+                "escapes": self.escapes, "no_close": self.no_close,
                 "progress_kind": self.watchdog.progress_kind,
                 "progress_age": round(self.watchdog.progress_age(self.clock.now()), 1),
                 "combos": {"attempts": self.combat.attempts, "hits": self.combat.hits,
