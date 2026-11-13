@@ -158,12 +158,26 @@
       setInfiniteAmmo:(sid,enabled)=>{if(typeof enabled!=='boolean')return Promise.reject(Error('Infinite ammo needs an explicit on/off value.'));return send(sid,'set_infinite_ammo',{enabled});},
       poll, dispose() { dead=true; if(timer)cancel(timer); pending.clear(); }};
   }
-  function bindFirstAid(button,{api,firstAid,sid,enabled=()=>true,
+  const compactIcons={
+    first_aid_now:'<rect x="5" y="5" width="14" height="16" rx="3"/><path d="M9 5V2h6v3M12 9v8M8 13h8"/>',
+    proximity_mine_drop:'<path d="M12 2v7m-3-3 3 3 3-3M5 19h14M7 16h10l2 3v2H5v-2z"/>',
+    proximity_mine_ring:'<circle cx="12" cy="12" r="2"/><path d="M7 5a9 9 0 0 1 10 0M20 10a9 9 0 0 1-3 9M7 19a9 9 0 0 1-3-9"/><circle cx="12" cy="3" r="1.5"/><circle cx="20.6" cy="9.2" r="1.5"/><circle cx="17.3" cy="19.3" r="1.5"/><circle cx="6.7" cy="19.3" r="1.5"/><circle cx="3.4" cy="9.2" r="1.5"/>',
+    detonate_mines:'<path d="m12 2 2 6 6-2-3 6 5 3-7 1-3 6-2-7-7-3 6-2z"/>',
+    flash:'<path d="m13 2-8 11h6l-1 9 9-13h-7z"/>',
+    hand:'<circle cx="12" cy="14" r="7"/><path d="M9 7V3h6v4m-1-4 4-1"/>',
+    incendiary:'<path d="M12 2c2 7 7 7 7 13a7 7 0 0 1-14 0c0-3 2-5 4-7 0 4 2 5 2 5s3-5 1-11Z"/>',
+    launcher:'<path d="m3 15 13-9 4 6-13 9zM5 15 2 11m13-3 3-2m1 4 3-2"/>',
+    shell1302:'<path d="m12 2 2 6 6-2-3 6 5 3-7 1-3 6-2-7-7-3 6-2z"/>',
+    shell1303:'<path d="M9 3h6m-5 0v7l-6 9a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2l-6-9V3M7 16h10"/>',
+    shell1304:'<path d="M12 2v20M3.3 7l17.4 10M3.3 17 20.7 7M9 4l3 3 3-3M9 20l3-3 3 3M3 10l4-1-1-4M21 14l-4 1 1 4M6 19l1-4-4-1M18 5l-1 4 4 1"/>'
+  };
+  function compactIcon(kind){return '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">'+(compactIcons[kind]||compactIcons.launcher)+'</svg>';}
+  function bindFirstAid(button,{api,firstAid,sid,enabled=()=>true,iconOnly=false,
       schedule=(fn,ms)=>root.setTimeout(fn,ms),cancel=id=>root.clearTimeout(id),
       operation='first_aid_now',label='First aid',description='Use a first aid spray',supported=()=>true}={}) {
     let dead=false,busy=false,timer=null,last='',bound=null,available=false;
     const selected=()=>typeof sid==='function'?sid():sid;
-    function paint(){button.textContent=label;button.disabled=busy||!available||!enabled();
+    function paint(){if(iconOnly)button.innerHTML=compactIcon(operation);else button.textContent=label;button.disabled=busy||!available||!enabled();
       button.title=last||description;button.setAttribute('aria-label',description);}
     async function poll(){timer=null;const session=selected();if(dead)return;
       if(session!==bound){bound=session;available=false;last='';paint();}
@@ -181,7 +195,7 @@
   function bindProximityMine(button,{ring=false,action,...options}={}) {
     return bindFirstAid(button,{...options,firstAid:action,
       operation:ring?'proximity_mine_ring':'proximity_mine_drop',label:ring?'Mine ring · 5 ft':'Drop mine',
-      description:ring?'Place eight RE5 proximity mines in a circle five feet away':'Drop an RE5 proximity mine without changing weapons',
+      description:ring?'Place five RE5 proximity mines in a circle five feet away':'Drop an RE5 proximity mine without changing weapons',
       supported:report=>report.options?.proximity_mines?.available===true});
   }
   function bindMineDetonate(button,{action,...options}={}) {
@@ -252,7 +266,7 @@
   const ringIcon='<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><circle cx="12" cy="12" r="8"/><circle cx="12" cy="12" r="1.6" fill="currentColor" stroke="none"/><circle cx="12" cy="3.5" r="1.4" fill="currentColor" stroke="none"/><circle cx="20.5" cy="12" r="1.4" fill="currentColor" stroke="none"/><circle cx="12" cy="20.5" r="1.4" fill="currentColor" stroke="none"/><circle cx="3.5" cy="12" r="1.4" fill="currentColor" stroke="none"/></svg>';
   // ringButton fires the ring with the chosen kind; kindButton opens a small chooser (flash preselected, the
   // unverified types disabled). The chosen kind is remembered per viewer like the flash shortcut.
-  function bindRing(ringButton,{ring,api,sid,enabled=()=>true,storage,kindButton}={}){
+  function bindRing(ringButton,{ring,api,sid,enabled=()=>true,storage,kindButton,iconOnly=false}={}){
     const doc=ringButton.ownerDocument,win=doc.defaultView;
     if(storage===undefined)try{storage=win.localStorage;}catch{}
     let choices=ringKindOptions(null),kind=readRingKind(storage),menu=null,dead=false,last='',sequence=0,readSequence=0;
@@ -279,7 +293,7 @@
     function paint(){
       ringButton.title=`Grenade ring (${ringKindLabel(kind)}): native blasts around the player.${last?'\n'+last:''}`;
       ringButton.setAttribute('aria-label',`Grenade ring (${ringKindLabel(kind)})`);
-      if(kindButton){kindButton.textContent=ringKindLabel(kind);kindButton.title='Choose the grenade type for the ring';
+      if(kindButton){if(iconOnly)kindButton.innerHTML=compactIcon(kind==='mine'?'detonate_mines':kind);else kindButton.textContent=ringKindLabel(kind);kindButton.title=`Choose the grenade type for the ring (${ringKindLabel(kind)})`;
         kindButton.setAttribute('aria-label',`Grenade ring type: ${ringKindLabel(kind)}`);}
     }
     function receipt(text,row){if(dead || (row?.sid && row.sid!==selected()))return;last=text;ringButton.dataset.ringState=row?.state||'unavailable';paint();}
