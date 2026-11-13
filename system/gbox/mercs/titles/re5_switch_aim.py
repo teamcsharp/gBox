@@ -24,6 +24,8 @@ import math
 import struct
 import time
 
+from . import re5_switch_pose as posed
+
 CTRL_VT, QFPS_VT = 0x1ACB410, 0x1ACBCF0
 CTRL_PLAYER, CTRL_ACTIVE, CTRL_QFPS = 0x130, 0x198, 0xDB0
 QF_PITCH = 0x1B0
@@ -315,6 +317,9 @@ def refresh_target(m, snap, target):
                      motion=m.rd(e + R.E_MOTION, 1)[0], **{'class': R.enemy_class(m, e)})
         if hp <= 0 or ehp <= 0 or not all(math.isfinite(v) for v in (*pose, *foot)):
             raise ValueError('selected body is dead or unreadable')
+        # Every selected-target read replaces the previous pose, including an
+        # unavailable result. Never carry a lying body's geometry into a new life.
+        enemy['aim_pose'] = posed.read(m, enemy)
         inventory = R.inventory(m, p)
         held = next((s for s in inventory if s.get('hand')), None)
         old_held = next((s for s in snap.get('inventory') or () if s.get('hand')), {})
@@ -391,6 +396,7 @@ def apply(bot, snap, act, now):
                      target_feedback_target=None, target_feedback_yaw_deg=None,
                      target_feedback_pitch_deg=None, target_feedback_block_why=None,
                      target_feedback_refresh_ms=None, target_feedback_refresh_error=None,
+                     target_feedback_pose=None,
                      target_feedback_dt_ms=0.)
     previous, previous_context = getattr(bot, '_feedback_at', None), getattr(bot, '_feedback_context', None)
     # Only an accepted correction below can keep the next interval alive.
@@ -447,13 +453,26 @@ def apply(bot, snap, act, now):
     px, py, pz = p['pos']
     foot = target['pos']
     dist = math.hypot(foot[0] - px, foot[2] - pz)
+    pose = target.get('aim_pose')
+    if pose and (pose.get('owner') != target.get('ptr') or pose.get('generation') != target.get('generation')):
+        pose = None
     aim_h = bot._aim_h(target, dist, now)
-    chest = (foot[0], foot[1] + aim_h, foot[2])
+    chest = posed.aim_point(pose, aim_h, R.body(target)) if pose else (foot[0], foot[1] + aim_h, foot[2])
+    if pose:
+        aim_h = chest[1]-foot[1]
+    native_point = chest if pose else None
+    endpoint = lambda point: posed.dot_on(point, pose) if pose else R.dot_on(point, foot, R.body(target))
+    if pose:
+        bot.stats['target_feedback_pose'] = {'source': 'native joints', 'action': pose.get('action'),
+            'point': list(chest), 'height_cm': round(aim_h, 2)}
     physical = chest
     bot._ab_physical = None
     book = getattr(bot, '_aim_book_point', None)       # the aim book's point on him (re5_switch AIM_BOOK)
     if callable(book):
-        chest = book(target, chest, aim_h, (px, py + R.MUZZLE_H, pz), now)
+        if pose:
+            chest = book(target, chest, aim_h, (px, py + R.MUZZLE_H, pz), now, posed=True)
+        else:
+            chest = book(target, chest, aim_h, (px, py + R.MUZZLE_H, pz), now)
         physical_plan = getattr(bot, '_ab_physical', None)
         if physical_plan and physical_plan[0] == target.get('ptr', target.get('slot')):
             physical = physical_plan[1]
@@ -515,11 +534,12 @@ def apply(bot, snap, act, now):
         bot._feedback_at, bot._feedback_context = sample_time, context
     # The write above is an intention. Only this snapshot's actual aim can
     # authorize fire; it must be observed aligned on a later sample.
-    body_contact = bool(valid_ray and bot._crowd_hit(origin, dot, foot, False))
+    body_contact = bool(valid_ray and (posed.contact(origin, dot, pose) if pose
+                                      else bot._crowd_hit(origin, dot, foot, False)))
     # The aim book's gate (re5_switch AIM_BOOK_GATE): a line that only grazes him - through his knees or over his head,
     # the close-range misses of 2026-11-10 - is no contact; the laser's dot on him always is.
     gate = getattr(bot, '_aim_book_contact', None)
-    if body_contact and callable(gate) and not R.dot_on(dot, foot, R.body(target))             and gate(target, origin, dot) is False:
+    if body_contact and not pose and callable(gate) and not endpoint(dot) and gate(target, origin, dot) is False:
         body_contact = False
         bot.stats['aimbook_gate_edge_holds'] = bot.stats.get('aimbook_gate_edge_holds', 0) + 1
     # Operator critique 2026-11-10 (moment e868adee806d44ce): up close the ray can graze a body segment (hip/legs) while
@@ -527,7 +547,7 @@ def apply(bot, snap, act, now):
     # no damage, while the crowd closed in. A grazing segment (the dot not on him) within SEGMENT_PITCH_DIST_CM with
     # the pitch error beyond SEGMENT_PITCH_MAX is not contact: hold fire and keep correcting instead of wasting pulls.
     if (body_contact and valid_ray and spec.family != 'shotgun' and dist <= SEGMENT_PITCH_DIST_CM
-            and abs(pitch_error) > SEGMENT_PITCH_MAX and not R.dot_on(dot, foot, R.body(target))):
+            and abs(pitch_error) > SEGMENT_PITCH_MAX and not endpoint(dot)):
         # BOUNDED. The hold was added for a good reason (operator, 2026-11-10: ~15 magnum pulls in 3 s at a wall while
         # the camera was 13-18 deg off the chest), but it had no time limit, so when the pitch does not converge the
         # trigger is withheld for the whole round. Measured live 2026-11-12: doing=aim, act=['rleft','zl'],
@@ -545,17 +565,18 @@ def apply(bot, snap, act, now):
     else:
         bot.__dict__['_pitch_hold_since'] = None
     spread_contact = bool(valid_ray and not body_contact and spec.family == 'shotgun'
-                          and bot._crowd_hit(origin, dot, foot, True))
+                          and (posed.spread(origin, dot, pose, R.CROWD_CONE, R.WALL_SLACK) if pose
+                               else bot._crowd_hit(origin, dot, foot, True)))
     # Weapon mastery (operator 2026-11-09): a shotgun point blank into the crowd - within SHOTGUN_POINT_BLANK_CM, the
     # aim inside POINT_BLANK_YAW / _PITCH of him and the ray not stopped short on geometry (it ends on another body or
     # runs on past him) - is contact: the spread does the rest at that range.
     short = bool(valid_ray and math.dist(origin, dot) < math.dist(origin, chest) - R.WALL_SLACK
-                 and not any(R.dot_on(dot, e['pos'], R.body(e)) for e in candidates))
+                 and not any(endpoint(dot) if e is target else R.dot_on(dot, e['pos'], R.body(e)) for e in candidates))
     bot._ab_los = (target.get('ptr', target.get('slot')), (not short) if valid_ray else None)   # the aim book's line of sight
-    point_blank = bool(valid_ray and not body_contact and not spread_contact and spec.family == 'shotgun'
+    point_blank = bool(not pose and valid_ray and not body_contact and not spread_contact and spec.family == 'shotgun'
                        and dist <= SHOTGUN_POINT_BLANK_CM and not short
                        and abs(yaw_error) <= POINT_BLANK_YAW and abs(pitch_error) <= POINT_BLANK_PITCH)
-    contact_kind = ('body endpoint' if body_contact and R.dot_on(dot, foot) else
+    contact_kind = ('body endpoint' if body_contact and endpoint(dot) else
                     'body segment' if body_contact else 'shotgun spread' if spread_contact else
                     'shotgun point blank' if point_blank else '')
     on = bool(p.get('motion') in (R.MOTION_AIMED, R.MOTION_SHOT) and (body_contact or spread_contact or point_blank))
@@ -661,7 +682,8 @@ def apply(bot, snap, act, now):
                           yaw_err=yaw_error, pitch_err=pitch_error, foot=tuple(foot),
                           origin=tuple(feedback_origin) if feedback_origin is not None else None,
                           dot=tuple(feedback_dot) if feedback_dot is not None else None,
-                          where=R.dot_on(feedback_dot, foot) if feedback_dot is not None else None,
+                          where=endpoint(feedback_dot) if feedback_dot is not None else None,
+                          posed_point=native_point,
                           laserless=not (valid_ray or recoil),
                           contact_kind=accepted_kind, ray_observed=valid_ray and not recoil,
                           camera_ray_residual=calibration,

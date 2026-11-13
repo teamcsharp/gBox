@@ -4611,6 +4611,10 @@ class Bot:
         return self._majini_near(p, snap, DOOR_GRAB_R) or self._majini_near(p, snap, DOOR_HOLD_R, self._winding)
 
     def _prompt_wanted(self, kind, p, snap) -> bool:
+        if kind in ("door", "traverse"):
+            from .re5_movement_safety import prompt_allowed
+            if not prompt_allowed(self, snap, self.clock(), kind=kind):
+                return False
         if kind in ("enemy", "dying", "bonus"):
             return True
         if kind == "pickup":
@@ -5872,9 +5876,13 @@ class Bot:
         self._dead_ends = tuning.dead_ends(MAP_ID)       # the stage's learned dead ends, before this round's own
         # the learned occupancy-grid navigator (re5_switch_nav): seeded from the trail and walls each tick
         stage_name = STAGE_KEY.format(stage or "unknown")
-        if getattr(self, "_nav", None) is None or self._nav.grid.stage != stage_name:
+        nav = getattr(self, "_nav", None)
+        # Menu identity may arrive after the measured mesh. Never replace its
+        # persistent grid with an unverified stage-name navigator.
+        if nav is None or (not nav.grid.identity and nav.grid.stage != stage_name):
             from .re5_switch_nav import Navigator
-            self._nav = Navigator(stage_name, learn_dir=self._learn_dir)
+            self._nav = Navigator(stage_name)
+            self._navigation_scope = None
 
     def _stage_sync(self) -> None:
         """The round's stage learned after its first tick (the navigation signature reads a moment later, or corrects a
@@ -5932,7 +5940,7 @@ class Bot:
         spec = _w.WEAPONS.get(self._item)
         return spec.family if spec is not None else "gun"
 
-    def _aim_book_point(self, tgt, chest, aim_h, origin, now) -> tuple:
+    def _aim_book_point(self, tgt, chest, aim_h, origin, now, *, posed=False) -> tuple:
         """The point re5_switch_aim.apply steers the laser onto: his chest (as the bot chose it) moved by the book's
         body point - only where the bot aims at his plain chest (a special's site, the dynamite, K's learned height keep
         their own) - his lead and the angular correction. Kept for the pull's record (_aim_book_shot)."""
@@ -5940,7 +5948,9 @@ class Bot:
             return chest
         try:
             b = body(tgt)
-            plain = abs(aim_h - b.chest) < 1.0 or abs(aim_h - CHEST_H) < 1.0
+            # Posed native joints already locate the real body. Keep learned
+            # lead/camera compensation without restoring a standing-height aim.
+            plain = not posed and (abs(aim_h - b.chest) < 1.0 or abs(aim_h - CHEST_H) < 1.0)
             plan = self._aim_core().plan(tgt, origin, self._aim_family(), now, body=b)
             if plan is None:
                 return chest
@@ -6500,6 +6510,10 @@ class Bot:
         act = self._shot_tail(act, snap, now)
         act = self._native_equipment(act, snap)
         act = self._special("post", act, snap, now) or act  # the stagger shot's site, the specials line in the why
+        from .re5_native_mine_escape import guard as native_mine_escape_guard
+        act = native_mine_escape_guard(self, act, snap, now)
+        from .re5_movement_safety import guard as stage_hazard_guard
+        act = stage_hazard_guard(self, act, snap, now)  # final veto, after every movement rewrite
         self.stats.update(combat_action=self.doing, combat_reason=self.why,
                           combat_hold=','.join(act.get('hold') or ()))
         from . import re5_switch_wall
@@ -6781,6 +6795,14 @@ class Bot:
         rows = [row for row in snap.get('inventory') or () if row.get('grid') == grids[0]]
         if len(rows) != 1 or rows[0].get('id') not in SUPPORTED_IDS:
             return act  # healing items have a separate, unverified lifecycle
+        if getattr(self.mines, '_native_escape', None) is not None:
+            # Do not start a new attachment while a planted mine requires us
+            # to move. An already-running native transaction still completes.
+            self.stats['native_equip_deferred_for_escape'] = self.stats.get('native_equip_deferred_for_escape', 0) + 1
+            result = dict(act, hold=tuple(k for k in act.get('hold', ()) if k not in QUICK.values()))
+            if result.get('tap') in QUICK.values():
+                result.pop('tap')
+            return result
         res = self.native_equip.select(grids[0], rows[0]['id']) or {}
         # A native request that cannot finish hands the slot back to the D-pad tap: one unconfirmed request made every
         # later one of that gun this life "previous_request_unconfirmed", and the swallowed tap left him standing with
@@ -6797,6 +6819,8 @@ class Bot:
     def _tick(self, snap: dict, now: float) -> dict:
         p = snap.get("player")
         self._mesh = snap.get("nav")                       # the stage's own nav mesh this tick (None: not read)
+        from .re5_switch_nav import sync_geometry
+        sync_geometry(self, self._mesh)
         if not p:
             self._gun_down()
             return {"hold": ()}
@@ -6981,7 +7005,7 @@ class Bot:
                 self.escape = None
                 self._gun_down()
                 self.doing, self.why = "mine", str(self.stats.get("mine_status") or "")
-                act = self._mine_route(p, act, now)
+                act = self._mine_route(p, act, now, snap)
             else:
                 throwing = UNIVERSAL_CORE and THROWS and (act := self._throw_core(p, snap, live, flat, now)) is not None
                 if throwing:
@@ -7048,7 +7072,7 @@ class Bot:
         self._gun_down()
         self.stats['reactive_escape_requests'] = self.stats.get('reactive_escape_requests', 0) + 1
 
-    def _mine_route(self, p, act, now) -> dict:
+    def _mine_route(self, p, act, now, snap=None) -> dict:
         """The mine controller's run out (its retreat, its guard) picks a heading by the widest gap among the Majini;
         in a corridor that is a wall. With the mesh read, the run follows the mesh's own retreat route instead: floor
         all the way, never toward the bomb, to the standoff. stats mine_mesh_retreats."""
@@ -7066,10 +7090,13 @@ class Bot:
         if r["key"] != key or now - r["at"] >= MESH_REPLAN_S:
             r["key"], r["at"] = key, now
             try:
-                distance = getattr(m, 'native_retreat_distance', re5_switch_mines.RETREAT_CM) \
-                    if m._native_escape is not None else re5_switch_mines.RETREAT_CM
-                pts = mesh.retreat((px, py, pz), tuple(hazard[:3]), min_distance=distance,
-                                   max_travel=2.5 * distance)
+                if m._native_escape is not None:
+                    from .re5_native_mine_escape import route as all_mines_route
+                    pts = all_mines_route(self, snap or {'nav':mesh, 'player':p}, (px,py,pz))
+                else:
+                    distance = re5_switch_mines.RETREAT_CM
+                    pts = mesh.retreat((px, py, pz), tuple(hazard[:3]), min_distance=distance,
+                                       max_travel=2.5 * distance)
             except Exception as exc:                         # noqa: BLE001
                 self.stats["nav_error"] = f"mesh retreat {type(exc).__name__}: {exc}"[:120]
                 pts = None
@@ -7318,7 +7345,9 @@ class Bot:
         except Exception:                                    # noqa: BLE001 - (a mesh without floors: his own height)
             end = (x, pos[1], z)
         try:
-            return bool(mesh.floor_segment(tuple(pos), end))
+            from .re5_stage_hazards import blocked_segment
+            return (blocked_segment(mesh, tuple(pos), end, departing=True) is None
+                    and bool(mesh.floor_segment(tuple(pos), end)))
         except Exception:                                    # noqa: BLE001 - the mesh never costs a tick
             return False
 
@@ -7359,8 +7388,12 @@ class Bot:
             avoid = tuple(self._mesh_avoid(mesh, now))
             try:
                 kw = {"clearance": MESH_CORNER_CLEARANCE_CM} if MESH_CORNER_CLEARANCE_CM > 0 else {}
-                pts = mesh.route((px, py, pz), tuple(goal[:3]), avoid=avoid, **kw) if avoid \
-                    else mesh.route((px, py, pz), tuple(goal[:3]), **kw)
+                from . import re5_stage_hazards
+                if re5_stage_hazards.for_mesh(mesh):
+                    pts = re5_stage_hazards.route(mesh, (px, py, pz), tuple(goal[:3]), avoid=avoid, **kw)
+                else:
+                    pts = mesh.route((px, py, pz), tuple(goal[:3]), avoid=avoid, **kw) if avoid \
+                        else mesh.route((px, py, pz), tuple(goal[:3]), **kw)
             except TypeError:                                # an older re5_nav without clearance (a partial reload)
                 pts = mesh.route((px, py, pz), tuple(goal[:3]), avoid=avoid) if avoid \
                     else mesh.route((px, py, pz), tuple(goal[:3]))
@@ -7386,6 +7419,12 @@ class Bot:
                 if free:
                     self.stats["mesh_no_exit"] = self.stats.get("mesh_no_exit", 0) + 1
         pts = r["pts"]
+        from .re5_stage_hazards import blocked_path, blocked_segment
+        if pts and blocked_path(mesh, p["pos"], pts, departing=True):
+            r.update(pts=None, at=-1e9)
+            self.stats["nav_status"] = "native stage hazard blocks this route; replan"
+            self._mesh_wp = None
+            return None
         while pts:
             q = pts[0]
             link = hasattr(q, "approach")
@@ -7432,7 +7471,8 @@ class Bot:
                 # the bus): then this one is still the way, until he is nearly on it
                 nxt = pts[1]
                 nxt_pt = nxt.approach if hasattr(nxt, "approach") else nxt
-                if not MESH_LOOKAHEAD or d <= MESH_WP_NEAR_CM or self._mesh_open(mesh, p["pos"], nxt_pt[0], nxt_pt[2]):
+                if blocked_segment(mesh, p["pos"], nxt_pt, departing=True) is None and (
+                        not MESH_LOOKAHEAD or d <= MESH_WP_NEAR_CM or self._mesh_open(mesh, p["pos"], nxt_pt[0], nxt_pt[2])):
                     pts.pop(0)
                     continue
                 self.stats["mesh_lookahead_holds"] = self.stats.get("mesh_lookahead_holds", 0) + 1
@@ -8897,7 +8937,8 @@ class Bot:
         return act
 
     def prompt_ok(self, button, snap, now) -> bool:
-        return True
+        from .re5_movement_safety import prompt_allowed
+        return prompt_allowed(self, snap, now)
 
     def save(self) -> None:
         if self.mines is not None:

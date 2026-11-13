@@ -75,6 +75,8 @@ def test_no_trail_known_back_the_way_he_came():
 
 def test_a_remembered_wall_is_not_pushed_again_on_that_heading():
     b, clock = bot()
+    from gbox.mercs.titles.re5_switch_nav import sync_geometry
+    sync_geometry(b, None)  # these observations belong to this run's current scope
     b.wall_memory(0.0, 0.0, 0.0)
     act = b.tick(snap(bonuses=[at(1500, 0)]))
     assert b.stats["wall_preempts"] == 1 and "lup" not in act["hold"] and "ldown" in act["hold"]

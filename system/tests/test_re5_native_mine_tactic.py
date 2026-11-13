@@ -61,6 +61,16 @@ def test_production_gate_never_uses_probe_override_or_legacy_fallback(monkeypatc
     assert not calls and flight.job is None
 
 
+def test_native_weapon_handover_defers_mine_allocation_until_movement_can_resume():
+    import time
+    mem,s,st,calls = memory(),scene(),stats(),[]
+    st['native_weapon_pending'] = {'player':PLAYER,'generation':1,'until':time.monotonic()+60}
+    flight = N.Flight(mem,run=lambda *a,**kw: calls.append(a))
+    assert not flight.submit(s,st,30,reason='hit',count=5,center=s['player']['pos'])
+    assert not calls and flight.job is None
+    assert 'handover' in st['native_mine_admission_pause']
+
+
 def test_native_api_uses_one_drop_expected_life_and_nonblocking_lock(monkeypatch):
     calls = []
     ctl = SimpleNamespace(proximity_mines=lambda **kw: calls.append(kw) or receipt())

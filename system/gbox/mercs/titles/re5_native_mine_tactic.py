@@ -187,8 +187,13 @@ class Flight:
         return rows
 
     def submit(self, snap, stats, now, *, reason='distance', count=1, center=None):
+        from ..primary_weapon import quiescing
         if type(count) is not int or count not in (1, 5) or center is not None and not position(center):
             return False
+        if quiescing(stats, snap):
+            stats['native_mine_admission_pause'] = 'native weapon handover prevents immediate escape'
+            return False
+        stats.pop('native_mine_admission_pause', None)
         center = tuple(center) if center is not None else None
         self.emergency = reason in ('hit', 'qte')
         self.observe(snap, stats)
@@ -211,6 +216,7 @@ class Flight:
                     and stats.get('round_evidence_id') == owner[0]
                     and not stats.get('round_evidence_closed') and not stats.get('operator_control')
                     and stats.get('automine_enabled', True)
+                    and not quiescing(stats, {'player': {'ptr': owner[1], 'generation': owner[2]}})
                     and stats.get('screen') in (None, 'playing'))
 
         def deployed(row):

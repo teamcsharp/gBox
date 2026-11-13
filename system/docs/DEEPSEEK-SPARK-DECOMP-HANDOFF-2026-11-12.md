@@ -1,5 +1,47 @@
 # DeepSeek takeover: RE4/5/6 MercMode, Spark decompilation and live replacement
 
+## Latest continuation: lethal stage hazards and actual body aim (2026-11-13)
+
+Codex continues the active implementation. Preserve these latest operator requests:
+
+- Never intentionally run into a stage hazard. The reported RE5 flame death is
+  corroborated by the native Missile Area `incineratorC` bounds: the player crossed
+  its boundary by 6.64 cm as HP fell from 1000 to zero. All three incinerators are
+  extracted from the owned s405 scene resource and bound to its exact geometry.
+  `re5_stage_hazards` excludes their volumes from routes; `re5_movement_safety`
+  vetoes final movement and locomotion prompts after combat/wall rewrites. Grab
+  QTEs remain available. Other titles/stages still need verified hazard catalogues.
+- Navigation memory must survive each run. The main RE5 loop now binds the existing
+  persistence helper to measured native geometry; menu-stage changes cannot erase
+  or relabel it. Unknown geometry is never saved under a guessed stage name.
+- Aim down at prone enemies. Live read-only evidence found a living downed Majini's
+  spine only 18.4 cm above its anchor while the old controller aimed 110 cm above it.
+  The selected-target reader now uses verified current joints, retaining head/knee
+  preferences and learned compensation. Creature layouts keep their existing profiles.
+- Functional RE5 mines are now live after the between-round d56ee2ac activation.
+  Village round1bdc96ce25874b29b9d2c6340b083d01 ended at35kills/17400points with
+  27 placed and15 observed native trigger latches. It did not achieve the rank goal.
+  The audit found HP342->1 at303.6cm from a triggering owned mine; native damage
+  ownership is not recorded, so this is strong temporal evidence, not proven attribution.
+  An escape incorrectly considered only its latest batch. The next revision considers
+  all observed/retained mines and gives validated departure the final movement priority.
+  It releases fire during a boosted-shot lock, then moves after that lock ends. New
+  equipment requests wait for escape; new automatic mines wait for a native handover.
+- "when a character climbs a ladder or drops down a ledge or does a climb operation
+  of jumps through a window. Leave a mine / remote bomb / do a nitrogen round ring"
+  is the newest requirement. Implement one life-scoped drop at a verified landing/exit,
+  with no interrupted climb or midair spawn. RE5/RE6 native action/landing detection
+  is being added next. RE4's radial mine spawn and nitrogen effect remain unverified;
+  do not represent grenade/flash effects as nitrogen.
+
+RE6 measured20ft single native drops are committed/pushed in24830e87, preserving
+the five-second deadline and actual bomb-census checks (107 focused tests).
+RE5 hazard/navigation tests passed121, pose tests182, and final integrated
+mine/hazard/equipment/flight tests171. Live acceptance of these new guards and posed
+aim remains pending deployment. Exact commands/evidence are in the research notes.
+No infinite health is introduced. All-title S/five-star performance, full rotating
+model coverage, complete extraction/decompilation and nitrogen360 remain open.
+
 ## Latest continuation: functional mines, escape and run objectives (2026-11-13)
 
 Codex remains the active implementer. This update supersedes conflicting older

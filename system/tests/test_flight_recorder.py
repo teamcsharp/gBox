@@ -2,6 +2,18 @@ import json
 from gbox.mercs.flight_recorder import FlightRecorder
 
 
+def test_stage_hazard_veto_retains_the_proposed_and_applied_movement():
+    f = FlightRecorder()
+    incident = {'mesh': 'verified', 'requested_hold': ['lup','b'], 'applied_hold': ['ldown'],
+                'hazard': {'name': 'incineratorC'}, 'pos': [1,2,3]}
+    f.observe(1., {}, {}, {'stage_hazard_last': incident, 'stage_hazard_blocks': 1})
+    incident['pos'][0] = 999
+    row = f.snapshot()['tail'][0]['diagnostics']
+    assert row['stage_hazard_last']['pos'] == [1,2,3]
+    assert row['stage_hazard_last']['requested_hold'] == ['lup','b']
+    assert row['stage_hazard_last']['applied_hold'] == ['ldown']
+
+
 def test_re5_camera_weapon_motion_and_aim_feedback_are_preserved():
     f = FlightRecorder()
     snap = {'player': {'motion': 26, 'pos': [0, 0, 0]}, 'mercenaries_phase': 1,

@@ -134,6 +134,21 @@ class Bridge:
     def select(self, grid, item): self.targets.append((grid, item))
 
 
+def test_new_equipment_request_waits_until_native_mine_escape_finishes():
+    from types import SimpleNamespace
+    bridge = Bridge()
+    bot = R.Bot(stats={}, equip=bridge)
+    bot.doing = 'rearm'
+    bot.mines = SimpleNamespace(_native_escape={'id': 'current'})
+    snap = {'mercenaries_phase': R.PHASE_PLAYING, 'player': {'hp':1000},
+            'inventory':[{'grid':1,'id':0x10b}]}
+    assert bot._native_equipment({'tap':'dup'},snap) == {'hold':()}
+    assert not bridge.targets
+    bot.mines._native_escape = None
+    bot._native_equipment({'tap':'dup'},snap)
+    assert bridge.targets == [(1,0x10b)]
+
+
 @pytest.mark.parametrize('kind,grid,doing,key', [(0x10b, 1, 'rearm', 'dup'), (0x119, 3, 'raise', 'dleft'),
                                              (0x108, 5, 'flashbang', 'dright'), (0x10a, 7, 'mine', 'ddown')])
 @pytest.mark.parametrize('held', [False, True])

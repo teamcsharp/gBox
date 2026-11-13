@@ -187,7 +187,12 @@ def test_bot_start_faces_open_ground():
     b, clock = bot()
     b._round_started = b._round_t0 = 0.0
     b._start_facing_done = False
-    nav = Navigator("StartBot")
+    # Bind this run's verified geometry before adding its observed wall memory.
+    from test_re5_navigation_binding import mesh
+    from gbox.mercs.titles.re5_switch_nav import sync_geometry
+    level = mesh(-500.)
+    sync_geometry(b, level)
+    nav = b._nav
     # wall to the east
     for z in range(-300, 400, 100):
         nav.grid.mark_wall(500, z)
@@ -197,6 +202,7 @@ def test_bot_start_faces_open_ground():
     b._nav = nav
     # bot starts facing east (into the wall)
     s = snap()
+    s['nav'] = level
     s["player"]["rot"] = math.pi / 2
     act = b.tick(s)
     # should be turning, not walking forward into the wall

@@ -761,7 +761,7 @@ class Mines:
         old = self._native_escape
         if old is None or old['id'] != request_id:
             self._native_escape = {'id': request_id, 'center': tuple(center),
-                'sites': dict(old['sites']) if old else {}, 'predicted': tuple(predicted),
+                'sites': dict(self.bombs) | (dict(old['sites']) if old else {}), 'predicted': tuple(predicted),
                 'pending': True, 'started': now, 'report_at': now, 'replan': 0}
         self.site = self._native_escape['center']
         self.state, self.t = 'retreat', now
@@ -909,16 +909,33 @@ class Mines:
             return self._clear(p, snap, live, now)  # an existing physical hazard still matters
         return self._native_tick(p, snap, live, now)
 
+    def native_sites(self, snap):
+        """All physical mines constrain departure, including earlier completed drops.
+
+        Receipt hazards survive a stale/unavailable census. Predicted ring points
+        exist only until the allocation receipt arrives; they never count as mines.
+        """
+        from .re5_native_mine_tactic import position
+        escape = self._native_escape or {}
+        sites = dict(escape.get('sites', {})) | self.bombs
+        for row in snap.get('ground_mines') or ():
+            if (isinstance(row, dict) and position(row.get('pos'))
+                    and row.get('active') is not False and row.get('trigger_observed') is not True):
+                sites[row.get('ptr', row.get('unit', ('observed', tuple(row['pos']))))] = tuple(row['pos'])
+        sites.update({('predicted', i): tuple(pos) for i, pos in enumerate(escape.get('predicted', ()))})
+        return {key: tuple(pos) for key, pos in sites.items() if position(pos)}
+
     def _native_tick(self, p, snap, live, now, *, busy=False):
         """A request never neutralizes the pad or enters an equip/placing animation."""
         from . import re5_native_mine_tactic as native
         flight = self.native
         escape = self._native_escape
         if escape is not None:
-            sites = list(escape['sites'].values()) + list(escape['predicted'])
+            sites = list(self.native_sites(snap).values())
             clearance = min((flat(p['pos'], site) for site in sites), default=math.inf)
             away = clearance >= RETREAT_CM and (bool(sites) or not escape['pending'])
             self.stats['native_mine_escape_clearance_cm'] = round(clearance, 1) if math.isfinite(clearance) else None
+            self.stats['native_mine_escape_hazards'] = len(sites)
             if away:
                 if sites:
                     self.stats['mine_retreats_completed'] += 1
