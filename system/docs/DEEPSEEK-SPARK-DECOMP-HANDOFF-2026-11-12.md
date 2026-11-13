@@ -1,5 +1,9 @@
 # DeepSeek takeover: RE4/5/6 MercMode, Spark decompilation and live replacement
 
+**Current PM takeover:** read [DEEPSEEK-PM-HANDOFF-2026-11-13.md](DEEPSEEK-PM-HANDOFF-2026-11-13.md)
+first. The operator has now handed remaining work to DeepSeek; that document
+supersedes older activation instructions and records the final consolidated batch.
+
 ## Latest continuation: lethal stage hazards and actual body aim (2026-11-13)
 
 Codex continues the active implementation. Preserve these latest operator requests:

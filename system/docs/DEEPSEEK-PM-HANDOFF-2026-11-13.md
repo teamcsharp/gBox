@@ -1,0 +1,305 @@
+# DeepSeek PM takeover: MercMode and Hermes, 2026-11-13
+
+The operator is handing all remaining work to DeepSeek because Codex credit is
+nearly exhausted. Keep MercMode playing while you manage, implement, review,
+merge and deploy the remaining work. The goal is **S rank / five stars on every
+RE4, RE5 and RE6 run**, with random weapons, effective grenade swarms, accurate
+aim and persistent improvement. **That goal has not been achieved.** Do not mark
+the parent task complete because code is merged, a counter increases, or a
+round reaches 300 kills.
+
+This document supersedes conflicting operating instructions in older handoffs.
+The original handoff identifier `07c0e8a01710cf1d60b2e6d3810e076fa2688781`
+is a Git commit updating `HANDOFF-2026-11-12-GRENADE-RING-PM.md`, not an inbox ID.
+Read that document and `DEEPSEEK-SPARK-DECOMP-HANDOFF-2026-11-12.md` for earlier
+implementation details. The most recent evidence is in
+`research/merc-tuning-2026-11-13-native-controls.md`.
+
+## Operator priorities and authority
+
+The repeated complaints matter: wall hugging, face-first walking into walls,
+indecisive turning, not leaving the first room, shooting the floor or walls,
+shooting over prone enemies, raising/lowering the gun after one bullet, too many
+pistols, slow shotguns, unarmed mines, self-explosions and lethal stage hazards.
+The operator wants confident continuous movement and spectacular effective combat,
+not a series of nominal flags or test-only claims. They particularly enjoyed
+frequent mines left while fleeing and miss large grenade swarms in every title.
+
+- Commit and push tested source to `teamcsharp/gBox` **main**; explicitly authorized.
+- Spark title restarts are permitted. Backend restarts are authorized **between
+  completed rounds**, not during a live attempt. Preserve closed-round evidence.
+- Preserve concurrent PSO work and user changes. Do not reset shared main, stage
+  everything, force-push, or indiscriminately merge historical branches.
+- Do not touch the i9-NUC PSO session. Last known session was
+  `29d05fb902974b97-dd9c53f0fd8b4d1f`; rediscover ownership before any operation.
+- All models, ROMs, game files, extracted geometry/NAV and decompilation databases
+  remain **Spark-local**, outside Git. Git contains tooling, source, tests and notes.
+- Use `x-gbox-actor: agent` on API calls. Never print API tokens or provider keys.
+- The older handoff's blanket SSH ban and 05:00-only restart rule are superseded
+  by the explicit authorizations above. Existing unrelated operator sessions remain
+  protected. Do not move the broadcast program away from lilspark.
+- No infinite life / invulnerability. The requested ammunition, weapon-speed and
+  native deployment assistance are allowed; healing should use actual first aid.
+
+## Current operation and source consolidation
+
+Control plane: `http://127.0.0.1:8765` on lilspark, system service `gbox.service`
+(not the user service). Runtime: `/home/ehm_eckx/gBox/system`. Python:
+`.venv-linux-aarch64/bin/python`. Token: `gbox-data/api_token`, read privately.
+Deployment clone: `/home/ehm_eckx/gBox_alt/gBox-src`.
+Windows source: `C:\_tools\gBox`; tested worktree:
+`C:\_tools\gBox\.scratch-merc-recovery\merc-tune-next`.
+
+Verified saved lilspark settings on November 13:
+
+```json
+{"enabled":true,"titles":["re4","re5","re6"],"rounds_per_title":5,
+ "rounds_by_title":{"re4":5,"re5":5,"re6":5},"queue":[],
+ "skin_swap":"random","cast_swap":"on","donor_rotation":"fresh",
+ "donor_rounds":1,"presentation_priority":true,"coop_ratio":"off"}
+```
+
+The empty DJ queue uses the endless title rotation; `repeat_queue:false` does not
+stop that rotation. Every completed attempt, including deaths, counts. Each
+title has its own configurable count. Launch payloads request random characters
+and stages. Existing blueprint look remains enabled. A model request being on
+does not prove every enemy instance was replaced; inspect donor receipts.
+
+All 12 commits from `codex/merc-tune-20261113b` were patch-equivalent on main,
+then the branch was formally merged as `0e64ecc7c` without additional tree changes.
+There were no uncommitted changes in main or that worktree at consolidation.
+Relevant main commits:
+
+| Commit | Change |
+| --- | --- |
+| `3b71f60b` | RE5 native heading alignment for mine escape and diagnostics |
+| `7eaf31c2` | RE5 pitch written to the persistent native controller output |
+| `cb7b5751` | RE6 free-walking proof rejects near-vertical NAV triangles |
+| `382cb96be` | Recover positively inactive mine refusals; independent crowd cadence |
+| `a37bbe6a3` | Stop repeated grenade rearm waits after permanent equip refusal |
+| `d7c315a59` | Distinguish definitely unsubmitted equip attempts from uncertain writes |
+| `7e885ac41` | Preserve/add RE5 grenade supply; RE6 time-bonus priority below 300 seconds |
+| `103eaa3de` | Bounded read-only retry for transient RE5 equip readback races |
+| `c2d71665e` | Restore earned automine distance after a verified zero-placement refusal |
+| `c1a97781` | PiP double-click toggles fullscreen/windowed without exiting PiP |
+
+`7e885ac41` activated at epoch `1794589707.613`, after RE5 round
+`6a33c3ad929e46b5b7b67140629e3268` reached fresh, closed `results` with timer0.1.
+Replacement service PID was2886149, worker `d6891b50cc2e4cb5`. MercMode resumed
+automatically in session `d6891b50cc2e4cb5-f364be569bb24341`, round
+`0c5bbbe8f4d342bb838535abe2d125e3`. It had20kills/8000points, one confirmed native
+mine, Automine enabled and one policy-recorded grenade throw at the next check.
+These IDs are historical: rediscover them; do not reuse blindly.
+
+The newest two fixes were staged after that restart. The final activation helper
+is `/tmp/gbox-activate-final-20261113.py`, log of the same stem, with receipt
+`gbox-data/merc-activation-final-20261113.json`. Inspect those plus
+`gbox-data/deployed-main.txt` and current service PID to distinguish **staged**
+from **loaded**. The helper waits for fresh closed-round evidence, exact staged
+commit and old service PID, captures the terminal JPEG, rechecks session identity,
+then restarts under `/tmp/gbox-deploy.lock`. A changed deployment/PID cancels it.
+Do not restart merely because the deployment marker exists.
+
+Use `scripts/deploy_main.sh --deploy --no-restart` for staging. It preserves
+unknown share edits and backs up stale source. Deployment is manual-only; old
+handoffs describing unconditional periodic auto-deployment are obsolete.
+
+### Preserved runtime divergence
+
+Spark's `gbox/mercs/titles/re5_switch_native_nav.py` is a local native-NAV-v5
+implementation with `S_AI=0x1CEFBF8`, while main has the older discovery path.
+Deployment deliberately preserves it. Do not overwrite it with main. Review and
+assimilate this source **on Spark** with its native evidence before changing it.
+Automatic approval review rejected copying this file off Spark under the local
+NAV-data restriction; no copy was made. Do not bypass that restriction.
+
+## Hermes: continue tickets and assimilate through the existing gate
+
+`GET /api/hermes/task-mode` confirmed enabled, available, `continuous_queue`,
+job `d24e4c0f82a5`, capabilities ready and Git workspace ready. Recent runs were
+actively assigned to tickets, including `064c7f33b1f54eae`, `6351db8284f3370a`
+and `2711e8ca8145478e`. Keep existing claims and pending native job IDs; do not
+duplicate them or cancel other projects to accelerate MercMode.
+
+`gbox.hermes_result_review.config()` confirmed `enabled:true`, `review_prs:true`,
+`auto_merge:true`, review job `2be3398574b3`, reviewer `sparkDeux`. Last check had
+`last_error:network_unavailable`, next retry epoch1794590018.419; prior successful
+review epoch1794588765.848. The exact-head merge gate found **no approved PR ready
+for delivery**. `deliver_one()` returnedNone. There is a large pending backlog;
+it has not all been merged. Do not present queue enablement as assimilation done.
+
+Use the installed reviewer instead of mass-merging stale branches:
+
+```sh
+cd /home/ehm_eckx/gBox/system
+.venv-linux-aarch64/bin/python -m gbox.hermes_result_review --status
+```
+
+The existing one-minute cron runs `tick()`, discovers PR heads/current main,
+reviews complete source and focused test evidence, retests carried approvals,
+and merges approved exact commits. Source merge is not gameplay acceptance.
+Review state is in `gbox-data/hermes-dispatch/result-review.json` and
+`result-review.sqlite3`; task workspaces use `hermes_delivery.prepare()`.
+Recover the local reviewer network if it keeps failing, while ordinary tickets
+continue. Respect the configured provider policy; do not buy/use extra cloud
+capacity or blindly retry exhausted accounts.
+
+## Complete operator requirements, retained for the next PM
+
+1. **Rotation and models:** endlessly cycle RE4/5/6, five completed attempts each
+   initially, separately adjustable from GBox's right-click MercMode menu. Random
+   character each RE4/5 round; retain RE6's randomized costumes and swap all its
+   characters. Replace every enemy, including bosses, dogs, parasites and other
+   nonhumans. Each individual enemy draws its own library model, not merely one
+   model per species. Extract all favorited games into the Spark-local library;
+   keep the cast circulating every round. Fix rig/geometry/normals defects.
+   Between-round title restarts are acceptable while real live replacement develops.
+2. **Weapons and shooting:** random loadout/weapon each round, strongly favor
+   shotguns, magnums and late-campaign weapons; eliminate pistol fixation. Let the
+   operator assign any supported weapon from the loader. All guns should deliver
+   requested20x fire rate, no recoil animation and infinite ammo. The operator also
+   explicitly described20shots/sec and bursts of at least20shots while aimed:
+   measure actual projectile emissions, not just modifier values or button presses.
+   Hold aim and fire until threats are dispatched; compensate while firing.
+3. **Aim and learning:** fast accurate magnum shots, shotgun crowd control,
+   downward aim at prone enemies, correct boss weak points (including exposed
+   backs), correct grenade/remote-bomb throws. Persist per-weapon mastery across
+   titles. Learn from deaths, survival time, hit accuracy and combo losses;
+   prioritize prior killers and instant-kill bosses. Never train on confounded
+   damage or label an unobserved projectile a miss.
+4. **Run and navigation:** get time bonuses first by an efficient learned route;
+   build at least five minutes, then exploit combo bonuses/high-score stands.
+   Explore/master each stage, stairs, doors, windows and ladders. RE4 doors can
+   be opened/kicked with rapid Y or destroyed where appropriate. Log every stuck
+   wall/doorway incident with preceding inputs, pose, geometry/route, threat and
+   recovery evidence; analyze every round and its final failure sequence.
+   Avoid stage hazards and self-kills. Preserve measured geometry identity across
+   rounds; never guess a stage binding from a menu label.
+5. **Healing and QTE:** always retain RE4 first aid spray and use actual native
+   use on demand/low health. Automatically succeed solvable QTEs through proven
+   native flags, flash nearby attackers during grabs/QTEs, then escape. Distinguish
+   unavoidable downed-death animations from an actual solvable QTE prompt.
+6. **Automine RE5/6:** default-on named toggle. Leave armed mines/remote bombs
+   every20ft (609.6cm) of measured travel while holding a gun, no equip/plant
+   animation. Flash and leave a five-mine ring after damage/grabs/QTE, flee while
+   enemies are stunned, and leave a mine/bomb at verified ladder/window/ledge
+   traversal exits. Manual Mine Ring must actually flash and deploy five **armed**
+   mines at a five-foot radius. Throw/eject deployables toward enemies when safe.
+   Maintain clearance from every active retained bomb, not just the latest batch.
+7. **Detonation:** RE4 mine-thrower rounds detonate after3seconds plus a manual
+   native detonate control. RE6 bombs detonate within5seconds, after escaping blast
+   range; plan a feasible exit before placing. Never solve that deadline by knowingly
+   exploding the player. Record missed deadlines truthfully and fix their cause.
+8. **Grenade spectacle:** randomized grenade types and large aimed/scattered
+   volleys across all three titles, requested20x throwing animation speed. Keep
+   the90second defensive ring behavior and approximately120second randomized
+   crowd swarms as distinct cadences. On damage/grab deploy a grenade/mine/freeze
+   ring; on QTE flash, deploy and flee. Roulette among effective behaviors for
+   variety. Reactive flashes must not starve the periodic crowd scheduler.
+9. **Controls:** usable native360 nitrogen/freeze ring especially; hand,
+   incendiary, explosive/acid/nitrogen launcher and mine-thrower ring controls
+   across supported titles, sidebar/topbar and MCP. Manual controls must work
+   in game, not just show enabled. Combo-time native switch:30seconds on demand
+   in each title. Icon-only action buttons leave room for chat. PiP exits only
+   via Alt+Enter or right-click Exit PiP; double-click toggles fullscreen/windowed.
+10. **Long-term engineering:** comprehensive Spark decompilation/Ghidra hooks,
+    fluid live model/game-data replacement without rebuilding whole games,
+    eventual combined titles/custom levels. DeepSeek owns the remaining analysis,
+    dispatch, implementation, integration and honest live verification.
+
+## Immediate technical continuation
+
+### RE5 mines and grenade supply
+
+`382cb96b` positively reconciles zero-arm floor refusals using actor identity,
+native mailbox/build/player life and both collision volumes. Only confirmed
+inactive, detached actors are reusable. In round6a33 nine mines had armed at the
+midround check: four distance singles plus a five-mine ring; native trigger and
+retirement evidence exists. At least76 hit-ring floor refusals included14 ray
+misses and62 results outside61cm floor tolerance, some3–11m below the player.
+Keep the floor checks. Provisional escape sites are not armed mines.
+
+`c2d71665e` repairs consumed distance on such a refusal: preserve travel already
+earned, restore it once after the private Flight release, cap at609.6cm, keep the
+three-second retry and event deduplication. Related247tests passed, six optional
+asset skips; recorder/credit35passed. Test fixtures are not live acceptance.
+
+`7e885ac41` preserves grenades when adding mine templates, adds a damaging hand
+or incendiary grenade where a safe slot exists, and only replaces ammo when
+infinite ammo is enabled. Protected/full inventories fail truthfully. Supply
+checks80passed. Earlier round evidence had zero throwable inventory; later pickups
+appeared but repeated equipment failures dominated. The new supply is next-round
+template behavior, not an arbitrary live inventory pointer write.
+
+`103eaa3de` retries only transient **readback** of the original equipment request,
+within its original1.5s deadline and immutable owner/action/slot identity. Never
+republish an uncertain attempted native write.125tests passed. Observe actual
+grenade births next: `grenade_throws` is a policy counter, not native birth proof.
+
+### Aiming: new native evidence, integration unfinished
+
+RE5 persistent pitch now survives native controller updates. A sampled pose/ray
+audit found median absolute pitch error0.74degrees for53 fresh posed targets,
+but only28 conservative body-proxy intersections; substantial yaw acquisition
+misses remain. This is not proven hit accuracy. AimCore is verified-only, but its
+RE5 path lacks a verified discharge witness and required fire identity/confound
+fields, so learning is not yet validated.
+
+Read-only native bullet investigation proved three owned active M500 projectile
+births1430/1431/1432 in20seconds. Evidence stays on Spark:
+`analysis/merc-tuning-20261113/re5-bullet-readonly-b5a2a2cf2906495c-7c87c4cec33b4703-1794588712.jsonl`
+and its summary. Pinned ELF SHA256:
+`674c88288eda98b8974e4185853d0b7c2f3fe6b623c823124326d14834856f5c`.
+Derived offsets: common emitter7E5FE0, shotgun81A7B0,100-slot pool global1D3F120,
+slots+D8, bullet VT1C62048, active+2910, owner weapon+1A10,
+attack-volume pointer+1D38 then serial+144, mode+28DC is **one byte**, notu32.
+Global serial1D79060 alone is not shot proof; other attacks increment it.
+An already-inactive serial is unknown, not a miss. Group shotgun pellets so one
+shot does not become many discharges. Require coherent owner/weapon/generation,
+freshness under0.25s and bounded scans. No production witness code was added.
+
+### RE6 run/escape and broader unfinished work
+
+Time bonuses now outrank distant combat below300seconds while immediate threats,
+QTE, health, pending bombs, hazards and explicit operator orders retain priority.
+Related397tests passed with one asset skip; fresh live run acceptance remains.
+
+Old roundccb6's cached geometry had94 walkable headings among360 tested, but none
+passed the current monotonic bomb-clearance rule. An offline graph search found
+a walkable27-waypoint route of22.13m that initially approaches the bomb; minimum
+vertex clearance8.69m, not a continuous clearance proof. Active stage binding
+and a feasible five-second escape are unproved. Do not simply loosen blast guards.
+Evidence: `re6-ccb6-continuous-heading-probe.json` and
+`re6-ccb6-nonmonotonic-route-probe.json` in the same Spark analysis directory.
+
+Still unfinished: reliable damaging grenade swarms in every title; nitrogen360;
+actual20x emission/throwing cadence; complete per-enemy model coverage and fixed
+rigs; robust RE6 escape/detonation deadlines; all-stage hazard catalogues; full
+time/combo runs; verified auto-learning and all-run S/five-star performance.
+Native rings currently support RE4 hand/flash and RE5/6 flash; never relabel a
+flash as nitrogen or mark unsupported controls successful.
+
+## Acceptance and next-PM checklist
+
+1. Read final deployment receipt/log; verify the loaded revision, fresh worker,
+   live session and continued5/5/5 rotation. Finish only the pending safe activation.
+2. Capture every attempt through terminal outcome; preserve score, native rank,
+   time bonuses, combo loss, weapon changes, mine armed/triggered/retired, actual
+   projectile evidence, movement and preceding death/stuck frames. The last6a33
+   terminal JPEG captured the blurred results transition, **not a readable rank**.
+3. Compare the next mine-credit/equip round against6a33, then fix the first measured
+   bottleneck. Do not confuse motionless aimed combat with all stationary failure.
+4. Recover Hermes review connectivity if necessary; keep its existing exact-head
+   tests/approval gate and ticket ownership, merge useful bounded milestones,
+   and report outstanding gameplay acceptance separately.
+5. Keep shared cadence, ownership, evidence, learning and priority policies in
+   `gbox/mercs`; keep native layouts/title capabilities in `mercs/titles`. Unifying
+   logic does not justify pretending that different engines share native flags.
+6. Keep a concrete prioritized backlog and update this handoff after each accepted
+   live improvement. The operator requested efficiency and continuity, not another
+   restart of the investigation from scratch.
+
+Known test limits: asset-dependent tests need Spark-owned inputs. An existing
+PS3 mine-retreat guard test and four old weapon-control expectations failed on
+their unchanged baselines; they were not repaired in this batch. Do not claim
+the entire repository suite passes. No game assets were added by this handoff.
