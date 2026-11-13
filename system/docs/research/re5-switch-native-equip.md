@@ -58,3 +58,13 @@ fresh admission. Native uncertain-request locks remain unchanged. Deferred
 requests that have not reached permanent refusal keep their bounded admission
 window. This repair removes repeated futile waits; it does not establish the
 cause of the original ambiguous publication or claim a successful throw.
+
+The publisher now distinguishes a stale initial witness before any writer was
+called from an attempted write with an uncertain outcome. A zero-write refusal
+reports `native_not_submitted` and can capture a new owned witness later. The
+attempt is recorded before invoking each writer, so an exception after memory
+may have changed remains uncertain. No published request is replayed. Forty-six
+equip/throw regressions cover initial witness changes, failed writers and native
+consumption of the pending byte. This fixes a definite false-lock path in the
+source; the old receipt did not retain enough detail to prove this was the
+specific cause of round `4d2c`'s original failure.

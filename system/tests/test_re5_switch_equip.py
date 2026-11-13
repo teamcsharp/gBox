@@ -101,6 +101,84 @@ def test_error_after_publication_is_ambiguous_and_never_replayed():
     assert len(writes) == n
 
 
+def test_every_changed_initial_witness_refuses_before_any_writer_call():
+    probe = fixture()[0]
+    count = len(E.Request(probe, 'owned-re5', BASE, 3, 0x119).witness.checks)
+    for index in range(count):
+        g, p, writes, write = fixture()
+        request = E.Request(g, 'owned-re5', BASE, 3, 0x119)
+        address, old = request.witness.checks[index]
+        g.put(address, bytes([old[0] ^ 1]) + old[1:])
+        receipt = request.publish('owned-re5', write, enabled=True)
+        assert writes == [], (index, hex(address))
+        assert receipt['state'] == 'refused', (index, hex(address))
+        assert receipt['native_not_submitted'] is True
+        assert receipt['preparation_writes_attempted'] == 0 and receipt['publication_attempted'] is False
+        # This one-use request stays refused; a caller must capture a new
+        # witness rather than reuse an old, possibly invalid identity.
+        assert request.publish('owned-re5', write, enabled=True) == receipt
+        assert writes == []
+
+
+@pytest.mark.parametrize('write_happened', [False, True])
+def test_writer_exception_is_not_mistaken_for_a_never_attempted_write(write_happened):
+    g, p, writes, write = fixture()
+    request = E.Request(g, 'owned-re5', BASE, 3, 0x119)
+    def failing(address, data):
+        writes.append((address, bytes(data)))
+        if write_happened:
+            g.put(address, data)
+        raise OSError('writer may have changed the cell before failing')
+    receipt = request.publish('owned-re5', failing, enabled=True)
+    assert receipt['state'] == 'unknown'
+    assert receipt['preparation_writes_attempted'] == 1
+    assert receipt['publication_attempted'] is False
+    assert not receipt.get('native_not_submitted')
+    count = len(writes)
+    request.publish('owned-re5', failing, enabled=True)
+    assert len(writes) == count
+
+
+def test_consumed_pending_write_still_remains_uncertain_after_writer_exception():
+    g, p, writes, write = fixture()
+    request = E.Request(g, 'owned-re5', BASE, 3, 0x119)
+    def consumed(address, data):
+        write(address, data)
+        if address == p + E.PENDING:
+            g.put(address, b'\0')
+            raise OSError('native consumer already cleared the pending byte')
+    receipt = request.publish('owned-re5', consumed, enabled=True)
+    assert receipt['state'] == 'unknown' and receipt['publication_attempted'] is True
+    assert not receipt.get('native_not_submitted')
+    count = len(writes)
+    request.publish('owned-re5', consumed, enabled=True)
+    assert len(writes) == count
+
+
+def test_safe_initial_refusal_can_capture_fresh_witness_and_confirm_attachment(monkeypatch):
+    g, p, writes, write = fixture()
+    g.wr = write
+    control = E.Controller(g, {'source_session_id': 'owned-re5'})
+    original = E.Request.publish
+    first = [True]
+    def raced(request, *args, **kwargs):
+        if first[0]:
+            first[0] = False
+            g.put(p + R.P_HP, struct.pack('<h', 900))
+        return original(request, *args, **kwargs)
+    monkeypatch.setattr(E.Request, 'publish', raced)
+    receipt = control.select(3, 0x119)
+    assert receipt['native_not_submitted'] is True and writes == []
+    assert control.pending is None and control.failed is None
+    assert control.select(3, 0x119)['state'] == 'requested'
+    assert sum(address == p + E.PENDING for address, _ in writes) == 1
+    g.i32(p + R.P_INV + R.INV_HAND, 0)
+    g.i32(p + R.P_INV + R.INV_SLOT + R.INV_HAND, 1)
+    g.put(p + E.PENDING, b'\0')
+    assert control.tick()['state'] == 'equipped'
+    assert control.failed is None
+
+
 def test_controller_requires_session_and_respects_operator_control():
     g, p, writes, write = fixture()
     g.wr = write
