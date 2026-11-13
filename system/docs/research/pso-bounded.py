@@ -233,7 +233,16 @@ def run(mode: str, args) -> int:
         if args.map_name:
             name = next((key for key in grid if args.map_name in key), name)
         row = grid[name]
-        router = MapRouter(row["cells"])
+        cells = row["cells"]
+        if args.carve:
+            # The disc mesh has every door closed, so a doorway is wall in the static grid and A* goes around the
+            # room instead of through the door. Carve a passage at every gate the session currently reports.
+            state = world.observe() or {}
+            gates = [(float(e["x"]), float(e["z"])) for e in (state.get("entities") or [])
+                     if str(e.get("class")) in B.DOOR_CLASSES and e.get("x") is not None]
+            cells = B.carve_doorways(cells, gates, radius=args.carve_radius, cell=2.5)
+            log(f"carved {len(gates)} doorway(s) into the grid")
+        router = MapRouter(sorted(cells))
         log(f"routing over {name}: {len(row['cells'])} safe cells")
 
     if mode == "walk":
@@ -392,6 +401,10 @@ def main(argv=None) -> int:
         item.add_argument("--seconds", type=float, default=60.0)
         item.add_argument("--session", default="")
         item.add_argument("--map", default="", help="decoded collision grid to route over")
+        item.add_argument("--carve", action="store_true", default=True,
+                          help="open a grid passage at every current gate (default on)")
+        item.add_argument("--no-carve", dest="carve", action="store_false")
+        item.add_argument("--carve-radius", type=float, default=8.0)
         item.add_argument("--motion", default="hill", choices=("hill", "vector", "relative"),
                           help="movement controller: hill climbs measured gains, vector/relative infer a frame")
         item.add_argument("--map-name", default="", help="substring of the grid entry to use (e.g. forest01)")

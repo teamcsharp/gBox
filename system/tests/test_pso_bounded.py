@@ -235,6 +235,20 @@ def test_action_validation_rejects_unknown_inputs():
 # ---------------------------------------------------------------------------------------------------------------------
 # Operator ownership: checked before and after every input
 # ---------------------------------------------------------------------------------------------------------------------
+def test_a_stale_operator_flag_does_not_block_the_bot(workdir):
+    """The flag's mtime is an epoch, the tick clock is monotonic: comparing them made every leftover flag fresh forever.
+
+    Measured live: a 141-second-old `operator-playing.flag` still produced "operator owns the pad" for a whole run.
+    """
+    flag = workdir / "operator-playing.flag"
+    flag.write_text("operator pad relay", encoding="ascii")
+    guard = B.OperatorGuard(flag, stale_s=15.0)
+    assert guard.active(1234.0) is True, "a fresh flag means hands off, whatever clock the caller passes"
+    old = time.time() - 300.0
+    os.utime(flag, (old, old))
+    assert guard.active(1234.0) is False, "a dead relay's flag is not a playing operator"
+
+
 def test_operator_takeover_before_the_tick_releases_and_presses_nothing(workdir):
     clock = FakeClock()
     world = FakeWorld(clock)

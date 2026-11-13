@@ -488,3 +488,24 @@ What that requires, and what this round started:
 * **the operator's own demonstrations as the route source**, recorded through `pso-controller.py` (which also writes
   the operator flag so the bot stands down while they drive).
 
+
+
+## 13. The gate did not open, and a clock bug that stopped the bot
+
+**A switch -> flag chain does not mean switch -> gate.** With the operator's pad relayed in, they walked to the laser-fence
+switch at `(592, -163)` and pressed it; the stage-flag array went from all zero to **bit 30**, and that switch's own
+`+0xC8` is **30**. The fence it presumably opens, `TObjLazerFenceNorm 80DB3ED0` at `(498, -261)`, was then walked into
+from 30 units away: the character closed to **4 units and stopped there** for nine seconds while the route passed
+through it. The fence is still solid. So the flag bit is real, the gate mapping is not established - and the fence's own
+`+0xC8` is `29328` (not a 0..255 flag index), so the gate does not declare which flag opens it.
+
+**A clock bug had been silently disarming the bot.** `OperatorGuard.active()` compared the flag **file mtime** (a wall-clock
+epoch, ~1.8e9) against the **monotonic** tick clock (~1e6 seconds since boot). The difference is always hugely negative,
+so *any* leftover `operator-playing.flag` read as fresh forever: one 141-second-old flag made a whole run report
+"operator owns the pad" on all 265 ticks with zero actions taken. It now uses `time.time()` for the file and a test
+pins it (fresh flag = hands off, 300-second-old flag = dead relay).
+
+Gate carving is now wired into the runner: every gate the session reports gets a grid passage (`--carve`, radius 8
+units), so a route can cross a doorway instead of going around the room. The fence walk above used it - the route did
+pass through the fence's cells, which is how the character got to 4 units of it.
+

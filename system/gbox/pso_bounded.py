@@ -163,9 +163,14 @@ class OperatorGuard:
         if self.flag is None:
             return False
         try:
-            return (now - self.flag.stat().st_mtime) < self.stale_s
+            # Wall clock for a file's mtime, never the caller's monotonic clock: `now` is seconds since boot (~1e6)
+            # while st_mtime is an epoch (~1.8e9), so `now - mtime` is hugely negative and a single leftover flag file
+            # then reads as fresh forever - the bot stood down for a whole run because of it (measured: flag age 141 s,
+            # still "operator owns the pad").
+            age = time.time() - self.flag.stat().st_mtime
         except OSError:
             return False
+        return age < self.stale_s
 
 
 @dataclass(frozen=True)
