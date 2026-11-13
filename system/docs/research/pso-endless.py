@@ -900,6 +900,12 @@ def play(pad: Pad, seconds: float = 120.0) -> str:
                 left = math.hypot(float(ient.get("x") or 0) - float(nowat.get("x") or 0),
                                   float(ient.get("z") or 0) - float(nowat.get("z") or 0))
                 log(f"  INTERACT: walking to {iclass} ({kind}) {idist:.0f} -> {left:.0f} units")
+                if idist - left < 2.0:
+                    # THE INTERACT BRANCH MUST FREE ITSELF. It runs before the loop's stuck handling and ends in
+                    # `continue`, so `stuck` never incremented while the bot was walking to a switch - and a blocked
+                    # character then repeated the same line for minutes (measured: three minutes at (487,0), where
+                    # `up` moved 0.0 while down/left/right each moved 30+ units).
+                    unstick(pad)
                 moved += 1
                 time.sleep(0.1)
                 continue
