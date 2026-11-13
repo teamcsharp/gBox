@@ -35,3 +35,26 @@ Validation: 109 tests passed across RE5 equip, main driver, rampage, mines, and
 emergency-flash suites. The live trial verifies native hand attachment; it does
 not establish firing damage, target accuracy, an instant native flash blast, or
 twenty grenade births in two seconds.
+
+## Repeated center-slot throw refusals, 2026-11-13
+
+RE5 round `4d2c85b3fbfe48b88643928c9fcea29a` repeatedly selected hand grenade
+`0x106` in grid 4. Its native request was recorded waiting at
+1794585671.503, then `unknown/preparation_changed` at 1794585672.634. Later
+throw attempts repeatedly returned `previous_request_unconfirmed`. The throw
+machine ignored that terminal receipt and spent its full two-second equip
+window holding neutral before each abort. These were center-grid requests, so
+the quick-slot D-pad fallback could not resolve them. Spark evidence is in
+`analysis/merc-tuning-20261113/re5-4d2c-grenade-equip-windows.json` and the full
+`post-dd05a9ef-4d2c85b3fbfe48b88643928c9fcea29a-audit.json`.
+
+The throw policy now releases combat immediately on that explicit permanent
+refusal and remembers all refused grenade IDs for the exact round/player/life.
+Another weapon request cannot erase this history. Unheld refused grenades are
+excluded from subsequent choices; other available kinds remain eligible. A
+fresh live observation of the same owner's held grenade allows using it
+without replaying native attachment. A new round/player lifetime also begins
+fresh admission. Native uncertain-request locks remain unchanged. Deferred
+requests that have not reached permanent refusal keep their bounded admission
+window. This repair removes repeated futile waits; it does not establish the
+cause of the original ambiguous publication or claim a successful throw.

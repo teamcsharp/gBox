@@ -20,11 +20,16 @@ def test_re5_camera_weapon_motion_and_aim_feedback_are_preserved():
             'inventory': [{'hand': False, 'item': 2}, {'hand': True, 'item': 11}],
             'aim_cam': {'pitch': .3, 'heading': -.2}, 'laser': {'up': False}}
     stats = {'target_feedback_yaw_deg': 22., 'target_feedback_write_failures': 3,
-             'target_feedback_gate': 'no current laser'}
+             'target_feedback_gate': 'no current laser', 'throw_equip_blocked_count': 1,
+             'throw_equip_blocked_items': '0x106',
+             'throw_equip_refusal': {'owner': ['round', 10, 20], 'item': 262,
+                                     'reason': 'previous_request_unconfirmed'}}
     f.observe(1, snap, {}, stats)
     out = f.snapshot(); row = out['tail'][0]
     assert row['weapon'] == 11 and row['native_action'] == 26 and row['game_phase'] == 1
     assert row['camera'] == snap['aim_cam'] and row['diagnostics'] == stats
+    stats['throw_equip_refusal']['owner'][0] = 'next-round'
+    assert row['diagnostics']['throw_equip_refusal']['owner'][0] == 'round'
     assert out['signal_quality']['tail_field_samples']['camera'] == 1
 
 
