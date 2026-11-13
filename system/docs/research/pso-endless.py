@@ -409,6 +409,11 @@ def arm(pad: Pad) -> None:
         log(f"  {payload['op']} {payload.get('code', '')}: {answer.get('state')} "
             f"{str(answer.get('error'))[:70]}")
     log(f"  difficulty: {set_ultimate(pad)}")
+    for payload in ({"op": "floor_rares", "on": True, "character_class": "HUmar"},
+                    {"op": "enemy_drops", "on": True,
+                     "codes": ["009d00", "003200", "004400", "000100", "000200"]}):
+        answer = mods(pad, payload)
+        log(f"  {payload['op']}: {answer.get('state')} {str(answer.get('error'))[:60]}")
     log(f"  gates: {open_all_gates(pad)}")
     ARMED_SESSIONS.add(pad.sid)
 
@@ -503,6 +508,8 @@ def play(pad: Pad, seconds: float = 120.0) -> str:
     unlock_counter, last_unlock = 0, ""
     pressed_keys, key_misses = set(), 0      # door keys already pressed this window, and approach misses
     warped, warp_misses, warp_reported = 0, 0, None   # level exits entered, approach misses, last report
+    boxes_hit, box_misses = 0, 0                        # containers destroyed, approach misses
+    reticle_hits = 0                                    # presses made because something actionable was close
     last_enemy_hp = {}
 
     while time.time() - started < seconds:
@@ -609,6 +616,71 @@ def play(pad: Pad, seconds: float = 120.0) -> str:
             #    the stage, so this is the end-of-level door and it outranks everything else once the room is clear.
             # 2. a door KEY (TObjDoorKey / TLazerFenceSw) which must be PRESSED, close up.
             # 3. a DOOR (TObjDoor / TObjLazerFenceNorm / TOBarrierEnergy01) to walk through.
+            # THE RETICLE RULE. If the game is offering something to act on, act on it: press B then A. Anything
+            # actionable within 12 units counts, because the reticle is the game's own way of saying so. Townsfolk are
+            # excluded by class - talk to them and the character can be locked in a conversation, which happened.
+            actionables = []
+            for candidate in (now.get("entities") or []):
+                candidate_class = str(candidate.get("class"))
+                if "Npc" in candidate_class or "NPC" in candidate_class:
+                    continue                                    # never talk to townsfolk
+                if candidate.get("x") is None or candidate.get("z") is None:
+                    continue
+                kind = str(candidate.get("kind"))
+                if not (kind == "enemy" or kind == "object" or kind == "gate"):
+                    continue
+                distance_c = math.hypot(float(candidate.get("x") or 0) - x, float(candidate.get("z") or 0) - z)
+                if distance_c <= 12.0:
+                    actionables.append((distance_c, candidate_class))
+            if actionables:
+                actionables.sort()
+                nearest_class = actionables[0][1]
+                tap(pad, "b")
+                time.sleep(0.08)
+                tap(pad, "a")
+                time.sleep(0.3)
+                reticle_hits += 1
+                if reticle_hits % 10 == 1:
+                    log(f"  acted on {nearest_class} ({actionables[0][0]:.1f} units) - reticle rule")
+                moved += 1
+                continue
+
+            # BREAK THE BOXES. Containers are ordinary entities in the table (TObjContainerItem, TOCapsuleAncient01),
+            # so they can be walked up to and hit. Boxes come before warps and doors: loot before leaving.
+            boxes = [e for e in (now.get("entities") or [])
+                     if ("Container" in str(e.get("class")) or "Capsule" in str(e.get("class"))
+                         or "Trap" in str(e.get("class")))
+                     and e.get("x") is not None and e.get("z") is not None]
+            if boxes:
+                box = min(boxes, key=lambda e: (float(e.get("x") or 0) - x) ** 2
+                          + (float(e.get("z") or 0) - z) ** 2)
+                bx, bz = float(box.get("x") or 0), float(box.get("z") or 0)
+                bdist = math.hypot(bx - x, bz - z)
+                if bdist <= 14.0:
+                    tap(pad, "b")                      # a pause menu eats the swing here too
+                    time.sleep(0.1)
+                    tap(pad, "a")
+                    time.sleep(0.35)
+                    tap(pad, "a")
+                    boxes_hit += 1
+                else:
+                    side_b = globals().get("BOX_SIDE", 1)
+                    before_b = bdist
+                    hold(pad, "left" if side_b > 0 else "right", 0.18)
+                    hold(pad, "up", 0.7)
+                    time.sleep(0.2)
+                    after_b = state(pad).get("player") or {}
+                    now_b = math.hypot(bx - float(after_b.get("x") or 0), bz - float(after_b.get("z") or 0))
+                    if now_b > before_b - 1.0:
+                        box_misses += 1
+                        if box_misses >= 4:
+                            globals()["BOX_SIDE"] = -side_b
+                            box_misses = 0
+                    else:
+                        box_misses = 0
+                moved += 1
+                continue
+
             warps = [e for e in (now.get("entities") or [])
                      if "Warp" in str(e.get("class")) and e.get("x") is not None and e.get("z") is not None]
             if warps:
