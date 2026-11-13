@@ -174,6 +174,7 @@ def test_a_bomb_left_behind_lets_the_next_twenty_feet_chain_while_it_lies(lane, 
     assert len(flight.requests) == 1 and flight.requests[0]['reason'] == 'travel'
     flight.finish()                                   # the worker runs the native drop outside the input tick
     assert calls and calls[0].get('allow_existing') is True
+    assert st['mine_trail_chained'] == 1
     # An emergency ring still waits for the bomb out, even with it far behind.
     sent = len(flight.requests)
     st['ring_flash_at'] = 102.

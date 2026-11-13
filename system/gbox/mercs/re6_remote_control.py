@@ -422,6 +422,8 @@ def control(ad, prof, bot_getter=None):
             stats['mine_landing_requests'] = int(stats.get('mine_landing_requests', 0)) + 1
         elif not emergency:
             stats['mine_trail_requests'] = int(stats.get('mine_trail_requests', 0)) + 1
+            if chaining:
+                stats['mine_trail_chained'] = int(stats.get('mine_trail_chained', 0)) + 1
         stats.pop('mine_next_drop_at', None)
         if surrounded:
             stats['mine_surround_at'] = now
