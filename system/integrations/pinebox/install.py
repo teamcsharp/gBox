@@ -44,7 +44,7 @@ def install(target, *, package=None):
             raise ValueError('reviewed Pine integration module is absent: '+name)
     sources = [*(package/name for name in SERVER_FILES), *(package / "frontend").rglob("*")]
     sources = [p for p in sources if p.is_file()]
-    planned = {str(p.relative_to(package)): p.read_bytes() for p in sources}
+    planned = {p.relative_to(package).as_posix(): p.read_bytes() for p in sources}
     planned["app.py"] = new_app.encode()
     changed = {name: raw for name, raw in planned.items()
                if not (target / name).is_file() or (target / name).read_bytes() != raw}

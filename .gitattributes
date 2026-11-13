@@ -5,3 +5,7 @@
 *.ps1 text eol=crlf
 *.png binary
 *.blend binary
+# Preserve the vendored bytes checked by Pine's installer/provenance manifest.
+system/integrations/pinebox/frontend/vendor/hls-1.7.3.min.js text eol=lf
+system/integrations/pinebox/frontend/vendor/LICENSE.hls.js.txt text eol=lf
+system/integrations/pinebox/frontend/vendor/LICENSE-2.0.txt text eol=lf

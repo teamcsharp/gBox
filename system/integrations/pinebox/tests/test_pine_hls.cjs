@@ -6,7 +6,7 @@ const vm = require('node:vm');
 const player = require('../frontend/pine-hls.js');
 
 function fixture(native = false) {
-  const engines = [], messages = [], timers = [];
+  const engines = [], messages = [], timers = [], intervals = [], clock = {ms:0};
   class Hls {
     static Events = {MANIFEST_PARSED:'manifest', ERROR:'error', FRAG_BUFFERED:'buffered'};
     static ErrorTypes = {MEDIA_ERROR:'mediaError',NETWORK_ERROR:'networkError'};
@@ -27,10 +27,13 @@ function fixture(native = false) {
   const hold={capture(){holds.push('capture');},show(){holding=true;holds.push('show');},hide(){holding=false;holds.push('hide');},
     reset(){holding=false;holds.push('reset');},held(){return holding;}};
   const options = {loadHls:async()=>Hls, holdFrame:hold, onStatus:s=>messages.push(s),
+    now:()=>clock.ms,
+    setInterval(fn,ms) { const row={fn,ms}; intervals.push(row); return row; },
+    clearInterval(row) { row.cancelled=true; },
     setTimeout(fn,ms) { const row={fn,ms}; timers.push(row); return row; },
     clearTimeout(row) { row.cancelled=true; }};
   const p = player.create(video, options);
-  return {p,video,Hls,engines,messages,timers,options,holds,hold};
+  return {p,video,Hls,engines,messages,timers,intervals,clock,options,holds,hold};
 }
 const flush = ()=>new Promise(resolve=>setImmediate(resolve));
 
@@ -59,10 +62,110 @@ test('compressed live main video uses a bounded buffer without periodic healthy 
   assert.equal(e.config.liveMaxLatencyDurationCount,24);
   assert.equal(e.config.maxMaxBufferLength,24);
   assert.equal(e.config.backBufferLength,10);
+  assert.equal(e.config.maxLiveSyncPlaybackRate,1);
   e.events.manifest();
   for(let i=0;i<20;i++) f.p.source(e.source);
   assert.equal(f.engines.length,1); assert.equal(f.timers.length,0);
   assert.equal(f.video.muted,true);
+});
+
+function ranges(video, rows) {
+  video.buffered={length:rows.length,start:i=>rows[i][0],end:i=>rows[i][1]};
+}
+
+test('small segment seams retain the cushion and resume without a decoder rebuild',async()=>{
+  const f=fixture();ranges(f.video,[[0,1],[1.3,5],[5.5,10]]);
+  f.p.source('/hls');await flush();f.engines[0].events.manifest();
+  assert.equal(f.video.currentTime,1.31);assert.equal(f.video.plays,1);
+  assert.equal(f.p.state().seams,1);assert.equal(f.p.state().attachments,1);
+  assert.ok(f.p.state().bufferAheadSeconds>8);
+  f.video.onplaying();f.video.currentTime=5;f.video.onwaiting();
+  ranges(f.video,[[0,5],[5.5,15]]);f.engines[0].events.buffered();
+  assert.equal(f.video.currentTime,5.51);assert.equal(f.video.plays,2);
+  f.p.source('/next');await flush();assert.equal(f.p.state().seams,0);
+});
+
+test('startup never joins a large media hole or counts a distant buffer as its cushion',async()=>{
+  const f=fixture();ranges(f.video,[[0,2],[3,20]]);
+  f.p.source('/hls');await flush();f.engines[0].events.manifest();
+  assert.equal(f.video.plays,0);assert.equal(f.video.currentTime,1);
+  assert.equal(f.p.state().bufferAheadSeconds,1);
+});
+
+test('stall resync requires a buffered live target with a full cushion and resumes immediately',async()=>{
+  const f=fixture();f.p.source('/hls');await flush();const e=f.engines[0];
+  e.events.manifest();f.video.onplaying();f.video.onwaiting();
+  ranges(f.video,[[0,3],[20,24]]);e.liveSyncPosition=10;e.events.buffered();
+  assert.equal(f.video.currentTime,1);assert.equal(f.p.state().resyncs,0);
+  e.liveSyncPosition=20;e.events.buffered();
+  assert.equal(f.video.currentTime,1,'an actual range without enough cushion is still insufficient');
+  ranges(f.video,[[0,3],[20,32]]);e.events.buffered();
+  assert.equal(f.video.currentTime,20);assert.equal(f.video.plays,2);
+  assert.equal(f.p.state().resyncs,1);assert.equal(f.engines.length,1);
+});
+
+test('watchdog retries a silent startup once and stopping cancels all recurring work',async()=>{
+  const f=fixture();ranges(f.video,[]);f.p.source('/hls');await flush();
+  const watch=f.intervals[0];watch.fn();f.clock.ms=29999;watch.fn();assert.equal(f.timers.length,0);
+  f.clock.ms=30001;watch.fn();watch.fn();assert.equal(f.timers.length,1);assert.equal(f.timers[0].ms,250);
+  f.p.stop();assert.equal(watch.cancelled,true);assert.equal(f.timers[0].cancelled,true);
+  f.clock.ms=100000;watch.fn();assert.equal(f.timers.length,1);
+});
+
+test('watchdog follows real frame progress, tolerates zero-counter browsers and hidden tabs',async()=>{
+  const f=fixture();let frames=0;f.video.getVideoPlaybackQuality=()=>({totalVideoFrames:frames,droppedVideoFrames:0});
+  f.p.source('/hls');await flush();f.engines[0].events.manifest();f.video.onplaying();
+  const tick=f.intervals[0].fn;tick();f.clock.ms=16000;f.video.currentTime=2;tick();
+  assert.equal(f.timers.length,0,'unimplemented zero frame counters use playhead progress');
+  frames=10;tick();f.clock.ms=32000;f.video.currentTime=3;tick();
+  assert.equal(f.timers.length,1,'audio-clock motion cannot hide an observed frozen video decoder');
+  f.p.stop();
+  const g=fixture();g.video.ownerDocument={hidden:true};g.p.source('/hls');await flush();
+  const check=g.intervals[0].fn;g.clock.ms=100000;check();assert.equal(g.timers.length,0);
+  g.video.ownerDocument.hidden=false;g.clock.ms=101000;check();assert.equal(g.timers.length,0);
+});
+
+test('catchup seeks only within media retaining the cushion and keeps audio preferences',async()=>{
+  const f=fixture();f.p.volume(.23);f.p.source('/hls');await flush();
+  f.engines[0].events.manifest();f.video.onplaying();f.p.enableAudio();
+  const tick=f.intervals[0].fn;ranges(f.video,[[0,12],[30,35]]);tick();
+  assert.equal(f.video.currentTime,1,'a short isolated live range cannot receive a catchup');
+  ranges(f.video,[[20,40]]);tick();assert.equal(f.video.currentTime,31.5);
+  assert.equal(f.p.state().catchups,1);assert.equal(f.video.volume,.23);assert.equal(f.video.muted,false);
+  f.p.source('/new');await flush();assert.equal(f.p.state().catchups,0);
+});
+
+test('a timed-out async attachment cannot replace its watchdog successor',async()=>{
+  const f=fixture();const pending=[];f.options.loadHls=()=>new Promise(resolve=>pending.push(resolve));
+  const p=player.create(f.video,f.options);p.source('/hls');const tick=f.intervals[0].fn;
+  tick();f.clock.ms=30001;tick();assert.equal(f.timers.length,1);
+  f.timers[0].fn();assert.equal(pending.length,2);
+  pending[1](f.Hls);await flush();assert.equal(f.engines.length,1);
+  pending[0](f.Hls);await flush();assert.equal(f.engines.length,1);
+  assert.equal(f.engines[0].destroyed,undefined);p.stop();
+});
+
+test('autoplay denial waits for interaction instead of rebuilding the decoder repeatedly',async()=>{
+  const f=fixture();f.video.play=()=>Promise.reject(Object.assign(new Error('blocked'),{name:'NotAllowedError'}));
+  f.p.source('/hls');await flush();f.engines[0].events.manifest();await flush();
+  f.clock.ms=60000;f.intervals[0].fn();assert.equal(f.timers.length,0);
+  f.video.play=()=>{f.video.paused=false;f.video.plays++;return Promise.resolve();};
+  f.p.enableAudio();assert.equal(f.video.plays,1);f.video.onplaying();
+  assert.equal(f.p.state().phase,'playing');assert.equal(f.video.muted,false);
+});
+
+test('loader timeout is bounded and late script events cannot erase a new shared load',async()=>{
+  const scripts=[],timers=[];
+  const box={module:{exports:{}},URL,console,setTimeout(fn,ms){const row={fn,ms};timers.push(row);return row;},
+    clearTimeout(row){row.cancelled=true;},document:{createElement(){return {remove(){this.removed=true;}};},
+      head:{appendChild(script){scripts.push(script);}}}};
+  vm.runInNewContext(fs.readFileSync(path.join(__dirname,'../frontend/pine-hls.js'),'utf8'),box);
+  const load=box.module.exports.loadHls;
+  const first=load();const rejected=assert.rejects(first,/timed out/);timers[0].fn();await rejected;
+  assert.equal(timers[0].ms,15000);assert.equal(scripts[0].removed,true);
+  const second=load();scripts[0].onerror();assert.equal(load(),second);assert.equal(scripts.length,2);
+  box.Hls={version:'1.7.3'};scripts[1].onload();assert.equal(await second,box.Hls);
+  assert.equal(timers[1].cancelled,true);
 });
 
 test('startup and rebuffer wait for decoded cushion without replacing the decoder',async()=>{
