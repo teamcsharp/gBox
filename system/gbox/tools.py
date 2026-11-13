@@ -6596,6 +6596,27 @@ def _state_transfer(inp: StateXIn, ctx: Ctx):
 
 
 # ---- no hidden games left behind: emulators this worker started are recorded; a restarted worker closes the old ones ----
+_RUNNING_LOCK = threading.RLock()
+
+
+def _write_running(path: Path, records: dict) -> None:
+    """Publish a complete manifest; concurrent readers never see truncation."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    name = None
+    try:
+        with tempfile.NamedTemporaryFile(mode='w', encoding='utf-8', dir=path.parent,
+                                         prefix=path.name + '.', suffix='.tmp', delete=False) as out:
+            name = out.name
+            json.dump(records, out)
+            out.flush()
+            os.fsync(out.fileno())
+        os.replace(name, path)
+        name = None
+    finally:
+        if name is not None:
+            Path(name).unlink(missing_ok=True)
+
+
 def _running_file(config) -> Path:
     return Path(config.runtime) / "gbox-running.json"
 
@@ -6613,6 +6634,13 @@ def _live_game_pids() -> list[int]:
 
 
 def track_emulator(config, sid: str, pid: int | None, add: bool = True) -> None:
+    # Launch/stop callbacks run on different threads. Serialize the complete
+    # read-modify-write as well as publishing atomically.
+    with _RUNNING_LOCK:
+        _track_emulator(config, sid, pid, add)
+
+
+def _track_emulator(config, sid: str, pid: int | None, add: bool = True) -> None:
     if add and pid and sys.platform.startswith('linux'):
         from .cpu_affinity import ensure_keeper            # playing games on the fast cores, warm ones on the slow
         ensure_keeper(_live_game_pids)
@@ -6632,13 +6660,17 @@ def track_emulator(config, sid: str, pid: int | None, add: bool = True) -> None:
     else:
         d.pop(sid, None)
     try:
-        f.parent.mkdir(parents=True, exist_ok=True)
-        f.write_text(json.dumps(d))
+        _write_running(f, d)
     except OSError:
         pass
 
 
 def reap_orphans(config) -> list[int]:
+    with _RUNNING_LOCK:
+        return _reap_orphans(config)
+
+
+def _reap_orphans(config) -> list[int]:
     """At worker start: close emulators a previous run of this worker launched (they'd keep running invisibly, with no
     session gBox can stop). Only PIDs gBox recorded itself are touched."""
     f = _running_file(config)
@@ -6661,7 +6693,7 @@ def reap_orphans(config) -> list[int]:
         if ok:
             killed.append(pid)
     try:
-        f.write_text("{}")
+        _write_running(f, {})
     except OSError:
         pass
     return killed

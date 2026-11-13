@@ -299,3 +299,34 @@ def test_failed_launch_identity_capture_retains_legacy_protection(tmp_path, monk
     assert record == {'pid': 42, 'ts': 2000}
     linux_process_query(monkeypatch)
     assert worker_results._pid_alive(record['pid'], recorded_at=record['ts']) is True
+
+
+def test_concurrent_session_tracking_keeps_every_record(tmp_path, monkeypatch):
+    from concurrent.futures import ThreadPoolExecutor
+    from gbox import tools
+    config = SimpleNamespace(runtime=tmp_path)
+    monkeypatch.setattr(tools, 'sys', SimpleNamespace(platform='win32'))
+    with ThreadPoolExecutor(max_workers=12) as pool:
+        list(pool.map(lambda n: tools.track_emulator(config, str(n), n + 1), range(48)))
+    rows = json.loads(tools._running_file(config).read_text())
+    assert set(rows) == {str(n) for n in range(48)}
+    with ThreadPoolExecutor(max_workers=12) as pool:
+        list(pool.map(lambda n: tools.track_emulator(config, str(n), None, False), range(0, 48, 2)))
+    assert set(json.loads(tools._running_file(config).read_text())) == {str(n) for n in range(1, 48, 2)}
+
+
+def test_manifest_publish_failure_preserves_previous_complete_file(tmp_path, monkeypatch):
+    from pathlib import Path
+    from gbox import tools
+    path = tmp_path / 'running.json'
+    original = {'kept': {'pid': 1, 'ts': 2}}
+    path.write_text(json.dumps(original))
+    def refuse(source, target):
+        assert json.loads(path.read_text()) == original
+        assert json.loads(Path(source).read_text()) == {}
+        raise OSError('replacement interrupted')
+    monkeypatch.setattr(tools.os, 'replace', refuse)
+    with pytest.raises(OSError, match='interrupted'):
+        tools._write_running(path, {})
+    assert json.loads(path.read_text()) == original
+    assert list(tmp_path.glob('*.tmp')) == []
