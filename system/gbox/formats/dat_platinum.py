@@ -39,18 +39,27 @@ def parse_dat(buf: bytes) -> list[DatEntry]:
 def repack_dat(buf: bytes, replace: dict[str, bytes] | None = None) -> bytes:
     """Rebuild a Platinum DAT, preserving the original layout.
 
-    ``replace`` maps entry name -> replacement payload bytes. Verified modes:
+    ``replace`` maps entry key -> replacement payload bytes. Key is
+    ``"name.ext"``; a bare ``name`` is accepted only when unambiguous (that
+    name occurs once in the file). Verified modes:
       * no-op (``replace`` None/empty): consistency-checked, byte-identical
         output — tables, payloads and the unknown hashmap/inter-table regions
         are preserved verbatim;
-      * same-size member swap: payload overwritten in place, tables unchanged.
+      * same-size member swap: payload overwritten in place, tables unchanged;
+      * shorter (donor) swap: new payload written at the head of the slot,
+        original trailing bytes preserved — file size, offset/size tables,
+        alignment and the per-member hash region stay byte-identical
+        (the loader reads exactly ``size`` bytes; the inert original tail is
+        ignored by WMB section parsing).
 
-    A size-changing repack needs the shifted-layout path (hash-table extent
-    handling, hypothesis: hashmap is name-based so it can be preserved
-    verbatim); it is not implemented yet and raises ValueError.
+    Longer replacements raise ValueError (needs a shifted-layout rebuild
+    with hash-region semantics; open, pending the ExeFS loader oracle).
+    Open question for the loader oracle: if the game verifies per-member
+    content hashes at load, changed payloads will fail that check regardless
+    of swap mode.
     """
     buf = bytes(buf)
-    if buf[:4] != b"DAT\0":
+    if buf[:4] != b"DAT\x00":
         raise ValueError("not DAT")
     entries = parse_dat(buf)
     n, off_o, ext_o, nam_o, siz_o, _hash = struct.unpack_from("<6I", buf, 4)
@@ -66,13 +75,23 @@ def repack_dat(buf: bytes, replace: dict[str, bytes] | None = None) -> bytes:
             raise ValueError(f"payloads overlap: {entries[i1].name}")
     if not replace:
         return buf
+    names = [e.name for e in entries]
     out = bytearray(buf)
     for e in entries:
-        if e.name in replace:
-            new = bytes(replace[e.name])
-            if len(new) != e.size:
+        full = f"{e.name}.{e.ext}" if e.ext and not e.name.endswith("." + e.ext) else e.name
+        if full in replace:
+            key = full
+        elif e.name in replace:
+            if names.count(e.name) > 1:
                 raise ValueError(
-                    f"size-changing repack for {e.name} not implemented "
-                    f"(needs shifted layout + hash-table handling)")
-            out[e.offset:e.offset + e.size] = new
+                    f"ambiguous replace key {e.name!r}; use {e.name}.{e.ext}")
+            key = e.name
+        else:
+            continue
+        new = bytes(replace[key])
+        if len(new) > e.size:
+            raise ValueError(
+                f"longer replacement for {e.name} not implemented "
+                f"({len(new)} > {e.size}; needs shifted layout + hash-table handling)")
+        out[e.offset:e.offset + len(new)] = new
     return bytes(out)

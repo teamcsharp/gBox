@@ -9,7 +9,42 @@ import pytest
 
 from gbox.formats.dat_platinum import parse_dat, repack_dat
 
+REAL_PL0010 = Path.home() / ".hermes/cache/scratch/b2/pl0010.dat"
 REAL_DAT = Path.home() / ".hermes/cache/scratch/b2/pl0000.dat"
+
+
+@pytest.mark.skipif(not REAL_PL0010.exists(),
+                    reason="real pl0010.dat not present in scratch/b2")
+def test_real_donor_swap_pl0010_wmb_into_pl0000():
+    """The acceptance swap: pl0010.wmb (657248 B) into pl0000.dat's wmb slot
+    (793184 B) — shorter donor, file size and tables must be unchanged."""
+    src = REAL_DAT.read_bytes()
+    donor_buf = REAL_PL0010.read_bytes()
+    donor_ents = parse_dat(donor_buf)
+    wmb10 = [e for e in donor_ents if e.ext == "wmb"]
+    assert len(wmb10) == 1 and wmb10[0].size == 657248
+    e = wmb10[0]
+    donor = donor_buf[e.offset:e.offset + e.size]
+
+    ents = parse_dat(src)
+    assert len(ents) == 5
+    assert any(e.size == 793184 for e in ents)
+    target = next(e for e in ents if e.size == 793184)
+    key = f"{target.name}.{target.ext}" if target.ext else target.name
+
+    out = repack_dat(src, {key: donor})
+    assert len(out) == len(src)                      # file size unchanged
+    assert hashlib.sha256(out).hexdigest() != hashlib.sha256(src).hexdigest()
+    assert out[target.offset:target.offset + 657248] == donor
+    assert out[target.offset + 657248:target.offset + 793184] == \
+        src[target.offset + 657248:target.offset + 793184]  # original tail
+    # tables byte-identical; unrelated members intact
+    assert out[:target.offset] == src[:target.offset]
+    ents2 = parse_dat(out)
+    assert [ (a.offset, a.size, a.name) for a in ents2 ] == \
+           [ (a.offset, a.size, a.name) for a in ents ]
+    wtp = next(e for e in ents if e.ext == "wtp")
+    assert out[wtp.offset:wtp.offset + wtp.size] == src[wtp.offset:wtp.offset + wtp.size]
 
 
 def _build_dat(items, hash_words=None):
@@ -76,9 +111,38 @@ def test_repack_same_size_swap_only_touches_payload():
     assert out[ents[1].offset:ents[1].offset + 40] == b"B" * 40  # unrelated intact
 
 
-def test_repack_size_change_rejected():
+def test_repack_shorter_donor_swap_preserves_layout():
+    # shape of the real donor swap: pl0010.wmb (657248) into pl0000's wmb slot (793184)
+    buf = _build_dat([("w", "wmb", b"A" * 100), ("t", "wtp", b"B" * 40),
+                      ("s", "exp", b"C" * 16)])
+    donor = b"D" * 40
+    out = repack_dat(buf, {"w": donor})
+    assert len(out) == len(buf)
+    e = parse_dat(buf)[0]
+    diff = [i for i in range(len(buf)) if buf[i] != out[i]]
+    # only the new payload prefix may differ; tables + hash region byte-identical
+    assert diff and min(diff) == e.offset and max(diff) < e.offset + 40
+    assert out[e.offset:e.offset + 40] == donor
+    assert out[e.offset + 40:e.offset + 100] == b"A" * 60  # original tail kept
+    ents = parse_dat(out)
+    assert ents[0].offset == e.offset and ents[0].size == 100  # slot unchanged
+    assert out[ents[1].offset:ents[1].offset + 40] == b"B" * 40  # unrelated intact
+    assert out[ents[2].offset:ents[2].offset + 16] == b"C" * 16
+
+
+def test_repack_full_name_key_and_ambiguity():
+    buf = _build_dat([("pl0000", "wmb", b"A" * 100), ("pl0000", "wtp", b"B" * 40)])
+    with pytest.raises(ValueError, match="ambiguous"):
+        repack_dat(buf, {"pl0000": b"A" * 100})
+    out = repack_dat(buf, {"pl0000.wmb": b"Z" * 100})
+    e0, e1 = parse_dat(buf)
+    assert out[e0.offset:e0.offset + 100] == b"Z" * 100
+    assert out[e1.offset:e1.offset + 40] == b"B" * 40  # wtp untouched
+
+
+def test_repack_longer_rejected():
     buf = _build_dat([("w", "wmb", b"A" * 100)])
-    with pytest.raises(ValueError, match="size-changing"):
+    with pytest.raises(ValueError, match="longer replacement"):
         repack_dat(buf, {"w": b"A" * 128})
 
 
