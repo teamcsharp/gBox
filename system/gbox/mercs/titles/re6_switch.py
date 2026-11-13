@@ -4909,12 +4909,13 @@ class Bot:
                 return self._go("raise", "raise", {"hold": ("zl",) + back}, "the gun comes up (no laser yet)")
             if now - self.aim_since < LASER_WAIT_S:
                 # The laser is still unread (it is flaky on this build: reraise 28 / t_raise 26 s in the live
-                # 2026-11-13 No Mercy round). The camera line never authorizes fire by itself, but a close clear
-                # shot it already proves by the SAME geometry gate _aim applies below - same cone, same
-                # is_blocked test, same GEOM_CLOSE_R band - is pulled now instead of after the 0.7 s wait. Nothing
-                # new can fire: a line this gate rejects still waits for the measured laser exactly as before.
+                # 2026-11-13 No Mercy round). The camera line never authorizes fire by itself, but a shot it
+                # already proves by the SAME geometry gate _aim applies below - same cone, same is_blocked test,
+                # and the same band (close, or the nav mesh proves no wall) - is pulled now instead of after the
+                # 0.7 s wait. Nothing new can fire: a line this gate rejects still waits for the measured laser.
                 err = ray_error(cam["pos"], cam["target"], aim_point(tgt, p["pos"]))
-                if not (flat(tgt) <= GEOM_CLOSE_R and abs(err[0]) <= GEOM_FIRE_ERR
+                proven = dist <= ENGAGE_R and (dist <= GEOM_CLOSE_R or self._mesh_clear(tgt, now))
+                if not (proven and abs(err[0]) <= GEOM_FIRE_ERR
                         and abs(err[1]) <= GEOM_FIRE_PITCH and not self.is_blocked(tgt, now)):
                     return self._go("raise", "raise", {"hold": ("zl",) + back}, "the gun comes up (no laser yet)")
                 self.stats["raise_geometry_fires"] = self.stats.get("raise_geometry_fires", 0) + 1

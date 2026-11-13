@@ -921,6 +921,20 @@ def test_a_close_enemy_in_front_is_fired_on_by_geometry_without_the_laser():
     assert bot2.stats.get("re6_geometry_fires", 0) == 0
 
 
+def test_a_mesh_proven_line_fires_before_any_laser_wait():
+    # 2026-11-13: the laser wait also held targets beyond GEOM_CLOSE_R whose straight line the nav mesh proves
+    # clear. That is the same _mesh_clear proof _aim's geometry gate accepts, so the shot now comes at the raise's
+    # end instead of after 0.7 s; a line the mesh does not prove still waits (the 12 m no-mesh case above).
+    from tests.test_re6_movement_safety import square
+    bot, clock, snap = brain(round_guest(enemies=((0.0, 0.0, 800.0, 700),), cam_yaw=0.0))
+    snap["navmesh"] = square(4000.)
+    bot.held = lambda p, now: False
+    acts = run(bot, snap, clock, int(R.READY_S / 0.05) + 8)
+    assert any("zr" in a.get("hold", ()) for a in acts)
+    assert bot.stats.get("raise_geometry_fires", 0) >= 1
+    assert bot.stats.get("re6_geometry_fires", 0) >= 1
+
+
 def test_a_distant_ledge_or_shooter_threat_gets_a_long_geometry_shot_but_a_far_ground_zombie_does_not():
     # operator 2026-11-03: "long shots on exposed/distant targets ... ledge snipers / rocket enemies up high ... any
     # zombie pointing a laser becomes a target". With no laser and no mesh, a precise long shot still fires at an
