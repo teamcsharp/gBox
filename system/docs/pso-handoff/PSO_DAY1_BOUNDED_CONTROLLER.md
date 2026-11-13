@@ -343,11 +343,23 @@ is recorded as a traversal, not yet as a linked-door transition.
 * a closed door is *wall* to the collision mesh, so the router goes around it even after its flag opens it. Doors are
   now approached along a route to a point 18 units short and then walked through directly.
 
-**Still open:** long-range navigation orbits in the Forest. Measured on a 500-unit route: 138 ticks, a median 7.6 units
-per tick (the taps work), ~1,050 units of path for 105 units of net progress, and five room transitions back and forth.
-The steering is a frame-relative rule — `up`/`left`/`right` chosen from the last movement direction — and it does not
-survive repeated reversals. The next step is a hill-climbing controller that checks each tap against the *waypoint*
-distance and flips the key that made it worse, instead of inferring a frame.
+**Still open:** long-range navigation. Measured on a 500-unit route: 138 ticks, a median 7.6 units per tick (the taps
+work), ~1,050 units of path for 105 units of net progress, and five room transitions back and forth.
+
+Three causes were found and fixed in this round, each measured:
+
+* the controller inferred a frame and trusted it. `HillClimbMotion` infers nothing: it credits the key that closed
+  distance and switches when one stops paying (tested against a world whose key mapping rotates 90° every three taps);
+* the route target changed every one or two taps, because waypoints are 12.5 units apart and a tap is 8. The follower
+  now looks four waypoints (~50 units) ahead so a measurement has time to mean something;
+* `A*` returned **None** across most of Forest 1, and the follower silently fell back to a straight line — the orbit.
+  The cause was snapping onto one of the grid's **isolated safe cells** (measured: component size 1). The follower now
+  snaps to the nearest cell with two or more safe neighbours, and the same route returns **545 waypoints** instead of
+  none.
+
+The live walk still oscillates between two areas ~90 units apart rather than closing, so route-following is not solved;
+the next step is to stop switching targets at all while a leg is in progress (advance only when the *current* target is
+reached, not when a "nearest" waypoint changes) and to measure the tapped distance against the route tangent.
 
 ```
 cd system

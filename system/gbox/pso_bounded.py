@@ -381,10 +381,13 @@ class RouteFollower:
     a 60-waypoint route between the same two points, so the controller follows the route instead of the straight line.
     """
 
-    def __init__(self, router, *, arrive: float = 6.0, replan_after: int = 4) -> None:
+    def __init__(self, router, *, arrive: float = 6.0, replan_after: int = 4, lookahead: int = 4,
+                 cell: float = 2.5) -> None:
         self.router = router
         self.arrive = float(arrive)
         self.replan_after = int(replan_after)
+        self.lookahead = int(lookahead)
+        self.cell = float(cell)
         self.route = None
         self.index = 0
         self.goal = None
@@ -398,15 +401,22 @@ class RouteFollower:
             self._plan(position, goal)
         if not self.route:
             return tuple(goal)
-        # Advance when the waypoint is reached. A projection test ("already past it") was tried and is wrong: it
-        # consumes waypoints while the character is far off to the side, and the route then ends wherever it drifted
-        # (measured: a 60-waypoint route consumed while the character ended 118 units from the door). The arrival
-        # radius is larger than one tap so a single 8-unit step lands inside it.
-        while self.index < len(self.route) - 1 and math.dist(position, self.route[self.index]) <= self.arrive:
-            self.index += 1
+        # Advance to the closest waypoint ahead, not just the next one. A tap moves 8 units in a straight line while the
+        # route bends, so the character regularly cuts a corner and never comes within `arrive` of the waypoint it was
+        # aiming at - the index then never advances and the controller keeps aiming at a point it already passed, which
+        # is a measured orbit (197 ticks, 380 units still to go).
+        window = self.route[self.index:min(self.index + 10, len(self.route))]
+        if window:
+            nearest = min(range(len(window)), key=lambda offset: math.dist(position, window[offset]))
+            if math.dist(position, window[nearest]) <= max(self.arrive * 2.5, 25.0):
+                self.index = min(self.index + nearest, len(self.route) - 1)
         if math.dist(position, tuple(goal)) <= self.arrive:
             return None
-        return self.route[self.index]
+        # Look a few waypoints ahead. A waypoint 12.5 units away changes the target every one or two 8-unit taps, and
+        # a controller that measures gains per target (the hill climber) then re-explores on every step - measured as a
+        # zigzag over 186 ticks. Four waypoints ahead is ~50 units, stable for six taps.
+        target_index = min(self.index + self.lookahead, len(self.route) - 1)
+        return self.route[target_index]
 
     def note_progress(self, progressed: bool) -> None:
         if progressed:
@@ -419,9 +429,39 @@ class RouteFollower:
         position = (float(player.get("x") or 0), float(player.get("z") or 0))
         self._plan(position, self.goal or position, skip_first=True)
 
+    def _connected_near(self, position: tuple):
+        """The nearest grid cell that is actually part of a corridor, not one of the erosion's isolated islands.
+
+        Measured: the Forest grid's safe set contains single-cell islands, and snapping onto one makes A* return None -
+        the follower then falls back to a straight line and orbits (187 ticks, 380 units still to go). A cell with two
+        or more safe neighbours is a corridor cell by definition, so routing from it works.
+        """
+        safe = getattr(self.router, "safe", None)
+        if not isinstance(safe, set) or not safe:
+            return None
+        base = (math.floor(position[0] / self.cell), math.floor(position[1] / self.cell))
+        neighbours = ((1, 0), (-1, 0), (0, 1), (0, -1))
+
+        def good(cell) -> bool:
+            return cell in safe and sum((cell[0] + ox, cell[1] + oz) in safe for ox, oz in neighbours) >= 2
+
+        if good(base):
+            return ((base[0] + 0.5) * self.cell, (base[1] + 0.5) * self.cell)
+        for radius in range(1, 28):
+            for dx in range(-radius, radius + 1):
+                for dz in (-radius, radius):
+                    for cell in ((base[0] + dx, base[1] + dz), (base[0] + dz, base[1] + dx)):
+                        if good(cell):
+                            return ((cell[0] + 0.5) * self.cell, (cell[1] + 0.5) * self.cell)
+        return None
+
     def _plan(self, position: tuple, goal: tuple, skip_first: bool = False) -> None:
         try:
             route = self.router.route(position, goal) or []
+            if not route:
+                snapped = self._connected_near(position)
+                if snapped is not None and snapped != position:
+                    route = self.router.route(snapped, goal) or []
         except Exception:                                    # noqa: BLE001 - a map is an aid, never a dependency
             route = []
         if skip_first and len(route) > 1:
@@ -484,6 +524,59 @@ class RoutedPolicy:
     def progress_token(self) -> int:
         """A re-plan is a new attempt: the no-close budget must start again rather than end the run mid-route."""
         return self.follower.plans
+
+
+class HillClimbMotion:
+    """Keep the key that measurably closes the distance; when it stops, try another and keep the best.
+
+    The models above try to say *which way* a key points and then trust that. The measured failure of that approach is
+    a lane of 1,050 units travelled for 105 units of progress: a frame that cannot be inferred reliably turns every
+    correction into a new orbit. This controller infers nothing. It records the distance closed by the last tap, credits
+    or debits the key that produced it, and switches keys only when the current one stops paying - so an inverted or
+    rotating frame costs one tap to notice, not a detour.
+    """
+
+    def __init__(self, *, arrive: float = 6.0, min_gain: float = 1.0, patience: int = 2,
+                 keys: Iterable[str] = DIRECTIONS) -> None:
+        self.arrive = float(arrive)
+        self.min_gain = float(min_gain)
+        self.patience = int(patience)
+        self.keys = tuple(keys)
+        self.key = None
+        self.last_key = None
+        self.last_distance = None
+        self.gains = {key: 0.0 for key in self.keys}
+        self.misses = 0
+        self.switches = 0
+
+    def step(self, player: dict, target: tuple, reason: str = "") -> Action | None:
+        x, z = float(player.get("x") or 0), float(player.get("z") or 0)
+        distance = math.hypot(float(target[0]) - x, float(target[1]) - z)
+        if distance <= self.arrive:
+            return None
+        if self.last_key is not None and self.last_distance is not None:
+            gain = self.last_distance - distance
+            if gain >= self.min_gain:
+                self.gains[self.last_key] += gain
+                self.misses = 0
+            else:
+                self.gains[self.last_key] -= 2.0
+                self.misses += 1
+        if self.key is None or self.misses >= self.patience:
+            self.key = self._next_key()
+            self.misses = 0
+            self.switches += 1
+        self.last_key = self.key
+        self.last_distance = distance
+        return press(self.key, f"tap {self.key} ({distance:.0f} units, gain {self.gains[self.key]:+.1f}) "
+                              f"toward {reason or 'target'}")
+
+    def _next_key(self) -> str:
+        ranked = sorted(self.keys, key=lambda key: -self.gains[key])
+        for key in ranked:
+            if key != self.last_key:
+                return key
+        return ranked[0]
 
 
 @dataclass

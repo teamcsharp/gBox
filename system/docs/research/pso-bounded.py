@@ -163,7 +163,17 @@ def run(mode: str, args) -> int:
     turns = {}
     if calibration is not None:
         turns = {key: value for key, value in calibration.turn.items() if abs(value) >= 12.0}
-    motion = B.RelativeTapMotion(arrive=arrive, turn_deg=turns)
+    # `hill` is the default because the frame cannot be inferred reliably: measured at 1,050 units of path for 105 of
+    # progress with the frame-relative rule. It infers nothing - it credits the key that closed distance and switches
+    # when one stops paying.
+    if args.motion == "hill":
+        motion = B.HillClimbMotion(arrive=arrive)
+    elif args.motion == "vector":
+        motion = B.VectorMotion(arrive=arrive, primitive="tap")
+        if calibration is not None:
+            motion.seed(calibration.effects, speed=calibration.speed or None)
+    else:
+        motion = B.RelativeTapMotion(arrive=arrive, turn_deg=turns)
 
     router = None
     if args.map:
@@ -303,6 +313,8 @@ def main(argv=None) -> int:
         item.add_argument("--seconds", type=float, default=60.0)
         item.add_argument("--session", default="")
         item.add_argument("--map", default="", help="decoded collision grid to route over")
+        item.add_argument("--motion", default="hill", choices=("hill", "vector", "relative"),
+                          help="movement controller: hill climbs measured gains, vector/relative infer a frame")
         item.add_argument("--map-name", default="", help="substring of the grid entry to use (e.g. forest01)")
         item.add_argument("--no-calibrate", action="store_true",
                           help="skip the one-tap-per-key calibration (it costs about five seconds)")

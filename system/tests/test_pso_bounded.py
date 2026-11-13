@@ -780,6 +780,51 @@ def test_relative_motion_uses_the_character_frame_not_a_world_table(workdir):
     assert moves and all(action.kind == "press" for action in moves)
 
 
+class ShiftingWorld(FakeWorld):
+    """A world whose key mapping changes every few taps: the camera-following frame that caused the 1,050-unit orbit."""
+
+    def __init__(self, clock, **kwargs):
+        super().__init__(clock, mode="vector", **kwargs)
+        self.log_every = 3
+        self.taps = 0
+        self.rotation = 0
+
+    def act(self, action, deadline):
+        if action.kind == "press" and action.key in B.DIRECTIONS:
+            self.taps += 1
+            if self.taps % self.log_every == 0:
+                self.rotation = (self.rotation + 90) % 360
+        super().act(action, deadline)
+
+    def _move(self, key, seconds):
+        vectors = {"up": (0.0, 1.0), "down": (0.0, -1.0), "left": (-1.0, 0.0), "right": (1.0, 0.0)}
+        dx, dz = vectors[key]
+        radians = math.radians(self.rotation)
+        rdx = dx * math.cos(radians) - dz * math.sin(radians)
+        rdz = dx * math.sin(radians) + dz * math.cos(radians)
+        step = self.speed * seconds
+        self.pos[0] += rdx * step
+        self.pos[1] += rdz * step
+
+
+def test_hill_climbing_finds_the_closing_key_when_the_frame_keeps_shifting(workdir):
+    """The frame is unknowable here: the mapping rotates 90 degrees every three taps, so no inferred frame survives.
+
+    The controller must instead notice that a key stopped closing and switch to one that does.
+    """
+    clock = FakeClock()
+    world = ShiftingWorld(clock)
+    motion = B.HillClimbMotion(arrive=6.0)
+    for _ in range(120):
+        action = motion.step(world.observe()["player"], (90.0, 40.0), "target")
+        if action is None:
+            break
+        world.act(action, clock.now() + 3.0)
+    remaining = math.hypot(90.0 - world.pos[0], 40.0 - world.pos[1])
+    assert remaining <= 12.0, f"the hill climber should reach the target (at {remaining:.0f} units)"
+    assert motion.switches >= 2, "it must have changed keys as the frame shifted"
+
+
 def test_heading_motion_turns_with_bounded_taps_then_steps(workdir):
     clock = FakeClock()
     world = FakeWorld(clock, mode="vector")
