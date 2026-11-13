@@ -745,11 +745,15 @@ def play(pad: Pad, seconds: float = 120.0) -> str:
                 bx, bz = float(box.get("x") or 0), float(box.get("z") or 0)
                 bdist = math.hypot(bx - x, bz - z)
                 if bdist <= 14.0:
-                    tap(pad, "b")                      # a pause menu eats the swing here too
-                    time.sleep(0.1)
-                    tap(pad, "a")
-                    time.sleep(0.35)
-                    tap(pad, "a")
+                    # SWEEP the aim cone. The attack only connects inside an 8-degree cone and heading_deg cannot be
+                    # trusted to aim, so swing a few times and rotate a little each visit - verified to break a box
+                    # at heading 58 after the same sweep. A fixed heading beside a box hits nothing.
+                    for _ in range(3):
+                        tap(pad, "b")                  # a pause menu eats the swing here too
+                        time.sleep(0.08)
+                        tap(pad, "a")
+                        time.sleep(0.3)
+                    hold(pad, "left" if int(time.time() * 3) % 2 else "right", 0.2)
                     boxes_hit += 1
                 else:
                     side_b = globals().get("BOX_SIDE", 1)
