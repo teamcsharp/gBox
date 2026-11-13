@@ -434,12 +434,15 @@ def test_live_ray_cancels_camera_bias_without_aiming_at_the_biased_command():
 
 
 @pytest.mark.parametrize('fresh', [True, False])
-def test_learning_uses_observed_camera_residual_and_never_reused_recoil_ray(monkeypatch, fresh):
+def test_learning_uses_observed_camera_residual_and_never_reused_recoil_ray(monkeypatch, tmp_path, fresh):
     monkeypatch.setattr(R, 'AIM_BOOK', True)
     bot = R.Bot.__new__(R.Bot)
     bot.stats = {}
     bot._ab_snap = scene()
-    bot._ab_plan = (2, object())
+    bot._item = 0x1b
+    core = R.aim_book.AimCore(R.combat_profile(), {}, root=tmp_path, log=False)
+    plan = core.plan(bot._ab_snap['enemies'][0], (0., 140., 0.), 'magnum', 0., weapon=bot._item)
+    bot._ab_plan = (2, plan)
     bot._aim_family = lambda: 'magnum'
     calls = []
     bot._aim_core = lambda: SimpleNamespace(shot=lambda *a, **kw: calls.append(kw))

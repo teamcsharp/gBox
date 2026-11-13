@@ -5951,11 +5951,11 @@ class Bot:
             # Posed native joints already locate the real body. Keep learned
             # lead/camera compensation without restoring a standing-height aim.
             plain = not posed and (abs(aim_h - b.chest) < 1.0 or abs(aim_h - CHEST_H) < 1.0)
-            plan = self._aim_core().plan(tgt, origin, self._aim_family(), now, body=b)
+            plan = self._aim_core().plan(tgt, origin, self._aim_family(), now, body=b, weapon=self._item)
             if plan is None:
                 return chest
             key = tgt.get("ptr", tgt.get("slot"))
-            self._ab_plan = (key, plan)
+            self._ab_plan = (aim_book.AimCore.target_key(tgt), plan)
             if plain:
                 d = tuple(plan.point[k] - plan.chest[k] for k in range(3))
                 physical = tuple(chest[k] + plan.point0[k] - plan.chest[k] for k in range(3))
@@ -5977,8 +5977,9 @@ class Bot:
         if not (AIM_BOOK and AIM_BOOK_GATE):
             return None
         got = self.__dict__.get("_ab_plan")
-        key = tgt.get("ptr", tgt.get("slot"))
-        if not got or got[0] != key:
+        key = aim_book.AimCore.target_key(tgt)
+        if (not got or got[0] != key
+                or not aim_book.plan_matches(got[1], self._item, tgt, self._aim_family())):
             return None
         return self._aim_core().contact_ok(got[1], origin, dot, tgt, body(tgt))
 
@@ -5996,11 +5997,13 @@ class Bot:
             laserless = bool(ctx.get("laserless"))
             origin, dot = (None, None) if laserless else (ctx.get("origin"), ctx.get("dot"))
             got = self.__dict__.get("_ab_plan")
-            plan = got[1] if got and got[0] == key else None
+            plan = got[1] if (got and got[0] == aim_book.AimCore.target_key(e)
+                and aim_book.plan_matches(got[1], self._item, e, self._aim_family())) else None
             p = snap.get("player") or {}
             if plan is None and p.get("pos"):
                 px, py, pz = p["pos"]
-                plan = self._aim_core().plan(e, origin or (px, py + MUZZLE_H, pz), self._aim_family(), now, body=body(e))
+                plan = self._aim_core().plan(e, origin or (px, py + MUZZLE_H, pz), self._aim_family(), now,
+                                             body=body(e), weapon=self._item)
             los = self.__dict__.get("_ab_los")
             los = los[1] if los and los[0] == key else None
             contact = ctx.get("body_contact")

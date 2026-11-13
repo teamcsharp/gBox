@@ -97,10 +97,42 @@ RECENT_N, LOG_N = 24, 12
 SAVE_S = 15.0
 CAUSES = ("no_los", "off_body", "moved", "on_body", "unmeasured")
 ERRS_KEPT = 400
+WEAPON_CELLS_MAX = 2048
+WEAPON_PRIOR_N = 4.0
 
 Correction = namedtuple("Correction", "yaw pitch pu pv tol lead_s n n_prior source")
 NO_CORRECTION = Correction(0.0, 0.0, 0.0, 0.0, 1.0, LEAD_PRIOR_S, 0, 0.0, "none")
-Plan = namedtuple("Plan", "point point0 chest corr key ukey band kind family cls dist_cm vel")
+Plan = namedtuple("Plan", "point point0 chest corr key ukey band kind family cls dist_cm vel weapon pose",
+                  defaults=(None, None))
+
+
+def weapon_key(weapon):
+    """Title-local item identity, never a path or an inferred weapon family."""
+    if type(weapon) is int and 0 <= weapon <= 0xffff:
+        return f'0x{weapon:04x}'
+    if isinstance(weapon, str) and 0 < len(weapon) <= 64 and weapon.isprintable():
+        return weapon
+    return None
+
+
+def target_pose(enemy, pose=None):
+    value = pose if pose is not None else (enemy or {}).get('action')
+    if value is None:
+        value = (enemy or {}).get('motion')
+    if isinstance(value, str) and value and value.isprintable():
+        return value[:128]
+    if type(value) is int:
+        return f'motion:{value}'
+    return 'unknown'
+
+
+def plan_matches(plan, weapon, enemy, family, *, pose=None):
+    """A cached correction is specific to the current item, body pose and family.
+
+    Target allocation identity is checked by the caller that owns the cache.
+    """
+    return (isinstance(plan, Plan) and plan.weapon == weapon_key(weapon)
+            and plan.pose == target_pose(enemy, pose) and plan.family == (family or 'gun'))
 
 
 def band(dist_cm) -> str:
@@ -223,8 +255,40 @@ def new_cell() -> dict:
 
 
 def _cell_ok(c) -> bool:
-    return isinstance(c, dict) and isinstance(c.get("bias"), list) and len(c["bias"]) == 2 \
-        and isinstance(c.get("pt"), list) and len(c["pt"]) == 2
+    """Reject corrupt persisted evidence before it can steer the camera or learn.
+
+    Older cells may omit optional fields. Present fields must have the same
+    finite, bounded shape produced by learn_cell; booleans are not measurements.
+    """
+    num = lambda x: (type(x) is int and abs(x) <= 2**53) or (type(x) is float and math.isfinite(x))
+    pair = lambda x: isinstance(x, list) and len(x) == 2 and all(num(v) for v in x)
+    if not isinstance(c, dict) or not pair(c.get('bias')) or not pair(c.get('pt')):
+        return False
+    if (any(abs(v) > BIAS_MAX + 1e-5 for v in c['bias']) or abs(c['pt'][0]) > PU_MAX
+            or not PV_MIN <= c['pt'][1] <= PV_MAX):
+        return False
+    for key in ('n', 'hits', 'misses', 'movers', 'bias_probes'):
+        if type(c.get(key, 0)) is not int or not 0 <= c.get(key, 0) <= 2**53:
+            return False
+    if c.get('n', 0) > N_CAP:
+        return False
+    tol, lead, updated = c.get('tol', TOL_MAX), c.get('lead_s'), c.get('updated')
+    if (not num(tol) or not TOL_MIN <= tol <= TOL_MAX
+            or (lead is not None and (not num(lead) or not 0 <= lead <= LEAD_MAX))
+            or (updated is not None and not num(updated))):
+        return False
+    recent, residuals, log = c.get('recent', ''), c.get('res', []), c.get('log', [])
+    if not isinstance(recent, str) or len(recent) > RECENT_N or any(v not in 'HM' for v in recent):
+        return False
+    if not isinstance(residuals, list) or len(residuals) > BIAS_WINDOW:
+        return False
+    for row in residuals:
+        if (not isinstance(row, list) or len(row) != 2 or not num(row[0])
+                or (row[1] is not None and not num(row[1]))):
+            return False
+    return (isinstance(log, list) and len(log) <= LOG_N and all(
+        isinstance(row, list) and len(row) == 3 and num(row[0])
+        and isinstance(row[1], str) and isinstance(row[2], str) and len(row[2]) <= 200 for row in log))
 
 
 def learn_cell(c: dict, shot: dict, now: float) -> list:
@@ -365,7 +429,14 @@ class AimBook:
         filename = 'aim_book_verified.json' if verified_only else FILE
         self.path = self.root / self.title_id / filename
         self.upath = self.root / UNIVERSAL / filename
-        self.cells: dict = {k: v for k, v in (_load(self.path).get("cells") or {}).items() if _cell_ok(v)}
+        data = _load(self.path)
+        self.cells: dict = {k: v for k, v in (data.get("cells") or {}).items() if _cell_ok(v)}
+        # Actual item identity is scoped to this title; matching item numbers
+        # across games do not imply the same weapon. Family priors remain shared.
+        weapons = data.get('weapons') or {}
+        self.weapons = {k: v for k, v in weapons.items() if self._wkey_ok(k) and _cell_ok(v)} \
+            if isinstance(weapons, dict) else {}
+        self._bound_weapons()
         self.others: dict = {}                             # ukey -> {title: cell} of the OTHER titles (the prior)
         self.mine: dict = {}                               # ukey -> this title's universal sub-cell
         self._read_universal()
@@ -379,6 +450,32 @@ class AimBook:
     @staticmethod
     def ukey(family, kind, band_name) -> str:
         return f"{family or 'gun'}|{kind or 'human'}|{band_name}"
+
+    @staticmethod
+    def wkey(weapon, family, cls, pose, band_name):
+        identity = weapon_key(weapon)
+        if identity is None:
+            return None
+        return json.dumps([identity, family or 'gun', cls or '?', target_pose({}, pose), band_name],
+                          separators=(',', ':'), ensure_ascii=True)
+
+    def _bound_weapons(self):
+        if len(self.weapons) > WEAPON_CELLS_MAX:
+            ordered = sorted(self.weapons, key=lambda key: self.weapons[key].get('updated') or 0)
+            for key in ordered[:-WEAPON_CELLS_MAX]:
+                del self.weapons[key]
+
+    @classmethod
+    def _wkey_ok(cls, key):
+        if not isinstance(key, str) or len(key) > 1024:
+            return False
+        try:
+            parts = json.loads(key)
+        except (ValueError, TypeError):
+            return False
+        return (isinstance(parts, list) and len(parts) == 5
+                and all(isinstance(v, str) and v and v.isprintable() and len(v) <= 128 for v in parts)
+                and parts[4] in {name for _, name in BANDS} and key == cls.wkey(*parts))
 
     def _read_universal(self) -> None:
         cells = _load(self.upath).get("cells") or {}
@@ -412,7 +509,22 @@ class AimBook:
         lead = sum(m * l for m, l in leads) / lm if lm > 0 else None
         return n, bias, pt, tol, lead, lm, sorted(per)
 
-    def correction(self, family, cls, kind, band_name) -> Correction:
+    def correction(self, family, cls, kind, band_name, *, weapon=None, pose=None) -> Correction:
+        prior = self._family_correction(family, cls, kind, band_name)
+        cell = self.weapons.get(self.wkey(weapon, family, cls, pose, band_name))
+        n = min(N_CAP, cell.get('n', 0)) if cell else 0
+        if n <= 0:
+            return prior
+        # A few family observations initialize a new weapon. Its own measured
+        # residuals take over; a magnum cannot overwrite a shotgun's cell.
+        prior_n = min(WEAPON_PRIOR_N, prior.n + prior.n_prior)
+        own = (-cell['bias'][0], -cell['bias'][1], cell['pt'][0], cell['pt'][1],
+               cell.get('tol', TOL_MAX), cell.get('lead_s'))
+        values = [prior[i] if value is None else (n*value+prior_n*prior[i])/(n+prior_n)
+                  for i, value in enumerate(own)]
+        return Correction(*values, n, prior_n, 'weapon+'+prior.source)
+
+    def _family_correction(self, family, cls, kind, band_name) -> Correction:
         c = self.cells.get(self.key(family, cls, band_name))
         pr = self._prior(self.ukey(family, kind, band_name))
         n = min(N_CAP, c.get("n", 0)) if c else 0
@@ -463,6 +575,13 @@ class AimBook:
         changes = learn_cell(c, shot, now)
         u = self.mine.setdefault(self.ukey(shot.get("family"), shot.get("kind"), shot.get("band")), new_cell())
         learn_cell(u, shot, now)
+        wk = self.wkey(shot.get('weapon'), shot.get('family'), shot.get('cls'), shot.get('pose'), shot.get('band'))
+        # Weapon mastery always needs actual discharge and eligible attribution,
+        # even for an older caller still using the legacy family-only book.
+        if wk is not None and shot.get('discharge_confirmed') is True and shot.get('learning_eligible') is True:
+            cell = self.weapons.setdefault(wk, new_cell())
+            changes += ['weapon: '+x for x in learn_cell(cell, shot, now)]
+            self._bound_weapons()
         self.dirty = True
         return changes
 
@@ -474,12 +593,14 @@ class AimBook:
         self.saved_at = now
         try:
             _atomic_write(self.path, {"version": VERSION, "title": self.title_id, "saved": round(self.clock(), 1),
-                                      "cells": self.cells})
+                                      "cells": self.cells, "weapons": self.weapons})
             with _Lock(self.upath):
                 data = _load(self.upath) or {"version": VERSION, "cells": {}}
                 cells = data.setdefault("cells", {})
                 for uk, c in self.mine.items():
-                    cells.setdefault(uk, {})[self.title_id] = c
+                    if not isinstance(cells.get(uk), dict):
+                        cells[uk] = {}
+                    cells[uk][self.title_id] = c
                 data["saved"] = round(self.clock(), 1)
                 _atomic_write(self.upath, data)
             self._read_universal()
@@ -502,7 +623,7 @@ class AimBook:
 
 
 # --- the ledger -----------------------------------------------------------------------------------------------------------
-LOG_KEYS = ("target", "family", "cls", "kind", "band", "dist_cm", "los", "contact", "uv", "vlat", "lead_s", "corr",
+LOG_KEYS = ("target", "family", "weapon", "pose", "cls", "kind", "band", "dist_cm", "los", "contact", "uv", "vlat", "lead_s", "corr",
             "outcome", "cause", "hits", "hp_delta", "hp0", "cam", "gun", "source",
             'discharge_confirmed', 'discharge_source', 'learning_eligible', 'learning_refusal', 'aim_settled')
 
@@ -719,7 +840,8 @@ class AimCore:
         key = (e or {}).get("ptr", (e or {}).get("slot"))
         return (key, e['generation']) if e and e.get('generation') is not None else key
 
-    def confirm_discharge(self, now, identity, enemies, *, unconfounded):
+    def confirm_discharge(self, now, identity, enemies, *, unconfounded,
+                          source='native_fire_cooldown_rearm'):
         """Match one native rearm to a recent request, never to a new life/weapon.
 
         Repeated requests on the same target can share a confirmation window;
@@ -734,7 +856,7 @@ class AimCore:
         seen = {self.target_key(e) for e in enemies or ()}
         if shot.get('target') not in seen:
             return False
-        shot.update(discharge_confirmed=True, discharge_source='native_fire_cooldown_rearm')
+        shot.update(discharge_confirmed=True, discharge_source=source)
         residual = shot.get('resid')
         measured = (isinstance(residual, (tuple, list)) and len(residual) == 2
                     and all(type(v) in (int, float) and math.isfinite(v) and abs(v) <= math.radians(15)
@@ -782,12 +904,14 @@ class AimCore:
                 self._summary_at = now
                 self.stats[f"{self.prefix}_book"] = self.book.summary()
                 self.stats[f"{self.prefix}_book_cells"] = len(self.book.cells)
+                self.stats[f"{self.prefix}_weapon_cells"] = len(self.book.weapons)
             return done
         except Exception as exc:                          # noqa: BLE001 - the book never costs a tick
             self.stats[f"{self.prefix}_error"] = f"{type(exc).__name__}: {exc}"[:160]
             return []
 
-    def plan(self, e, origin, family=None, now: float | None = None, body=None, extra=(0.0, 0.0, 0.0)) -> Plan | None:
+    def plan(self, e, origin, family=None, now: float | None = None, body=None, extra=(0.0, 0.0, 0.0),
+             weapon=None, pose=None) -> Plan | None:
         """The aim at e from origin (the title's units): point0 the body point meant (his chest moved by the book's body
         point and his lead), point the one to steer the gun onto (point0 turned by the book's angular correction),
         chest his plain chest; all in the title's units. extra: an offset (cm) added to point0 (the fire pattern's
@@ -800,7 +924,8 @@ class AimCore:
             b = body if body is not None else prof.body(e)
             dist = math.hypot(foot[0] - o[0], foot[2] - o[2])
             bn, kind, cls = band(dist), kind_of(prof, e), class_key(prof, e)
-            corr = self.book.correction(family, cls, kind, bn) if self.apply else NO_CORRECTION
+            weapon, pose = weapon_key(weapon), target_pose(e, pose)
+            corr = self.book.correction(family, cls, kind, bn, weapon=weapon, pose=pose) if self.apply else NO_CORRECTION
             vel = self.velocity(e)
             lead = tuple(v * corr.lead_s for v in (vel[0], 0.0, vel[2])) if self.apply else (0.0, 0.0, 0.0)
             p0 = body_point(o, foot, b, corr.pu, corr.pv, lead)
@@ -810,7 +935,7 @@ class AimCore:
             k = prof.units_per_cm
             back = lambda q: tuple(v * k for v in q)
             return Plan(back(p1), back(p0), back(chest), corr, self.book.key(family, cls, bn),
-                        self.book.ukey(family, kind, bn), bn, kind, family, cls, dist, vel)
+                        self.book.ukey(family, kind, bn), bn, kind, family, cls, dist, vel, weapon, pose)
         except Exception as exc:                          # noqa: BLE001
             self.stats[f"{self.prefix}_error"] = f"{type(exc).__name__}: {exc}"[:160]
             return None
@@ -853,7 +978,8 @@ class AimCore:
             _h, lat, _fw = frame(ref, foot)
             vlat = vel[0] * lat[0] + vel[2] * lat[2]
             s = {"t": now, "target": self.target_key(e), "family": family, "cls": plan.cls, "kind": plan.kind,
-                 "band": plan.band, "dist_cm": round(plan.dist_cm, 1), "los": los,
+                 "band": plan.band, "weapon": plan.weapon, "pose": plan.pose,
+                 "dist_cm": round(plan.dist_cm, 1), "los": los,
                  "contact": None if contact is None else bool(contact), "err": err, "resid": resid, "uv": uv,
                  "vlat": round(vlat, 1), "lead_s": plan.corr.lead_s, "hp0": e.get("hp"),
                  "corr": (round(plan.corr.yaw, 5), round(plan.corr.pitch, 5), round(plan.corr.pu, 3),

@@ -1013,7 +1013,19 @@ def snapshot(m, now: float | None = None, search: bool = True) -> dict:
             # gbox.mercs.grenade_ring.decide) can read. `boss` / `key` / `chainsaw` per enemy, never a guess for a
             # health the list does not hold.
             stage = stage_name(snap)
+            from . import re4_garrador_aim as _ga
             for e in enemies:
+                native_type = _ga.native_type(m, base, e)
+                if native_type is not None:
+                    e['native_type'] = native_type
+                    if e.get('id') is not None:
+                        e['generation'] = e['id']
+                if native_type in (0xA, 0xD):
+                    e['boss'], e['key'], e['chainsaw'] = True, (
+                        'garrador' if native_type == 0xA else 'garrador_armored'), False
+                    e['weakpoint'] = _ga.read(m, base, e)
+                    if e['weakpoint'] is not None:
+                        e['weakpoint']['at'] = now
                 key = boss_key(e, stage)
                 if key is not None:
                     e["boss"] = True
@@ -1051,6 +1063,10 @@ def snapshot(m, now: float | None = None, search: bool = True) -> dict:
                         # Why the laser was refused. Every steady aim request depends on it, and the ~40% rounds could
                         # not say whether the class byte, the ray's origin or its length was refusing (2026-11-11).
                         snap["laser_gate"] = laser_gate(aim, player)
+                from . import re4_discharge_witness as _dw
+                witness = _dw.read(m, base, snap, now)
+                if witness is not None:
+                    snap['fire_witness'] = witness
         snap["enemies"] = [dict(e, hp_max=e.get("hp_max")) for e in enemies]
     if CAMERA_READ:                                      # the camera (#9386): where it is, how far from him
         cam = camera_state(m, base)
@@ -2833,6 +2849,8 @@ class Bot:
 
     def _aim_tick(self, snap, now) -> None:
         if AIM_BOOK:
+            from . import re4_discharge_witness as dw
+            dw.observe(self, snap, now, self._aim_core())
             kills = snap.get("kills")
             self._aim_core().tick(now, snap.get("enemies") or (), kills if isinstance(kills, int) else None)
             st = self.stats                              # the round's two numbers by their plain names, on RE4
@@ -2847,8 +2865,19 @@ class Bot:
         return (x, y + GUN_H_MM, z), False
 
     def _aim_plan(self, p, e, snap, now, fp_off=0.0):
+        from . import re4_garrador_aim as ga
         origin, _fresh = self._gun_origin(p, snap)
-        return self._aim_core().plan(e, origin, aim_family(snap), now), origin
+        if ga.required(e) and not ga.fresh(e, now):
+            return None, origin
+        held = (snap.get('aim') or {}).get('item', snap.get('equipped_id'))
+        plan = self._aim_core().plan(e, origin, aim_family(snap), now, weapon=held, pose=ga.pose(e))
+        if plan is not None and ga.required(e):
+            point = ga.point(e)
+            # A live damage sphere replaces the generic body/lead model. Keep
+            # only the book's bounded angular correction, never a chest offset.
+            corrected = aim_book.turn_point(origin, point, plan.corr.yaw, plan.corr.pitch)
+            plan = plan._replace(point=corrected, point0=point, chest=point)
+        return plan, origin
 
     def _aim_shot(self, p, e, snap, now, plan=None, actual=None, contact=None) -> None:
         """The tap's record (aim_book.Ledger): the plan meant, the laser's line when it is up, else `actual` angles."""
@@ -2861,7 +2890,19 @@ class Bot:
             laser = snap.get("laser") if fresh else None
             gate = self.__dict__.get("_gate")
             los = None if gate == "controls" else gate is None
-            extra = {}
+            from . import re4_garrador_aim as ga
+            from . import re4_discharge_witness as dw
+            extra = {'weapon': plan.weapon if plan is not None else None,
+                     'pose': plan.pose if plan is not None else ga.pose(e), 'fire_identity': dw.identity(snap, now),
+                     'unconfounded': dw.unconfounded(self, snap, now),
+                     'aim_settled': bool(fresh and contact is True
+                         and (snap.get('aim') or {}).get('sight') == e.get('ptr'))}
+            if ga.required(e):
+                extra['weakpoint'] = {'source': 'native Garrador damage sphere',
+                    'part_no': (e.get('weakpoint') or {}).get('part_no'), 'target': ga.point(e)}
+                contact = bool(laser and ga.contact(laser['from'], laser['at'], e)
+                               and (snap.get('aim') or {}).get('sight') == e.get('ptr'))
+                los = bool(contact)
             cam = snap.get("camera")
             if cam and plan is not None:                 # the camera's own line (Campos -> Target), for the log
                 cy, cp = aim_book.angles(cam["pos"], cam["target"])
@@ -2889,13 +2930,31 @@ class Bot:
     def _ram_aim(self, p, live, e, dist, err, fp_off, snap, now) -> dict | None:
         """AIM_RAM: the steady aim (see AIM_PITCH_GAIN). None: the old path aims and fires this tick (no aim read, the
         lock not writing, the core's error)."""
+        from . import re4_garrador_aim as ga
+        weak = ga.required(e)
         aim, laser = snap.get("aim"), snap.get("laser")
+        if weak and (not ga.fresh(e, now) or ga.rear_visible(e, p['pos']) is not True):
+            reason = 'native sphere unavailable' if not ga.fresh(e, now) else 'back weakpoint faces away'
+            # Continue fighting a valid nearby target while the boss's back is
+            # inaccessible. A health-derived boss name never authorizes chest fire.
+            choices = [t for t in live if t[2] is not e and not ga.required(t[2])
+                       and t[0] <= HUNT_RUN_MM and self._may_fire(p, t[2], t[0], snap)]
+            if choices:
+                alt_dist, alt_err, alt = min(choices, key=lambda t: t[0])
+                self.target = alt.get('ptr')
+                self.stats['weakpoint_aim'] = {'state': 'nearby_target', 'reason': reason,
+                    'target': e.get('ptr'), 'alternative': self.target}
+                # Exclude the unavailable boss from the sight-switch pool, so
+                # the alternate cannot recursively switch straight back to it.
+                pool = [t for t in live if t[2] is not e]
+                return self._ram_aim(p, pool, alt, alt_dist, alt_err, 0., snap, now) or {'hold': {AIM_BTN}}
+            return ga.reposition(self, p, e, snap, now, reason)
         if not aim or p.get("ptr") is None or p.get("rot") is None or not self._lock_live(now):
-            return None
+            return ga.reposition(self, p, e, snap, now, 'native aim lock unavailable') if weak else None
         try:
             plan, origin = self._aim_plan(p, e, snap, now)
             if plan is None:
-                return None
+                return ga.reposition(self, p, e, snap, now, 'native weakpoint plan unavailable') if weak else None
             pt = plan.point
             up = self._aim_since is not None and now - self._aim_since >= AIM_READY_S
             fresh = bool(up and laser is not None and laser.get("up"))
@@ -2924,9 +2983,31 @@ class Bot:
             else:
                 yaw = heading(pt[0] - p["pos"][0], pt[2] - p["pos"][2])
                 pitch = math.atan2(pt[1] - origin[1], max(math.hypot(pt[0] - origin[0], pt[2] - origin[2]), 1.0))
-            AIM_REQUEST.update(ptr=p["ptr"], yaw=wrap(yaw + fp_off), pitch=pitch, steady=True, wep=aim.get("wep"),
+            AIM_REQUEST.update(ptr=p["ptr"], yaw=wrap(yaw + (0. if weak else fp_off)), pitch=pitch, steady=True, wep=aim.get("wep"),
                                at=time.monotonic())
             self.stats["aim_ram"] = "line" if fresh else "rising"
+            if weak:
+                on_weakpoint = bool(fresh and aim.get('sight') == e.get('ptr')
+                    and ga.contact(laser['from'], laser['at'], e))
+                self.stats['weakpoint_aim'] = {'state': 'contact' if on_weakpoint else 'correcting',
+                    'target': e.get('ptr'), 'point': list(plan.point0),
+                    'radius_mm': e['weakpoint']['radius_mm'], 'finite_laser_contact': on_weakpoint}
+                if not on_weakpoint:
+                    previous = self.__dict__.get('_weakpoint_miss')
+                    identity = (e.get('ptr'), e.get('id'))
+                    if previous is None or previous[0] != identity:
+                        previous = self._weakpoint_miss = (identity, now)
+                    if now-previous[1] >= 1.0:
+                        return ga.reposition(self, p, e, snap, now, 'laser misses native back sphere')
+                    self.doing, self.why = 'aim', 'correcting the laser onto the Garrador back sphere'
+                    return {'hold': {AIM_BTN}}
+                self._weakpoint_miss = None
+                if now-self._last_fire < FIRE_GAP_S:
+                    self.doing = 'aim'
+                    return {'hold': {AIM_BTN}}
+                self._aim_shot(p, e, snap, now, plan=plan, contact=True)
+                self.why = 'the finite native laser reaches the Garrador back sphere'
+                return self._tap(e, dist, err, snap, now)
             if not fresh:
                 self._ram_since = None
                 if up and SPRAY_ALWAYS:
@@ -2974,6 +3055,8 @@ class Bot:
                 self.stats["aim_ram_sight_switches"] = self.stats.get("aim_ram_sight_switches", 0) + 1
                 dist, err, e = next(t for t in live if t[2] is on)
                 self.target = e.get("ptr")
+                if ga.required(e):
+                    return self._ram_aim(p, live, e, dist, err, 0., snap, now)
                 plan, _o = self._aim_plan(p, e, snap, now)
             self.stats["aim_ram_shots"] = self.stats.get("aim_ram_shots", 0) + 1
             self._aim_shot(p, e, snap, now, plan=plan, contact=True)
@@ -2981,7 +3064,7 @@ class Bot:
             return self._tap(e, dist, err, snap, now)
         except Exception as exc:                         # noqa: BLE001 - the RAM aim never costs the fight
             self.stats["aim_ram_error"] = f"{type(exc).__name__}: {exc}"[:160]
-            return None
+            return ga.reposition(self, p, e, snap, now, 'native weakpoint aim error') if weak else None
 
     def _bow_in_hand(self, snap) -> bool:
         """The gun in hand is the bow (the fast-fire class family): arrows discharge on the bow's own fast path."""

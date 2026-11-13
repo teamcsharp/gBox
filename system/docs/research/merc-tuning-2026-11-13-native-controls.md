@@ -232,3 +232,52 @@ all-player blast clearance. Nitrogen remains unverified. The RE4 aim book's
 verified-only learning lacks a discharge-confirmation feed; counting trigger
 requests as hits would hide rather than fix that defect. No S-rank consistency
 or complete implementation of these requests is claimed here.
+
+## Activation, round evidence and reload recovery
+
+Revision `5d99bb63114603ef14fbd101b3dc5fbfc62d2e58` activated after a closed
+RE5 death at 1794577578.4451225. The new service PID was1284752 and worker
+`025de5feea3142c4`; all25 checked changed runtime sources matched. Its RE5
+round `443f46cf24f54548a8078df81609c1ae` reached a sampled49-kill combo and
+22,200points, then died at1794577791.6464307 with49kills and36,340points.
+It captured zero time bonuses. Sampled shotgun trigger requests
+rose to63 with15.91seconds of trigger hold over60.68seconds. These are input
+and outcome observations, not a native bullet count or a successful S rank.
+Four native mine trigger/retirement witnesses were recorded. The durable record
+contains77seconds stationary across97.6seconds. One mine was raycast14.54meters
+below the player's floor but retained by the flat-distance escape test. Native
+vertical blast bounds or pre-arming floor validation need investigation before
+relaxing that protection. Blocked mine escape, low health and slow decisions
+remained; no survival guarantee follows.
+
+Revision `f2b1b3f38f5237e54a5f876c338cb54db48a8a65` activated in the following
+empty MercMode boundary; service PID1324645, worker`5848d136b3904c8b`.
+Its crowd roulette has an independent120-second clock, verified effect
+selection and owned flash-to-mine follow-ups. See `merc-crowd-roulette.md`.
+RE4's per-frame20x gun guard still needs a fresh RE4 process and measured live
+cadence. RE6 nitrogen remains unverified. Activation archives and round JSONL
+are under Spark `gbox-data/merc-activation-*` and
+`gbox-data/analysis/merc-tuning-20261113/post-5d99-round-audit.jsonl`.
+
+The earlier RE4 attempt `6bd20871af54439dabfeb324bfff98be` froze at the
+Waterworld intro: timer119.67seconds, zero kills, native dispatcher tick80949
+unchanged across repeated reads. The mailbox was completed, not a proven
+pending native call. Evidence is archived in `re4-frozen-6bd20871-*`; root cause
+remains unresolved. MercMode moved on to RE5 after the stopped autoplay job.
+
+The operator then requested GitHub synchronization to reload gBox. The desktop
+updater now checks whether the fetched commit already equals HEAD before
+refusing a merge because of local edits. Current checkouts can report current
+while retaining those edits. No dirty checkout is merged by that change.
+An additional reload blocker was639 old local ownership records; the read-only
+inspection now accepts positive process absence/reuse while retaining the
+records and refusing live, unknown or concurrently changed ownership. The
+operator separately requested closing lingering Ryujinx; a fresh process
+inventory subsequently confirmed that no Ryujinx process remained.
+
+The latest aim work is described in `re4-garrador-native-weakpoint-20261113.md`
+and `weapon-aim-mastery-20261113.md`: actual animated Garrador damage spheres,
+conservative native shotgun/magnum discharge witnesses, and title-local weapon
+partitions. RE5 still needs a verified emission feed; its static provenance is
+in `re5-fire-witness-20261113.md`. Trigger requests must never substitute for
+native discharge or impact evidence in the mastery database.

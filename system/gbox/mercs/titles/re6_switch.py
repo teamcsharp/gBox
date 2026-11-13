@@ -5277,10 +5277,10 @@ class Bot:
         if not AIM_BOOK or not e or not p.get("pos"):
             return None
         try:
-            plan = self._aim_core().plan(e, origin or p["pos"], aim_family(p), now, body=body(e))
+            plan = self._aim_core().plan(e, origin or p["pos"], aim_family(p), now, body=body(e), weapon=p.get('weapon_id'))
             if plan is None:
                 return None
-            self._ab_plan = (e.get("ptr", e.get("slot")), plan)
+            self._ab_plan = (aim_book.AimCore.target_key(e), plan)
             base = aim_point(e, p["pos"])
             if abs(base[1] - plan.chest[1]) > 1.0:          # off his floor: aim_point's own height kept - the lead and
                 lead = (plan.vel[0] * plan.corr.lead_s, 0.0, plan.vel[2] * plan.corr.lead_s)   # the angular part only
@@ -5295,9 +5295,10 @@ class Bot:
             return
         try:
             got = self.__dict__.get("_ab_plan")
-            key = e.get("ptr", e.get("slot"))
-            plan = got[1] if got and got[0] == key else self._aim_core().plan(e, origin or p["pos"], aim_family(p), now,
-                                                                              body=body(e))
+            key = aim_book.AimCore.target_key(e)
+            plan = got[1] if (got and got[0] == key
+                and aim_book.plan_matches(got[1], p.get('weapon_id'), e, aim_family(p))) else self._aim_core().plan(
+                    e, origin or p["pos"], aim_family(p), now, body=body(e), weapon=p.get('weapon_id'))
             laser = source == "laser"
             self._aim_core().shot(now, e, plan, origin=origin if laser else None, at=dot if laser else None,
                                   contact=bool(on) if laser else None, los=False if self.is_blocked(e, now) else
