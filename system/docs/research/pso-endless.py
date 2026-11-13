@@ -130,6 +130,39 @@ def ensure_in_game(pad: Pad) -> bool:
     return False
 
 
+
+def mods(pad: Pad, payload: dict, wait: float = 45.0) -> dict:
+    """One pso_mods mutation, single attempt."""
+    job = call("/api/jobs", {"tool": "pso_mods", "require_worker": pad.worker,
+                             "input": {"session_id": pad.sid, **payload}}, "POST")
+    job_id = job.get("id") if isinstance(job, dict) else None
+    if not job_id:
+        return {"state": "rejected", "error": str(job)[:120]}
+    deadline = time.time() + wait
+    while time.time() < deadline:
+        time.sleep(1.5)
+        row = call("/api/jobs/" + job_id)
+        if row.get("state") in ("succeeded", "failed", "cancelled"):
+            return {"state": row.get("state"), "error": row.get("error"),
+                    "output": (row.get("output") or {}).get("result")}
+    return {"state": "timeout"}
+
+
+def arm(pad: Pad) -> None:
+    """Make this cycle's character able to play: unblockable, armed, and unable to stay dead.
+
+    A relaunched session starts with none of this, because equipment lives in live memory rather than on the worker.
+    """
+    log("arming: walk_through, best weapons, survival")
+    for payload in ({"op": "walk_through", "on": True},
+                    {"op": "give", "code": "009d00", "equip": True},      # DARK FLOW
+                    {"op": "give", "code": "003200", "equip": True},      # TSUMIKIRI J-SWORD
+                    {"op": "survival", "on": True}):                      # virtual Scape Doll
+        answer = mods(pad, payload)
+        log(f"  {payload['op']} {payload.get('code', '')}: {answer.get('state')} "
+            f"{str(answer.get('error'))[:70]}")
+
+
 # ---- play ------------------------------------------------------------------------------------------------------------
 def play(pad: Pad, seconds: float = 45.0) -> str:
     """Fight what is near, otherwise travel. Returns what it did most."""
@@ -217,6 +250,8 @@ if __name__ == "__main__":
                                    "input": {"session_id": pad.sid, "op": "stop_game", "args": {}}}, "POST")
                 time.sleep(8)
                 continue
+
+            arm(pad)
 
             while live_sessions():
                 outcome = play(pad, seconds=45)
