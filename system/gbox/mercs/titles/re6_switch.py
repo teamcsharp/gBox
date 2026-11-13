@@ -1560,6 +1560,10 @@ def forget(what: str) -> None:
     """Drop a cached unit ("camera", "laser") for every main base: the next read looks for it again."""
     for key in [k for k in _FOUND if k[1] == what]:
         _FOUND.pop(key, None)
+    for key in [k for k in _MISS if k[1] == what]:
+        # A deliberate re-look (the raise's reraise / the stale ray) must not be
+        # held off by the negative cache for up to RESCAN_S beyond LASER_WAIT_S.
+        _MISS.pop(key, None)
 
 
 def camera(m, base: int, near=None) -> dict | None:
@@ -4901,8 +4905,19 @@ class Bot:
             forget("laser")
         source = "laser"
         if origin is None:
-            if cam is None or now - self.aim_since < LASER_WAIT_S:
+            if cam is None:
                 return self._go("raise", "raise", {"hold": ("zl",) + back}, "the gun comes up (no laser yet)")
+            if now - self.aim_since < LASER_WAIT_S:
+                # The laser is still unread (it is flaky on this build: reraise 28 / t_raise 26 s in the live
+                # 2026-11-13 No Mercy round). The camera line never authorizes fire by itself, but a close clear
+                # shot it already proves by the SAME geometry gate _aim applies below - same cone, same
+                # is_blocked test, same GEOM_CLOSE_R band - is pulled now instead of after the 0.7 s wait. Nothing
+                # new can fire: a line this gate rejects still waits for the measured laser exactly as before.
+                err = ray_error(cam["pos"], cam["target"], aim_point(tgt, p["pos"]))
+                if not (flat(tgt) <= GEOM_CLOSE_R and abs(err[0]) <= GEOM_FIRE_ERR
+                        and abs(err[1]) <= GEOM_FIRE_PITCH and not self.is_blocked(tgt, now)):
+                    return self._go("raise", "raise", {"hold": ("zl",) + back}, "the gun comes up (no laser yet)")
+                self.stats["raise_geometry_fires"] = self.stats.get("raise_geometry_fires", 0) + 1
             origin, dot, source = cam["pos"], cam["target"], "camera"
         cands = self._aimable if source == "laser" else (front or self._aimable)
         on_e = self._on_line(origin, dot, source, cands, now)

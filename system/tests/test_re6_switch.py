@@ -902,11 +902,14 @@ def test_the_throw_is_held_and_flashes_come_in_a_flurry_while_they_crowd_him(mon
 def test_a_close_enemy_in_front_is_fired_on_by_geometry_without_the_laser():
     # operator 2026-11-03: "raising their weapon and NOT firing ... firing like mad". With NO laser ray, a close enemy
     # in front (within GEOM_CLOSE_R, clear line) is still fired on - the trigger (zr) is pulled, via geometry.
+    # 2026-11-13 live: the 0.7 s laser wait before that pull was 74% of t_raise (reraise 28); the same verified
+    # close shot now comes at the end of READY_S instead, so only a few ticks may pass.
     on_close = ((0.0, 0.0, 300.0, 700),)                                     # 3 m straight ahead, no laser
     bot, clock, snap = brain(round_guest(enemies=on_close, cam_yaw=0.0))
     bot.held = lambda p, now: False
-    acts = run(bot, snap, clock, int(R.LASER_WAIT_S / 0.05) + 8)
+    acts = run(bot, snap, clock, int(R.READY_S / 0.05) + 6)
     assert any("zr" in a.get("hold", ()) for a in acts)                      # it discharges (geometry), no laser needed
+    assert bot.stats.get("raise_geometry_fires", 0) >= 1
     assert bot.stats.get("re6_geometry_fires", 0) >= 1 and bot.stats["confirmed_shots"] >= 1
     assert "via geometry" in bot.stats["aim"]
     # but a FAR enemy with no laser and no mesh is still not blind-fired at (no proof the line clears a wall)

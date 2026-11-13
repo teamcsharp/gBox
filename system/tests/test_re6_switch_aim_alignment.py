@@ -92,11 +92,18 @@ def test_point_blank_emergency_quick_shots_survive_without_a_laser():
     bot, clock, snap = brain(round_guest(enemies=((0.0, 0.0, 150.0, 700),), cam_yaw=0.0))
     bot.held = lambda p, now: False
     acts = run(bot, snap, clock, int(2 * R.CC_QSHOT_GAP_S / 0.05))
-    # Close range does not establish a clear projectile path. Acquire the gun's
-    # measured line before requesting emergency quick shots.
+    # Close range does not establish a clear projectile path, so no emergency quick
+    # shot is requested. The close geometry pull is a different, already-verified
+    # shot (GEOM_CLOSE_R band, cone and is_blocked test): it used to wait LASER_WAIT_S
+    # and is what this test's old blanket "no trigger" assertion measured. The
+    # no-trigger rule belongs to a target outside that proven band.
     assert bot.stats["cc_quick_shots"] == 0
     assert any('zl' in a.get('hold', ()) for a in acts)
-    assert all('zr' not in a.get('hold', ()) and a.get('tap') != 'zr' for a in acts)
+    assert bot.stats.get('re6_geometry_fires', 0) >= 1
+    far, clock2, snap2 = brain(round_guest(enemies=((0.0, 0.0, 900.0, 700),), cam_yaw=0.0))
+    far.held = lambda p, now: False
+    acts2 = run(far, snap2, clock2, int(2 * R.CC_QSHOT_GAP_S / 0.05))
+    assert all('zr' not in a.get('hold', ()) and a.get('tap') != 'zr' for a in acts2)
 
 
 def test_a_material_camera_redirect_cannot_fire_using_the_pre_write_ray():
