@@ -2496,6 +2496,13 @@ AIM_WALK_R, AIM_WALK_S = 800.0, 0.8     # aiming this long without the line on o
 TICK_S = 0.05                           # the engine's tick (gbox.mercs.engine tick_s)
 BOMB_FIGHT_R, BOMB_DET_NEAR_R, BOMB_FACE_CLEAR_R, BOMB_FACE_MAX_S = 200.0, 400.0, 400.0, 0.4
 BOMB_CROWD_N, BOMB_CROWD_R = 2, 300.0
+# A timed escape that has not cleared the rule's distance this long after the earliest armed placement cannot clear it
+# here (the five-second deadline is already missed and truthfully recorded): instead of walking until the round ends
+# with the gun down - which broke the operator's combo rule in the live RE6 No Mercy rounds of 2026-11-13 - the gun
+# comes back up and the retreat keys are merged into normal aimed fire (stats escape_timeouts). The escape route is
+# still kept; only the pure-movement monopoly ends. Deadlines are never waived: the blast is still set off only from
+# the rule's clearance, and a missed deadline stays in mine_deadline_incidents.
+ESCAPE_TIMEOUT_S, ESCAPE_TIMEOUT_FIGHT_R = 12.0, 600.0
 DEATH_LOG_N, HP_HIST_S = 8, 3.0         # stats death_log: the last deaths, each with his last HP_HIST_S
 BOMB_STUCK_S, BOMB_SIDE_S = 0.6, 0.8    # walking off it: not 30 cm further in this long, a side step this long
 BOMB_HURT_HP = 50                       # a blast that takes this much of his health (BOMB_LEARN_S): stats bomb_self_hits
@@ -7434,6 +7441,19 @@ class Bot:
         ESCAPE_FIGHT_R in the way out - the crowd between him and safe ground is fought first."""
         px, _, pz = p["pos"]
         deadline_escape = act == 'bomb_escape' and self.stats.get('mine_escape_required')
+        timed_out = False
+        if deadline_escape:
+            elapsed = self.stats.get('mine_elapsed_s')
+            if isinstance(elapsed, (int, float)) and math.isfinite(elapsed) and elapsed >= ESCAPE_TIMEOUT_S:
+                # The five-second deadline is already missed and recorded with its reason (mine_deadline_incidents):
+                # the pure-movement monopoly ends here. The route is kept and the gun comes back up, so a live round
+                # cannot be walked away with the combo dying (stats escape_timeouts) while the blast is still only
+                # ever set off from the rule's clearance.
+                timed_out, deadline_escape = True, False
+                if getattr(self, '_escape_timeout_for', None) != self.stats.get('mine_oldest_placed_at'):
+                    self._escape_timeout_for = self.stats.get('mine_oldest_placed_at')
+                    self.stats['escape_timeouts'] = self.stats.get('escape_timeouts', 0) + 1
+        fight_r = ESCAPE_TIMEOUT_FIGHT_R if timed_out else BOMB_FIGHT_R
         # A pre-placement crowd push may lead back toward the new bomb. Rank
         # the escape from its current position instead; the final floor guard
         # checks the actual pad direction against every outstanding bomb.
@@ -7465,7 +7485,7 @@ class Bot:
         d_near = min((math.hypot(e["pos"][0] - px, e["pos"][2] - pz) for e in live), default=math.inf)
         eq = p.get('equipped')
         if (type(eq) is int and 0 <= eq < WEAPON_INDEXES and (p.get('ammo') or 0) > 0
-                and not self.down and d_near <= BOMB_FIGHT_R and not deadline_escape):
+                and not self.down and d_near <= fight_r and not deadline_escape):
             # Escape is movement, not a reason to repeatedly lower a loaded gun.
             # Let the normal aim/LOS/fire gates fight while retaining this route.
             self._combat_escape_move = tuple(k for k in keys if k in ('lup', 'ldown', 'lleft', 'lright'))

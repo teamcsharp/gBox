@@ -243,6 +243,38 @@ def test_ring_escape_anchor_does_not_flip_when_nearest_bomb_changes():
     assert anchors == [(0, 0), (0, 0)]
 
 
+def test_timed_out_deadline_escape_returns_the_gun_to_the_fight_and_keeps_the_route():
+    """A timed escape that cannot clear must not walk the round away with the gun down.
+
+    Live 2026-11-13 (RE6 No Mercy, round 33cba3ca): the combo went 24 -> 0 while the bot was 'out first' inside a
+    1100 cm bomb clearance it could not reach, with six zombies within 4.6 m and the gun never firing again. After
+    ESCAPE_TIMEOUT_S the pure-movement monopoly ends: the retreat route is kept and the aim/fire gates run. The
+    blast is never waived - it is still set off only from the rule's clearance, and the missed deadline remains in
+    mine_deadline_incidents.
+    """
+    from tests.test_re6_fire_commitment import crowd
+    bot, s = crowd()
+    p = s['player']
+    p.update(equipped=0, ammo=10)
+    bot._open_heading = lambda *a, **kw: 0
+    # Enemies 4 m to the side: outside ESCAPE_FIGHT_R, inside ESCAPE_TIMEOUT_FIGHT_R.
+    s['enemies'][0]['pos'] = (400., 0., 0.)
+    s['enemies'][1]['pos'] = (450., 0., 20.)
+    bot.stats.update(mine_escape_required=True, mine_oldest_placed_at=100., mine_elapsed_s=13.)
+    out = bot._bomb_walk(p, (0, -200), 0, 500, 0, 113., act='bomb_escape', live=s['enemies'])
+    assert out is None                                          # the normal combat tick runs, not a gun-down walk
+    assert bot.stats['escape_timeouts'] == 1
+    assert bot._combat_escape_move                              # the retreat direction is kept for _escape_fire_inputs
+    # Still inside the five-second deadline: pure movement, no aim, no trigger.
+    bot.stats.update(mine_elapsed_s=1.)
+    out = bot._bomb_walk(p, (0, -200), 0, 200, 0, 101., act='bomb_escape', live=s['enemies'])
+    assert out is not None and not ({'zl', 'zr'} & set(out['hold']))
+    # One timeout per bomb set, not one per tick.
+    bot.stats.update(mine_elapsed_s=20.)
+    bot._bomb_walk(p, (0, -200), 0, 200, 0, 120., act='bomb_escape', live=s['enemies'])
+    assert bot.stats['escape_timeouts'] == 1
+
+
 def test_engine_services_deadlines_before_prompt_only_ticks(monkeypatch, tmp_path):
     from gbox.mercs import engine, lessons, grenade_ring
     monkeypatch.setattr(lessons, 'ROOT', tmp_path / 'mercs' / 'lessons')
