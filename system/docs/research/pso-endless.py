@@ -255,9 +255,52 @@ def go_to_field(pad: Pad) -> bool:
     return False
 
 
+def unlock_floor(pad: Pad) -> str:
+    """Set every stage flag for the floor the character is standing on, and verify it.
+
+    Doors recompute their open state from this array every frame (pso_coop_gates: "native_state (+0xAC) is futile -
+    it is recomputed each frame FROM this flag"), so this opens them without a button or a target.
+    """
+    raw = call("/api/sessions/%s/rpc" % pad.sid,
+               {"op": "read_memory", "args": {"address": STAGE_FLAG_GROUP_PTR, "length": 4}}, "POST")
+    try:
+        floor = int.from_bytes(bytes.fromhex(raw), "big")
+    except Exception:                                      # noqa: BLE001
+        return "no floor"
+    if not 0 <= floor < STAGE_FLAG_GROUPS:
+        return f"floor {floor} out of range"
+    address = STAGE_FLAG_BASE + floor * STAGE_GROUP_SIZE
+    full = bytes([255] * STAGE_GROUP_SIZE)
+    raw_group = call("/api/sessions/%s/rpc" % pad.sid,
+                     {"op": "read_memory", "args": {"address": address, "length": STAGE_GROUP_SIZE}}, "POST")
+    try:
+        group = bytes.fromhex(raw_group)
+    except Exception:                                      # noqa: BLE001
+        group = b""
+    if group == full:
+        return f"floor {floor} already open"
+    job = call("/api/jobs", {"tool": "write_memory", "require_worker": pad.worker,
+                             "input": {"session_id": pad.sid, "address": address, "hex_bytes": full.hex()}}, "POST")
+    job_id = job.get("id") if isinstance(job, dict) else None
+    for _ in range(8):
+        time.sleep(0.3)
+        row = call("/api/jobs/" + job_id) if job_id else {}
+        if row.get("state") in ("succeeded", "failed", "cancelled"):
+            break
+    time.sleep(0.2)
+    check = call("/api/sessions/%s/rpc" % pad.sid,
+                 {"op": "read_memory", "args": {"address": address, "length": STAGE_GROUP_SIZE}}, "POST")
+    try:
+        ok = bytes.fromhex(check) == full
+    except Exception:                                      # noqa: BLE001
+        ok = False
+    return f"floor {floor} {'unlocked' if ok else 'write failed'}"
+
+
 STAGE_FLAG_BASE = 0x80515CC8
 STAGE_FLAG_GROUP_PTR = 0x805D5FC0
 STAGE_GROUP_SIZE = 32
+STAGE_FLAG_GROUPS = 18
 
 
 def open_all_gates(pad: Pad) -> str:
@@ -408,6 +451,7 @@ def play(pad: Pad, seconds: float = 120.0) -> str:
     last_position, stuck, killed, moved, closest = None, 0, 0, 0.0, 999.0
     gates_seen, crossed = set(), []
     unproductive, walked_out = 0, 0
+    unlock_counter, last_unlock = 0, ""
     last_enemy_hp = {}
 
     while time.time() - started < seconds:
@@ -424,6 +468,13 @@ def play(pad: Pad, seconds: float = 120.0) -> str:
         else:
             stuck = 0
         last_position = (x, z)
+
+        unlock_counter += 1
+        if unlock_counter % 12 == 0:
+            result = unlock_floor(pad)
+            if result != last_unlock:
+                log(f"  doors: {result}")
+                last_unlock = result
 
         if stuck >= 2:
             # measured, not assumed: try every direction and keep the one that moves
