@@ -305,7 +305,8 @@ def test_the_shell_and_launcher_rows_match_the_research_tree():
 def test_the_grenade_launcher_fires_the_three_round_classes():
     assert [s.name for s in C.shell_rounds()] == ["uWp1302", "uWp1303", "uWp1304"]
     assert [s.item for s in C.shell_rounds()] == [0x133, 0x134, 0x135]
-    assert [s.name for s in C.shell_rounds("uWp1120")] == ["uWp1304"]
+    assert [(s.name, s.item) for s in C.shell_rounds("uWp1120")] == [("uWp1305", 0x136)]
+    assert C.shell_for_item(0x136).name == "uWp1305"
     assert C.shell_for_item(0x135).name == "uWp1304" and C.shell_for_item(0x999) is None
 
 

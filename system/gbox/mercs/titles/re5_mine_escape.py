@@ -7,7 +7,11 @@ def execute(ctl, count, *, ring, allow_unverified, allowed, stats, request_id, r
     owner = ctl.ready()
 
     def current():
-        return allowed() and ctl.ready() == owner
+        try:
+            return allowed() and ctl.ready() == owner
+        except (Unavailable, OSError):
+            # A death after native completion must not discard the receipt.
+            return False
 
     if not current():
         raise Unavailable('mine escape request changed before execution')

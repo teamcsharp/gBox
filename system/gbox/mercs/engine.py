@@ -705,10 +705,12 @@ def play_round(prof, m, send, stopped, stats: dict, lessons=None, sleep=time.sle
             # below can skip bot.tick and the ordinary periodic ring entirely.
             if where == 'playing':
                 for name, reaction in (('reactive_ring', getattr(ring_step, 'react', None)),
-                                       ('reactive_mines', getattr(bot, 'observe_reactions', None))):
+                                       ('reactive_mines', getattr(bot, 'observe_reactions', None)),
+                                       ('remote_deadlines', getattr(remote_step, 'observe', None))):
                     if callable(reaction):
                         try:
-                            args = (snap, stats, now) if name == 'reactive_ring' else (snap, now)
+                            args = ((snap, now) if name == 'reactive_mines' else
+                                    (snap, stats, clock() if name == 'remote_deadlines' else now))
                             decision_work.call(name, reaction, *args)
                         except Exception as exc:       # an optional native reaction never suppresses the QTE
                             stats[name + '_error'] = f'{type(exc).__name__}: {exc}'[:200]
@@ -774,7 +776,7 @@ def play_round(prof, m, send, stopped, stats: dict, lessons=None, sleep=time.sle
                     stats["doctrine_error"] = f"{type(exc).__name__}: {exc}"[:160]
             vi = frame_fn.vi(m) if frame_fn is not None and hasattr(frame_fn, "vi") else None
             lat.observe(bot, snap, act, held, vi)
-            if ring_step is not None and where == "playing":
+            if ring_step is not None and where == "playing" and not stats.get('mine_deadline_pending'):
                 try:
                     ring_out = decision_work.call('grenade_ring', ring_step, snap, stats, now, hold)
                 except Exception as exc:             # noqa: BLE001 - a ring never ends the round
@@ -791,17 +793,15 @@ def play_round(prof, m, send, stopped, stats: dict, lessons=None, sleep=time.sle
                         continue
             if remote_step is not None and where == "playing":   # the RE6 remote-mine rings and flag detonation
                 try:
-                    remote_out = decision_work.call('remote_mines', remote_step, snap, stats, now, hold)
+                    remote_out = decision_work.call('remote_mines', remote_step, snap, stats, clock(), hold)
                 except Exception as exc:             # noqa: BLE001 - a mine rule never ends the round
                     stats["remote_mines_error"] = f"{type(exc).__name__}: {exc}"[:200]
                 else:
                     if remote_out.get("fired"):
-                        # Operator 2026-11-11 18:44: "dropping massive amounts of remote mines and running for his
-                        # life." The mine ring is escape cover: the same back-step window as the grenade ring, so he
-                        # is moving out of the cluster he just laid instead of standing on it.
-                        stats["ring_blast_until"] = now + RING_BLAST_HOLD_S
-                        next_frame()
-                        continue
+                        # Native remote flags need no pad release. Preserve the
+                        # bot's measured escape route instead of replacing it
+                        # with 2.5 seconds of camera-relative backward input.
+                        stats['remote_mines_last_action'] = remote_out.get('op')
             run = stats.get("player_damage_run")
             if run is not None and run != damage_run:    # a new round's damage run: its count starts at 0
                 damage_run, hits_seen = run, 0
@@ -817,7 +817,7 @@ def play_round(prof, m, send, stopped, stats: dict, lessons=None, sleep=time.sle
                                  why=getattr(bot, "why", None))
                     except Exception as exc:         # noqa: BLE001 - a follow report never ends the round
                         stats["hit_report_error"] = f"{type(exc).__name__}: {exc}"[:200]
-            if now < float(stats.get("ring_blast_until") or 0):   # the ring's fuses: back out of the blast
+            if now < float(stats.get("ring_blast_until") or 0) and not stats.get('mine_escape_required'):
                 act = {"hold": {"ldown"}}
                 stats["ring_blast_backsteps"] = int(stats.get("ring_blast_backsteps", 0)) + 1
             if "tap" in act:
@@ -834,6 +834,8 @@ def play_round(prof, m, send, stopped, stats: dict, lessons=None, sleep=time.sle
     finally:
         if ring_step is not None and hasattr(ring_step, 'close'):
             ring_step.close()
+        if remote_step is not None and hasattr(remote_step, 'close'):
+            remote_step.close()
         read_retry.stopped()
         try:
             hold(set())

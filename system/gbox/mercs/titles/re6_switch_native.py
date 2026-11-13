@@ -897,7 +897,7 @@ class Controller:
         if self.rd(self.base + at, size) != data:
             raise Unavailable(f"native {name} installation unconfirmed")
 
-    def drop_bomb(self, at=None, *, wait_s=0.5):
+    def drop_bomb(self, at=None, *, wait_s=0.5, expected_player=None, expected_generation=None, cancelled=None):
         """A remote bomb dropped at `at` (x, y, z; default his feet) already lying placed and armed - no throw, no
         animation, no remote in his hand (spawn_bomb.c). Verified: the unit is a uWp1097 owned by him, its action the
         placed one (cWpAction_wp_act_setting) within wait_s, and his detonator flag set. One call = one bomb, never
@@ -915,6 +915,10 @@ class Controller:
                 raise Unavailable("player is not alive")
             self.player = player
             self.generation = self.w(self.player + 0x1308)
+            if ((expected_player is not None and player != expected_player) or
+                    (expected_generation is not None and self.generation != expected_generation) or
+                    (callable(cancelled) and cancelled())):
+                raise Unavailable('remote-bomb request belongs to an ended player life')
             self.manager = self.player + 0x13A8
             self.check()
             _idx, _item, bomb = R.inventory_state(self, self.player)
@@ -926,6 +930,9 @@ class Controller:
                 attached = True
                 self.attach()
                 self._ensure_image(SPAWN_BOMB)
+                self.check()
+                if callable(cancelled) and cancelled():
+                    raise Unavailable('remote-bomb request cancelled before allocation')
                 bits = [struct.unpack("<I", struct.pack("<f", float(v)))[0] for v in (x, y, z)]
                 unit = self.call(SPAWN_BOMB[0], self.player, *bits)
                 if not R.ptr_ok(unit):
@@ -944,9 +951,14 @@ class Controller:
                 armed = bool(self.rd(self.player + P_FLAGS_ARMED_BYTE, 1)[0] & ARMED_BIT)
                 if not armed:
                     raise Uncertain("the detonator flag did not read back set after the drop")
-                return {"state": "confirmed", "verified": True, "op": "bomb_drop", "unit": unit, "generation": born,
+                placed_at = time.time()
+                receipt = {"state": "confirmed", "verified": True, "op": "bomb_drop", "unit": unit, "generation": born,
                         "pos": [round(v, 1) for v in (x, y, z)], "armed": True, "player_generation": self.generation,
+                        "placed_at": placed_at, "detonate_deadline_at": placed_at + 5.0,
                         "elapsed_ms": round(1000 * (time.monotonic() - started), 1)}
+                from ..re6_bomb_deadlines import record_placement
+                record_placement(player, self.generation, receipt)
+                return receipt
             except Exception:
                 self.failed, self.recoverable = True, True
                 raise
@@ -954,7 +966,8 @@ class Controller:
                 if attached:
                     self.detach_completed()
 
-    def drop_bomb_ring(self, count=4, radius_cm=200.0, *, wait_s=0.5):
+    def drop_bomb_ring(self, count=4, radius_cm=200.0, *, wait_s=0.5,
+                       expected_player=None, expected_generation=None, cancelled=None):
         """`count` remote bombs ejected from his body in a ring around him, each already lying placed and armed -
         no throw, no remote in his hand, no animation (spawn_bomb.c through `drop_bomb`).
 
@@ -966,19 +979,34 @@ class Controller:
         wanted = max(1, min(int(count or 4), 16))
         radius = max(0.0, min(float(radius_cm if radius_cm is not None else 200.0), 600.0))
         with self.lock:
-            player, _generation = self.ready()
+            player, generation = self.ready()
+            expected_player = player if expected_player is None else expected_player
+            expected_generation = generation if expected_generation is None else expected_generation
+            if player != expected_player or generation != expected_generation:
+                raise Unavailable('remote-bomb ring belongs to an ended player life')
             x, y, z = struct.unpack("<3f", self.rd(player + R.P_POS, 12))
             started = time.monotonic()
             units, failures = [], []
             for i in range(wanted):
+                # Do not spend the five-second fuse window allocating a large
+                # ring. The bot is already escaping concurrently. Keep time for
+                # its clearance check and the game's own blast action.
+                if callable(cancelled) and cancelled():
+                    failures.append('ring cancelled before the next bomb; placed bombs are not replayed')
+                    break
+                if units and time.monotonic() - started >= 2.0:
+                    failures.append('ring allocation budget reached; escape and detonation take priority')
+                    break
                 angle = 2 * math.pi * (i / wanted) + (math.pi / 4 if wanted == 4 else 0.0)
                 at = (x + radius * math.cos(angle), y, z + radius * math.sin(angle))
                 try:
-                    receipt = self.drop_bomb(at, wait_s=wait_s)
+                    receipt = self.drop_bomb(at, wait_s=wait_s, expected_player=expected_player,
+                                             expected_generation=expected_generation, cancelled=cancelled)
                 except Exception as exc:                     # noqa: BLE001 - a refused bomb reports the ring partial
                     failures.append(f"{type(exc).__name__}: {exc}"[:200])
                     break
-                units.append({"unit": receipt.get("unit"), "pos": receipt.get("pos")})
+                units.append({key: receipt.get(key) for key in
+                              ('unit', 'generation', 'pos', 'armed', 'placed_at', 'detonate_deadline_at')})
             state = "confirmed" if len(units) == wanted else ("uncertain" if units else "failed")
             return {"state": state, "op": "bomb_ring", "requested": wanted, "placed": len(units),
                     "radius_cm": radius, "units": units, "failures": failures,
@@ -1030,7 +1058,8 @@ def bomb_drop_now(ad, at=None) -> dict:
             "elapsed_ms": round(1000 * (time.monotonic() - started), 1)}
 
 
-def bomb_ring_now(ad, count=4, radius_cm=200.0, *, wait_s=0.5) -> dict:
+def bomb_ring_now(ad, count=4, radius_cm=200.0, *, wait_s=0.5,
+                  expected_player=None, expected_generation=None, cancelled=None) -> dict:
     """The bot's / the PiP's ring of instant remote bombs on the session's one native controller (drop_bomb_ring).
     Never raises: a refusal is a receipt with its reason (state unavailable / uncertain / failed)."""
     started = time.monotonic()
@@ -1042,7 +1071,8 @@ def bomb_ring_now(ad, count=4, radius_cm=200.0, *, wait_s=0.5) -> dict:
                 ad._re6_native_flash = ctl
         if not ctl.recover_completed_call() and ctl.failed:
             raise Unavailable("native controller awaits recovery after an uncertain operation")
-        return ctl.drop_bomb_ring(count, radius_cm, wait_s=wait_s)
+        return ctl.drop_bomb_ring(count, radius_cm, wait_s=wait_s, expected_player=expected_player,
+                                 expected_generation=expected_generation, cancelled=cancelled)
     except Uncertain as exc:
         state, reason = "uncertain", exc
     except (Unavailable, ValueError, TypeError, OSError) as exc:

@@ -5,12 +5,9 @@ ring around them ... drop massive quantities of them and then be able to detonat
 detonator in his hand, no animation. The drops go through `re6_switch_native.bomb_ring_now` (spawn_bomb.c), the
 detonation through `re6_switch_mods.detonate` (the player's +0x5A19 bit 0x20 cleared, the detonator's own flag).
 
-The rule runs beside the driver's own bomb mind, never while it is mid-action (`bomb_phase`/`nade`), and keeps its
-own ring counters so its cadence does not depend on what the driver's bombs do.
+Existing bombs are serviced before grenade/QTE branches. New rings run on a
+background worker; each confirmed native placement starts a five-second deadline.
 """
-import math
-import random
-
 TITLES = {"01002A000CD48000": "gbox.mercs.titles.re6_switch"}
 #: Why the other playable editions have no remote-mine lane yet (operator 2026-11-11 18:30: the same features across
 #: titles; the honest per-title report is the mod sidebar's source, the same shape as grenade_status).
@@ -43,14 +40,9 @@ DEFAULTS = {
     "drop_jitter_s": 2.5,          # +/- so the drops land anywhere in the 5-10 s window ("randomly in the match")
     "count": 6,                    # six a ring: "dropping even more remote mines"
     "radius_cm": 200.0,
-    # 1 and 20 (was 4 and 75): the operator, 2026-11-12: "the bot needs to be placing rings of remote bombs every
-    # minute and a half at least ... It is imperative they are always placing bombs and running around the level
-    # detonating them" and "make sure that they blow up all of the mines that they drop on the ground". Four rings
-    # before a detonation left up to 24 bombs lying - the live RE6 round measured mine_ring_bombs 63 with
-    # mine_bombs_since_detonate 12 and only 2 detonations - which is the "mines on the ground that do not go up" the
-    # operator saw. One ring, then a forced detonation 20 s after it, so what he drops is what goes up.
+    # Every placed bomb has a five-second maximum. More rings never extend it.
     "rings_before_detonate": 1,
-    "detonate_after_s": 20.0,
+    "detonate_after_s": 5.0,
     # Operator 2026-11-11 17:50: "detonating them as they get distance away from them" - the flag never goes while he
     # is inside a lying ring's blast; once he is detonate_safe_cm clear of every centre the set goes.
     "detonate_safe_cm": 1100.0,
@@ -71,8 +63,8 @@ def policy(stats=None) -> dict:
         out["drop_jitter_s"] = max(0.0, min(float(out["drop_jitter_s"]), 120.0))
         out["count"] = max(1, min(int(out["count"]), 16))
         out["radius_cm"] = max(50.0, min(float(out["radius_cm"]), 600.0))
-        out["rings_before_detonate"] = max(1, min(int(out["rings_before_detonate"]), 16))
-        out["detonate_after_s"] = max(5.0, min(float(out["detonate_after_s"]), 300.0))
+        out["rings_before_detonate"] = 1
+        out["detonate_after_s"] = 5.0
         out["detonate_safe_cm"] = max(1100.0, min(float(out["detonate_safe_cm"]), 2000.0))
     except (TypeError, ValueError):
         out = dict(DEFAULTS)
@@ -80,199 +72,6 @@ def policy(stats=None) -> dict:
 
 
 def control(ad, prof, bot_getter=None):
-    """The engine's hook for RE6: a ring of four on a jittered cadence, then the flag detonation of the set."""
-    if str((prof or {}).get("map_id") or "") not in TITLES:
-        return None
-    from .titles import re6_switch_native
-
-    def step(snap: dict, stats: dict, now: float, hold=None, **_) -> dict:
-        out = {"fire": False, "op": "remote_mines", "reason": ""}
-        policy_ = policy(stats)
-        if not policy_["enabled"]:
-            return {**out, "reason": "the remote-mine rule is switched off (REMOTE_MINES)"}
-        player = (snap or {}).get("player") or {}
-        if not player.get("pos"):
-            return {**out, "reason": "no player in a live round"}
-        round_id = stats.get('round_evidence_id')
-        if 'mine_round_id' not in stats:
-            stats['mine_round_id'] = round_id
-        elif stats.get('mine_round_id') != round_id:
-            stats.update(mine_round_id=round_id, mine_rings_since_detonate=0, mine_bombs_since_detonate=0,
-                         mine_ring_centres=[], mine_avoid_positions=[])
-            stats.pop('mine_first_ring_at', None)
-        observed = (snap or {}).get('throwables')
-        if isinstance(observed, list):
-            # Keep avoiding a triggered bomb until the native unit disappears.
-            # The flag receipt alone does not mean its blast has finished.
-            owned = [u for u in observed if u.get('kind') == 'remote']
-            stats['mine_avoid_positions'] = [list(u['pos']) for u in owned if u.get('pos')]
-            if not owned:
-                stats.update(mine_rings_since_detonate=0, mine_bombs_since_detonate=0,
-                             mine_ring_centres=[])
-                stats.pop('mine_first_ring_at', None)
-                stats.pop('mine_triggered_positions', None)
-        bot = bot_getter() if callable(bot_getter) else None
-        if bot is not None and (getattr(bot, "bomb_phase", None) is not None or
-                                getattr(bot, "nade", None) is not None):
-            return {**out, "reason": "the driver's own bomb or grenade action is in progress"}
-        rings = int(stats.get("mine_rings_since_detonate") or 0)
-        bombs = int(stats.get("mine_bombs_since_detonate") or 0)
-        first = stats.get("mine_first_ring_at")
-        # The player's own blast is the first gate (operator 2026-11-11 17:50: "detonating them as they get distance
-        # away from them"): the nearest lying ring's centre decides; never the flag under his feet.
-        centres = [c for c in (stats.get("mine_ring_centres") or []) if isinstance(c, (list, tuple)) and len(c) == 3]
-        try:
-            ppos = [float(v) for v in player.get("pos")]
-            clear_cm = min((math.hypot(ppos[0]-float(c[0]), ppos[2]-float(c[2])) for c in centres), default=None)
-        except (TypeError, ValueError):
-            clear_cm = None
-        # Centres are only a conservative scheduling estimate. Account for the
-        # complete ring radius; the native flag path rereads every actual bomb.
-        safe_cm = float(policy_["detonate_safe_cm"]) + float(policy_["radius_cm"])
-        clear = clear_cm is not None and math.isfinite(clear_cm) and clear_cm >= safe_cm
-        set_due = rings > 0 and (rings >= int(policy_["rings_before_detonate"]) or
-                                 (isinstance(first, (int, float)) and now - first >= float(policy_["detonate_after_s"])))
-        due = set_due and clear
-        if due:
-            if hold is not None and hold(set()) is False:
-                return {**out, "reason": "the bot's keys did not release before the detonation"}
-            receipt = re6_switch_native.bomb_detonate_now(ad, snap=snap)
-            if not receipt.get("verified"):
-                stats["mine_detonate_failures"] = int(stats.get("mine_detonate_failures", 0)) + 1
-                stats["mine_detonate_reason"] = str(receipt.get("reason") or "")[:200]
-                return {**out, 'reason': stats['mine_detonate_reason'], 'receipt': receipt}
-            stats["mine_flag_detonations"] = int(stats.get("mine_flag_detonations", 0)) + 1
-            stats["mine_rings_since_detonate"] = 0
-            stats["mine_bombs_since_detonate"] = 0
-            stats["mine_ring_centres"] = []
-            stats['mine_triggered_positions'] = list(stats.get('mine_avoid_positions', []))
-            stats['mine_trigger_requested_at'] = now
-            stats.pop("mine_first_ring_at", None)
-            stats["mine_last_detonate_at"] = now
-            return {"fire": True, "op": "bomb_detonate", "fired": True,
-                    "reason": f"flag detonation of {bombs} lying bombs", "receipt": receipt}
-        if set_due and not clear:
-            if clear_cm is None or not math.isfinite(clear_cm):
-                return {**out, 'reason': 'bomb clearance unknown: flag withheld; native positions needed'}
-            return {**out, "reason": (f"the player is {clear_cm:.0f} cm from the nearest lying ring: the flag waits "
-                                      f"{safe_cm:.0f} cm")}
-        # The operator's surrounded rule (2026-11-11 18:44: "surrounded by enemies ... needs to be dropping massive
-        # amounts of remote mines and running for his life"): a real surround earns the big ring on its own cadence,
-        # whatever the flash state. It runs before the flash combo so a surround never waits for a flash that is not
-        # coming.
-        near = 0
-        try:
-            ppos = [float(v) for v in player.get("pos")]
-            near = sum(1 for e in (snap or {}).get("enemies") or ()
-                       if isinstance(e, dict) and (e.get("hp") or 0) > 0 and e.get("pos")
-                       and math.dist(ppos, [float(e["pos"][0]), float(e["pos"][1]), float(e["pos"][2])])
-                       <= SURROUND_R_CM)
-        except (TypeError, ValueError, IndexError):
-            near = 0
-        if (near >= SURROUND_N and now - float(stats.get("mine_surround_at") or 0) >= SURROUND_S
-                and stats.get("mine_surround_at") != now):
-            if hold is not None and hold(set()) is False:
-                return {**out, "reason": "the bot's keys did not release before the surround ring"}
-            receipt = re6_switch_native.bomb_ring_now(ad, count=FLASH_COMBO_MINES,
-                                                      radius_cm=float(policy_["radius_cm"]))
-            stats["mine_surround_at"] = now
-            stats["mine_surround_rings"] = int(stats.get("mine_surround_rings", 0)) + 1
-            stats["mine_next_drop_at"] = now + float(policy_["drop_every_s"]) + \
-                random.uniform(-float(policy_["drop_jitter_s"]), float(policy_["drop_jitter_s"]))
-            if int(receipt.get("placed") or 0) > 0:
-                placed = int(receipt.get("placed") or 0)
-                stats["mine_rings_dropped"] = int(stats.get("mine_rings_dropped", 0)) + 1
-                stats["mine_ring_bombs"] = int(stats.get("mine_ring_bombs", 0)) + placed
-                stats["mine_rings_since_detonate"] = rings + 1
-                stats["mine_bombs_since_detonate"] = bombs + placed
-                stats.setdefault("mine_avoid_positions", []).extend(
-                    list(u["pos"]) for u in receipt.get("units", [])
-                    if isinstance(u, dict) and isinstance(u.get("pos"), (list, tuple)) and len(u["pos"]) == 3)
-                if receipt.get("state") != "confirmed":
-                    stats["mine_partial_rings"] = int(stats.get("mine_partial_rings", 0)) + 1
-                try:
-                    stats.setdefault("mine_ring_centres", []).append(tuple(float(v) for v in player.get("pos")))
-                    del stats["mine_ring_centres"][:-16]
-                except (TypeError, ValueError):
-                    pass
-                stats.setdefault("mine_first_ring_at", now)
-                stats["mine_ring_last_at"] = now
-            else:
-                stats["mine_ring_failures"] = int(stats.get("mine_ring_failures", 0)) + 1
-                stats["mine_ring_reason"] = str(receipt.get("reason") or receipt.get("state") or "")[:200]
-            return {"fire": True, "op": "bomb_ring", "fired": True,
-                    "reason": (f"surrounded ({near} within {SURROUND_R_CM:.0f} cm): a ring of "
-                               f"{receipt.get('placed')} remote bombs"), "receipt": receipt}
-        # The flashbang combo (operator 2026-11-11 18:02): the flash just went -> a 15-mine ring right away (the flash
-        # spreads the crowd, the ring clears the surround), then the standard distance-gated detonation.
-        recovery = stats.get('qte_escape_mines_due')
-        flash_at = stats.get('qte_escape_flash_at') if recovery else stats.get("ring_flash_at")
-        if (isinstance(flash_at, (int, float)) and 0 <= now - flash_at <= (5 if recovery else FLASH_COMBO_S)
-                and stats.get("mine_flash_combo_at") != flash_at):
-            if hold is not None and hold(set()) is False:
-                return {**out, "reason": "the bot's keys did not release before the flash combo ring"}
-            receipt = re6_switch_native.bomb_ring_now(ad, count=FLASH_COMBO_MINES,
-                                                      radius_cm=float(policy_["radius_cm"]))
-            if recovery:
-                stats.pop('qte_escape_mines_due', None)
-            stats["mine_flash_combo_at"] = flash_at
-            stats["mine_flash_combos"] = int(stats.get("mine_flash_combos", 0)) + 1
-            stats["mine_next_drop_at"] = now + float(policy_["drop_every_s"]) + \
-                random.uniform(-float(policy_["drop_jitter_s"]), float(policy_["drop_jitter_s"]))
-            if int(receipt.get("placed") or 0) > 0:
-                placed = int(receipt.get("placed") or 0)
-                stats["mine_rings_dropped"] = int(stats.get("mine_rings_dropped", 0)) + 1
-                stats["mine_ring_bombs"] = int(stats.get("mine_ring_bombs", 0)) + placed
-                stats["mine_rings_since_detonate"] = rings + 1
-                stats["mine_bombs_since_detonate"] = bombs + placed
-                stats.setdefault("mine_avoid_positions", []).extend(
-                    list(u["pos"]) for u in receipt.get("units", [])
-                    if isinstance(u, dict) and isinstance(u.get("pos"), (list, tuple)) and len(u["pos"]) == 3)
-                if receipt.get("state") != "confirmed":
-                    stats["mine_partial_rings"] = int(stats.get("mine_partial_rings", 0)) + 1
-                try:
-                    stats.setdefault("mine_ring_centres", []).append(tuple(float(v) for v in player.get("pos")))
-                    del stats["mine_ring_centres"][:-16]
-                except (TypeError, ValueError):
-                    pass
-                stats.setdefault("mine_first_ring_at", now)
-                stats["mine_ring_last_at"] = now
-            else:
-                stats["mine_ring_failures"] = int(stats.get("mine_ring_failures", 0)) + 1
-                stats["mine_ring_reason"] = str(receipt.get("reason") or receipt.get("state") or "")[:200]
-            return {"fire": True, "op": "bomb_ring", "fired": True,
-                    "reason": f"the flash combo: a ring of {receipt.get('placed')} remote bombs", "receipt": receipt}
-        next_drop = stats.get("mine_next_drop_at")
-        if isinstance(next_drop, (int, float)) and now < next_drop:
-            return {**out, "reason": f"{next_drop - now:.1f} s to the next ring"}
-        if hold is not None and hold(set()) is False:
-            return {**out, "reason": "the bot's keys did not release before the ring"}
-        receipt = re6_switch_native.bomb_ring_now(ad, count=int(policy_["count"]),
-                                                  radius_cm=float(policy_["radius_cm"]))
-        stats["mine_next_drop_at"] = now + float(policy_["drop_every_s"]) + \
-            random.uniform(-float(policy_["drop_jitter_s"]), float(policy_["drop_jitter_s"]))
-        if int(receipt.get("placed") or 0) > 0:
-            placed = int(receipt.get("placed") or 0)
-            stats["mine_rings_dropped"] = int(stats.get("mine_rings_dropped", 0)) + 1
-            stats["mine_ring_bombs"] = int(stats.get("mine_ring_bombs", 0)) + placed
-            stats["mine_rings_since_detonate"] = rings + 1
-            stats["mine_bombs_since_detonate"] = bombs + placed
-            stats.setdefault("mine_avoid_positions", []).extend(
-                list(u["pos"]) for u in receipt.get("units", [])
-                if isinstance(u, dict) and isinstance(u.get("pos"), (list, tuple)) and len(u["pos"]) == 3)
-            if receipt.get("state") != "confirmed":
-                stats["mine_partial_rings"] = int(stats.get("mine_partial_rings", 0)) + 1
-            try:
-                stats.setdefault("mine_ring_centres", []).append(tuple(float(v) for v in player.get("pos")))
-                del stats["mine_ring_centres"][:-16]
-            except (TypeError, ValueError):
-                pass
-            stats.setdefault("mine_first_ring_at", now)
-            stats["mine_ring_last_at"] = now
-        else:
-            stats["mine_ring_failures"] = int(stats.get("mine_ring_failures", 0)) + 1
-            stats["mine_ring_reason"] = str(receipt.get("reason") or receipt.get("state") or "")[:200]
-        return {"fire": True, "op": "bomb_ring", "fired": True,
-                "reason": f"a ring of {receipt.get('placed')} remote bombs around him", "receipt": receipt}
-
-    return step
+    """Native placement evidence starts a five-second deadline; escape begins immediately."""
+    from .re6_remote_control import control as make_control
+    return make_control(ad, prof, bot_getter)

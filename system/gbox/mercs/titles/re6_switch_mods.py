@@ -678,7 +678,7 @@ def detonate(ad, snap=None, unit=None, wait_s: float = 0.0, clock=time.monotonic
     out["armed_after"] = bool(after & ARMED_BIT)
     if after & ARMED_BIT:
         return out | {"reason": "the detonator flag read back set"}
-    out.update(verified=True, detonated=[b["unit"] for b in bombs], count=len(bombs))
+    out.update(verified=True, detonated=[b["unit"] for b in bombs], count=len(bombs), triggered_at=time.time())
     if wait_s > 0:
         until = clock() + wait_s
         pending = {b["unit"]: b["generation"] for b in bombs}

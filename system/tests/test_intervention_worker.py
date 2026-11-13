@@ -187,3 +187,60 @@ def test_the_re4_selftest_op_runs_the_controllers_selftest(monkeypatch):
     assert calls == [1]
     assert results and results[0]["result"]["op"] == "re4_harness_selftest"
     assert results[0]["result"]["result"] == 0
+
+
+@pytest.mark.parametrize('change', ['none', 'player', 'operator', 'bombs', 'viewer'])
+def test_re6_shell_probe_uses_shared_owner_and_preserves_uncertainty(monkeypatch, change):
+    import json
+    import time
+    from gbox.mercs.titles import re6_switch_native as N, re6_switch_shell_probe as P
+    class FakeRE6(SimpleNamespace):
+        pass
+    life, running, calls, results = [2], [True], [], []
+    stats = {'round_evidence_id': 'round-a'}
+    ctl = FakeRE6(pid=123, identity=(123, 99), ready=lambda: (456, life[0]), ad=SimpleNamespace())
+    monkeypatch.setattr(N, 'Controller', FakeRE6)
+    monkeypatch.setattr(I, 'native_controller', lambda _: ctl)
+    def probe(controller, point, *, kind, expected, allowed):
+        assert controller is ctl and expected == (456, 2)
+        assert allowed() and point == [700., 0., 0.] and kind == 'shell1304'
+        calls.append(controller)
+        return {'state': 'uncertain', 'verified': False, 'op': 'shell_probe',
+                'spawned': 1, 'detonated': 0, 'reason': 'no native emission observed'}
+    monkeypatch.setattr(P, 'probe_one', probe)
+    def handler(request):
+        body = json.loads(request.content)
+        if request.url.path.endswith('/claim'):
+            assert 're6_shell_probe' in body['capabilities']
+            assert not any(row.get('kind') == 're6_shell_probe'
+                           for row in body.get('options', {}).get('grenade_kinds', []))
+            if change == 'player': life[0] += 1
+            if change == 'operator': stats['operator_control'] = True
+            if change == 'bombs': stats['mine_bombs_since_detonate'] = 1
+            return httpx.Response(200, json={'requests': [{'id': 'probe', 'claim': 'once',
+                'op': 're6_shell_probe', 'source': 'viewer' if change == 'viewer' else 'probe',
+                'args': {'kind': 'shell1304', 'point': [700., 0., 0.], 'allow_unverified': True},
+                'expires': time.time() + 10, 'epoch': body['epoch']}]})
+        results.extend(body['results'])
+        running[0] = False
+        return httpx.Response(200, json={})
+    original = httpx.Client
+    monkeypatch.setattr(httpx, 'Client', lambda **kw: original(**kw, transport=httpx.MockTransport(handler)))
+    I.worker_loop('sid', 'http://fixture', {}, SimpleNamespace(), lambda: stats, lambda: running[0])
+    assert calls == ([ctl] if change == 'none' else [])
+    if change == 'none':
+        assert results[0]['result']['state'] == 'uncertain'
+        assert results[0]['result']['detonated'] == 0
+        assert results[0]['result']['verified'] is False
+
+
+def test_re6_shell_probe_is_not_advertised_for_inherited_other_title_controller(monkeypatch):
+    from gbox.mercs.titles import re6_switch_native as N
+    class Base(SimpleNamespace):
+        pass
+    class OtherTitle(Base):
+        pass
+    monkeypatch.setattr(N, 'Controller', Base)
+    ctl = OtherTitle(pid=123, identity=(123, 99), ready=lambda: (456, 2))
+    body = _run_worker(monkeypatch, ctl, {'game_id': 'resident-evil-5'})
+    assert 're6_shell_probe' not in body['capabilities']

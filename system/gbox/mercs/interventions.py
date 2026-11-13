@@ -21,7 +21,7 @@ MAX_PENDING, KEEP, TTL, FRESH = 64, 128, 10.0, 3.0
 TERMINAL = {"confirmed", "failed", "unavailable", "expired", "uncertain"}
 OPERATIONS = {"flash_now", "equip_primary", "magnum_quick4", "grenade_ring", "grenade_scatter",
               "re4_harness_selftest", "set_infinite_ammo", "remote_mines", "first_aid_now",
-              "proximity_mine_drop", "proximity_mine_ring", "detonate_mines"}
+              "proximity_mine_drop", "proximity_mine_ring", "detonate_mines", "re6_shell_probe"}
 # The grenade-ring button's selectable types. "flash" is the default and the only one verified; the others
 # are refused by the native controller with a reason (never silently substituted). A longer TTL covers the
 # ten spawn/explode pairs the ring runs (each is the verified flash).
@@ -39,6 +39,24 @@ RECEIPT_ROOT = Path(__file__).resolve().parents[2] / 'gbox-data' / 'mercs' / 'na
 
 _WAKE_LOCK = threading.Lock()
 _WAITERS = weakref.WeakValueDictionary()
+
+
+def shell_probe_args(args, source):
+    """Research-only, one named shell at one point; no pointers/counts/code input."""
+    if source not in ('agent', 'gbox-agent', 'mcp', 'probe'):
+        raise ValueError('shell probe is an agent research operation')
+    if not isinstance(args, dict) or set(args) != {'kind', 'point', 'allow_unverified'} or \
+            args.get('allow_unverified') is not True or args.get('kind') not in ('shell1302', 'shell1303', 'shell1304'):
+        raise ValueError('shell probe needs one shell kind and explicit allow_unverified=true')
+    point = args['point']
+    try:
+        valid = isinstance(point, (list, tuple)) and len(point) == 3 and all(
+            type(v) in (float, int) and math.isfinite(float(v)) for v in point)
+    except (OverflowError, ValueError, TypeError):
+        valid = False
+    if not valid:
+        raise ValueError('shell probe needs three finite world coordinates')
+    return {**args, 'point': [float(v) for v in point]}
 
 
 @contextmanager
@@ -111,7 +129,9 @@ class Queue:
         if op not in OPERATIONS:
             raise ValueError("unsupported intervention")
         args = {} if args is None else args
-        if op == 'set_infinite_ammo':
+        if op == 're6_shell_probe':
+            args = shell_probe_args(args, source)
+        elif op == 'set_infinite_ammo':
             if not isinstance(args, dict) or set(args) != {'enabled'} or type(args['enabled']) is not bool:
                 raise ValueError('infinite ammo needs an explicit boolean enabled value')
         elif op in ('proximity_mine_drop', 'proximity_mine_ring'):
@@ -414,7 +434,8 @@ def completion_receipt(result, *, session_id=None, request_id=None):
             'state', 'verified', 'native_state', 'op', 'kind', 'effect', 'requested', 'placed', 'armed',
             'triggered', 'detonated', 'completed', 'presses', 'item', 'enabled', 'consumed',
             'inventory_consumed', 'weapon_before', 'weapon_after', 'weapon_unchanged', 'player_generation',
-            'hp_before', 'hp_after', 'self_damage', 'elapsed_ms', 'placement_span_ms', 'radius_cm', 'probe')
+            'hp_before', 'hp_after', 'self_damage', 'hp_loss_observed', 'flash_detonated',
+            'elapsed_ms', 'placement_span_ms', 'radius_cm', 'probe')
             if k in result and (result[k] is None or type(result[k]) in (bool, int, float, str))}
         for k in ('reason', 'verification_reason', 'detach_error'):
             if k in result:
@@ -490,6 +511,9 @@ def _worker_loop(sid, server, headers, ad, stats_of, alive, event, game=None):
             caps = ["flash_now"] + (["equip_primary"] if choices else [])
             if getattr(ctl, "selftest", None) is not None:
                 caps.append("re4_harness_selftest")
+            if type(ctl) is N.Controller:
+                # Agent-only research, deliberately absent from grenade-kind/UI choices.
+                caps.append('re6_shell_probe')
             if getattr(ctl, "first_aid_now", None) is not None:
                 caps.append("first_aid_now")
             if getattr(ctl, 'proximity_mines', None) is not None:
@@ -678,6 +702,24 @@ def _worker_loop(sid, server, headers, ad, stats_of, alive, event, game=None):
                                         stats['first_aid_used'] = stats.get('first_aid_used', 0) + 1
                                 elif row['op'] == 're4_harness_selftest':
                                     result = ctl.selftest()
+                                elif row['op'] == 're6_shell_probe':
+                                    if type(ctl) is not N.Controller:
+                                        raise N.Unavailable('shell probe requires the shared RE6 native controller')
+                                    args = shell_probe_args(row['args'], row.get('source'))
+                                    if stats is None or stats.get('operator_control') or \
+                                            stats.get('mine_bombs_since_detonate') or stats.get('mine_avoid_positions'):
+                                        raise N.Unavailable('shell research waits for bot ownership and no pending remote bombs')
+                                    from .titles.re6_switch_shell_probe import probe_one
+                                    expected, round_id = ctl.ready(), stats.get('round_evidence_id')
+                                    def allowed_probe():
+                                        return (alive() and row['expires'] > time.time() and
+                                                row['epoch'] == context(full=False)['epoch'] and
+                                                stats.get('round_evidence_id') == round_id and
+                                                not stats.get('operator_control') and
+                                                not stats.get('mine_bombs_since_detonate') and
+                                                not stats.get('mine_avoid_positions'))
+                                    result = probe_one(ctl, args['point'], kind=args['kind'],
+                                                       expected=expected, allowed=allowed_probe)
                                 elif row['op'] == 'remote_mines':
                                     args = row.get('args') or {}
                                     from .titles import re6_switch_native

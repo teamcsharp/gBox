@@ -62,6 +62,31 @@ def test_re5_mine_probe_gate_epoch_and_durable_partial_receipt(queue):
     assert q.status('sid')['requests'][-1]['state'] == 'expired'
 
 
+def test_re6_shell_probe_is_explicit_bounded_and_not_replayed(queue):
+    q, _ = queue
+    caps = ['re6_shell_probe']
+    q.claim('sid', 'life-1', caps)
+    args = {'kind': 'shell1304', 'point': [700., 0., 0.], 'allow_unverified': True}
+    for bad in ({**args, 'count': 2}, {**args, 'ptr': 1234}, {**args, 'kind': 'flash'},
+                {**args, 'allow_unverified': 1}, {**args, 'allow_unverified': False},
+                {**args, 'point': [True, 0, 0]}, {**args, 'point': [float('nan'), 0, 0]},
+                {**args, 'point': [10 ** 1000, 0, 0]}, {**args, 'point': [0, 0]}):
+        with pytest.raises(ValueError):
+            q.post('sid', caps[0], str(uuid.uuid4()), 'probe', bad)
+    with pytest.raises(ValueError, match='agent research'):
+        q.post('sid', caps[0], str(uuid.uuid4()), 'viewer', args)
+    rid = str(uuid.uuid4())
+    q.post('sid', caps[0], rid, 'probe', args)
+    claim = q.claim('sid', 'life-1', caps)[0]
+    receipt = {'state': 'uncertain', 'verified': False, 'spawned': 1, 'detonated': 0}
+    q.finish('sid', rid, claim['claim'], receipt)
+    assert q.post('sid', caps[0], rid, 'probe', args)['result'] == receipt
+    assert not q.claim('sid', 'life-1', caps)
+    q.post('sid', caps[0], str(uuid.uuid4()), 'probe', args)
+    assert not q.claim('sid', 'life-2', caps)
+    assert q.status('sid')['requests'][-1]['state'] == 'expired'
+
+
 def test_twenty_clicks_remain_distinct_and_complete_once(queue):
     q, now = queue
     with concurrent.futures.ThreadPoolExecutor(max_workers=8) as pool:
@@ -252,6 +277,35 @@ def test_http_routes_require_auth_and_running_session(tmp_path):
         assert client.post('/api/sessions/sid/interventions/claim',json={'epoch':'life','capabilities':['flash_now']}).status_code == 200
         response=client.post('/api/sessions/sid/interventions',json={'op':'flash_now','request_id':str(uuid.uuid4())})
         assert response.json()['request']['state']=='queued'
+    store.db.close()
+
+
+def test_shell_probe_http_requires_authenticated_research_actor(tmp_path):
+    from fastapi import HTTPException, Header
+    store = Store(tmp_path)
+    store.put('session', 'sid', {'state': 'running'})
+    app = FastAPI()
+    def auth(authorization: str = Header(default=''), x_gbox_actor: str = Header(default='operator')):
+        if authorization != 'Bearer test':
+            raise HTTPException(401)
+        return x_gbox_actor
+    I.install(app, store, auth)
+    path = '/api/sessions/sid/interventions'
+    body = {'op': 're6_shell_probe', 'request_id': str(uuid.uuid4()), 'source': 'probe',
+            'args': {'kind': 'shell1304', 'point': [700, 0, 0], 'allow_unverified': True}}
+    with TestClient(app) as client:
+        assert client.post(path, json=body, headers={'x-gbox-actor': 'probe'}).status_code == 401
+        client.headers['Authorization'] = 'Bearer test'
+        assert client.post(path + '/claim', json={'epoch': 'life', 'capabilities': ['re6_shell_probe']}).status_code == 200
+        # An actor supplied inside the JSON body does not become the authenticated actor.
+        refused = client.post(path, json=body)
+        assert refused.status_code == 409
+        assert 'agent research operation' in refused.json()['detail']
+        for actor in ('probe', 'gbox-agent'):
+            body['request_id'] = str(uuid.uuid4())
+            result = client.post(path, json=body, headers={'x-gbox-actor': actor})
+            assert result.status_code == 200
+            assert result.json()['request']['source'] == actor
     store.db.close()
 
 

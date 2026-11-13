@@ -2054,7 +2054,7 @@ BOMB_BOOK_V, BOMB_ME_R = 2, 300.0       # the book's record version; zombies thi
 BOMB_LEARN_S, BOMB_SPARE_R, BOMB_BLAME_R = 0.7, 1500.0, 200.0   # a blast's toll read this long after it; the zombies
                                         # within SPARE_R left whole are the spared; one within BLAME_R of him takes the
                                         # blame for his health instead
-BOMB_HOLD_S = 8.0                       # out this long: off once he is clear
+BOMB_HOLD_S = 5.0                       # native placement deadline; escape and flag service run before other items
 # "With his mind" (operator 2026-11-10: "the bot flipping the switch with his mind ... it would allow for the bot to
 # always use a weapon and detonate remote mines at will"): once a bomb is out his gun comes back at once (the native
 # equip) and he fights on; the rules above decide when it goes off (clear of the learned reach, BOMB_BLAST_N on it,
@@ -3400,7 +3400,8 @@ class Bot:
         """core.respond on this tick's decision: the native flash, the remote bomb due, or the fight on the threats."""
         p = snap.get("player") or {}
         if (not RESPOND or snap.get("mercenaries_phase") != PHASE_PLAYING or not p.get("pos")
-                or (p.get("hp") or 0) <= 0 or self.stats.get("operator_control")):
+                or (p.get("hp") or 0) <= 0 or self.stats.get("operator_control")
+                or (self.stats.get('mine_escape_required') and self.stats.get('act') == 'bomb_escape')):
             return out
         try:
             r = self.__dict__.get("_resp")
@@ -3899,6 +3900,13 @@ class Bot:
             return self._go("held", "break_free", {"hold": WIGGLE[self.wiggle % len(WIGGLE)]},
                             f"held (action {state}): B mashed, the stick round")
         self.in_hold = False
+        if self.stats.get('mine_escape_required'):
+            # Placement starts a five-second deadline. A quick-turn sequence,
+            # weapon handover or another grenade must not consume this route.
+            self.quick, self.qshot_release = 0, False
+            escape = self._bomb_escape(p, snap, now)
+            if escape is not None:
+                return escape
         self.mode = self._operator_command(p, snap, live, now)   # the operator's commands, else the doctrine's
         took = self._prompt(p, snap, now)                        # the game's own prompt: pressed at once
         if took is not None:
@@ -3935,12 +3943,12 @@ class Bot:
                 self.stats["hit_quick_shots"] = self.stats.get("hit_quick_shots", 0) + 1
                 return self._go("quick_shot", "hit_quick_shot", {"hold": ("zl", "zr")},
                                 f"hit: a quick shot back ({self.hit_qs} more)")
-        switched = self._weapon_switch(p, now)                   # the weapon asked for (the app, a grab's pick)
-        if switched is not None:
-            return switched
         escape = self._bomb_escape(p, snap, now)
         if escape is not None:
             return escape
+        switched = self._weapon_switch(p, now)                   # the weapon asked for (the app, a grab's pick)
+        if switched is not None:
+            return switched
         if self.stats.get('qte_escape_active'):
             close = [e for e in live if flat(e) < 800]
             if close:
@@ -7240,18 +7248,25 @@ class Bot:
         if known:
             nearest = min(known, key=lambda at: math.hypot(px-at[0], pz-at[2]))
             bx, bz = nearest[0], nearest[2]
+            # Inside a ring, repelling the nearest individual bomb reverses
+            # direction as soon as another one becomes nearest. Escape outward
+            # from the set's centre; clearance still measures every actual unit.
+            route_from = (sum(at[0] for at in known) / len(known), sum(at[2] for at in known) / len(known))
         elif self.bomb_at is not None:
             bx, bz = self.bomb_at
+            route_from = (bx, bz)
         else:
             return None
         me = math.hypot(px - bx, pz - bz)
+        required = self.stats.get('mine_required_clearance_cm')
+        safe = max(self.book.safe, required) if isinstance(required, (int, float)) and math.isfinite(required) else self.book.safe
         py = p["pos"][1]
         live = [e for e in snap.get("enemies") or () if (e.get("hp") or 0) > 0 and abs(e["pos"][1] - py) <= MAX_DY]
         on_him = any(math.hypot(e["pos"][0] - px, e["pos"][2] - pz) <= BOMB_FIGHT_R for e in live)
-        if self.bomb_phase in ("det_aim", "det") and (me < self.book.safe or (on_him and self.bomb_phase == "det_aim")):
+        if self.bomb_phase in ("det_aim", "det") and (me < safe or (on_him and self.bomb_phase == "det_aim")):
             self.stats["bomb_det_holds"] += 1                    # too near it for the blast, or one on him: not now
             self.bomb_phase = "wait"
-        if me >= self.book.safe:
+        if me >= safe:
             return None
         if self.bomb_phase not in ("wait", None):
             self.bomb_phase = "wait"
@@ -7264,8 +7279,8 @@ class Bot:
                 if (self._equip_result or {}).get("state") in ("requested", "pending", "equipped"):
                     self.stats["bomb_gun_backs"] += 1
         cam = snap.get("camera")
-        walked = self._bomb_walk(p, (bx, bz), cam["yaw"] if cam else p["rot"], me, 0, now, act="bomb_escape",
-                                why=f"inside the bomb clearance margin ({me:.0f} of {self.book.safe:.0f} cm): out first",
+        walked = self._bomb_walk(p, route_from, cam["yaw"] if cam else p["rot"], me, 0, now, act="bomb_escape",
+                                why=f"inside the bomb clearance margin ({me:.0f} of {safe:.0f} cm): out first",
                                 live=live)
         if walked is not None:
             self._gun_down()
@@ -7345,7 +7360,8 @@ class Bot:
         pushing = self.push is not None and now <= self.push["until"]
         way = self.push["h"] if pushing else self._open_heading(p, live, avoid=at)
         stunned = self.flashed if now < self.fever_until else set()   # (flashed: walked through, kicked)
-        if any(math.hypot(e["pos"][0] - px, e["pos"][2] - pz) <= ESCAPE_FIGHT_R
+        deadline_escape = act == 'bomb_escape' and self.stats.get('mine_escape_required')
+        if not deadline_escape and any(math.hypot(e["pos"][0] - px, e["pos"][2] - pz) <= ESCAPE_FIGHT_R
                and e.get("ptr", e.get("slot")) not in stunned
                and abs(wrap(heading(e["pos"][0] - px, e["pos"][2] - pz) - way)) <= math.radians(60) for e in live):
             self.stats["escape_fights"] = self.stats.get("escape_fights", 0) + 1
@@ -7368,7 +7384,7 @@ class Bot:
         d_near = min((math.hypot(e["pos"][0] - px, e["pos"][2] - pz) for e in live), default=math.inf)
         eq = p.get('equipped')
         if (type(eq) is int and 0 <= eq < WEAPON_INDEXES and (p.get('ammo') or 0) > 0
-                and not self.down and d_near <= BOMB_FIGHT_R):
+                and not self.down and d_near <= BOMB_FIGHT_R and not deadline_escape):
             # Escape is movement, not a reason to repeatedly lower a loaded gun.
             # Let the normal aim/LOS/fire gates fight while retaining this route.
             self._combat_escape_move = tuple(k for k in keys if k in ('lup', 'ldown', 'lleft', 'lright'))

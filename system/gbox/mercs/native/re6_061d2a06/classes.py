@@ -136,13 +136,14 @@ class ShellClass:
     item: int
     dti: int
     parent: str
-    size: int
+    size: int                   # Raw DTI metadata, not allocation bytes (launcher shells allocate 0x3970).
 
 
 SHELLS = {
     "uWp1302": ShellClass("uWp1302", 0x133, 0x2952098, "uWpShellLauncher", 0xE5C),
     "uWp1303": ShellClass("uWp1303", 0x134, 0x29520D0, "uWpShellLauncher", 0xE5C),
     "uWp1304": ShellClass("uWp1304", 0x135, 0x2952108, "uWpShellLauncher", 0xE5C),
+    "uWp1305": ShellClass("uWp1305", 0x136, 0x2952140, "uWpShell", 0xE58),
 }
 
 SHELL_FAMILY = {
@@ -159,11 +160,12 @@ LAUNCHERS = {
 }
 
 #: class name -> the round it fires (what "real launcher rounds in the barrage" means)
-LAUNCHER_ROUNDS = {"uWp1080": ("uWp1302", "uWp1303", "uWp1304"), "uWp1120": ("uWp1304",)}
+# B2BC70 maps item 0x11B to 0x136. Nitrogen (0x135) belongs to the grenade launcher.
+LAUNCHER_ROUNDS = {"uWp1080": ("uWp1302", "uWp1303", "uWp1304"), "uWp1120": ("uWp1305",)}
 
 
 def shell_for_item(item: int) -> ShellClass | None:
-    """The launcher round class for an inventory item id (0x133-0x135), or None."""
+    """The launcher round class for an inventory item id (0x133-0x136), or None."""
     for shell in SHELLS.values():
         if shell.item == item:
             return shell
