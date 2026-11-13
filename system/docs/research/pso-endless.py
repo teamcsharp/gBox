@@ -210,6 +210,38 @@ def arm(pad: Pad) -> None:
 
 
 # ---- play ------------------------------------------------------------------------------------------------------------
+def unstick(pad: Pad, attempts: int = 3) -> str:
+    """Find a direction that actually moves the character, and report which one worked.
+
+    A blocked direction retried forever is indistinguishable from a dead bot, and that is what every "stuck" episode in this session was: a ledge at y 16.2, a wall corner, an
+    NPC conversation. So instead of a fixed key dance, try each direction and keep the one that produces movement.
+    """
+    for attempt in range(attempts):
+        for key in ("up", "left", "right", "down", "left", "right"):
+            before = state(pad)
+            player = before.get("player") or {}
+            if not player:
+                return "no player"
+            start = (float(player.get("x") or 0), float(player.get("z") or 0))
+            hold(pad, key, 0.6)
+            time.sleep(0.15)
+            after = state(pad)
+            player = after.get("player") or {}
+            end = (float(player.get("x") or 0), float(player.get("z") or 0))
+            if math.dist(start, end) > 1.0:
+                log(f"unstick: {key} freed it ({math.dist(start, end):.1f} units)")
+                return key
+        # nothing physical worked: a menu or a dialogue is the remaining explanation
+        log(f"unstick: no direction moved it (attempt {attempt + 1}) - pressing START and B")
+        tap(pad, "start")
+        time.sleep(0.6)
+        tap(pad, "b")
+        time.sleep(0.4)
+        tap(pad, "a")
+        time.sleep(0.4)
+    return ""
+
+
 def play(pad: Pad, seconds: float = 45.0) -> str:
     """Fight what is near, otherwise travel. Returns what it did most."""
     started = time.time()
@@ -231,15 +263,10 @@ def play(pad: Pad, seconds: float = 45.0) -> str:
             stuck = 0
         last_position = (x, z)
 
-        if stuck >= 4:
-            # a pause menu looks exactly like this from the position alone
-            log("stuck - closing menus and backing off")
-            tap(pad, "start")
-            time.sleep(0.6)
-            tap(pad, "b")
-            time.sleep(0.4)
-            hold(pad, "down", 0.6)
-            hold(pad, "right", 0.5)
+        if stuck >= 2:
+            # measured, not assumed: try every direction and keep the one that moves
+            unstick(pad)
+            stuck = 0
 
         enemies = [e for e in (now.get("entities") or [])
                    if str(e.get("kind")) == "enemy" and e.get("hp") is not None
