@@ -26,9 +26,12 @@ import traceback
 
 from pso_pad import Pad, call
 
+import singleton                      # one bot only: a second loop fights the first for the pad
+
 # The operator's controller relay (controller_relay.py) creates this while they are playing, so the bot stands down.
 OPERATOR_PLAYING = pathlib.Path(r"D:\gBox\pso-ds\operator-playing.flag")
 FLAG_STALE_S = 15.0        # a pause flag older than this is a dead relay, not a playing operator
+LOOP_LOCK = pathlib.Path(r"D:\gBox\pso-ds\endless.lock")
 
 # The game's own affordance classifier, so a door key is recognised from its entity CLASS in RAM rather than guessed
 # from distance: SWITCH_CLASSES {'TLazerFenceSw', 'TObjDoorKey'} must be PRESSED, DOOR_CLASSES {'TObjDoor',
@@ -883,6 +886,8 @@ def play(pad: Pad, seconds: float = 120.0) -> str:
 
 # ---- outer loop ------------------------------------------------------------------------------------------------------
 if __name__ == "__main__":
+    if not singleton.acquire(LOOP_LOCK):
+        raise SystemExit(0)                     # another bot is already playing; two would fight over the pad
     cycle = 0
     while True:
         cycle += 1
