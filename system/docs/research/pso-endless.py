@@ -771,6 +771,11 @@ def play(pad: Pad, seconds: float = 120.0) -> str:
                 kind = str(candidate.get("kind"))
                 if not (kind == "enemy" or kind == "object" or kind == "gate"):
                     continue
+                # NEVER pick items up: TItemMoney / TItemEquipBase and the rest of the loose-drop family are skipped.
+                # The operator wants the bag empty - the character has unlimited Scape Dolls and needs no monomates,
+                # trimates, monofluids or difluids - and a full bag is what stopped pickups working in the first place.
+                if candidate_class.startswith("TItem") or candidate_class.startswith("TObjItem"):
+                    continue
                 distance_c = math.hypot(float(candidate.get("x") or 0) - x, float(candidate.get("z") or 0) - z)
                 if distance_c <= 12.0:
                     actionables.append((distance_c, candidate_class))

@@ -46,6 +46,18 @@ def send(pad, events):
 def main():
     pad = Pad()
     print("relay session:", pad.sid, flush=True)
+
+    # The session changes whenever the bot relaunches, and a relay bound to a dead sid silently drops every press.
+    # Re-resolve it periodically and rebind so the operator's controller always reaches the LIVE game.
+    def rebind(current):
+        try:
+            fresh = Pad()
+        except RuntimeError:
+            return current
+        if fresh.sid != current.sid:
+            print(f"relay rebinding {current.sid[:12]} -> {fresh.sid[:12]}", flush=True)
+            return fresh
+        return current
     pygame.init()
     pygame.joystick.init()
     if pygame.joystick.get_count() == 0:
@@ -54,7 +66,7 @@ def main():
     joy.init()
     print(f"relay watching '{joy.get_name()}'", flush=True)
 
-    held, last_stick, last_activity = set(), (0.0, 0.0), 0.0
+    held, last_stick, last_activity, last_rebind = set(), (0.0, 0.0), 0.0, 0.0
     while True:
         pygame.event.pump()
         now = {name for index, name in BUTTONS.items() if index < joy.get_numbuttons() and joy.get_button(index)}
@@ -76,6 +88,10 @@ def main():
             if abs(lx) > 0:
                 events.append({"key": "left" if lx < 0 else "right", "down": True})
             last_stick = stick
+
+        if time.time() - last_rebind > 1.0:
+            last_rebind = time.time()
+            pad = rebind(pad)
 
         if events:
             last_activity = time.time()
