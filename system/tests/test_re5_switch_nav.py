@@ -12,7 +12,6 @@ from gbox.mercs.titles.re5_switch_nav import OccupancyGrid, Navigator
 def _switch_fight(monkeypatch):
     monkeypatch.setattr(R, "PS3_BRAIN", False)
     monkeypatch.setattr(R, "HEAL_ENABLED", False)
-    R._BONUS_SCAN.update(at=-1e9, list=None, line=None, full_at=-1e9)
 
 
 def at(dist, deg, y=0.0):

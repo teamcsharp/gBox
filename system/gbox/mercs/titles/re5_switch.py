@@ -1779,38 +1779,90 @@ def heading(dx: float, dz: float) -> float:
 
 
 _UNIT_CENSUS = {"at": -1e9, "n": None}
-_BONUS_SCAN = {"at": -1e9, "list": None, "line": None, "full_at": -1e9}
+BONUS_SCAN_NODES = 64
+BONUS_SCAN_BUDGET_S = .005
 
 
-def time_bonuses(m, base: int, now: float | None = None):
-    """The hourglass statues standing (uOm0100, vtable main+BONUS_VT): [{"ptr", "pos", "secs"}], read at most every
-    BONUS_SCAN_S - their own line only, every line every 10 s (where they live is learned)."""
+def time_bonuses(m, base: int, now: float | None = None, *, identity=None):
+    """Incremental census of every unit line, without a long combat-thread scan.
+
+    A partial/failed census never reports missing statues as collected. Retain
+    the last complete list until a full pass finishes, or None for a new life.
+    Per-memory state cannot carry a previous session's pointers into a new one.
+    """
     now = time.monotonic() if now is None else now
-    if now - _BONUS_SCAN["at"] < BONUS_SCAN_S:
-        return _BONUS_SCAN["list"]
-    _BONUS_SCAN["at"] = now
-    out, found_line = [], None
+    started = time.perf_counter()
+    st = getattr(m, '_re5_bonus_scan', None)
     try:
         su = u64(m, base + S_UNIT)
         if not ptr_ok(su):
+            m._re5_bonus_scan = None
             return None
-        vt = base + BONUS_VT
-        for line in range(N_LINES):                      # every line each time (a one-line scan lost some: 16:59)
-            u, k = u64(m, su + UNIT_LINES + LINE_STRIDE * line), 0
-            while ptr_ok(u) and k < 1024:
-                if u64(m, u) == vt:
+        key = (base, su, identity)
+        if st is None or st['identity'] != key:
+            st = m._re5_bonus_scan = {'identity':key, 'list':None, 'complete_at':-1e9,
+                'next_at':now, 'scan':None, 'status':'unobserved', 'nodes':0}
+        if st['scan'] is None:
+            if now < st['next_at']:
+                return st['list']
+            st['scan'] = {'line':0, 'unit':None, 'seen':set(), 'found':{}, 'nodes':0, 'started':now, 'errors':[]}
+        scan = st['scan']
+        work = 0
+        while scan['line'] < N_LINES and work < BONUS_SCAN_NODES:
+            # Check between reads; one slow transport read remains indivisible.
+            if work and time.perf_counter() - started >= BONUS_SCAN_BUDGET_S:
+                break
+            if scan['unit'] is None:
+                scan['unit'] = u64(m, su + UNIT_LINES + LINE_STRIDE * scan['line'])
+                work += 1
+                continue
+            u = scan['unit']
+            if not ptr_ok(u):
+                scan.update(line=scan['line']+1, unit=None, seen=set())
+                continue
+            if u in scan['seen'] or len(scan['seen']) >= 1024:
+                scan['errors'].append('unit-list cycle or node limit on line '+str(scan['line']))
+                scan.update(line=scan['line']+1, unit=None, seen=set())
+                work += 1
+                continue  # one bad effects line must not starve later statue lines
+            scan['seen'].add(u)
+            # Vtable and next link fit in one 32-byte read. No class-name walk.
+            try:
+                header = m.rd(u, UNIT_NEXT + 8)
+                vt, nxt = struct.unpack_from('<Q', header)[0], struct.unpack_from('<Q', header, UNIT_NEXT)[0]
+                if vt == base + BONUS_VT:
                     pos = struct.unpack("<3f", m.rd(u + E_POS, 12))
                     secs = struct.unpack("<h", m.rd(u + E_HP, 2))[0]
-                    if all(math.isfinite(v) for v in pos):
-                        out.append({"ptr": u, "pos": pos, "secs": secs})
-                        found_line = line
-                u, k = u64(m, u + UNIT_NEXT), k + 1
-    except (ValueError, OSError, struct.error):
-        return _BONUS_SCAN["list"]
-    if found_line is not None:
-        _BONUS_SCAN["line"] = found_line
-    _BONUS_SCAN["list"] = out
-    return out
+                    if not all(math.isfinite(v) for v in pos):
+                        raise ValueError('nonfinite statue position')
+                    scan['found'][u] = {"ptr":u, "pos":pos, "secs":secs}
+            except (ValueError, OSError, struct.error):
+                scan['errors'].append('unit read incomplete on line '+str(scan['line']))
+                scan.update(line=scan['line']+1, unit=None, seen=set())
+                work += 1
+                continue
+            scan['unit'] = nxt
+            scan['nodes'] += 1
+            work += 1
+        st.update(nodes=scan['nodes'], work=work, read_ms=round((time.perf_counter()-started)*1000, 2))
+        if scan['line'] == N_LINES:
+            if scan['errors']:
+                # Useful discoveries survive an incomplete pass, but missing
+                # rows never become false collection/removal evidence.
+                found = {row['ptr']:row for row in st['list'] or ()}
+                found.update(scan['found'])
+                st.update(list=list(found.values()) if found else None, status='incomplete',
+                          error='; '.join(scan['errors'])[:160])
+            else:
+                st.update(list=list(scan['found'].values()), complete_at=now, status='complete', error=None)
+            st.update(next_at=now+BONUS_SCAN_S, scan=None)
+        else:
+            st['status'] = 'scanning'
+        return st['list']
+    except (ValueError, OSError, struct.error) as exc:
+        if st is not None:
+            st.update(scan=None, status='incomplete', error=str(exc)[:120], next_at=now+BONUS_SCAN_S)
+        return None  # unknown this tick; never synthesize an empty census
 
 
 def unit_enemies_alive(m, base: int, now: float | None = None):
@@ -1965,7 +2017,6 @@ def snapshot(m) -> dict:
                 except (ValueError, OSError):
                     snap["continue_cursor"] = snap["continue_ready"] = None
     snap["unit_enemies_alive"] = unit_enemies_alive(m, base)
-    snap["bonuses"] = time_bonuses(m, base)
     se = u64(m, base + S_ENEMY)
     ppos = (snap.get("player") or {}).get("pos")
     if ptr_ok(se):
@@ -2019,6 +2070,11 @@ def snapshot(m) -> dict:
     # cached; None until sAI is found or between rounds
     from . import re5_switch_native_nav
     snap["nav"] = re5_switch_native_nav.get_navmesh(m, base)
+    player = snap.get('player') or {}
+    snap['bonuses'] = time_bonuses(m, base, identity=(player.get('ptr'), player.get('generation'),
+                                                   gs, snap.get('mercenaries_phase')))
+    scan = getattr(m, '_re5_bonus_scan', None) or {}
+    snap['bonus_scan'] = {k:scan.get(k) for k in ('status', 'nodes', 'work', 'read_ms', 'complete_at', 'error')}
     return snap
 
 
@@ -8922,8 +8978,11 @@ class RE5Switch(Driver):
         return [tuple(str(button).split("+"))]
 
     def progress(self, snap: dict) -> dict:
+        scan = snap.get('bonus_scan') or {}
         return {"timer": snap.get("timer"), "combo": snap.get("combo"), "score": snap.get("score"),
                 "kills": snap.get("kills"), "max_combo": snap.get("max_combo"),
+                'bonus_scan_status':scan.get('status'), 'bonus_scan_read_ms':scan.get('read_ms'),
+                'bonus_scan_nodes':scan.get('nodes'), 'bonus_scan_error':scan.get('error'),
                 "mercenaries_phase": snap.get("mercenaries_phase"), "mode": "no_mercy"}
 
 

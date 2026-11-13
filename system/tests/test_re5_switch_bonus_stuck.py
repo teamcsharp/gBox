@@ -13,7 +13,6 @@ from tests.test_re5_switch_bonus_giveup import at, snap, bot, OTHER_PTR, STUCK_P
 def _switch_fight(monkeypatch):
     monkeypatch.setattr(R, "PS3_BRAIN", False)
     monkeypatch.setattr(R, "HEAL_ENABLED", False)
-    R._BONUS_SCAN.update(at=-1e9, list=None, line=None, full_at=-1e9)
 
 
 FAR = at(1000, 0)      # the moment: the statue the route kept ramming a wall for

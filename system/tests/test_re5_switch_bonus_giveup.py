@@ -17,7 +17,6 @@ KNIFE_TRY_S, KNIFE_RETRIES, BONUS_BLOCK_S, KNIFE_CAP_S = R.KNIFE_TRY_S, R.KNIFE_
 def _switch_fight(monkeypatch):
     monkeypatch.setattr(R, "PS3_BRAIN", False)
     monkeypatch.setattr(R, "HEAL_ENABLED", False)
-    R._BONUS_SCAN.update(at=-1e9, list=None, line=None, full_at=-1e9)
 
 
 def at(dist, deg, y=0.0):

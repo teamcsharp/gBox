@@ -13,7 +13,6 @@ from gbox.mercs.titles import re5_switch as R
 def _switch_fight(monkeypatch):
     monkeypatch.setattr(R, "PS3_BRAIN", False)
     monkeypatch.setattr(R, "HEAL_ENABLED", False)
-    R._BONUS_SCAN.update(at=-1e9, list=None, line=None, full_at=-1e9)
 
 
 def at(dist, deg, y=0.0):
@@ -88,9 +87,10 @@ def test_the_statues_are_read_from_the_unit_lines():
     class M:
         def rd(self, a, n):
             return (mem.get(a) or bytes(n))[:n].ljust(n, b"\0")
-    got = R.time_bonuses(M(), base, now=0.0)
-    assert got == [{"ptr": unit, "pos": (35.0, 303.0, 29.0), "secs": 60}] and R._BONUS_SCAN["line"] == 13
-    assert R.time_bonuses(M(), base, now=0.5) is got                  # (at most every BONUS_SCAN_S)
+    m = M()
+    got = R.time_bonuses(m, base, now=0.0)
+    assert got == [{"ptr": unit, "pos": (35.0, 303.0, 29.0), "secs": 60}]
+    assert R.time_bonuses(m, base, now=0.5) is got                  # (at most every BONUS_SCAN_S)
 
 
 def test_stuck_on_a_ledge_above_the_statue_he_takes_the_context_action():
