@@ -36,7 +36,8 @@ def mine_controller(monkeypatch):
             ctl.units.append(unit)
             for at, value in ((unit, ctl.base + M.VTABLE), (unit + 0x1A00, len(ctl.units)),
                               (unit + 0x1A10, ctl.player), (unit + 0x1FB8, 0x240000000),
-                              (unit + 0x1D38, 0x240000000), (unit + 0x28C8, unit + 0x3000)):
+                              (unit + 0x1D38, 0x240000000), (unit + 0x28C8, unit + 0x3000),
+                              (unit + 0x2710, unit + 0x4000)):
                 ctl.put(at, struct.pack('<Q', value))
             ctl.put(unit + 0x1B28, struct.pack('<I', 29))
             ctl.put(unit + 0x1B88, b'\1')
@@ -45,6 +46,10 @@ def mine_controller(monkeypatch):
         unit = args[0]
         if off == 0x60D6D0:
             ctl.put(unit + 0x27B9, b'\1')
+            ctl.put(unit + 0x4014, b'\0')
+            ctl.put(unit + 0x273F, bytes([args[2] & 1]))
+        if off == 0x790FE0 and ctl.rd(unit + 0x273F, 1) == b'\1':
+            ctl.put(unit + 0x4014, b'\1')  # native put action's first tick
         if off == 0x793AB0:
             ctl.put(unit + 0x3014, b'\1')
         return 1
@@ -66,6 +71,27 @@ def test_verified_button_requires_native_armed_mines(monkeypatch):
     out = M.place(ctl, 5)
     assert out['verified'] and out['state'] == 'confirmed'
     assert out['armed'] == 5 and all(m['active'] for m in out['mines'])
+    assert all(m['primary_enabled'] and m['proximity_enabled'] for m in out['mines'])
+
+
+def test_proximity_enabled_without_primary_gate_cannot_confirm_armed(monkeypatch):
+    ctl = mine_controller(monkeypatch)
+    original = ctl.call
+    def call(off, *args, **kw):
+        result = original(off, *args, **kw)
+        if off == 0x790FE0:
+            ctl.put(args[0] + 0x4014, b'\0')
+        return result  # native return alone is not evidence of an enabled volume
+    ctl.call = call
+    def wait(predicate, **_):
+        if not predicate():
+            raise N.Unavailable('native arming not observed')
+    ctl.wait = wait
+    out = M.place(ctl, allow_unverified=True)
+    assert out['state'] == 'uncertain' and out['armed'] == 0
+    row = out['mines'][0]
+    assert row['proximity_enabled'] and not row['primary_enabled']
+    assert not row['armed_observed']
 
 
 @pytest.mark.parametrize('count', [5, 8])
@@ -185,4 +211,30 @@ def test_mine_receipt_records_concurrent_movement_health_and_native_ground_posit
     assert out['hp_loss_observed'] == 50 and out['damage_attribution'].startswith('unattributed')
     assert out['player_pos_before'] == [100, 200, 300] and out['player_pos_after'] == [200, 200, 400]
     assert out['mines'][0]['pos'] == [100, 190, 300]
+
+
+def test_hit_ring_uses_event_position_and_publishes_hazards_before_arming_wait(monkeypatch):
+    ctl = mine_controller(monkeypatch)
+    hazards = []
+    original = ctl.wait
+    def wait(predicate, **kw):
+        if len(ctl.units) == 5 and all(ctl.rd(u + 0x27B9, 1) == b'\1' for u in ctl.units):
+            assert len(hazards) == 5
+            assert all(h['armed_observed'] is False for h in hazards)
+        return original(predicate, **kw)
+    ctl.wait = wait
+    out = M.place(ctl, 5, allow_unverified=True, center=(400, 200, 800), on_deployed=hazards.append)
+    assert out['center'] == [400, 200, 800]
+    assert out['center_source'] == 'request_event_observation'
+    assert out['armed'] == 5
+    assert all(math.hypot(h['pos'][0]-400, h['pos'][2]-800) == pytest.approx(152.4) for h in hazards)
+    assert all(args[1:] == (1, 1, M.ITEM, 1) for off, args in ctl.native_calls if off == 0x60D6D0)
+
+
+@pytest.mark.parametrize('center', [(True, 0, 0), (float('nan'), 0, 0), [1, 2], 'bad'])
+def test_invalid_event_center_refused_before_native_calls(monkeypatch, center):
+    ctl = mine_controller(monkeypatch)
+    with pytest.raises(ValueError):
+        M.place(ctl, allow_unverified=True, center=center)
+    assert not ctl.native_calls and not ctl.writes
 

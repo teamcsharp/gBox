@@ -75,7 +75,73 @@ def test_the_run_out_from_a_bomb_follows_the_mesh_not_the_widest_gap():
     b.mines.state, b.mines.site = "retreat", (100.0, 0.0, 1900.0)       # a bomb at the top of the corridor
     p = player(pos=(100.0, 0.0, 1700.0), rot=math.pi / 2)              # 2 m below it, facing the wall (+x)
     act = b._mine_route(p, {"hold": ("b", "lup", "rleft")}, 1000.0)
-    assert {"lup", "b"} <= set(act["hold"]) and b.stats["mine_mesh_retreats"] == 1
+    assert "b" not in act["hold"] and "lup" not in act["hold"]
+    assert "lleft" in act["hold"] and b.stats["mine_mesh_retreats"] == 1
     # the only floor away from the bomb is back down the corridor (-z): he turns that way, not on into the wall
     assert "rright" in act["hold"] or "rleft" in act["hold"]
+    assert b._mesh_wp[2] == 1000.0
     assert b._mine_route(p, {"hold": ()}, 1000.0) == {"hold": ()}        # the controller's pauses are left alone
+
+
+def test_mine_retreat_handoff_preserves_route_through_mesh_and_room_guards():
+    from gbox.mercs.titles import re5_switch_mines as MN, re5_switch_wall
+    from gbox.mercs import tactical
+
+    mesh = corridor()
+    b = bot(mesh)
+    b.mines = MN.Mines(b.stats)
+    b.mines.state, b.mines.site = "retreat", (100., 0., 1900.)
+    b._now, b.doing = 1000., "mine"
+    p = player(pos=(100., 0., 1700.), rot=math.pi / 2)
+    act = b._mine_route(p, {"hold": ("b", "lup")}, 1000.)
+    assert re5_switch_wall.route_steers(b, 1000.)
+    assert not re5_switch_wall.route_steers(b, 1000.1)
+    # Both post-planning guards now know the escape lies down the corridor.
+    # Their previously unconnected waypoint lookup otherwise chose a tangent.
+    class Room:
+        def walk_block(self, start, end, **kw):
+            return None if mesh.floor_segment(start, end) else "wall"
+
+    b._sm = Room()
+    b._room_learn = lambda *_: None
+    snap = {"player": p, "nav": mesh}
+    guarded = b._room_guard(b._mesh_guard(act, snap), snap)
+    travel = re5_switch_wall._travel_heading(p, guarded['hold'])
+    assert abs(R.wrap(travel - math.pi)) < math.radians(25)
+    out = {}
+    tactical._take_native_route(out, b)
+    assert out['route_source'] == 'native_navmesh'
+    assert out['route'][-1][2] < p['pos'][2]
+
+
+def test_mine_retreat_keeps_near_corner_when_shortcut_crosses_a_wall():
+    from gbox.mercs.titles import re5_switch_mines as MN
+
+    corner, endpoint = (0., 0., 100.), (1000., 0., 100.)
+    class Mesh:
+        def retreat(self, *args, **kwargs):
+            return [corner, endpoint]
+
+        def floor_segment(self, start, end):
+            return end[0] == 0. or start[2] >= 99.
+
+    b = bot(Mesh())
+    b.mines = MN.Mines(b.stats)
+    b.mines.state, b.mines.site = 'retreat', (0., 0., -100.)
+    p = player(pos=(0., 0., 0.))
+    act = b._mine_route(p, {'hold': ('b', 'lup')}, 1000.)
+    assert b._mesh_wp == (0., 100., 1000.)
+    assert act['hold'] == ('lup', 'b')
+    assert b.stats['mesh_lookahead_holds'] == 1
+    # Once the corner is actually reached, the next segment becomes usable.
+    p['pos'] = (0., 0., 100.)
+    act = b._mine_route(p, {'hold': ('b', 'lup')}, 1000.2)
+    assert b._mesh_wp == (1000., 100., 1000.2)
+    assert 'lleft' in act['hold'] and 'b' not in act['hold']
+
+
+def test_prompt_only_observation_clears_previous_mine_retreat_route():
+    b = bot(None)
+    b._native_route_active = True
+    b.observe_reactions({'mercenaries_phase': 0}, 1000.)
+    assert not b._native_route_active

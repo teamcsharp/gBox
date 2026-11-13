@@ -44,6 +44,10 @@ def observe_event(snap, stats, now):
         event = {'id': sequence, 'owner': owner, 'kind': 'qte' if grabbed and not old_grab else 'hit',
                  'at': now, 'hp_before': old_hp, 'hp_after': hp, 'damage': damage,
                  'motion': p.get('motion'), 'prompt_label': prompt.get('label')}
+        pos = p.get('pos')
+        if isinstance(pos, (tuple, list)) and len(pos) == 3 and all(
+                type(v) in (int, float) and math.isfinite(v) for v in pos):
+            event['pos'] = list(pos)
         stats.update(re5_reaction_sequence=sequence, automine_event=event,
                      reactive_ring_events=sequence, reactive_ring_event=dict(event))
     event = stats.get('automine_event')
@@ -53,6 +57,7 @@ def observe_event(snap, stats, now):
 class Reactions:
     def __init__(self):
         self.consumed = None
+        self.retry_at = -math.inf
 
     def observe(self, snap, stats, now):
         event = observe_event(snap, stats, now)
@@ -61,11 +66,26 @@ class Reactions:
         if not 0 <= now - event['at'] <= EVENT_MAX_AGE_S:
             self.consume(event, stats, 'expired before native admission')
             return None
+        if now < self.retry_at:
+            return None
         return event
 
     def consume(self, event, stats, state):
         self.consumed = (tuple(event['owner']), event['id'])
         stats['reactive_ring_last_event'] = {**event, 'state': state}
+
+    def retry_unsubmitted(self, event, stats, now):
+        """Only a proven pre-submission busy refusal can release a fresh edge."""
+        latest = stats.get('automine_event') or {}
+        if (not isinstance(event, dict) or event.get('owner') != latest.get('owner')
+                or event.get('id') != latest.get('id')
+                or (tuple(event.get('owner') or ()), event.get('id')) != self.consumed
+                or not 0 <= now - event['at'] <= EVENT_MAX_AGE_S):
+            return False
+        self.consumed = None
+        self.retry_at = now + .15
+        stats['reactive_ring_last_event'] = {**event, 'state': 'waiting for native mailbox; nothing submitted'}
+        return True
 
     @staticmethod
     def decision(event):

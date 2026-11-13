@@ -522,7 +522,9 @@ def fire(ad, decision: dict, stats: dict, now: float, *, ring=None, native_guard
         # overwritten by the lock it caused).
         stats.setdefault("ring_first_failure", f"{type(exc).__name__}: {exc}"[:300])
         stats["rings_attempted"] = int(stats.get("rings_attempted", 0)) + 1
-        return {"state": "failed", "reason": stats["ring_error"]}
+        from .titles.re5_switch_native import ControllerBusy
+        return {"state": "failed", "reason": stats["ring_error"],
+                "native_not_submitted": isinstance(exc, ControllerBusy)}
     stats["ring_last_at"] = now
     stats["rings_attempted"] = int(stats.get("rings_attempted", 0)) + 1
     stats.pop("ring_error", None)
@@ -613,6 +615,8 @@ def control(ad, prof, *, ring=None):
                 stats['reactive_ring_receipt'] = {k: receipt.get(k) for k in
                     ('state', 'verified', 'kind', 'requested', 'detonated', 'reason', 'self_damage')}
                 stats['reactive_ring_receipt']['event'] = result.get('reactive_event')
+                if receipt.get('native_not_submitted') is True:
+                    re5_reactions.retry_unsubmitted(result.get('reactive_event'), stats, now)
             return result
         if event is None:
             return None

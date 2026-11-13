@@ -1,5 +1,53 @@
 # DeepSeek takeover: RE4/5/6 MercMode, Spark decompilation and live replacement
 
+## Latest continuation: functional mines, escape and run objectives (2026-11-13)
+
+Codex remains the active implementer. This update supersedes conflicting older
+mine counts, arming claims and run priorities below. The operator's latest
+observations and requirements must carry forward:
+
+- ?I am not seeing the mines be armed in RE5. They are on the floor but not being triggered.?
+  Confirmed defect: native configure0x60D6D0 received third argument0, leaving
+  unit+0x273F clear. Native put-action0x91E6D0 skipped primary-volume enabling.
+  The secondary proximity volume was enabled, so earlier receipts incorrectly
+  called these mines armed. The corrected argument1 permits normal native
+  triggering; confirmation now checks both volumes. Real native configure/put/
+  update execution passed13 cases at two load bases. Live explosion acceptance
+  after deployment remains pending; see research/re5-automine.md.
+- Default-on **Automine** means native armed drops after20ft of measured travel,
+  gun kept equipped, with no planting animation. Manual Mine Ring means flash
+  cover and **five** mines at5ft radius. Fresh damage requests five mines at the
+  observed hit location while the bot flees; the operator explicitly wants
+  distance from these dangerous mines. Early hazard notices must start escape
+  before the arming receipt finishes. Never infer safety from a six-second timeout.
+- RE6: every placed bomb has a **five-second detonation deadline**, with immediate
+  escape. Keep the prior no-self-detonation requirement. Record flag readback,
+  actual blast observation, disappearance and deadline violations separately.
+  Commit63d21398 implements this service; new movement-driven single drops are
+  in progress. Optional throws toward enemies ahead still need a native path that
+  preserves the held gun; the existing equip/throw animation does not satisfy it.
+- Run time bonuses until the native timer reaches **5:00**, then seek combo-time
+  pickups for scoring. The operator strongly rejects wall hugging and expects
+  persistent improvement across runs. Audit found RE5's verified-geometry
+  navigation persistence helper and native bonus-route helper were not called.
+  These integration gaps and native RE5 combo-pickup identification remain open.
+- Aim down at enemies lying on the floor. The operator reports shots passing
+  above nearby downed enemies; posture-dependent targeting is being investigated.
+
+RE6 genuine nitrogen-shell research has a bounded one-shell agent-only operation,
+real native collision execution proof and strict emission/ice receipts, committed
+in63d21398. It has **not** passed a live ice-effect acceptance test and is not a
+verified nitrogen360 control. Preserve that distinction; do not unlock it merely
+because allocation or an arm flag succeeded. No infinite-health behavior is
+requested or introduced. S/five-star on every run remains an active, unmet goal.
+
+The RE5 latest coherent batch combines primary-trigger correction, early escape,
+sprint-distance cadence, raw mine-state flight evidence, mesh-waypoint handoff,
+and time-bonus priority. Activation must still occur **between rounds**, as the
+operator authorized. Existing full-library model coverage and complete decompile/
+live-replacement requirements remain open; this progress does not cancel them.
+
+
 ## Continuing work: RE5 native proximity mines (2026-11-13 UTC)
 
 Codex is still working; this is a progress record, not an immediate transfer to DeepSeek.

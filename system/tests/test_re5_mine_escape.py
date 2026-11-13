@@ -15,6 +15,9 @@ def test_manual_armed_drop_keeps_inputs_free_and_publishes_hazards(ring, count):
     def mines(n, **kw):
         assert n == count and kw['allowed']() and kw['expected'] == (10, 2)
         calls.append('mines')
+        kw['on_deployed']({'unit': 42, 'generation': 8, 'pos': (0, 0, 0), 'armed_observed': False})
+        assert stats['native_mine_force_hazards'][0]['mine']['armed_observed'] is False
+        assert 'native_mine_force_receipts' not in stats
         return dict(state='confirmed', verified=True, placed=n, armed=n, mines=[{'unit': 42}])
     ctl = SimpleNamespace(ready=lambda: (10, 2), grenade_ring=flash, proximity_mines=mines)
     out = execute(ctl, count, ring=ring, allow_unverified=False, allowed=lambda: True,
@@ -22,6 +25,7 @@ def test_manual_armed_drop_keeps_inputs_free_and_publishes_hazards(ring, count):
     assert calls == (['flash', 'mines'] if ring else ['mines'])
     assert out['state'] == 'confirmed'
     assert stats['native_mine_force_receipts'][0]['owner'] == ['round', 10, 2]
+    assert stats['native_mine_force_hazards'][0]['owner'] == ['round', 10, 2]
     assert 'native_weapon_pending' not in stats
 
 

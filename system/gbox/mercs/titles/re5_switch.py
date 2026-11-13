@@ -1118,15 +1118,11 @@ BONUS, BONUS_VT, BONUS_SCAN_S, BONUS_FIGHT_R, BONUS_WALK_R, BONUS_BLOCK_S, BONUS
 # Bounded so a statue it genuinely cannot reach still falls through to the detour/give-up path.
 BONUS_PRESS_IN_S = 4.0
 BONUS_OFFLEVEL_DY, BONUS_OFFLEVEL_BLOCK_S = 300.0, 30.0   # a statue this far off his floor with no route: not a straight-line walk
-# The enemies and the combo come before the statues (operator 2026-11-09, the map showing him headed for a time
-# bonus with six Majini alive elsewhere: "The bot needs to go to that enemy and dispatch them"; live that round 36
-# bonus runs for 1 statue taken, 91 detours, 0 pursuits). With a Majini alive anywhere a statue is run for only when
-# the clock needs it (BONUS_NEED_S or less on it), or he is passing it (BONUS_NEAR_R from him, his own floor) and no
-# combo window is running down (none, or BONUS_COMBO_MIN_S of it left). BONUS_NEAR_R is a pass, not a trip: the
-# operator's next map had him standing 7.9 m from a statue, nine Majini alive ("the bot should never stand still.
-# The bot needs to pursue the enemy dots and navigate to and dispatch them"). stats bonus_deferred (ticks a statue
-# waited).
-BONUS_NEED_S, BONUS_NEAR_R, BONUS_COMBO_MIN_S = 120.0, 300.0, 8.0
+# The run comes before distant enemy pursuit and combo scoring, regardless of
+# time remaining. The Mines round 43273846 spent 254 s with its clock above the
+# old 120 s gate and never came within 3 m of a statue: all eight were missed.
+# Immediate threats, healing, QTEs and physical mine hazards still interrupt;
+# when that threat is gone, the same bonus route resumes.
 # KNIFE_R was 90 cm: inside a statue's own footprint, so the bot walked up, circled (bonus_detours 6-27 a round) and never
 # entered the reach that starts the swing. Four consecutive rounds measured knife_swings 0 with bonuses_taken 0 (the only take
 # came from a context prompt), while bonuses_seen was 8-11 a round. 160 cm is where the bot actually stands when it arrives, and
@@ -2048,6 +2044,7 @@ def snapshot(m) -> dict:
                 observed = re5_native_mine_tactic.ground(m, base, snap['player'])
                 if observed is not None:
                     snap['ground_mines'] = observed
+                    snap['ground_mine_observations'] = re5_native_mine_tactic.ground_observations(m, snap['player'])
             elif any(s["id"] == MINE_ITEM for s in snap["inventory"]):   # legacy inventory placement observation
                 # uWp0a also represents the inventory's own mine stack. Its
                 # dormant position can be near a fight; it is not a planted
@@ -3165,17 +3162,6 @@ class Bot:
             return None
         self._bonus_block = {k: t for k, t in self._bonus_block.items() if t > now}
         open_ = [b for b in bonuses if b["ptr"] not in self._bonus_block]
-        timer = snap.get("timer")
-        if open_ and any((e.get("hp") or 0) > 0 for e in snap.get("enemies") or ()) \
-                and not (isinstance(timer, (int, float)) and timer <= BONUS_NEED_S):
-            left = self._combo_left(snap)                  # the enemies and the combo first (BONUS_NEED_S above)
-            calm = left is None or left >= BONUS_COMBO_MIN_S
-            near = [b for b in open_ if calm and abs(b["pos"][1] - py) <= LEVEL_DY
-                    and math.hypot(b["pos"][0] - px, b["pos"][2] - pz) <= BONUS_NEAR_R]
-            if not near:
-                self.stats["bonus_deferred"] = self.stats.get("bonus_deferred", 0) + 1
-                self._bonus = None
-            open_ = near
         if not open_:
             return None
         cost = lambda b: math.hypot(b["pos"][0] - px, b["pos"][2] - pz) + 3.0 * abs(b["pos"][1] - py)
@@ -7030,6 +7016,7 @@ class Bot:
 
     def observe_reactions(self, snap, now):
         """Also called before prompt-only ticks, so QTE handling never hides a request."""
+        self._native_route_active = False             # a prompt/equip-only tick has no active retreat route
         p = snap.get('player') or {}
         if ((self._round_started is None or self.died) and snap.get('mercenaries_phase') == PHASE_PLAYING
                 and (p.get('hp') or 0) > DYING_HP and not self.stats.get('operator_control')):
@@ -7079,8 +7066,10 @@ class Bot:
         if r["key"] != key or now - r["at"] >= MESH_REPLAN_S:
             r["key"], r["at"] = key, now
             try:
-                pts = mesh.retreat((px, py, pz), tuple(hazard[:3]), min_distance=re5_switch_mines.RETREAT_CM,
-                                   max_travel=2.5 * re5_switch_mines.RETREAT_CM)
+                distance = getattr(m, 'native_retreat_distance', re5_switch_mines.RETREAT_CM) \
+                    if m._native_escape is not None else re5_switch_mines.RETREAT_CM
+                pts = mesh.retreat((px, py, pz), tuple(hazard[:3]), min_distance=distance,
+                                   max_travel=2.5 * distance)
             except Exception as exc:                         # noqa: BLE001
                 self.stats["nav_error"] = f"mesh retreat {type(exc).__name__}: {exc}"[:120]
                 pts = None
@@ -7091,11 +7080,28 @@ class Bot:
         while pts:
             q = pts[0]
             point = q                                         # (a FloorWaypoint is its own point)
-            if len(pts) > 1 and math.hypot(point[0] - px, point[2] - pz) <= MESH_WP_CM:
-                pts.pop(0)
-                continue
+            distance = math.hypot(point[0] - px, point[2] - pz)
+            if len(pts) > 1 and distance <= MESH_WP_CM:
+                # A near corner is not passed while the next segment still cuts
+                # a wall. This is the same measured lookahead as ordinary routes.
+                nxt = pts[1]
+                if (not MESH_LOOKAHEAD or distance <= MESH_WP_NEAR_CM
+                        or self._mesh_open(mesh, p["pos"], nxt[0], nxt[2])):
+                    pts.pop(0)
+                    continue
+                self.stats["mesh_lookahead_holds"] = self.stats.get("mesh_lookahead_holds", 0) + 1
+            # The room/mesh/wall guards need this tick's actual escape waypoint.
+            # Without it they choose an unrelated tangent or reverse the trail,
+            # as Ship Deck 0ab55576 did back into its manual five-mine ring.
+            self._mesh_wp = (point[0], point[2], now)
+            self._native_route, self._native_route_active = tuple(pts), True
             err = wrap(heading(point[0] - px, point[2] - pz) - p["rot"])
-            return dict(act, hold=("lup", "b") + self._turn(err, TURN_TOL))
+            # Move toward the route while turning, rather than sprinting forward
+            # into the wall when the escape lies beside or behind the player.
+            keys = self._stick_toward(err)
+            if abs(err) <= math.radians(22.5):
+                keys += ("b",)
+            return dict(act, hold=keys + self._turn(err, TURN_TOL))
         return act
 
     # --- the operator's marks on the map (MAP_GOALS above) -----------------------------------------------------------
@@ -8009,14 +8015,14 @@ class Bot:
                 near_e = min(live, key=flat, default=None)
                 near = flat(near_e) if near_e is not None else math.inf
         self._fault_tick(p, live, flat, snap, now)
-        if own:
-            act = self._door_safe(self._explore, p, flat, snap, now)   # nobody to fight: the doors seen here
-            if act is not None:
-                return act
         if not live:
             act = self._go_bonus(p, live, flat, snap, now)
             if act is not None:
                 return act
+            if own:
+                act = self._door_safe(self._explore, p, flat, snap, now)
+                if act is not None:
+                    return act
             act = self._rampage(p, live, flat, snap, now)   # (the circle clear: the main gun back)
             if act is not None:
                 return act
@@ -8035,11 +8041,6 @@ class Bot:
             self.doing, self.why = "no_foes", "no Majini alive on his level"
             self._gun_down()
             return {"hold": ()}
-        reach = RUSH_R if self.mode == "rush" else HUNT_R
-        if self.mode in ("hunt", "rush") and near > reach and self.aim_since is None:   # hunt / rush: close in on the nearest
-            self.doing, self.why = "walk", f"{self.mode}: the nearest {near / 100:.1f} m"
-            self._gun_down()
-            return {"hold": self._gait(near) + self._approach(p, near_e["pos"], now)}
         self._track_approach(p, live, now)
         self._threat_now = self._threat_near(p, live)
         crowded = NEAR_FOCUS and any(flat(e) <= RAMPAGE_R and abs(e["pos"][1] - py) <= LEVEL_DY for e in live)
@@ -8059,6 +8060,15 @@ class Bot:
         act = self._quick_behind(p, live, flat, now)    # one close behind: the quick turn (stick back + B)
         if act is not None:
             return act
+        if own:
+            act = self._go_bonus(p, live, flat, snap, now)
+            if act is not None:
+                return act
+        reach = RUSH_R if self.mode == "rush" else HUNT_R
+        if self.mode in ("hunt", "rush") and near > reach and self.aim_since is None:
+            self.doing, self.why = "walk", f"{self.mode}: the nearest {near / 100:.1f} m"
+            self._gun_down()
+            return {"hold": self._gait(near) + self._approach(p, near_e["pos"], now)}
         act = self._sweep(p, live, flat, snap, now)     # crowded within 5 m: the turret sweep first (off)
         if act is not None:
             return act
@@ -8066,9 +8076,6 @@ class Bot:
         if act is not None:
             return act
         act = self._relocate(p, live, flat, snap, now)  # then keep moving: no spot held long
-        if act is not None:
-            return act
-        act = self._go_bonus(p, live, flat, snap, now)
         if act is not None:
             return act
         act = self._pursue(p, live, flat, snap, now)

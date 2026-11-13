@@ -72,3 +72,63 @@ exports `9211b0.json`, `920f70.json`, `920b60.json` in Spark's
 the requested class as well as owner and allocation generation. Fake tests
 now exercise those checks instead of disabling them. Hand/incendiary live
 availability is unchanged until their own native effects are verified.
+
+## Sprint cadence correction
+
+The first activated Ship Deck round `0ab55576a450407c82db66ed7b2579cf`
+retained native action 4 while holding B + forward and moving about three
+metres between Unix times 1794569039.78 and 1794569040.92. The initial cadence
+recognized walk (1) and backing (7), so it missed sprint distance. Observed
+sprint motion 4 now contributes actual position deltas to the twenty-foot
+cadence. Stationary movement input, teleports, stale intervals and non-travel
+motions still contribute no distance. The evidence is retained in
+`gbox-data/mercs/round_maps/010018100CD46000/Ship_Deck/20261113-052144-0ab55576.json`.
+Focused scheduling regressions cover all three travel motions and native
+submission from sprinting. This correction still needs another live round to
+establish successful distance-triggered placement.
+
+## Combined button acceptance after activation
+
+Commit `0560aad9` activated between rounds at Unix time 1794568759.84.
+New RE5 session `fff71e9405964236-be08dae348784be3`, round
+`0ab55576a450407c82db66ed7b2579cf`, reports Automine true and configured gun
+rate 20. Manual Mine Ring request `86491e97-228b-4b58-9957-9efe7c38e312`
+was claimed at 1794569023.2869 and confirmed at 1794569027.1212.
+Its full receipt confirms five flash detonations (zero observed self-damage),
+five active armed mines, and Jail Breaker item 23 preserved with HP916 unchanged.
+Native mine placement span was 341.4 ms; preparation/arming took 3533.3 ms.
+Archive: `gbox-data/mercs/native-intervention-receipts/6d7fd37cad68c2faec5d418118f2054a58e028220164f4fcbeb5875ae00c4dcc.json`.
+SHA-256: `507e14c9138890446dee218f3bd18c3416c123f52f67111777b4bf4d20afc8c5`.
+Player position did not change during that receipt window; automatic escape
+success is still being assessed separately, not inferred from arming.
+
+## Primary trigger gate correction (user-reported non-detonating mines)
+
+The earlier placement receipts are **not sufficient evidence of functional arming**.
+They observed the secondary proximity volume only. Live read-only inspection of
+RE5 PID4113346, main base0x3ca86aa000, found every active native drop with
+secondary volume `unit+0x28C8` enabled but primary volume `unit+0x2710`
+disabled. Enemy contacts within 19?44cm were present in Ship Deck round
+0ab55576, with no recorded mine blasts. The raw live state is archived at
+`gbox-data/analysis/merc-tuning-20261113/re5-mine-trigger-state.json`.
+
+Native update0x81F700 explicitly clears the pending explosion bit when the
+primary volume is absent or disabled. Configure0x60D6D0 disables that volume;
+the custom drop path passed zero as its third argument, leaving unit+0x273F
+clear. The native put action0x91E6D0 then permanently skipped primary enabling.
+Placement now passes one, allowing the put action to enable the primary volume
+and update native item flags through the normal lifecycle. Arming confirmation requires **both** volumes enabled,
+or an actual native explosion latch already observed. No explosion latch,
+enemy contact, inventory, equipment or health is written by this correction.
+Independent execution of the real configure, put-action and mine-update
+functions passes13 tests at two load bases. With the old argument, proximity
+contact cannot latch an explosion; with the corrected argument it can. A late
+flag correction does not repair an already-consumed put action. A real enemy
+trigger and explosion after deployment remain required for live acceptance.
+
+The adjacent escape correction passes its selected mesh waypoint to the wall
+and room guards, preserves corners that cannot be cut safely, and moves toward
+the waypoint while turning. Earlier manual-ring evidence showed initial motion
+away followed by a return into the ring, so successful escape is not claimed.
+The run now prioritizes remaining time bonuses over distant enemy hunting;
+nearby emergency responses still take precedence.

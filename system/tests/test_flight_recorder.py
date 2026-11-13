@@ -22,7 +22,10 @@ def test_native_defensive_requests_are_bounded_and_detached_from_later_receipts(
     stats = {'rapid_fire_configured_x': 20.0, 'rapid_fire_active': False, 'automine_enabled': True,
              'native_mine_pending': True, 'native_mine_request_id': 'request-1', 'native_mines_placed': 2,
              'automine_request_reason': 'hit', 'reactive_ring_requests': 3, 'reactive_ring_event': event,
-             'reactive_escape_requests': 2}
+             'reactive_escape_requests': 2, 'automine_request_count': 5,
+             'native_mine_deployed_hazards': 5, 'native_mine_escape_required': True,
+             'native_mine_escape_clearance_cm': 420., 'native_mine_escape_replans': 1,
+             'native_mine_escape_blocked': {'required_cm': 1500., 'center': [100, 0, 200]}}
     f.observe(10, {'player': {'hp': 900, 'pos': [100, 0, 200]}},
               {'controls': {'keys': ['b', 'lup']}}, stats)
     event['damage'] = 999
@@ -33,8 +36,35 @@ def test_native_defensive_requests_are_bounded_and_detached_from_later_receipts(
     assert row['diagnostics']['reactive_ring_event']['owner'][0] == 'round'
     assert row['diagnostics']['native_mine_pending'] is True
     assert row['diagnostics']['native_mines_placed'] == 2
+    assert row['diagnostics']['native_mine_escape_required'] is True
+    assert row['diagnostics']['native_mine_escape_blocked']['required_cm'] == 1500.
     assert row['diagnostics']['rapid_fire_configured_x'] == 20 and row['controls']['keys'] == ['b', 'lup']
     json.dumps(row, allow_nan=False)
+
+
+def test_ground_mine_evidence_is_bounded_scaled_detached_and_preserves_trigger_not_in_hazard_list():
+    f = FlightRecorder(.1)
+    rows = [{'ptr': k, 'generation': 42, 'native_owner': 7, 'pos': [100, 200, 300],
+             'active': True, 'trigger_observed': k == 0, 'primary_enabled': False,
+             'proximity_enabled': True, 'unbounded_extra': 'x'*10000} for k in range(50)]
+    f.observe(1, {'ground_mines': [], 'ground_mine_observations': rows}, {}, {})
+    rows[0]['pos'][0] = 9999
+    rows[0]['primary_enabled'] = True
+    out = f.snapshot()
+    for key in ('tail', 'timeline'):
+        recorded = out[key][0]['ground_mines']
+        assert len(recorded) == 40 and recorded[0]['pos'] == [10., 20., 30.]
+        assert recorded[0]['trigger_observed'] is True and recorded[0]['primary_enabled'] is False
+        assert 'unbounded_extra' not in recorded[0]
+    json.dumps(out, allow_nan=False)
+
+
+def test_missing_ground_mine_observation_is_distinct_from_confirmed_empty():
+    f = FlightRecorder()
+    f.observe(1, {}, {}, {})
+    f.observe(2, {'ground_mines': []}, {}, {})
+    rows = f.snapshot()['tail']
+    assert rows[0]['ground_mines'] is None and rows[1]['ground_mines'] == []
 
 
 def record(phase='walk', step=0, turns=False, scale=1):

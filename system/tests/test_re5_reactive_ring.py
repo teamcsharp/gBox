@@ -25,6 +25,7 @@ def test_two_observers_share_one_event_for_each_real_hit():
     assert observe_event(scene(), st, 10) is None
     hit = observe_event(scene(900), st, 10.1)
     assert hit['id'] == 1 and hit['kind'] == 'hit' and hit['damage'] == 100
+    assert hit['pos'] == [0, 0, 0]
     assert observe_event(scene(900), st, 10.1) == hit
     assert observe_event(scene(900), st, 10.2) == hit
     next_hit = observe_event(scene(800), st, 10.3)
@@ -140,6 +141,42 @@ def test_uncertain_native_result_is_archived_once_and_not_replayed(monkeypatch, 
     assert st['reactive_ring_receipt']['state'] == 'uncertain'
     step(scene(900), st, 10.3)
     assert len(calls) == 1 and not st.get('rings_deployed')
+
+
+def test_busy_before_submission_keeps_fresh_flash_event_for_bounded_retry(monkeypatch, tmp_path):
+    from gbox.mercs.titles.re5_switch_native import ControllerBusy
+    monkeypatch.setattr(A, 'ROOT', tmp_path)
+    ctl, flight, st = ring_controller(), A.Flight(), state()
+    ctl.async_flash_ring = True
+    original, calls = ctl.grenade_ring, []
+    def ring(*args, **kwargs):
+        calls.append(True)
+        if len(calls) == 1:
+            raise ControllerBusy('not queued')
+        return original(*args, **kwargs)
+    ctl.grenade_ring = ring
+    monkeypatch.setattr(A, 'Flight', lambda: flight)
+    step = G.control(None, {'map_id': '010018100CD46000'}, ring=ctl)
+    step.react(scene(), st, 10)
+    step.react(scene(900), st, 10.1)
+    assert flight.job['done'].wait(3)
+    out = step.react(scene(900), st, 10.2)
+    assert out['receipt']['native_not_submitted'] and not ctl.spawns
+    assert step.react(scene(900), st, 10.3) is None
+    assert step.react(scene(900), st, 10.4)['pending']
+    assert flight.job['done'].wait(3)
+    assert step.react(scene(900), st, 10.5)['fired']
+    assert len(calls) == 2 and len(ctl.spawns) == 10
+
+
+def test_busy_retry_cannot_restore_expired_or_superseded_hit():
+    observer, st = Reactions(), state()
+    observer.observe(scene(), st, 10)
+    first = observer.observe(scene(900), st, 10.1)
+    observer.consume(first, st, 'submitted')
+    assert not observer.retry_unsubmitted(first, st, 14)
+    observe_event(scene(800), st, 14.1)
+    assert not observer.retry_unsubmitted(first, st, 14.2)
 
 
 def test_engine_runs_reactions_before_prompt_only_ticks(monkeypatch, tmp_path):

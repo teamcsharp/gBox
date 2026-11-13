@@ -64,25 +64,24 @@ def bonus(bot, snap):
     return bot._go_bonus(player(), [], flat, snap, 50.0)
 
 
-def test_a_statue_waits_while_a_majini_is_alive_anywhere(bot):
-    """The operator's map: "Nearest: Time bonus 15 m" and him headed for it, 234 kills for a minute."""
+def test_run_reaches_distant_statue_before_pursuing_remote_enemies_even_with_time_to_spare(bot):
     snap = {"bonuses": [STATUE_FAR], "enemies": [MAJINI], "timer": 780.0, "combo": 0}
-    assert bonus(bot, snap) is None and bot.stats["bonus_deferred"] == 1 and bot._bonus is None
-    assert bonus(bot, dict(snap, enemies=[])) is not None                     # nobody left alive: the statue
+    assert bonus(bot, snap) is not None and bot._bonus['ptr'] == STATUE_FAR['ptr']
+    assert bonus(bot, dict(snap, enemies=[])) is not None
     bot._bonus = None
-    assert bonus(bot, dict(snap, timer=R.BONUS_NEED_S)) is not None           # the clock needs it
+    assert bonus(bot, dict(snap, timer=120.)) is not None
     assert bot.stats["bonus_runs"] == 2
 
 
-def test_a_statue_beside_him_is_taken_unless_the_combo_window_runs_down(bot):
+def test_collecting_the_time_bonuses_precedes_combo_scoring(bot):
     snap = {"bonuses": [STATUE_NEAR], "enemies": [MAJINI], "timer": 780.0, "combo": 0}
     assert bonus(bot, snap) is not None                                       # he is passing it: his floor, no combo
     bot._bonus = None
-    assert bonus(bot, dict(snap, bonuses=[STATUE_8M])) is None                # 7.9 m off is a trip: the Majini first
+    assert bonus(bot, dict(snap, bonuses=[STATUE_8M])) is not None
     bot._bonus = None
     assert bonus(bot, dict(snap, combo=9, combo_timer=9.5)) is not None       # ... or right after a kill
-    assert bonus(bot, dict(snap, combo=9, combo_timer=6.0)) is None           # the window running: the Majini first
-    assert bot._bonus is None
+    assert bonus(bot, dict(snap, combo=9, combo_timer=6.0)) is not None
+    assert bot._bonus['ptr'] == STATUE_NEAR['ptr']
 
 
 # --- the mesh's ladders and drops ------------------------------------------------------------------------------------

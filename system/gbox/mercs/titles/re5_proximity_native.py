@@ -47,13 +47,19 @@ def mine_lock(lock, wait):
         lock.release()
 
 
-def place(ctl, count=1, *, allow_unverified=False, allowed=None, expected=None, wait_for_lock=True):
+def place(ctl, count=1, *, allow_unverified=False, allowed=None, expected=None, wait_for_lock=True,
+          center=None, on_deployed=None):
     from . import re5_switch as R
     from .re5_switch_native import Unavailable, Uncertain, AllocationLost
     if not LIVE_VERIFIED and not allow_unverified:
         raise Unavailable('RE5 direct proximity-mine placement is awaiting live validation')
     if type(count) is not int or count not in COUNTS:
         raise ValueError('one mine, five mines, or the legacy eight-mine ring')
+    if center is not None:
+        if (not isinstance(center, (tuple, list)) or len(center) != 3
+                or not all(type(v) in (int, float) and math.isfinite(v) for v in center)):
+            raise ValueError('mine center requires three finite coordinates')
+        center = tuple(center)
     started = time.monotonic()
     ctl.ready()
     with mine_lock(ctl.lock, wait_for_lock):
@@ -126,8 +132,12 @@ def place(ctl, count=1, *, allow_unverified=False, allowed=None, expected=None, 
                 ctl.wait(loaded, timeout=5)
                 row['resources_ready'] = True
             current()
-            center = struct.unpack('<3f', ctl.rd(player + R.P_POS, 12))
-            receipt.update(center=list(center), center_source='commit_start_observation')
+            if center is None:
+                center = struct.unpack('<3f', ctl.rd(player + R.P_POS, 12))
+                center_source = 'commit_start_observation'
+            else:
+                center_source = 'request_event_observation'
+            receipt.update(center=list(center), center_source=center_source)
             commit = time.monotonic()
             for row, pos in zip(prepared, points(center, count)):
                 unit = actor(row)
@@ -139,7 +149,11 @@ def place(ctl, count=1, *, allow_unverified=False, allowed=None, expected=None, 
                 ctl.write(unit + 0x2680, raw)
                 row['requested_pos'] = list(pos)
                 invoke(row, 0x7E51A0)
-                invoke(row, 0x60D6D0, 1, 0, ITEM, 1)
+                # The third native argument sets +273F. The put action's first
+                # tick (91E6D0) uses it to enable the primary collision volume.
+                # Passing zero leaves a visible mine that cannot detonate even
+                # when its separate proximity volume detects an enemy.
+                invoke(row, 0x60D6D0, 1, 1, ITEM, 1)
                 row['configured'] = True
                 if invoke(row, 0x790FE0, 3, 0, 0, 0xFFFFFFFF, 0) != 1:
                     raise Uncertain('native mine drop state refused; activation not replayed')
@@ -149,6 +163,15 @@ def place(ctl, count=1, *, allow_unverified=False, allowed=None, expected=None, 
                 row['pos'] = list(struct.unpack('<3f', ctl.rd(unit + 0x60, 12)))
                 row['activation_elapsed_ms'] = round(1000*(time.monotonic()-commit), 1)
                 deployed.append(row)
+                # Navigation must leave immediately, not wait for the arming
+                # timer. Publish a physical hazard without claiming it is armed.
+                if on_deployed is not None:
+                    try:
+                        on_deployed({'unit': unit, 'generation': row['generation'],
+                                     'pos': tuple(row['pos']), 'center': tuple(center), 'active': True,
+                                     'armed_observed': False})
+                    except Exception as exc:
+                        row['hazard_notice_error'] = str(exc)[:160]
             receipt['placement_span_ms'] = round(1000*(time.monotonic()-commit), 1)
             # Read the game's own arming lifecycle, without setting a trigger flag.
             def armed():
@@ -163,10 +186,14 @@ def place(ctl, count=1, *, allow_unverified=False, allowed=None, expected=None, 
                         continue
                     volume = ctl.q(unit + 0x28C8)
                     row['volume'] = volume
+                    primary = ctl.q(unit + 0x2710)
+                    row['primary_volume'] = primary
                     row['arming_timer'] = struct.unpack('<f', ctl.rd(unit + 0x2890, 4))[0]
                     if not math.isfinite(row['arming_timer']):
                         raise Uncertain('mine arming timer is not finite')
-                    row['armed'] = bool(R.ptr_ok(volume) and ctl.rd(volume + 0x14, 1) == b'\1')
+                    row['proximity_enabled'] = bool(R.ptr_ok(volume) and ctl.rd(volume + 0x14, 1) == b'\1')
+                    row['primary_enabled'] = bool(R.ptr_ok(primary) and ctl.rd(primary + 0x14, 1) == b'\1')
+                    row['armed'] = row['proximity_enabled'] and row['primary_enabled']
                     row['armed_observed'] = row.get('armed_observed', False) or row['armed']
                     row['active'] = ctl.rd(unit + 0x27B9, 1) == b'\1'
                     row['pos'] = list(struct.unpack('<3f', ctl.rd(unit + 0x60, 12)))

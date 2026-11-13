@@ -196,6 +196,8 @@ class Mines:
         self.automine, self.cadence = True, Cadence()
         self._native_receipts = collections.deque(maxlen=32)
         self._native_receipt_census = {}
+        self._native_hazards_seen = collections.deque(maxlen=80)
+        self._native_escape = None
         for k in COUNTERS:
             self.stats.setdefault(k, 0)
         self.stats.setdefault("mine_last_actor", 0)
@@ -230,6 +232,8 @@ class Mines:
         self.last_at, self.last_pos, self.site, self.clear_from = None, None, None, None
         self.bombs, self.blast = {}, None
         self._native_receipt_census = {}
+        self._native_hazards_seen.clear()
+        self._native_escape = None
         self.baseline = None
         self._clear_run, self._clear_yield = None, -1e9
         self._calm_since = {}                          # quiet bombs he is beside: unit -> since when
@@ -296,11 +300,25 @@ class Mines:
         # only a distinct read can contradict a receipt newer than that census.
         gone = [k for k in self.bombs if k not in now_ptrs
                 and self._native_receipt_census.get(k) is not snap['ground_mines']]
+        native_gone = {k for k in gone if k in self._native_receipt_census}
+        observed_triggers = {r['ptr'] for r in snap.get('ground_mine_observations') or ()
+                             if r.get('ptr') in native_gone and r.get('trigger_observed') is True
+                             and r.get('native_owner') == p.get('ptr')}
+        if self._native_escape is not None:
+            for ptr in observed_triggers:
+                self._native_escape['sites'].pop(ptr, None)
+        if native_gone:
+            self.stats['native_mine_removals_observed'] = self.stats.get('native_mine_removals_observed', 0) + len(native_gone)
+            self.stats['native_mine_triggers_observed'] = self.stats.get('native_mine_triggers_observed', 0) + len(observed_triggers)
+            self.stats['native_mine_removals_unattributed'] = self.stats.get('native_mine_removals_unattributed', 0) + len(native_gone - observed_triggers)
         for ptr in gone:
             del self.bombs[ptr]
             self._native_receipt_census.pop(ptr, None)
             self.stats["mines_gone"] += 1
-        if gone:
+        # Native disappearance may be recycling/inactivation; even an explosion
+        # latch is a request, not damage proof. Keep legacy replay accounting,
+        # but never turn native removals into inferred blasts, hits or healing.
+        if set(gone) - native_gone:
             if self.blast is None:
                 before = [h for h in self.hist if h[0] >= now - BLAST_BEFORE_S] or [self.hist[-1]]
                 self.blast = {"t0": now, "until": now + BLAST_AFTER_S, "kills": before[0][1], "hp": before[0][2]}
@@ -719,6 +737,13 @@ class Mines:
             return
         self.native.clearance_cm = self.foe_clear_cm
         packet = self.native.poll(snap, self.stats)
+        for row in self.native.take_deployments():
+            self._merge_native_hazard(row, now, snap.get('ground_mines'))
+        forced_hazards = self.stats.get('native_mine_force_hazards')
+        if isinstance(forced_hazards, list):
+            for row in forced_hazards[:40]:
+                self._merge_native_hazard(row, now, snap.get('ground_mines'))
+            del forced_hazards[:40]
         if packet is not None:
             self._merge_native(packet, now, census=snap.get('ground_mines'))
         forced = self.stats.get('native_mine_force_receipts')
@@ -730,6 +755,44 @@ class Mines:
                                        census=snap.get('ground_mines'))
             del forced[:8]
         self._request_native(snap, now)
+
+    def _start_native_escape(self, request_id, center, now, *, predicted=()):
+        """One stable centre per request; nearby hazard identities do not flip the route."""
+        old = self._native_escape
+        if old is None or old['id'] != request_id:
+            self._native_escape = {'id': request_id, 'center': tuple(center),
+                'sites': dict(old['sites']) if old else {}, 'predicted': tuple(predicted),
+                'pending': True, 'started': now, 'report_at': now, 'replan': 0}
+        self.site = self._native_escape['center']
+        self.state, self.t = 'retreat', now
+        self.stats['native_mine_escape_required'] = True
+
+    def _merge_native_hazard(self, packet, now, census):
+        from . import re5_native_mine_tactic as native
+        if (not isinstance(packet, dict) or not packet.get('id') or self.native is None
+                or tuple(packet.get('owner') or ()) != self.native.owner):
+            return
+        row = packet.get('mine')
+        if (not isinstance(row, dict) or type(row.get('unit')) is not int
+                or type(row.get('generation')) is not int or not native.position(row.get('pos'))
+                or row.get('active') is not True):
+            return
+        key = (packet['id'], row['unit'], row['generation'])
+        if key in self._native_hazards_seen:
+            return
+        self._native_hazards_seen.append(key)
+        if self.native.guard is not None:
+            self.native.guard['actors'][row['unit']] = row['generation']
+        pos = tuple(row['pos'])
+        self.bombs[row['unit']] = pos
+        self._native_receipt_census[row['unit']] = census
+        if self.baseline is not None:
+            self.baseline.discard(row['unit'])
+        center = packet.get('center')
+        self._start_native_escape(packet['id'], center if native.position(center) else pos, now)
+        self._native_escape['sites'][row['unit']] = pos
+        self.stats['native_mine_deployed_hazards'] = self.stats.get('native_mine_deployed_hazards', 0) + 1
+        self.stats['mine_status'] = 'native mine deployed; flee while it arms'
 
     def _merge_native(self, packet, now, *, manual=False, census=None):
         from . import re5_native_mine_tactic as native
@@ -759,7 +822,7 @@ class Mines:
             self.stats.update(mine_last_actor=row['unit'], mine_last_placed_at=now,
                 mine_last_confirmation={'source': 'native_armed_uWp0a', 'ptr': row['unit'],
                                         'pos': list(row['pos']), 'at': now}, mine_overdue_s=0.)
-        expected = result.get('requested', 1) if manual else 1
+        expected = result.get('requested', packet.get('requested', 1))
         complete = (result.get('state') == 'confirmed' and result.get('verified') is True
                     and result.get('weapon_unchanged') is True and type(expected) is int
                     and 1 <= expected <= 8 and len(confirmed) == expected)
@@ -771,15 +834,24 @@ class Mines:
             self._retry_at = now + RETRY_S
         active = [r for r in rows if not r.get('trigger_observed')]
         if active:
-            self.site = tuple(active[-1]['pos'])
-            self.last_at, self.last_pos = now, self.site
+            for row in active:
+                self._merge_native_hazard(dict(packet, center=packet.get('center') or result.get('center'),
+                                               mine=dict(row, active=True)), now, census)
+            self.last_at, self.last_pos = now, tuple(active[-1]['pos'])
             self._site_until = None
-            self.state, self.t = 'retreat', now
-            self.stats['mine_status'] = 'native mine down; keep moving clear of its blast'
-        else:
+            if self._native_escape is not None:
+                self.site = self._native_escape['center']
+                self.state, self.t = 'retreat', now
+                self.stats['mine_status'] = 'native mine down; keep moving clear of its blast'
+        elif self._native_escape is None:
             self.state, self.site = 'idle', None
             if confirmed:
                 self.last_at = now
+        if self._native_escape is not None and self._native_escape['id'] == packet['id']:
+            self._native_escape['pending'], self._native_escape['predicted'] = False, ()
+            for row in rows:
+                if row.get('trigger_observed'):
+                    self._native_escape['sites'].pop(row['unit'], None)
 
     def _request_native(self, snap, now):
         """Background admission only: never lower a gun, equip, or hold an input."""
@@ -794,6 +866,16 @@ class Mines:
         demand = self.cadence.demand(snap, self.stats, now)
         if demand is None:
             return
+        event = self.stats.get('automine_event') or {}
+        reaction = demand[0] in ('hit', 'qte')
+        count = 5 if reaction and (demand[0] == 'hit' or (event.get('damage') or 0) > 0) else 1
+        center = tuple(event['pos']) if reaction and native.position(event.get('pos')) else None
+        if count == 5 and center is None:
+            self.stats['mine_blocked_reason'] = 'hit position unavailable; damage ring not relocated'
+            return
+        if self._native_escape is not None and not reaction:
+            self.stats['mine_blocked_reason'] = 'finish native mine escape before another distance drop'
+            return
         if not native.enabled(flight.memory) or flight.owner == flight.blocked_owner:
             self.stats['mine_blocked_reason'] = 'native mine unavailable or previous placement uncertain'
             return
@@ -802,17 +884,22 @@ class Mines:
             return
         # A native drop does not root the runner in a planting animation. Nearby
         # pursuers are its purpose; only existing mine sites restrict placement.
-        if why := self._clearance(p, [], now, native=True):
+        placement = dict(p, pos=center) if center is not None else p
+        if why := self._clearance(placement, [], now, native=True):
             self.stats['mine_blocked_reason'] = why
             return
         if self.stats.get('ring_async_pending') or self.stats.get('bot_grenade_state') == 'requested':
             self.stats['mine_blocked_reason'] = 'another native defensive action is pending'
             return
-        if flight.submit(snap, self.stats, now, reason=demand[0]):
+        if flight.submit(snap, self.stats, now, reason=demand[0], count=count, center=center):
             self.cadence.claimed(demand, now)
             self.stats['mine_attempts'] += 1
             self.stats['automine_request_reason'] = demand[0]
+            self.stats['automine_request_count'] = count
             self.stats['mine_status'] = 'native mine requested; movement and combat continue'
+            if count == 5:
+                from .re5_proximity_native import points
+                self._start_native_escape(flight.job['id'], center, now, predicted=points(center, count))
 
     def automatic(self, p, snap, live, now):
         """Automatic play never falls back to the legacy equip/place sequence."""
@@ -826,9 +913,34 @@ class Mines:
         """A request never neutralizes the pad or enters an equip/placing animation."""
         from . import re5_native_mine_tactic as native
         flight = self.native
+        escape = self._native_escape
+        if escape is not None:
+            sites = list(escape['sites'].values()) + list(escape['predicted'])
+            clearance = min((flat(p['pos'], site) for site in sites), default=math.inf)
+            away = clearance >= RETREAT_CM and (bool(sites) or not escape['pending'])
+            self.stats['native_mine_escape_clearance_cm'] = round(clearance, 1) if math.isfinite(clearance) else None
+            if away:
+                if sites:
+                    self.stats['mine_retreats_completed'] += 1
+                self._native_escape = None
+                self.state, self.site, self.last_pos = 'idle', None, None
+                self.stats['native_mine_escape_required'] = False
+            elif not busy:
+                self.site = escape['center']
+                self.native_retreat_distance = RETREAT_CM + max(
+                    (flat(self.site, site) for site in sites), default=0.)
+                if now - escape['report_at'] >= RETREAT_S:
+                    escape['report_at'], escape['replan'] = now, escape['replan'] + 1
+                    self.stats['native_mine_escape_replans'] = self.stats.get('native_mine_escape_replans', 0) + 1
+                    self.stats['native_mine_escape_blocked'] = {'id': escape['id'], 'at': now,
+                        'elapsed_s': round(now - escape['started'], 2), 'pos': list(p['pos']),
+                        'center': list(self.site), 'clearance_cm': self.stats['native_mine_escape_clearance_cm'],
+                        'required_cm': RETREAT_CM, 'actors': len(escape['sites'])}
+                self.stats['mine_status'] = 'native mine escape: reach measured clearance from every deployed mine'
+                return self._run(p, live, self.site)
         if flight.job is not None:
             self.stats['mine_status'] = 'native mine pending; movement and combat continue'
-            return None                                  # preserve an escape and never call Bot._gun_down
+            return None                                  # pending allocation alone never owns the pad
         if self.state == 'retreat' and self.site is not None:
             away = flat(p['pos'], self.site) >= RETREAT_CM
             if away or self._trail(live) or now - self.t > RETREAT_S:

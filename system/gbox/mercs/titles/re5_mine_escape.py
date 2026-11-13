@@ -29,7 +29,15 @@ def execute(ctl, count, *, ring, allow_unverified, allowed, stats, request_id, r
         return {'op': 'proximity_mine_ring' if ring else 'proximity_mine_drop',
                 'state': 'uncertain', 'verified': False, 'requested': count, 'placed': 0, 'armed': 0,
                 'reason': 'Player or round changed after flash cover; mines were not deployed.', 'flash': flash}
-    result = ctl.proximity_mines(count, allow_unverified=allow_unverified, allowed=current, expected=owner)
+    def deployed(mine):
+        if stats is not None and current():
+            queue = stats.setdefault('native_mine_force_hazards', [])
+            queue.append({'id': request_id, 'owner': [round_id, *owner],
+                          'center': mine.get('center'), 'mine': dict(mine)})
+            del queue[:-40]
+
+    result = ctl.proximity_mines(count, allow_unverified=allow_unverified, allowed=current,
+                                expected=owner, on_deployed=deployed)
     if flash is not None:
         result.update(flash=flash, flash_detonated=flash.get('detonated', 0))
     # The native arming lifecycle (or a witnessed trigger) is mandatory, not just

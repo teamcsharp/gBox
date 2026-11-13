@@ -20,6 +20,11 @@ from ..native.re5_ebffdb22.code import IMAGES
 from ..native.re5_ebffdb22.vtables import BASE_ENTRIES, PLAYER_TABLES
 
 Unavailable, Uncertain, AllocationLost = N.Unavailable, N.Uncertain, N.AllocationLost
+
+
+class ControllerBusy(Unavailable):
+    """The mailbox lock was refused before any native call was submitted."""
+
 process_identity = N.process_identity
 TEMP, UPDATE, DISPATCH = 0x1A91900, 0x799210, 0x118E740
 CODE = (
@@ -52,7 +57,7 @@ _CREATE_LOCK = threading.Lock()
 @contextmanager
 def ring_lock(lock, wait):
     if not lock.acquire(blocking=wait):
-        raise Unavailable('native controller busy; flash ring was not queued')
+        raise ControllerBusy('native controller busy; flash ring was not queued')
     try:
         yield
     finally:
@@ -184,10 +189,11 @@ class Controller(N.Controller):
     # RE6's inherited remote-bomb hook addresses do not belong to RE5.
     drop_bomb = None
 
-    def proximity_mines(self, count=1, *, allow_unverified=False, allowed=None, expected=None, wait_for_lock=True):
+    def proximity_mines(self, count=1, *, allow_unverified=False, allowed=None, expected=None, wait_for_lock=True,
+                        center=None, on_deployed=None):
         from .re5_proximity_native import place
         return place(self, count, allow_unverified=allow_unverified, allowed=allowed,
-                     expected=expected, wait_for_lock=wait_for_lock)
+                     expected=expected, wait_for_lock=wait_for_lock, center=center, on_deployed=on_deployed)
 
     def proximity_mine_status(self):
         from .re5_proximity_native import LIVE_VERIFIED, RADIUS_CM, RING_COUNT

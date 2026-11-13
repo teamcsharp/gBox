@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import math
 from pathlib import Path
+import queue
 import struct
 import threading
 import time
@@ -19,6 +20,7 @@ ROOT = Path(__file__).resolve().parents[3] / 'gbox-data' / 'mercs' / 'native-min
 DEADLINE_S, OBSERVER_FRESH_S = 24., 2.
 GUARD_ATTRIBUTE = '_re5_native_mine_guard'
 DISTANCE_CM, REACTION_S, REQUEST_GAP_S = 609.6, 8., 3.
+TRAVEL_MOTIONS = frozenset({1, 4, 7})  # walk, observed B+LUP sprint, backing
 
 
 def position(value):
@@ -43,7 +45,7 @@ class Cadence:
                  and not stats.get('round_evidence_closed') and stats.get('screen') in (None, 'playing')
                  and snap.get('mercenaries_phase') == R.PHASE_PLAYING
                  and (p.get('hp') or 0) > R.DYING_HP and position(p.get('pos')))
-        moving = valid and p.get('motion') in (1, 7)
+        moving = valid and p.get('motion') in TRAVEL_MOTIONS
         if moving and self.previous is not None:
             then, old = self.previous
             dt, step = now - then, math.dist(old, p['pos'])
@@ -66,7 +68,7 @@ class Cadence:
                 and event.get('kind') in ('hit', 'qte') and type(event.get('at')) in (int, float)
                 and 0 <= now - event['at'] <= REACTION_S):
             return event['kind'], event['id']
-        if self.distance >= DISTANCE_CM and (snap.get('player') or {}).get('motion') in (1, 7):
+        if self.distance >= DISTANCE_CM and (snap.get('player') or {}).get('motion') in TRAVEL_MOTIONS:
             return 'distance', None
         return None
 
@@ -94,14 +96,15 @@ def _owner_ok(owner):
     return bool(owner[0]) and all(type(v) is int for v in owner[1:])
 
 
-def _run(memory, expected, allowed):
+def _run(memory, expected, allowed, *, count=1, center=None, on_deployed=None):
     from . import re5_switch_native as native
     adapter = memory.adapter
     with native._CREATE_LOCK:
         ctl = getattr(adapter, '_re5_native_flash', None)
         if ctl is None:
             ctl = adapter._re5_native_flash = native.Controller(adapter)
-    return ctl.proximity_mines(count=1, expected=expected, allowed=allowed, wait_for_lock=False)
+    return ctl.proximity_mines(count=count, expected=expected, allowed=allowed, wait_for_lock=False,
+                               center=center, on_deployed=on_deployed)
 
 
 class Flight:
@@ -113,6 +116,7 @@ class Flight:
         self.guard = None
         self.clearance_cm = 500.
         self.emergency = False
+        self.deployments = queue.Queue(maxsize=40)
 
     def cancel(self):
         if self.job is not None:
@@ -167,9 +171,25 @@ class Flight:
                     self.guard['actors'][row['unit']] = row['generation']
             self.guard['pending'] = False
         return {'id': job['id'], 'owner': job['owner'], 'receipt': result,
+                'requested': job['requested'], 'center': job['center'],
                 'cancelled': job['cancel'].is_set(), 'archive': str(job['path'])}
 
-    def submit(self, snap, stats, now, *, reason='distance'):
+    def take_deployments(self):
+        """Combat-thread drain; the worker only queues detached owned facts."""
+        rows = []
+        for _ in range(40):
+            try:
+                row = self.deployments.get_nowait()
+            except queue.Empty:
+                break
+            if row['owner'] == self.owner:
+                rows.append(row)
+        return rows
+
+    def submit(self, snap, stats, now, *, reason='distance', count=1, center=None):
+        if type(count) is not int or count not in (1, 5) or center is not None and not position(center):
+            return False
+        center = tuple(center) if center is not None else None
         self.emergency = reason in ('hit', 'qte')
         self.observe(snap, stats)
         if not self.live or self.job is not None or self.owner == self.blocked_owner:
@@ -177,10 +197,10 @@ class Flight:
         owner = self.owner
         rid = uuid.uuid4().hex
         job = {'id': rid, 'owner': owner, 'cancel': threading.Event(), 'done': threading.Event(),
-               'path': ROOT / (rid + '.json')}
+               'path': ROOT / (rid + '.json'), 'requested': count, 'center': center}
         record = {'schema': 'gbox.mercs.native-mine/1', 'id': rid, 'owner': list(owner),
                   'session': stats.get('source_session_id'), 'requested_at': now,
-                  'requested': 1, 'state': 'requested', 'reason': reason}
+                  'requested': count, 'center': center, 'state': 'requested', 'reason': reason}
         deadline = time.monotonic() + DEADLINE_S
 
         def allowed():
@@ -193,6 +213,19 @@ class Flight:
                     and stats.get('automine_enabled', True)
                     and stats.get('screen') in (None, 'playing'))
 
+        def deployed(row):
+            if (not isinstance(row, dict) or type(row.get('unit')) is not int
+                    or type(row.get('generation')) is not int or not position(row.get('pos'))):
+                return
+            mine = {'unit': row['unit'], 'generation': row['generation'], 'pos': tuple(row['pos']),
+                    'active': row.get('active') is True, 'armed_observed': False}
+            deployed_center = center if center is not None else tuple(row['center']) if position(row.get('center')) else None
+            try:
+                self.deployments.put_nowait({'id': rid, 'owner': owner, 'center': deployed_center,
+                                            'requested': count, 'mine': mine})
+            except queue.Full:
+                job['deployment_queue_overflow'] = True
+
         def work():
             entered_native = False
             try:
@@ -201,16 +234,18 @@ class Flight:
                     job['result'] = {'state': 'unavailable', 'reason': 'native mine request no longer belongs to live play'}
                 else:
                     entered_native = True
-                    job['result'] = self.run(self.memory, owner[1:], allowed)
+                    job['result'] = self.run(self.memory, owner[1:], allowed,
+                                            count=count, center=center, on_deployed=deployed)
                     if not isinstance(job['result'], dict):
                         job['result'] = {'state': 'uncertain', 'reason': 'native mine returned no receipt'}
             except Exception as exc:
-                from .re5_switch_native import Unavailable
-                state = 'unavailable' if type(exc) is Unavailable else 'uncertain' if entered_native else 'failed'
+                from .re5_switch_native import Unavailable, ControllerBusy
+                state = 'unavailable' if type(exc) in (Unavailable, ControllerBusy) else 'uncertain' if entered_native else 'failed'
                 job['result'] = {'state': state, 'reason': f'{type(exc).__name__}: {exc}'[:240]}
             finally:
                 record.update(state='finished', receipt=job['result'], finished_at=time.time(),
-                              cancelled=job['cancel'].is_set())
+                              cancelled=job['cancel'].is_set(),
+                              deployment_queue_overflow=job.get('deployment_queue_overflow', False))
                 try:
                     _write(job['path'], record)
                 except Exception as exc:
@@ -248,6 +283,8 @@ def ground(memory, base, player):
     """
     from . import re5_switch as R, re5_proximity_native as native
     guard = getattr(memory, GUARD_ATTRIBUTE, None)
+    if isinstance(guard, dict):
+        guard['observations'] = None
     if not watching(memory, player):
         return None
     p, generation = player['ptr'], player['generation']
@@ -271,21 +308,40 @@ def ground(memory, base, player):
                 return None
         if len(actors) > 40:
             return None
-        out, retained = [], {}
+        out, observations, retained = [], [], {}
         for unit, born in actors.items():
             if q(unit) != base + native.VTABLE or q(unit + 0x1A00) != born or q(unit + 0x1A10) != p:
                 continue
-            if memory.rd(unit + 0x28C1, 1) == b'\1':
-                continue  # actual native trigger; no explosion/kill is invented
-            retained[unit] = born
-            if memory.rd(unit + 0x27B9, 1) != b'\1':
-                continue  # allocated but inactive is not a ground hazard
+            trigger = memory.rd(unit + 0x28C1, 1) == b'\1'
+            active = memory.rd(unit + 0x27B9, 1) == b'\1'
+            primary, proximity = q(unit + 0x2710), q(unit + 0x28C8)
+            primary_enabled = memory.rd(primary + 0x14, 1) == b'\1' if R.ptr_ok(primary) else None
+            proximity_enabled = memory.rd(proximity + 0x14, 1) == b'\1' if R.ptr_ok(proximity) else None
             pos = struct.unpack('<3f', memory.rd(unit + R.E_POS, 12))
             if not all(math.isfinite(v) for v in pos):
                 return None
-            out.append({'ptr': unit, 'generation': born, 'pos': pos, 'native_owner': p})
+            if q(unit) != base + native.VTABLE or q(unit + 0x1A00) != born or q(unit + 0x1A10) != p:
+                return None  # allocation changed during the read, not a confirmed empty census
+            row = {'ptr': unit, 'generation': born, 'pos': pos, 'native_owner': p,
+                   'active': active, 'trigger_observed': trigger, 'primary_enabled': primary_enabled,
+                   'proximity_enabled': proximity_enabled}
+            observations.append(row)
+            if trigger:
+                continue  # observed latch is preserved below, but no longer a standing ground hazard
+            retained[unit] = born
+            if active:
+                out.append(row)
+        if q(p + 0x1A00) != generation:
+            return None
         guard['actors'] = retained
+        guard['observations'] = observations
         guard['needs_scan'] = False
         return out
     except (ValueError, OSError, OverflowError, struct.error, TypeError):
         return None
+
+
+def ground_observations(memory, player):
+    """The last complete owned read, including an observed trigger/inactive transition."""
+    guard = getattr(memory, GUARD_ATTRIBUTE, None)
+    return guard.get('observations') if watching(memory, player) else None

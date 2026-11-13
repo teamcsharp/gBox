@@ -78,6 +78,7 @@ class FlightRecorder:
             if entity and entity.get('pos') is not None:
                 target = dict(target, pos=entity['pos'])
         held_weapon = next((i.get('item') for i in snap.get('inventory') or () if i.get('hand')), None)
+        mine_rows = snap.get('ground_mine_observations', snap.get('ground_mines'))
         row = {'t': round(now, 3), 'pos': self.point(p.get('pos')),
                'hp': safe(p.get('hp')), 'hp_max': safe(p.get('hp_max')),
                'player': safe(p.get('ptr')), 'heading': safe(p.get('rot', p.get('facing'))),
@@ -101,6 +102,10 @@ class FlightRecorder:
                'laser': safe(snap.get('laser')), 'camera': safe(snap.get('camera', snap.get('aim_cam'))),
                'native_action': safe(p.get('action', p.get('motion'))), 'fire_cooldown_s': safe(p.get('fire_cooldown_s')),
                'throwables': safe(snap.get('throwables')),
+                'ground_mines': [{**{k: safe(g.get(k)) for k in
+                    ('ptr', 'generation', 'native_owner', 'active', 'trigger_observed',
+                     'primary_enabled', 'proximity_enabled')}, 'pos': self.point(g.get('pos'))}
+                    for g in mine_rows[:40] if isinstance(g, dict)] if isinstance(mine_rows, (list, tuple)) else None,
                'diagnostics': {k: safe(stats[k]) for k in (
                    'decision_stages_ms', 'decision_work_ms', 'decision_work_p95_ms',
                    'snapshot_stages_json', 'heal_inventory_read', 'heal_inventory_slots', 'heal_quick_slots',
@@ -111,8 +116,15 @@ class FlightRecorder:
                    'target_feedback_writes', 'target_feedback_write_failures',
                    'rapid_fire_configured_x', 'rapid_fire_active', 'automine_enabled',
                    'native_mine_pending', 'native_mine_request_id', 'native_mines_placed',
-                   'automine_request_reason', 'reactive_ring_requests', 'reactive_ring_event',
+                    'native_mine_removals_observed', 'native_mine_triggers_observed', 'native_mine_removals_unattributed',
+                    'native_mine_deployed_hazards', 'native_mine_escape_required', 'native_mine_escape_clearance_cm',
+                    'native_mine_escape_replans', 'native_mine_escape_blocked',
+                    'automine_request_reason', 'automine_request_count', 'reactive_ring_requests', 'reactive_ring_event',
                    'reactive_escape_requests',
+                   'mine_ring_pending', 'mine_deadline_pending', 'mine_deadline_at', 'mine_elapsed_s',
+                   'mine_remaining_s', 'mine_timing_source', 'mine_clearance_cm', 'mine_escape_required',
+                   'mine_detonate_reason', 'mine_deadline_misses', 'mine_deadline_last',
+                   'mine_flag_detonations', 'mine_blasts_observed',
                    'shots', 'hits', 'aimbook_hits', 'aimbook_misses', 'heals', 'first_aid_last',
                    'bonuses_taken', 'bonus_approaches', 'bonus_unconfirmed', 'nav_stuck',
                    'fire_burst_goal', 'fire_burst_remaining', 'fire_burst_state', 'fire_burst_requests',
