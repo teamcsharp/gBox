@@ -212,7 +212,31 @@ def find_inventory_loose(mem: bytes, base: int, endian: str = "<") -> int | None
         score = (agrees, items, (cursor - start) // SLOT)
         if best is None or score > best[0]:
             best = (score, start)
-    return base + best[1] if best else None
+    if best:
+        return base + best[1]
+    # The count-byte check is the *preferred* answer, not the only one: on this build it can reject the real inventory
+    # (which then made give fail with 'inventory not found' after the stricter scan went in). Falling back to the
+    # unvalidated run keeps the tool working while the stricter path stays first, so a clean answer still wins.
+    fallback = None
+    for position in range(0, len(mem) - SLOT, 4):
+        if _slot_ok(mem[position:position + SLOT], endian) != 1:
+            continue
+        start = position
+        while start - SLOT >= 0 and _slot_ok(mem[start - SLOT:start], endian) == 1:
+            start -= SLOT
+        items = 0
+        cursor = start
+        while cursor + SLOT <= len(mem):
+            verdict = _slot_ok(mem[cursor:cursor + SLOT], endian)
+            if verdict < 0:
+                break
+            if verdict == 0 and cursor > start:
+                break
+            items += verdict
+            cursor += SLOT
+        if items >= 2 and (fallback is None or items > fallback[0]):
+            fallback = (items, start)
+    return base + fallback[1] if fallback else None
 
 def decode_slot(b: bytes, endian: str = "<") -> dict:
     present, flags = struct.unpack_from(f"{endian}II", b, 0)
