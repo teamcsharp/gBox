@@ -117,15 +117,17 @@ def test_a_down_at_normal_health_still_rises_when_nobody_is_near():
     assert any("lup" in a.get("hold", ()) for a in acts), "rise at normal HP when clear"
 
 
-def test_a_down_at_low_but_not_dying_health_still_fights():
-    """HP 100 (not 1): still fights - the gate is exactly DYING_HP."""
+def test_a_down_at_low_but_not_dying_health_stays_down():
+    """HP 100 (not 1, but <= SURVIVAL_HP*900 = 315): the bot stays down instead of
+    fighting, because the low-HP guard (#5052) takes precedence over the fight."""
     b, clock = _bot()
     b.held = lambda p, now: False
     foe = ((200.0, 0.0, 100.0), 700)
     snap = _snap(DOWN_ACTION, 100, enemies=(foe,))
     acts = _run(b, clock, snap, 4)
     assert b.down and not b.down_dying
-    assert any(a.get("hold") for a in acts), "still fighting at 100 HP"
+    assert all(a.get("hold") == () for a in acts), "stays down at low HP, not fighting"
+    assert b.stats["act"] == "down_lowhp_hold"
 
 
 # --- the felling guard: down at low health, a melee wind-up near -------------------------------------------------------
@@ -148,30 +150,42 @@ def test_down_at_low_health_with_a_melee_windup_stays_down():
     assert all(a.get("hold") == () for a in acts), f"expected no buttons, got {acts}"
     assert not any(a.get("tap") == "zr" for a in acts), "no kick while a wind-up is near"
     assert not any("lup" in a.get("hold", ()) for a in acts), "no rise while a wind-up is near"
-    assert b.stats["act"] == "down_windup_hold"
+    assert b.stats["act"] == "down_lowhp_hold"
     assert b.stats.get("melee", 0) == 0
     assert b.stats.get("down_shots", 0) == 0
 
 
-def test_down_at_low_health_stays_down_until_the_windup_clears():
-    """Once the wind-up enemy is gone, the bot resumes its normal down behaviour
-    (kick or rise) - the guard is scoped to the wind-up, not a permanent hold."""
+def test_down_at_low_health_with_no_windup_stays_down():
+    """#5052: down at 30 % with no melee wind-up near - the bot stays down instead of
+    rising or kicking, preventing the full-HP-cliff hit (400->1, 250->1) that the
+    getting-up deaths are made of. The guard is now scoped to low HP, not just wind-ups."""
     b, clock = _bot()
     b.held = lambda p, now: False
-    # wind-up enemy at 300 cm
-    snap_wind = _snap(DOWN_ACTION, 300, enemies=())
-    snap_wind["enemies"] = [_winding_enemy((300.0, 0.0, 100.0))]
-    # after the wind-up: enemy in a neutral action, no longer winding up
-    snap_clear = _snap(DOWN_ACTION, 300, enemies=())
-    snap_clear["enemies"] = [{"ptr": 99, "pos": (300.0, 0.0, 100.0), "hp": 700,
-                              "hp_max": 700, "action": "cPlAction_zombie_walk"}]
-    acts_wind = _run(b, clock, snap_wind, 4)
-    assert all(a.get("hold") == () for a in acts_wind), "stay down while winding"
-    assert b.stats["act"] == "down_windup_hold"
-    # after clear: the bot resumes fighting (aims and fires at the neutral enemy)
-    acts_clear = _run(b, clock, snap_clear, 4)
-    assert any(a.get("hold") for a in acts_clear), "resumes fighting once the wind-up clears"
-    assert b.stats["act"] != "down_windup_hold", "guard released once the wind-up clears"
+    # hp 300 (<= SURVIVAL_HP*900 = 315), no enemies at all
+    snap = _snap(DOWN_ACTION, 300, enemies=())
+    acts = _run(b, clock, snap, 4)
+    assert b.down and not b.down_dying, "down but not dying (hp 300 > 1)"
+    assert all(a.get("hold") == () for a in acts), f"expected no buttons, got {acts}"
+    assert not any("lup" in a.get("hold", ()) for a in acts), "no rise at low HP"
+    assert not any(a.get("tap") == "zr" for a in acts), "no kick at low HP"
+    assert b.stats["act"] == "down_lowhp_hold"
+
+
+def test_down_at_low_health_with_neutral_enemy_stays_down():
+    """#5052: down at 30 % with a neutral (non-wind-up) enemy nearby - the bot stays
+    down instead of kicking or firing at it, because the low-HP guard takes precedence."""
+    b, clock = _bot()
+    b.held = lambda p, now: False
+    # hp 300 (<= SURVIVAL_HP*900 = 315), a neutral enemy within DOWN_FIGHT_R
+    snap = _snap(DOWN_ACTION, 300, enemies=())
+    snap["enemies"] = [{"ptr": 99, "pos": (300.0, 0.0, 100.0), "hp": 700,
+                        "hp_max": 700, "action": "cPlAction_zombie_walk"}]
+    acts = _run(b, clock, snap, 4)
+    assert b.down and not b.down_dying
+    assert all(a.get("hold") == () for a in acts), f"expected no buttons, got {acts}"
+    assert not any(a.get("tap") == "zr" for a in acts), "no kick at low HP even with a neutral enemy near"
+    assert b.stats["act"] == "down_lowhp_hold"
+    assert b.stats.get("down_shots", 0) == 0
 
 
 def test_down_at_full_health_with_a_melee_windup_still_fights():
@@ -183,13 +197,26 @@ def test_down_at_full_health_with_a_melee_windup_still_fights():
     snap["enemies"] = [_winding_enemy((300.0, 0.0, 100.0))]
     acts = _run(b, clock, snap, 4)
     assert b.down and not b.down_dying
-    # full health: the wind-up guard is inactive, so the bot fights (fires at 300 cm)
-    assert b.stats["act"] != "down_windup_hold", "full HP: no wind-up hold"
+    # full health: the low-HP guard is inactive, so the bot fights (fires at 300 cm)
+    assert b.stats["act"] != "down_lowhp_hold", "full HP: no low-HP hold"
     assert any(a.get("hold") for a in acts), "fights at full HP even with a wind-up"
 
 
+def test_down_at_just_above_survival_still_fights():
+    """hp 316 (> SURVIVAL_HP*900 = 315): just above the threshold, the guard does
+    not trigger; the bot resumes its normal down behaviour (kick or fire)."""
+    b, clock = _bot()
+    b.held = lambda p, now: False
+    foe = ((200.0, 0.0, 100.0), 700)
+    snap = _snap(DOWN_ACTION, 316, enemies=(foe,))
+    acts = _run(b, clock, snap, 4)
+    assert b.down and not b.down_dying
+    assert b.stats["act"] != "down_lowhp_hold", "just above SURVIVAL: no hold"
+    assert any(a.get("hold") or a.get("tap") for a in acts), "fights just above SURVIVAL"
+
+
 def test_down_at_dying_hp_still_stays_down_with_a_windup():
-    """hp 1 (dying): the dying guard takes precedence; the wind-up guard is
+    """hp 1 (dying): the dying guard takes precedence; the low-HP guard is
     redundant here but both agree on stay down."""
     b, clock = _bot()
     b.held = lambda p, now: False
