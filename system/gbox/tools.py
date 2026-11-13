@@ -4266,7 +4266,7 @@ def pso_inventory(inp: InvIn, ctx: Ctx):
                 blk = ad.read_memory(o, min((1 << 20) + psoitems.SLOT * psoitems.SLOTS, lo + size - o))
             except Exception:
                 continue
-            a = psoitems.find_inventory(blk, o, E)
+            a = psoitems.find_inventory(blk, o, E) or psoitems.find_inventory_loose(blk, o, E)
             if a:
                 base = INV[inp.session_id] = a
                 break

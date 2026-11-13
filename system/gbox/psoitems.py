@@ -169,6 +169,35 @@ def find_inventory(mem: bytes, base: int, endian: str = "<") -> int | None:
     return best
 
 
+def find_inventory_loose(mem: bytes, base: int, endian: str = "<") -> int | None:
+    """Inventory slot-0 address found by a RUN of valid slots, so an unarmed character still works.
+
+    `find_inventory` anchors on an EQUIPPED weapon (present=1, flags=8). An unarmed character has no such slot, so the
+    anchor never matches and the inventory stays unreachable - the deadlock behind "inventory not found (equip a weapon
+    first, then retry)". This anchors on ANY real item instead: walk back from each real slot to the run's start, then
+    count forward while the slots stay valid.
+    """
+    best_score, best_start = 0, None
+    for position in range(0, len(mem) - SLOT, 4):
+        if _slot_ok(mem[position:position + SLOT], endian) != 1:
+            continue
+        start = position
+        while start - SLOT >= 0 and _slot_ok(mem[start - SLOT:start], endian) >= 0:
+            start -= SLOT
+        score, cursor = 0, start
+        while cursor + SLOT <= len(mem):
+            verdict = _slot_ok(mem[cursor:cursor + SLOT], endian)
+            if verdict < 0:
+                break
+            if verdict == 0 and cursor > start:
+                break
+            score += verdict
+            cursor += SLOT
+        if score > best_score:
+            best_score, best_start = score, start
+    return base + best_start if best_start is not None else None
+
+
 def decode_slot(b: bytes, endian: str = "<") -> dict:
     present, flags = struct.unpack_from(f"{endian}II", b, 0)
     return {"present": bool(present), "equipped": bool(flags & 8), "code": b[8:11].hex(), "data": b[8:20].hex(),
