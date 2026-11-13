@@ -38,6 +38,7 @@ import singleton                      # one bot only: a second loop fights the f
 # The operator's controller relay (controller_relay.py) creates this while they are playing, so the bot stands down.
 OPERATOR_PLAYING = pathlib.Path(r"D:\gBox\pso-ds\operator-playing.flag")
 FLAG_STALE_S = 15.0        # a pause flag older than this is a dead relay, not a playing operator
+PRESSED_SWITCHES = {}      # switch pointer -> when it was pressed, so each is pressed once then left alone
 TRIVIAL_HP = 40            # an enemy this cheap is worth killing before a box (the flies are 8 HP)
 LOOP_LOCK = pathlib.Path(r"D:\gBox\pso-ds\endless.lock")
 
@@ -832,6 +833,8 @@ def play(pad: Pad, seconds: float = 120.0) -> str:
                 rank = 0                                  # a level exit is the strongest signal in the room
             elif candidate_class in ("TObjDoorKey", "TLazerFenceSw", "TOKeyGenericSw"):
                 rank = 1                                  # the switch that opens the way on
+            elif candidate_class in ("TObjDoor", "TObjLazerFenceNorm", "TOBarrierEnergy01"):
+                rank = 2                                  # the way through, once a switch has opened it
             else:
                 continue
             idist = math.hypot(float(candidate.get("x") or 0) - x, float(candidate.get("z") or 0) - z)
@@ -844,7 +847,11 @@ def play(pad: Pad, seconds: float = 120.0) -> str:
             interact.sort(key=lambda t: (t[0], t[1]))
             rank, idist, ient = interact[0]
             iclass = str(ient.get("class"))
-            kind = "level exit" if rank == 0 else "switch"
+            kind = "level exit" if rank == 0 else ("switch" if rank == 1 else "door")
+            if idist <= 25.0 and rank == 1:
+                already = PRESSED_SWITCHES.get(str(ient.get("ptr")))
+                if already and (time.time() - already) < 45.0:
+                    continue                          # this switch was just pressed; look at the door instead
             if idist <= 25.0:
                 # PRESS FROM 25 UNITS. The walk closes to ~23 and then cannot get closer, because the switch sits
                 # behind geometry the collision mesh will not cross; with the old 12-unit gate the bot stopped
@@ -852,6 +859,8 @@ def play(pad: Pad, seconds: float = 120.0) -> str:
                 for _ in range(3):
                     tap(pad, "a")
                     time.sleep(0.35)
+                if rank == 1:
+                    PRESSED_SWITCHES[str(ient.get("ptr"))] = time.time()
                 log(f"  INTERACT: pressed A on {iclass} at {idist:.1f} units ({kind})")
                 moved += 1
                 continue
