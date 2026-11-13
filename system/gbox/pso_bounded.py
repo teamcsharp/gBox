@@ -831,6 +831,26 @@ class CommitMotion:
             if moved >= 4.0 and self.last_dir is not None:
                 toward = (x - self.last_pos[0]) * self.last_dir[0] + (z - self.last_pos[1]) * self.last_dir[1]
                 self.last_ok = toward > 1.0
+            y_now = player.get("y")
+            if y_now is not None and self.last_y is not None and (float(y_now) - self.last_y) < -3.0:
+                # Do not walk off a ledge. The west basin of Forest 1 is a one-way drop: from its floor (y 0.1-0.8)
+                # forty probes in every direction found no rising ground at all, and the character had to be restarted.
+                # A drop of more than three units is treated as a blocked direction, so the motion probes for another
+                # way instead of stepping over the edge.
+                self.blocked += 1
+                self.remaining = 0
+                self.dirs.pop(self.last_key, None)
+                if not self.probe_queue:
+                    self.probe_queue = list(self.keys)
+                    self.probe_scores = {}
+                    self.probe_target = (float(target[0]), float(target[1]))
+                self.last_y = float(y_now)
+                self.key = self.probe_queue.pop(0) if self.probe_queue else self.keys[0]
+                self.last_key, self.last_pos, self.last_dir = self.key, (x, z), (0.0, 0.0)
+                self.steps += 1
+                return press(self.key, f"probe {self.key}: the last tap dropped more than three units (ledge)")
+            if y_now is not None:
+                self.last_y = float(y_now)
             if moved >= self.blocked_units:
                 # Commit is broken the moment a tap moves *away* from the aim: measured in Forest 1 at (-108,2), the
                 # motion committed three westward taps at a time toward a door that was north, and a whole run went 470
