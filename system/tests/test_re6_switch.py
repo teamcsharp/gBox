@@ -574,7 +574,7 @@ def test_a_bomb_out_he_backs_off_it_and_kicks_the_ones_on_him_in_the_same_ticks_
 
 def test_drift_into_blast_radius_during_det_aim_holds_the_trigger_not_fires():
     """When the player drifts into the blast's safe radius during the det_aim hold, the bot holds ZL
-    (not ZL+ZR) so the bomb does not set off and damage him â€” the bomb_act_damage cluster fix."""
+    (not ZL+ZR) so the bomb does not set off and damage him Ã¢â‚¬â€ the bomb_act_damage cluster fix."""
     bot, clock, snap = bomb_out(((40.0, 0.0, 300.0, 700), (-40.0, 0.0, 320.0, 700)))
     # He starts clear of the bomb (7 m away = safe distance)
     snap["player"]["pos"] = (0.0, 0.0, R.BOMB_AHEAD - R.BOMB_SELF_R - 50.0)
@@ -586,7 +586,7 @@ def test_drift_into_blast_radius_during_det_aim_holds_the_trigger_not_fires():
     # Now he drifts back into the blast radius during the aim hold
     snap["player"]["pos"] = (0.0, 0.0, R.BOMB_AHEAD - 200.0)  # 2 m from bomb, well inside safe
     acts = run(bot, snap, clock, int(R.BOMB_AIM_S / 0.05) + 3)
-    # The ZL+ZR (detonation) frame must never appear â€” the trigger was held, not fired
+    # The ZL+ZR (detonation) frame must never appear Ã¢â‚¬â€ the trigger was held, not fired
     assert not any(set(a.get("hold", ())) >= {"zl", "zr"} for a in acts), \
         f"ZL+ZR fired despite drift: acts={acts}"
     assert bot.stats["bomb_det_holds"] >= 1, \
@@ -956,6 +956,18 @@ def test_the_escape_plans_a_mesh_route_clear_of_the_bombs():
     # first far-enough waypoint is east.
     assert h is not None and abs(h - math.pi / 2) < 1e-6
     assert bot.stats['escape_route_used'] == 1
+
+def test_fire_envelope_rejects_errors_that_miss_the_body_at_range():
+    # Operator 2026-11-13: "they're shooting up in the air". 106 shots / 37 hits (35 %); most correcting pulls were
+    # 12-27 deg off at 1-4 m. The same angle is 21 cm at 1 m but 89 cm at 4.2 m, so the pull is authorised on the
+    # centimetres of miss at the target, not on a fixed cone.
+    bot, clock, snap = brain(round_guest(enemies=()))
+    assert bot._fire_envelope(100., math.radians(10), 0.)          # 17 cm lateral at 1 m: on the body
+    assert not bot._fire_envelope(420., math.radians(12.3), 0.)    # 90 cm lateral at 4.2 m: in the air
+    assert not bot._fire_envelope(250., math.radians(-17.4), 0.)   # 79 cm lateral at 2.5 m: in the air
+    assert bot._fire_envelope(700., math.radians(2.), math.radians(2.))
+    assert not bot._fire_envelope(700., math.radians(4.), 0.)      # 49 cm: wide of the body
+    assert not bot._fire_envelope(800., 0., math.radians(-6.))     # 84 cm high at 8 m
 
 def test_a_distant_ledge_or_shooter_threat_gets_a_long_geometry_shot_but_a_far_ground_zombie_does_not():
     # operator 2026-11-03: "long shots on exposed/distant targets ... ledge snipers / rocket enemies up high ... any
@@ -2639,7 +2651,7 @@ def test_grab_panic_no_panic_when_enemy_in_front():
     """Held (state=8) with an enemy 0 deg in front: no grab panic, WIGGLE break proceeds.
 
     Damage cluster fc45a6229fe006d0: when the grabber is in front, the WIGGLE stick round
-    already faces him â€” no panic needed, the standard break cycle handles it.
+    already faces him Ã¢â‚¬â€ no panic needed, the standard break cycle handles it.
     """
     # Player faces +z (rot=0); enemy at (0,0,200) is 200 cm in front (0 deg bearing)
     bot, clock, snap = brain(round_guest(state=8, enemies=((0.0, 0.0, 200.0, 700),), cam_yaw=0.0))
@@ -3857,9 +3869,9 @@ def test_one_behind_turns_after_qt_gap_not_the_full_settle():
     # tick 1: quick turn fires immediately (quick_at starts far in the past)
     act = run(bot, snap, clock, 1)[0]
     assert act["hold"] == ("ldown",) and bot.stats["quick_turns"] == 1
-    # ticks 2-4: the turn anim (b phase, release) then the settle window â€” no new decision
+    # ticks 2-4: the turn anim (b phase, release) then the settle window Ã¢â‚¬â€ no new decision
     run(bot, snap, clock, 3)
-    # past the settle: the gate is QT_TURN_GAP_S (0.25 s), not QUICK_GAP_S (1.5 s) â€” the zombie is still behind,
+    # past the settle: the gate is QT_TURN_GAP_S (0.25 s), not QUICK_GAP_S (1.5 s) Ã¢â‚¬â€ the zombie is still behind,
     # so the bot fires another quick turn stick within ~4 ticks (0.2 s) of the settle ending
     acts = run(bot, snap, clock, 8)
     turn_sticks = [a for a in acts if "ldown" in a["hold"]]
@@ -3928,7 +3940,7 @@ def test_repeated_stalls_trigger_direct_walk_fallback():
     that caused the 157.0/round pursuit_stuck outlier."""
     class StuckMesh:
         """A mesh that gives a valid heading (waypoint > NAV_DEGEN_R) but the bot can't follow it
-        due to geometry â€” the bot gets stuck and side-steps don't help."""
+        due to geometry Ã¢â‚¬â€ the bot gets stuck and side-steps don't help."""
         def path(self, a, b):
             return [(a[0] + 200.0, a[1], a[2])]  # valid: 2 m ahead (> NAV_DEGEN_R)
     bot, clock, snap = brain(round_guest(enemies=((0.0, 0.0, 6000.0, 700),), cam_yaw=0.0))
@@ -4030,7 +4042,7 @@ def test_hazard_break_due_fires_on_ranged_damage_with_no_enemy_near():
 
 def test_hazard_break_due_does_not_fire_when_enemy_is_near():
     """#5056: when the bot just took HP loss but an enemy is within HAZARD_CONTACT_R (2.5 m),
-    _hazard_break_due returns False â€” the damage is from a melee attacker, not a ranged one,
+    _hazard_break_due returns False Ã¢â‚¬â€ the damage is from a melee attacker, not a ranged one,
     and the bot should stay in its current decision mode (e.g. cc_kick)."""
     bot, clock, snap = brain(round_guest(
         enemies=((0.0, 0.0, 200.0, 700),),   # 2 m away: within HAZARD_CONTACT_R (250 cm)

@@ -17,6 +17,9 @@ LOOKAHEAD_CM = 150.
 #: When no 150 cm step is on verified floor, retry the same eight pad directions with this shorter step (see
 #: guard()): a narrow catwalk corner can leave the 150 cm lookahead off-mesh while 60 cm is still solid floor.
 LOOKAHEAD_FALLBACK_CM = 60.
+#: A third, tiny step for tight corners where even 60 cm leaves the mesh (live 2026-11-13: the bot sat frozen in a
+#: bonus run with "no verified floor escape direction" for many seconds). Still mesh-proven and never longer.
+LOOKAHEAD_TINY_CM = 30.
 #: A bomb inside the planning margin used to forbid ANY step with a component toward it ("never decrease
 #: clearance"), which froze the bot outright when the only walkable floor out of a spot ran past a bomb:
 #: live 2026-11-13, a single trail bomb at 427 cm held it in place for 183 s with floor_safety_why
@@ -183,12 +186,14 @@ def guard(bot, snap, action, now):
                 # Follow the planned escape route's heading when the bot published one (re6_switch._escape_route):
                 # it plans around railings. Without a route, take the verified direction with the largest clearance
                 # at the step's end - a radial run - because a safe parallel step never leaves the blast.
-                opts = [k for k in options if safe(k, detour=True)]
-                look = LOOKAHEAD_CM
-                if not opts and LOOKAHEAD_FALLBACK_CM > 0:
-                    opts = [k for k in options if safe(k, detour=True, lookahead=LOOKAHEAD_FALLBACK_CM)]
-                    look = LOOKAHEAD_FALLBACK_CM
-                    short = bool(opts)
+                opts, look, short = [], LOOKAHEAD_CM, False
+                for look_try in (LOOKAHEAD_CM, LOOKAHEAD_FALLBACK_CM, LOOKAHEAD_TINY_CM):
+                    if look_try <= 0:
+                        continue
+                    opts = [k for k in options if safe(k, detour=True, lookahead=look_try)]
+                    if opts:
+                        look, short = look_try, look_try != LOOKAHEAD_CM
+                        break
                 if opts and want_route is not None:
                     keys = min(opts, key=lambda k: abs(R.wrap(stick_heading(k, yaw) - want_route)))
                 elif opts:
@@ -196,16 +201,19 @@ def guard(bot, snap, action, now):
                 else:
                     keys = ()
             else:
-                keys = next((keys for keys in options if safe(keys, detour=True)), ())
-                short = False
-                if not keys and LOOKAHEAD_FALLBACK_CM > 0:
-                    # A 150 cm lookahead can leave the mesh from a narrow walkway/railing corner while a short step
-                    # is still on verified floor. Without this the guard stripped every movement for the rest of a
-                    # round (live 2026-11-13: floor_safety_why "no verified floor escape direction" held the bot in
-                    # place fighting for 140+ s). Never a longer step than before, so no new ledge is exposed.
-                    keys = next((keys for keys in options if safe(keys, detour=True, lookahead=LOOKAHEAD_FALLBACK_CM)), ())
-                    short = bool(keys)
-            result = dict(action, hold=rest + keys)
+                keys, short = (), False
+                for look_try in (LOOKAHEAD_CM, LOOKAHEAD_FALLBACK_CM, LOOKAHEAD_TINY_CM):
+                    if look_try <= 0:
+                        continue
+                    keys = next((k for k in options if safe(k, detour=True, lookahead=look_try)), ())
+                    if keys:
+                        short = look_try != LOOKAHEAD_CM
+                        break
+            if keys and set(keys) == set(k for k in held if k in MOVEMENT):
+                # Same direction as requested: keep the caller's hold order (and still record the block below).
+                result = dict(action)
+            else:
+                result = dict(action, hold=rest + keys)
             why = (('redirecting to verified floor and bomb clearance' if escaping else 'redirecting to verified floor')
                    if keys else 'no verified floor escape direction')
             if short:

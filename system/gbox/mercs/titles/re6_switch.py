@@ -1236,7 +1236,7 @@ def _screen_impl(m, merc=None, now: float | None = None) -> dict:
             where, cursor, target = "main_menu", _i32(m, ui["uIdStartUp00"] + MENU_CURSOR), MAIN_PLAY_GAME
         elif "uIdTitle00" in ui and getattr(m, "mercs_split_screen", False) is True                 and snap.get("mercenaries_mode") == "no_mercy":
             # split screen's lobby (a live run 2026-10-27, real frames): after the stage select, "THE MERCENARIES NO
-            # MERCY Ãƒâ€šÃ‚Â· <stage>", Player 1 joined, Player 2's slot "Press -/+ to join", A starts the game. Its own unit is
+            # MERCY ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â· <stage>", Player 1 joined, Player 2's slot "Press -/+ to join", A starts the game. Its own unit is
             # not named yet; the title unit stays listed under it, and a real title never has the No Mercy mode set
             where = "split_lobby"
         elif "uIdTitle00" in ui:
@@ -2616,6 +2616,12 @@ FIRE_CAP_HZ = 10.0                      # the bot's own: a press every second 20
 # Continue firing while correcting a moderate miss. The obstruction gates still
 # apply; this is acquisition tolerance, not evidence that the shot hit anything.
 SPRAY_YAW, SPRAY_PITCH = math.radians(30), math.radians(20)
+#: Fire only while the current angular error would still land inside the body at this distance: the error's offset
+#: at the target (dist * tan(err)) must stay within a body half-width. Operator 2026-11-13, watching live: "they're
+#: shooting up in the air ... aiming and shooting at the people". Measured on the same build: 106 shots, 37 hits
+#: (35 %), 36 of 54 confirmed geometry shots had no body under the ray, and nearly every fired "correcting" pull was
+#: 12-27 deg off at 1-4 m - 1 m of vertical/lateral miss. The cone limits stay as outer bounds.
+FIRE_BODY_HALF_CM, FIRE_BODY_HALF_V_CM = 30.0, 35.0
 FIRE_FAMILY = {1: "handgun", 2: "handgun", 3: "handgun", 40: "handgun", 4: "shotgun", 5: "shotgun", 6: "shotgun",
                16: "shotgun", 7: "magnum", 8: "magnum", 9: "rifle", 10: "rifle", 11: "rifle"}
 
@@ -4603,7 +4609,7 @@ class Bot:
         if any(now - t <= 1.5 and isinstance(h, (int, float)) and isinstance(hp_now, (int, float))
                and h > hp_now for t, h, _ in self.hp_hist):
             self._burst().end('damage_response')  # emergency flash/heal may interrupt the commitment
-        # #5056: just took HP loss with no enemy within HAZARD_CONTACT_R ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â the damage came from a ranged enemy
+        # #5056: just took HP loss with no enemy within HAZARD_CONTACT_R ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â the damage came from a ranged enemy
         # (or a hazard), not a melee attacker. Break out of the current decision mode (cc_kick, quick_turn,
         # bonus_run, etc.) and turn to fight the ranged enemy or move to safety, rather than continuing the
         # current action that left the bot exposed.
@@ -4988,10 +4994,15 @@ class Bot:
         # standing with the gun raised; a shot that takes no health self-limits via the NOHIT_S fire_track below.
         if (not on and p.get("ammo") != 0
                 and not self.is_blocked(aim_at, now)):
-            close_geom = (dist <= ENGAGE_R and abs(yaw_err) <= GEOM_FIRE_ERR and abs(pitch_err) <= GEOM_FIRE_PITCH
-                          and (dist <= GEOM_CLOSE_R or self._mesh_clear(aim_at, now)))
+            cone_geom = (dist <= ENGAGE_R and abs(yaw_err) <= GEOM_FIRE_ERR and abs(pitch_err) <= GEOM_FIRE_PITCH
+                         and (dist <= GEOM_CLOSE_R or self._mesh_clear(aim_at, now)))
+            close_geom = cone_geom and self._fire_envelope(dist, yaw_err, pitch_err)
+            if cone_geom and not close_geom:
+                self.stats['fire_envelope_blocks'] = self.stats.get('fire_envelope_blocks', 0) + 1
             # option (b): the long shot at an exposed threat the operator named - elevated / ledge (off his level) or a
-            # shooter aiming at him (windup ranged) - on a tight cone, to LONG_R, no laser / mesh needed
+            # shooter aiming at him (windup ranged) - on a tight cone, to LONG_R, no laser / mesh needed. Its own
+            # 4/6 deg cone is already tight enough at LONG_R (the envelope above would make an elevated shot
+            # impossible: 2.4 deg of aim-point difference is 50 cm at 12 m).
             long_geom = (dist <= LONG_R and abs(yaw_err) <= LONGSHOT_FIRE_ERR and abs(pitch_err) <= LONGSHOT_FIRE_PITCH
                          and (abs(aim_at["pos"][1] - p["pos"][1]) > AIM_DY or windup(aim_at, p["pos"]) == "ranged"))
             if close_geom or long_geom:
@@ -5002,6 +5013,7 @@ class Bot:
         contact = on
         correcting = (not on and p.get('ammo') != 0 and (aim_at.get('hp') or 0) > 0
                       and dist <= ENGAGE_R and abs(yaw_err) <= SPRAY_YAW and abs(pitch_err) <= SPRAY_PITCH
+                      and self._fire_envelope(dist, yaw_err, pitch_err)
                       and not self.is_blocked(aim_at, now)
                       and not (source == 'laser' and self._ray_short(origin, dot, aim_at))
                       and (source != 'laser' or math.dist(origin, dot) + body(aim_at).r >= math.dist(origin, foot))
@@ -5702,7 +5714,7 @@ class Bot:
     def _prompt(self, p, snap, now) -> dict | None:
         """A shown prompt's button, pressed at once and again every PROMPT_REPEAT_S while it stays. None: no prompt to
         take this tick. A flanking crowd (4+ within CC_CROWD_R) defers the press: lowering the gun to take a prompt
-        in a surround is the crowd_gun_down trigger (cluster b294c62b554c77fd) ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â the bot waits for the crowd to
+        in a surround is the crowd_gun_down trigger (cluster b294c62b554c77fd) ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â the bot waits for the crowd to
         thin before pressing, matching the crowd_hold convention used by the other decision paths."""
         shown = getattr(self, "_prompt_shown", None) or []
         if not PROMPTS or not shown:
@@ -5719,7 +5731,7 @@ class Bot:
             if (key is None or (prompt_skipped(q) and not heal)
                     or (key != 'stick' and now - live["at"] < PROMPT_REPEAT_S)):
                 continue
-            # crowd guard: 4+ live enemies on his level within CC_CROWD_R ÃƒÂ¢Ã¢â‚¬Â Ã¢â‚¬â„¢ defer the press (gun stays up)
+            # crowd guard: 4+ live enemies on his level within CC_CROWD_R ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ defer the press (gun stays up)
             n = sum(1 for e in (snap.get("enemies") or ()) if (e.get("hp") or 0) > 0
                     and abs(e["pos"][1] - p["pos"][1]) <= MAX_DY
                     and math.hypot(e["pos"][0] - px, e["pos"][2] - pz) <= CC_CROWD_R)
@@ -6511,6 +6523,18 @@ class Bot:
         self.stats["burst_throw_speed"] = 0.0
 
     # --- line of sight ---------------------------------------------------------------------------------------------
+    @staticmethod
+    def _fire_envelope(dist, yaw_err, pitch_err) -> bool:
+        """The current aim error would still land inside the body at this distance (FIRE_BODY_HALF_CM/â€¦_V_CM).
+
+        A cone limit alone is not accuracy: the same 12 deg is 21 cm at 1 m but 89 cm at 4.2 m. This converts the
+        angular error at the target's distance into centimetres before authorising the pull, so a "correcting"
+        shot at a zombie two metres away is not fired a metre off the body.
+        """
+        reach = max(50.0, float(dist or 0.0))
+        return (abs(reach * math.tan(abs(yaw_err))) <= FIRE_BODY_HALF_CM
+                and abs(reach * math.tan(abs(pitch_err))) <= FIRE_BODY_HALF_V_CM)
+
     def _measured_contact(self, e, now) -> bool:
         """Current body contact, excluding a pre-redirect ray and a frozen ray after camera movement."""
         snap = getattr(self, "_snap", {}) or {}
