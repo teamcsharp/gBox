@@ -671,3 +671,26 @@ it cannot close the last stretch because one tap is 8 units and the approach is 
 melee attack range (30), so reaching an enemy does not require touching it - but combat itself is still unproven
 (6 attempts, 0 hits) because no enemy has been within range during a run.
 
+
+
+## 21. Combat works: first verified kill, and why it looked broken
+
+Six combo attempts with zero hits over several rounds looked like a broken attack. It was a **range** problem, not an
+attack problem. Chased into melee distance with the hill motion (which holds 23-27 units of precision), the first
+enemy kill followed directly:
+
+| step | measured |
+|---|---|
+| approach | hill motion from `(423,503)` to `(172,387)`, **27.3 units** from the enemy at `(154,366)` |
+| press A once | enemy hp 60, unchanged - a swing the game does not register as a hit |
+| press A three times | enemy hp **60 -> 39** (21 damage), enemy 12 units away |
+| six more presses | no change (the enemy had moved out of the swing arc) |
+| three more presses | **hp 0**, the enemy vanished from the entity table |
+
+Eleven attack presses killed a 60 hp `TObjEneBeast`. Attacks land **conditionally**: one hit per ~3-press combo, and a
+combo that starts while the enemy is outside the swing arc does nothing at all. The bot's earlier zero-hit runs never
+had an enemy inside 30 units - the wave objectives were being chosen at 200-400 units and the runs spent their whole
+budget walking.
+
+Killing it did not set a stage flag (`bits []`), so enemies are not the dependency for the floor's switches in Forest 1.
+
