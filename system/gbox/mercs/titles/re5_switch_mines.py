@@ -854,6 +854,7 @@ class Mines:
                     and 1 <= expected <= 8 and len(confirmed) == expected)
         if result.get('state') == 'confirmed' and not complete:
             self.native.blocked_owner = packet['owner']
+            self.native.refused_candidate = None  # independent uncertainty cannot inherit a safe-refusal retry
             self.stats['native_mine_last']['reason'] = 'native receipt did not confirm requested mines with unchanged weapon'
         if packet.get('reason') == 'traversal':
             self.stats['mine_landing_last'] = dict(self.stats['native_mine_last'],

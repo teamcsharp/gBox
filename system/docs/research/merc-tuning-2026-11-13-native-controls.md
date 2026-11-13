@@ -504,3 +504,53 @@ route. Eight exact directional checks took median 0.197 ms and maximum 0.261 ms
 in isolated replay. Stage ownership remains a separate unresolved question.
 Evidence stays on Spark in `re6-ccb6-floor-step-profile.json` and
 `re6-ccb6-floor-grade-guard-replay.json`.
+
+## Frequent mine drops and grenade suppression
+
+Old-policy RE5 Missile Area round `4d2c85b3fbfe48b88643928c9fcea29a`
+died after 1,213.9 sampled seconds, with 303 reported kills and 181,340 points.
+The terminal JPEG shows "You Are Dead"; crossing 300 kills did not establish
+a completed round or rank. It spent 79.1% of sampled time stationary, including
+301.2 seconds in rearm and 323.5 seconds aiming, and collected three time bonuses.
+The final health loss has no proven native damage owner. Its full flight and
+terminal frame remain in Spark `analysis/merc-tuning-20261113`.
+
+The early five-mine hit response `68ba6ae7` failed its native floor ray before
+activating any actor. Its receipt recorded five prepared actors, zero placed,
+armed or triggered mines, and a clean detach. The previous controller treated
+every prepared-but-unconfirmed batch as uncertain for the entire player life.
+That prevented later movement drops even after the player traveled far enough.
+The new exception is limited to this exact preactivation refusal shape. A
+read-only proof checks both collision volumes, actor identities, inactive
+flags, pool ownership, player life, build and detached mailbox twice before
+allowing a later request. Partial or uncertain native calls remain locked.
+Temporary operator control pauses proof; it does not permanently poison it.
+The existing placement cooldown, native grounding and escape checks remain.
+Tests demonstrate a later movement drop reusing an inactive pooled actor with
+the gun unchanged; that is not yet a live survival result.
+
+Repeated reactive flashes also postponed the periodic crowd scheduler behind
+the shared 90-second ring cooldown. The revised periodic cadence has its own
+minimum separation while retaining flash, ownership and escape checks. A due
+volley can explicitly account for a full verified reactive flash without
+issuing another native call or duplicating its mine response. Current native
+capabilities remain hand/flash for RE4 and flash for RE5/RE6; this does not claim
+damaging grenade swarms or nitrogen support across all titles. Ordinary grenade
+equipment failures are a separate investigation. In this round the dominant
+grenade occupied the center inventory slot; 131 recorded rearm samples reported
+`previous_request_unconfirmed`, after an earlier `unknown/preparation_changed`.
+The two-second D-pad fallback issue alone does not explain this center-slot case.
+
+Revision `cb7b575170ff8a71d5fdb0102b0b3262020e6f7b` activated only after this
+round closed dead, at `1794586653.336`, replacement service PID 2507690 and
+worker `ea0d8e66bac946ff`. It contains the persistent pitch and walking/escape
+repairs above. The mine-refusal and crowd cadence changes described here are
+a subsequent batch, not the loaded policy of that old round.
+
+The combined mine, ring, crowd and recorder regression run passed 304 checks
+with 19 skips requiring the user-owned native image. No extracted assets were
+added to Git. A fresh read-only cb7 pitch capture found 247 coherent alternate
+controller aiming samples; 243 camera values matched the persistent native
+pitch output. This confirms the new input survives native updates, not accuracy
+or verified hit attribution. The archive is
+`mercs/analysis/re5-native-pitch-0d48e242e4af4ce3-1794586851.json`.

@@ -18,6 +18,7 @@ from ..follow_report_delivery import _write
 
 ROOT = Path(__file__).resolve().parents[3] / 'gbox-data' / 'mercs' / 'native-mine-receipts'
 DEADLINE_S, OBSERVER_FRESH_S = 24., 2.
+REFUSAL_RECHECK_S = .5
 GUARD_ATTRIBUTE = '_re5_native_mine_guard'
 DISTANCE_CM, REACTION_S, REQUEST_GAP_S = 609.6, 8., 3.
 TRAVEL_MOTIONS = frozenset({1, 4, 7})  # walk, observed B+LUP sprint, backing
@@ -136,6 +137,7 @@ class Flight:
         self.closed, self.live = False, False
         self.seen = -math.inf
         self.guard = None
+        self.refused_candidate = None
         self.clearance_cm = 500.
         self.emergency = False
         self.deployments = queue.Queue(maxsize=40)
@@ -160,6 +162,8 @@ class Flight:
                          and (p.get('hp') or 0) > R.DYING_HP
                          and (self.emergency or p.get('motion') not in R.MOTION_HELD))
         self.owner = owner
+        if self.refused_candidate is not None and self.refused_candidate['owner'] != owner:
+            self.refused_candidate = None
         if self.job is not None and (not self.live or owner != self.job['owner']):
             self.cancel()
         if _owner_ok(owner):
@@ -171,11 +175,42 @@ class Flight:
             self.guard = guard
             setattr(self.memory, GUARD_ATTRIBUTE, guard)
 
+    def _reconcile_refusal(self, stats):
+        from . import re5_mine_refusal as refusal
+        item, now = self.refused_candidate, time.monotonic()
+        if (item is None or not self.live or self.job is not None
+                or self.owner != item['owner'] or self.blocked_owner != item['owner']
+                or now < item['next']):
+            return
+        item['next'] = now + REFUSAL_RECHECK_S
+        owner = item['owner']
+
+        def allowed():
+            return (not self.closed and self.live and self.owner == owner and self.job is None
+                    and self.blocked_owner == owner and self.refused_candidate is item
+                    and stats.get('round_evidence_id') == owner[0]
+                    and not stats.get('round_evidence_closed') and not stats.get('operator_control')
+                    and stats.get('automine_enabled', True) and stats.get('screen') in (None, 'playing')
+                    and enabled(self.memory) and 0 <= time.monotonic()-self.seen <= OBSERVER_FRESH_S)
+
+        proof = refusal.verify(self.memory, owner, item['receipt'], allowed=allowed)
+        stats['native_mine_refusal_retry'] = dict(proof, id=item['id'], at=now, owner=list(owner))
+        if proof['state'] == 'verified_inactive' and allowed():
+            self.blocked_owner = None
+            self.refused_candidate = None
+            stats['native_mine_refusal_recoveries'] = stats.get('native_mine_refusal_recoveries', 0) + 1
+            if stats.get('mine_blocked_reason') == 'native mine unavailable or previous placement uncertain':
+                stats.pop('mine_blocked_reason', None)
+        elif proof['state'] == 'unsafe':
+            self.refused_candidate = None  # preserve the owner lock; never reconsider an active/uncertain actor
+
     def poll(self, snap, stats):
         self.observe(snap, stats)
         job = self.job
         stats['native_mine_pending'] = bool(job and not job['done'].is_set())
         if job is None or not job['done'].is_set():
+            if job is None:
+                self._reconcile_refusal(stats)
             return None
         self.job = None
         result = job['result']
@@ -183,15 +218,21 @@ class Flight:
             stats['native_mine_retired'] = {'id': job['id'], 'owner': list(job['owner']),
                                            'state': result.get('state'), 'archive': str(job['path'])}
             return None
-        # An uncertain allocation is not a cue to allocate another actor. Its
-        # hazards remain observable; another round must begin before auto retry.
+        # Uncertain allocations remain locked for this life. The sole retry
+        # exception is an explicit preactivation floor refusal, independently
+        # reconciled below against its entire inactive pool and detached mailbox.
         if result.get('state') == 'uncertain' or result.get('prepared') and result.get('state') != 'confirmed':
             self.blocked_owner = job['owner']
+            self.refused_candidate = None
+            from . import re5_mine_refusal as refusal
+            if refusal.candidate(result, job['requested']):
+                self.refused_candidate = {'owner': job['owner'], 'id': job['id'], 'receipt': result, 'next': -math.inf}
         if self.guard is not None:
             for row in [*(result.get('prepared') or ()), *(result.get('mines') or ())]:
                 if isinstance(row, dict) and type(row.get('unit')) is int and type(row.get('generation')) is int:
                     self.guard['actors'][row['unit']] = row['generation']
             self.guard['pending'] = False
+        self._reconcile_refusal(stats)
         return {'id': job['id'], 'owner': job['owner'], 'receipt': result,
                 'requested': job['requested'], 'center': job['center'],
                 'reason': job['reason'],
