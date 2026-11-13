@@ -1484,6 +1484,8 @@ class SessionWorld:
         self.keep_focus = bool(keep_focus)
         self._hwnd = None
         self.focus_calls = 0
+        self.dead_input = False
+        self.missed_input = 0
 
     def observe(self, player_only: bool = False) -> dict:
         args = {"player_only": True} if player_only else {}
@@ -1553,13 +1555,23 @@ class SessionWorld:
 
     def _apply(self, events: list, deadline: float) -> str:
         self.focus()
+        # The app's session input queue can die: /input stops returning {"queued": N} and returns [] instead, after which
+        # nothing is applied - measured twice, about nine minutes of heavy input into a session, with the frame counter
+        # and memory reads still healthy. Counting those empty answers lets a run say "input is dead" instead of
+        # grinding out thousands of actions that cannot land.
         if self.fast_input:
             queued = self.call(f"/api/sessions/{self.sid}/input", {"events": events}, "POST", 10)
             if isinstance(queued, dict) and "queued" in queued:
                 self.fast_sent += 1
+                self.missed_input = 0
                 if self.settle_s > 0:
                     self.sleep(self.settle_s)
                 return "queued"
+            if isinstance(queued, list):
+                self.missed_input += 1
+                if self.missed_input >= 3:
+                    self.dead_input = True
+                return "dead-input"
         self.job_sent += 1
         return self._job(events, deadline)
 
