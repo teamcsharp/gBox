@@ -276,13 +276,16 @@ class Watchdog:
         # every hold moved 0.0 for seventy seconds; one turn to heading 359 and the same "up" hold moved 7 units, and
         # four turn-then-hold cycles carried it from (310,540) to (317,569). So the escapes alternate: a turn, then a
         # short push in the new frame.
-        if self.recoveries % 2 == 1:
-            return press("left", f"watchdog recovery {self.recoveries}/{self.max_recoveries}: turn - the stick is "
-                                 f"camera-relative and every direction may point into the same wall")
-        # A 0.45 s hold travels ~35 units (release latency), and at a map boundary that is enough to push the character
-        # into the geometry it cannot leave. Short pushes.
-        return hold("up", 0.30, f"watchdog recovery {self.recoveries}/{self.max_recoveries}: short push in the "
-                                f"turned frame")
+        # Taps, not holds, until the last resort. A hold travels 20-35 units (release latency) and every hard wedge in
+        # this project followed one: (607,520), (310,540), (104,174), (256,214) - all places where the character ended
+        # up inside geometry it could not leave, with all four directions dead. A tap is one step of ~8 units, which
+        # cannot push the body through a wall the way a sustained hold can.
+        plan = ("left", "up", "right", "left", "down", "right")
+        key = plan[min(self.recoveries, len(plan)) - 1]
+        if self.recoveries >= self.max_recoveries:
+            return hold(key, 0.30, f"watchdog recovery {self.recoveries}/{self.max_recoveries}: last resort, one hold")
+        return press(key, f"watchdog recovery {self.recoveries}/{self.max_recoveries}: tap {key} in turn with the "
+                          f"camera-relative frame (holds are what wedge the body inside geometry)")
 
     def exhausted(self) -> bool:
         return self.recoveries > self.max_recoveries
