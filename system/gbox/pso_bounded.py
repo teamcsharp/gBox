@@ -271,12 +271,18 @@ class Watchdog:
         lands a second late), which is a defect for *movement* but exactly what an escape wants: a large, immediate
         displacement out of whatever geometry the small steps cannot leave.
         """
-        plan = (("down", "reverse out of the obstruction"),
-                ("left", "strafe away and probe"),
-                ("right", "strafe the other way and probe"),
-                ("up", "advance again after the sidestep"))
+        plan = (("left", "strafe away and probe, short push"),
+                ("right", "strafe the other way, short push"),
+                ("down", "reverse out of the obstruction, short push"),
+                ("up", "advance again after the sidestep, short push"),
+                ("left", "second pass, longer push"),
+                ("right", "second pass, longer push"))
         key, why = plan[min(self.recoveries, len(plan)) - 1]
-        return hold(key, 0.45, f"watchdog recovery {self.recoveries}/{self.max_recoveries}: {why}")
+        # A 0.45 s hold travels ~35 units (release latency), and at a map boundary that is enough to push the character
+        # into the geometry it cannot leave: measured at (607,520), after two escape holds the character ignored every
+        # direction and only attack animations nudged it 0.3 units. Short pushes first; the longer pair only afterwards.
+        seconds = 0.18 if self.recoveries <= 4 else 0.35
+        return hold(key, seconds, f"watchdog recovery {self.recoveries}/{self.max_recoveries}: {why}")
 
     def exhausted(self) -> bool:
         return self.recoveries > self.max_recoveries
