@@ -587,12 +587,23 @@ def control(ad, prof, *, ring=None):
         units = float((prof or {}).get("units_per_cm") or 1.0)
     except (TypeError, ValueError):
         units = 1.0
+    reactions = None
+    if title == '010099A00BC1E000':
+        from .re4_reactive_ring import Reactions
+        reactions = Reactions()
 
     def step(snap: dict, stats: dict, now: float, hold=None) -> dict:
         view = _scaled(snap, units)                      # the rule speaks cm; RE4's RAM speaks mm
         policy_ = policy(title_mod, stats)
         observe(stats, view, now, policy_)
         decision = decide(view, stats, now, policy_, title=title)
+        event = reactions.observe(view, stats, now) if reactions is not None else None
+        if event is not None and policy_['enabled'] and decision['radius_cm'] <= policy_['max_radius_cm']:
+            # Damage and a new grab must not wait behind the periodic 90-second
+            # ring, its start delay, or its crowd/flash cooldown. Native build,
+            # allocation, player-life and blast-clearance checks still apply.
+            decision = {**decision, **event, 'fire': True, 'flash_ok': True,
+                        'reactive': True, 'ripple_ms': 0.0}
         stats["ring_decision"] = (decision["reason"] if not decision["fire"] else "fire: " + decision["reason"])[:200]
         # The kind is recorded with the ATTEMPT, not only with the receipt: a session that rotates or ends mid-fire used
         # to leave ring_kind_fired empty while rings_attempted had counted the attempt, so the operator's 360 ring
@@ -611,6 +622,9 @@ def control(ad, prof, *, ring=None):
             stats["ring_error"] = f"{type(exc).__name__}: {exc}"[:200]
             return {**decision, "fire": False, "reason": stats["ring_error"]}
         decision = {**decision, "attempted": True, "fired": receipt.get('state') == 'confirmed', "receipt": receipt}
+        if decision.get('reactive'):
+            stats['reactive_ring_receipt'] = {k: receipt.get(k) for k in
+                ('state', 'verified', 'kind', 'requested', 'detonated', 'reason', 'self_damage')}
         stats["ring_last_reason"] = decision["reason"][:200]
         return decision
 

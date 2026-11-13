@@ -66,6 +66,28 @@ def test_a_small_error_fine_turns_with_the_gun_up():
     assert D.AIM_TURN["left"] in act["hold"], "the right stick still corrects while it fires"
 
 
+def test_sustained_fire_keeps_aim_when_the_target_moves_outside_the_raise_cone():
+    """A raised gun must not repeat the acquisition turn/raise on every miss."""
+    b = bot()
+    b.tick(snap([((0.0, 0.0, 500.0), 400)]), now=10.0)
+    b.tick(snap([((0.0, 0.0, 500.0), 400)]), now=10.3)
+    for i, err in enumerate((0.55, 0.7, 0.6, 0.45, 0.2)):
+        s = snap([((500.0 * math.sin(err), 0.0, 500.0 * math.cos(err)), 400)])
+        act = b.tick(s, now=10.4 + i * 0.06)
+        assert D.AIM_BTN in act['hold']
+        assert act.get('tap') == D.FIRE_BTN
+    assert b._aim_since == 10.0
+    assert not b.stats.get('gun_downs')
+
+
+def test_sustained_aim_still_quick_turns_for_a_target_behind():
+    b = bot()
+    b.tick(snap([((0.0, 0.0, 500.0), 400)]), now=10.0)
+    act = b.tick(snap([((0.0, 0.0, -500.0), 400)]), now=10.3)
+    assert D.AIM_BTN not in act['hold']
+    assert act['hold'] == set(D.QUICK_TURN)
+
+
 def test_no_blind_fire_past_the_range_gate_he_walks_there_instead():
     b = bot()
     act = b.tick(snap([((0.0, 0.0, 3000.0), 400)]), now=1.0)
@@ -191,7 +213,8 @@ def test_the_switch_manuals_controls():
     assert D.AIM_TURN == {"left": "rleft", "right": "rright"} and D.TURN == {"left": "lleft", "right": "lright"}
 
 
-def test_after_a_magazine_of_shots_he_reloads_at_the_first_quiet_moment():
+def test_after_a_magazine_of_shots_he_reloads_at_the_first_quiet_moment(monkeypatch):
+    monkeypatch.setattr(D, 'RELOAD_SHOTS', 8)  # exercise the optional reload, not a million-shot live default
     b = bot()
     s = snap([((0.0, 0.0, 500.0), 400)])
     t = 0.0

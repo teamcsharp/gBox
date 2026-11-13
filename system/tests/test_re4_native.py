@@ -393,6 +393,14 @@ def test_a_hand_ring_uses_the_hand_blast_and_the_7000_floor(monkeypatch):
     assert all(r["from_player_cm"] >= 700 for r in result["grenades"])
 
 
+def test_hand_ring_at_exact_floor_survives_trigonometric_roundoff(monkeypatch):
+    ctl = _ring_controller(monkeypatch)
+    result = ctl.grenade_ring('hand', count=10, radius_cm=700, inner_cm=700)
+    assert result['state'] == 'confirmed' and result['detonated'] == 10
+    with pytest.raises(N.Unavailable, match='minimum'):
+        ctl._blast_at(N.HAND_BLAST, 'hand', 1, 2, 7002.99, N.HAND_MIN_MM)
+
+
 def test_the_incendiary_ring_is_refused_before_any_call(monkeypatch):
     ctl = _ring_controller(monkeypatch)
     before = len(ctl.writes)

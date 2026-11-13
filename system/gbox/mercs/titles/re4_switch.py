@@ -3306,7 +3306,7 @@ class Bot:
             # returned the walk turn at every error, so while aiming nothing moved the aim - turns=3366 in one round
             # (every tick), doing=turn, gun_down_turn climbing: the operator's "just turning back and forth and not
             # going forward".
-            if abs(err) > RAISE_TOL:
+            if abs(err) > cone:
                 self.stats["turns"] += 1
                 self._learn_turn(self.target, err, now)
                 self.doing = "turn"

@@ -487,7 +487,7 @@ class Controller(N.Controller):
         self.ensure_attached()
         px, py, pz = self.player_position()
         from_mm = math.hypot(x - px, z - pz)
-        if from_mm < floor_mm:
+        if from_mm + 1e-6 < floor_mm:
             raise Unavailable(f"a {kind} blast {from_mm / R.MM_PER_CM:.0f} cm from him is refused (the minimum is "
                               f"{floor_mm / R.MM_PER_CM:.0f} cm)")
         obj = bytearray(OBJECT_SIZE)
