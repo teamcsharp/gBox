@@ -220,7 +220,7 @@ native mailbox/build/player life and both collision volumes. Only confirmed
 inactive, detached actors are reusable. In round6a33 nine mines had armed at the
 midround check: four distance singles plus a five-mine ring; native trigger and
 retirement evidence exists. At least76 hit-ring floor refusals included14 ray
-misses and62 results outside61cm floor tolerance, some3ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Å“11m below the player.
+misses and62 results outside61cm floor tolerance, some3ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â€šÂ¬Ã…â€œ11m below the player.
 Keep the floor checks. Provisional escape sites are not armed mines.
 
 `c2d71665e` repairs consumed distance on such a refusal: preserve travel already
@@ -554,14 +554,14 @@ same worker modules serve every title).
 
 ## DeepSeek PM round 3 (2026-11-13 12:57 onward): the operator's mine-ring button, and what the reels show
 
-### The "Mine ring · 5 ft" button on RE6 is fixed in the client (no restart)
+### The "Mine ring Â· 5 ft" button on RE6 is fixed in the client (no restart)
 
 The root cause was not a missing backend: RE6 already exposes the interventions op **`remote_mines`** ->
 `re6_switch_native.bomb_ring_now` / `Controller.drop_bomb_ring` (armed native remote bombs ejected from the body,
 no throw/animation, placements recorded for the deadline controller). What never existed was any UI control that
 sent it; the topbar icon the operator pressed was the RE5 proximity-mine lane, which RE6 does not advertise.
 
-- `95c958138` adds a **"Remote mine ring · 5 ft"** topbar control, shown only where the worker advertises
+- `95c958138` adds a **"Remote mine ring Â· 5 ft"** topbar control, shown only where the worker advertises
   `remote_mines` (hidden on RE5/RE4 and on any title without the lane). Each click posts
   `{op:'remote_mines', args:{action:'ring', count:5, radius_cm:152.4}}`; the bot's own deadline controller then
   escapes the blast distance and sets the set off through the native flag. It sits beside the existing grenade-ring
@@ -600,3 +600,51 @@ why `death_cause` was added. Next deaths must be attributed from that scalar bef
 Hermes review gate is responsive: enabled, no `last_error`, 1520 reviewed / 325 merged / 2316 pending / 7 retry,
 12 attention items (reviewer verdicts, mostly "blocked" requests, not connectivity). MercMode stays on 5/5/5,
 rotating; keep it playing.
+
+## DeepSeek PM round 4 (2026-11-13 13:10 onward): the movement guard was freezing escapes; relaxed and verified
+
+### Why the bot stood still with a bomb out (measured, not inferred)
+
+With the round-2 fixes actually loaded (a service relaunch was used because the bot-only reload kept finding no
+finalized boundary, and no game was running at that moment), the new scalars named the blocker in a live RE6 round:
+
+- `floor_safety_why` = **"no verified floor escape direction"** 930+ times; `floor_safety_blocks` 185 -> 930.
+- One trail bomb at **427 cm**: `mine_escapes_started` 1, `mine_escapes_cleared` never, `mine_elapsed_s`
+  60 -> 183 s, clearance oscillating 427-451 against the required 1150 cm, gun down, combo 0.
+
+`re6_movement_safety._bomb_clear` refused every step with any component toward a bomb inside the planning margin,
+and `guard()` refuses movement when it cannot prove a safe direction. When the only walkable floor out of a
+railing corner runs past a bomb, that rule freezes the bot outright: the escape never clears, the deadline is
+missed forever, and the round ends standing still.
+
+### The fix (`725d073ea`)
+
+Movement may cross the planning margin; it now refuses only a step that *ends within* `BOMB_TRAVEL_MIN_CM`
+(250 cm) of a bomb. A bomb already closer than that keeps the old climb-out rule (only steps that do not approach
+it further). This does not loosen the blast guard: `re6_switch_mods.detonate` still rereads every live bomb and
+refuses the flag below `detonate_safe_cm`, and RE6 remote bombs have no proximity trigger - the flag is the only
+fuse - so walking past an armed bomb cannot set it off. Tests: 23 movement-safety + 114 in the related
+bomb/escape/travel suites; the old monotone assertion is replaced with the floor rule plus a dead-end regression
+test reproducing the 427 cm case.
+
+Deployed to the share and hot-reloaded (receipt: "0 of 0 autobot(s) back in 0.1 s; reloaded
+re6_remote_control, re6_movement_safety, re6_switch"), i.e. loaded while no bot was running. Live RE6 verification
+of the relaxed escape is the next step; MercMode had rotated to Resident Evil 5, so one RE6 round was queued
+(`settings.queue = [{"title": "re6"}]`) to measure it without waiting a full rotation - restore `queue: []` after
+the verification round.
+
+### Round results while this was being worked
+
+- 13:19 RE6 round: died, 32 120, 33 kills (the trapped round above).
+- 13:24 RE6 round: **interrupted** by the operator-authorized stop used to load the fix; 135 650, 128 kills,
+  combo 35, accuracy 44.7 %, 0 deaths - good evidence the bomb-free parts are healthy.
+- 13:28 RE5 round: died, 9 460, 22 kills (RE5 bot, separate lane; not this fix).
+
+### Still open
+
+- Verify the relaxed escape live on RE6 (`mine_escapes_cleared`, `mine_escape_clear_s_last`, flag detonations
+  within a reasonable time), then restore the MercMode queue.
+- Survival after the bomb cycle works (the 5 s deadline remains aspirational; a planned navmesh exit route is
+  still the real fix).
+- Manual remote-mine ring control landed in round 3 (`95c958138`, `43f7dfa7f`) and needs a live click on RE6.
+- Bonus routing and the S-rank/five-star goal remain unproven.
