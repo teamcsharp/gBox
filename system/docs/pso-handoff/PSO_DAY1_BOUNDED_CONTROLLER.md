@@ -736,3 +736,30 @@ last one all four direction taps moved **0.6 units or less for 201 seconds** whi
 - the input arrives, the character is inside geometry and cannot leave. Neither turning, holding, attacking, the menu
 nor loading a state recovers it; only a session restart does. That is why this round kept restarting.
 
+
+
+## 23. Long treks work now; a closed door's alcove is a trap
+
+**The probe-enabled commit motion made long unmapped treks reliable.** Two runs in this round:
+
+| target | result |
+|---|---|
+| energy barrier `(221,493)` | 234 ticks, **0 stalls**, arrived 5.9 units |
+| door at `(53,290)` | 415 ticks, **0 stalls**, 420 units of travel |
+
+That is a change in kind: the same terrain produced 5-8 stalls per three minutes two rounds ago. The barrier itself is
+**passable** - the character walked straight through it (`z 490 -> 559`), so `TOBarrierEnergy01` at `(221,493)` does not
+block the player.
+
+**The door at `(53,290)` is closed**, and its alcove is a trap. Walking *into* it, the character's taps were clipped to
+1-3 units each (geometry eats most of the 8-unit step), then to 0.0 - a hard wedge, in front of a door it could not
+open, with the door key (`+0xC8` = 60) at `(201,-18)`, 330 units away. Holds made it worse, as they always do. The only
+exit was a session restart.
+
+The lesson for the motion: **taps clipped to 1-3 units mean "stop pushing toward the target"**. A wall gives 0; a pocket
+gives 1-3 and then a wedge. The motion should reverse out along the way it came when it sees that signature, instead of
+choosing the best gain (which points into the door). That is the next change.
+
+Restart-to-Forest is now a reliable 4-minute sequence: six hops through the plaza (all converged, 8-10 units) and `A` on
+the pad.
+
