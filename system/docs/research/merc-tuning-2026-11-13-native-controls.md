@@ -482,3 +482,25 @@ The exact pre-change `re5_ps3.Bot._mine_retreat` method also fails it. That
 method unconditionally holds position inside `MINE_ESCAPE_CM`, even after
 finding a supported departure. It is separate from the Switch escape repair
 and remains an explicit follow-up; the combined run is not reported as green.
+
+## RE6 local walking grade
+
+The cached `ccb6` geometry also exposes a concrete floor-proof gap. A forward
+150 cm step crosses linked triangles with directional slopes of 75.31 and
+83.76 degrees, ending 207.64 cm above the player. Graph connectivity alone
+accepted it. The new free-walking check follows the exact crossed triangle
+intervals and rejects directional rise/run above 3:1. That is a conservative
+controller policy, not a recovered native slope flag. It starts on floor
+within 30 cm of the observed feet, preserves ordinary stairs and leaves native
+traversal/QTE controls to their existing handlers. The all-direction proof
+used after a heading change now checks grade as well as boundaries.
+
+Local related checks passed 100 tests with one asset skip; 16 isolated Spark
+checks passed. Exact replay rejects the near-vertical forward path and retains
+floor proof for right and forward-right. Those alternatives still approach
+the pending bomb, so the final guard correctly refuses them under the existing
+clearance rule. This repairs a false walking proof; it does not prove an escape
+route. Eight exact directional checks took median 0.197 ms and maximum 0.261 ms
+in isolated replay. Stage ownership remains a separate unresolved question.
+Evidence stays on Spark in `re6-ccb6-floor-step-profile.json` and
+`re6-ccb6-floor-grade-guard-replay.json`.
