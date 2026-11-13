@@ -814,6 +814,12 @@ class CommitMotion:
         self.probes = 0
         self.turns = 0
         self.last_y = None
+        self.best_distance = None
+        self.stuck_taps = 0
+        self.detour_left = 0
+        self.detour_side = 1.0
+        self.detour_len = 5
+        self.detours = 0
         self.last_aim = None
         self.last_ok = False
         self.last_dir = None
@@ -904,9 +910,27 @@ class CommitMotion:
         distance = math.hypot(float(target[0]) - x, float(target[1]) - z)
         if distance <= self.arrive:
             return None
-        if self.steps < self.slide_until:
-            aim = self.slide_dir
+        # Escalating detour. A greedy motion stalls when the only way on is through a direction that is blocked right
+        # then (measured: 5 stalls in 120 s at (551,380) in Forest 1, with three of four keys open but all of them
+        # leading away from the target). Walking *away* for an increasing number of taps, alternating sides, is what
+        # leaves a local minimum; the immediate one-tap retreat tried earlier ping-ponged instead.
+        if self.detour_left > 0:
+            self.detour_left -= 1
+            aim = self.detour_aim
         else:
+            if self.best_distance is None or distance < self.best_distance - 2.0:
+                self.best_distance = distance
+                self.stuck_taps = 0
+            else:
+                self.stuck_taps += 1
+            if self.stuck_taps >= 8:
+                self.stuck_taps = 0
+                self.detours += 1
+                self.detour_left = self.detour_len
+                self.detour_len = min(29, self.detour_len + 6)
+                ux, uz = _unit(float(target[0]) - x, float(target[1]) - z)
+                self.detour_aim = (-uz * self.detour_side, ux * self.detour_side)
+                self.detour_side = -self.detour_side
             aim = _unit(float(target[0]) - x, float(target[1]) - z)
         if self.last_ok and self.last_key is not None:
             # Straight-line stickiness. Measured: six presses of the same key walked (221)->(183) dead straight - the
@@ -1665,6 +1689,7 @@ class Automaton:
         self.entities = []
         self.room = None
         self.room_candidate = None
+        self.explore_steps = 0
         self.room_count = 0
         self.pending = None
 
@@ -1856,7 +1881,12 @@ class Automaton:
     def _explore(self, player: dict, now: float) -> Action:
         """A deterministic bounded sweep when nothing in the dependency chain is in reach."""
         room = str(player.get("room") or "0").strip()
-        direction = DIRECTIONS[int(room) % 4] if room.isdigit() else "up"
+        # Rotate every call. Taking the direction from the room number alone made the fallback press the SAME key for a
+        # whole run: measured, 599 consecutive `up` presses in Forest 1 room 16 (16 % 4 = 0), where `up` is blocked, so
+        # the character did not move for 150 seconds and the watchdog called it a stall five times.
+        self.explore_steps += 1
+        base = int(room) % 4 if room.isdigit() else 0
+        direction = DIRECTIONS[(base + self.explore_steps) % 4]
         return press(direction, f"explore room {room}: one step {direction}")
 
     def _account(self, objective: Objective | None, action: Action, before: dict, after: dict, now: float):
