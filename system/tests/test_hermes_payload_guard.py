@@ -105,7 +105,12 @@ def test_run_output_outside_the_work_folders_is_refused_on_push():
 
 
 def test_project_metadata_admits_only_exact_reviewed_files():
-    payloads = {'system/gbox.toml': b'[emulators.ps4]\nadapter = "shadps4"\n',
+    payloads = {'.gitattributes': b'*.py text eol=lf\n',
+                'CLAUDE.md': b'# Project instructions\n',
+                'system/integrations/pinebox/frontend/pine-hls.js': b'function create() {}\n',
+                'system/integrations/pinebox/install.py': b'def install(): pass\n',
+                'system/integrations/pinebox/tests/test_pine_hls.cjs': b'const test = require("node:test");\n',
+                'system/gbox.toml': b'[emulators.ps4]\nadapter = "shadps4"\n',
                 'system/LICENSES-THIRD-PARTY.md': b'# Third-party licenses\n',
                 'system/pyproject.toml': b'[project]\nname = "gbox"\n',
                 'system/tools/probes/mtf_tex_roundtrip.py': b'print("roundtrip")\n',
@@ -129,6 +134,39 @@ def test_project_metadata_admits_only_exact_reviewed_files():
             assert 'outside' in G.refusals([lookalike], files(**{lookalike: b'text'}), G.HOMES)[0]
     assert 'outside' in G.refusals(['system/tools/probes/result.json'],
         files(**{'system/tools/probes/result.json': b'{}'}), G.HOMES)[0]
+
+
+@pytest.mark.parametrize('path', [
+    '.gitattributes.bak', 'claude.md', 'CLAUDE.md/output.py',
+    'system/integrations/pinebox/frontend/recording.webm',
+    'system/integrations/pinebox/frontend/vendor/unreviewed.js',
+    'system/integrations/pinebox/frontend/pine-hls.js/extra.py',
+    'system/integrations/pinebox/tests/output.json', 'system/integrations/other/install.py',
+])
+def test_pine_source_allowance_never_opens_integration_output_or_similar_paths(path):
+    assert 'outside' in G.refusals([path], files(**{path: b'ordinary text'}), G.HOMES)[0]
+
+
+def test_installed_hook_pushes_reviewed_pine_source_but_rejects_a_disguised_payload(repo):
+    from pathlib import Path
+    G.install_pre_push(repo, sys.executable, Path(G.__file__).resolve().parents[1])
+    reviewed = {'.gitattributes': '*.py text eol=lf\n', 'CLAUDE.md': '# Project instructions\n',
+                'system/integrations/pinebox/frontend/pine-hls.js': 'function create() {}\n',
+                'system/integrations/pinebox/install.py': 'def install(): pass\n',
+                'system/integrations/pinebox/tests/test_pine_hls.cjs': 'const assert = require("node:assert");\n'}
+    for name, text in reviewed.items():
+        target = repo / name
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(text)
+    git('add', '.', cwd=repo); git('commit', '-m', 'reviewed Pine sources and project metadata', cwd=repo)
+    pushed = subprocess.run(['git', 'push', 'origin', 'main'], cwd=repo, capture_output=True, text=True)
+    assert pushed.returncode == 0, pushed.stderr
+    published = git('rev-parse', 'origin/main', cwd=repo)
+    (repo / 'system/integrations/pinebox/frontend/pine-hls.js').write_bytes(b'PK\x03\x04' + bytes(64))
+    git('commit', '-am', 'disguised archive', cwd=repo)
+    refused = subprocess.run(['git', 'push', 'origin', 'main'], cwd=repo, capture_output=True, text=True)
+    assert refused.returncode != 0 and 'a zip archive' in refused.stderr
+    assert git('rev-parse', 'origin/main', cwd=repo) == published
 
 
 @pytest.mark.parametrize('path', sorted(G.PROJECT_FILES))

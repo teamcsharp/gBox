@@ -47,7 +47,13 @@ HOMES = ('system/gbox/', 'system/tests/', 'system/clients/', 'system/docs/', 'sy
 # Tracked project metadata outside those directories. Exact membership only:
 # these are files, never filename prefixes or additional writable directories.
 PROJECT_FILES = frozenset({
+    '.gitattributes', 'CLAUDE.md',
     'system/gbox.toml', 'system/LICENSES-THIRD-PARTY.md', 'system/pyproject.toml',
+    # Reviewed Pine source/installer/regressions, not an integration-directory
+    # exemption: captured streams, vendored payloads and probe output stay gated.
+    'system/integrations/pinebox/frontend/pine-hls.js',
+    'system/integrations/pinebox/install.py',
+    'system/integrations/pinebox/tests/test_pine_hls.cjs',
     # Reviewed source tools live outside the normal package directories. Admit
     # their exact names; generated probe output and every payload check stay gated.
     'system/tools/probes/mtf_tex_roundtrip.py',
