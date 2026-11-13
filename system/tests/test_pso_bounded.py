@@ -365,8 +365,38 @@ def test_a_room_that_flicks_back_and_forth_is_not_progress(workdir):
     box = automaton(world, workdir, bounds=B.Bounds(max_no_close_s=6.0))
     box.run_for(30.0)
 
-    assert box.room is None, "a room that alternates every tick must never settle into a transition"
-    assert box.watchdog.progress_kind != "room"
+    assert box.watchdog.progress_kind != "room", "a flickering room is not progress"
+    # The character in this world never gets anywhere either, and that is now visible: the watchdog's net-window
+    # verdict fires even though every individual tap "moved".
+    assert box.watchdog.stalls >= 1, "a character that moves but goes nowhere is a stall"
+
+
+class SlowFlickerWorld(FakeWorld):
+    """The room flips and holds each value for two ticks - long enough to 'settle' - while the character cannot move."""
+
+    def __init__(self, clock):
+        super().__init__(clock)
+        self.flips = 0
+
+    def act(self, action, deadline):
+        x, z = list(self.pos)
+        super().act(action, deadline)
+        self.pos = [x, z]                         # pinned: the inputs move nothing
+        self.flips += 1
+        if self.flips % 2 == 0:
+            self.room = 11 if self.room == 10 else 10
+
+
+def test_a_settled_room_only_counts_when_the_character_moved(workdir):
+    """Room 10/8 boundary: the value settles on each side while the character is pinned. Counting that as progress kept
+    every clock alive and the bot sat in place for a whole run (347 actions, 60 s at (604,-151))."""
+    clock = FakeClock()
+    world = SlowFlickerWorld(clock)
+    world.entities = [entity("TObjDoorKey", "80DB5650", 200.0, 0.0)]
+    box = automaton(world, workdir, bounds=B.Bounds(max_no_close_s=4.0))
+    box.run_for(20.0)
+
+    assert box.watchdog.progress_kind != "room", "a settled room with no movement is not progress"
 
 
 def test_a_room_that_settles_is_progress(workdir):
@@ -465,6 +495,29 @@ def test_a_door_is_a_passage_not_an_objective(workdir):
     assert objective.kind == "switch", "a door is never a destination, even when it is known to be open"
     only_door = B.snapshot(FakeWorld(FakeClock()).observe() | {"entities": [entity("TObjDoor", "doorB", 20.0, 0.0)]})
     assert B.ProgressionPolicy().choose(only_door, 1000.0) is None, "a room with only a door has no objective"
+
+
+def test_an_anchor_inside_the_margin_is_skipped_not_ground_on(workdir):
+    """A grid cell in the eroded margin can be unreachable from the character's side, and the follower used to grind on
+    it until the run failed ("still 13 units away" for 20 s, room 8). It now gives an anchor a fixed patience and moves
+    on."""
+
+    class Router:
+        def __init__(self, points):
+            self.points = points
+
+        def route(self, start, goal):
+            return list(self.points)
+
+    points = [(0.0, 0.0), (10.0, 0.0), (20.0, 0.0), (40.0, 0.0)]
+    follower = B.RouteFollower(Router(points), arrive=6.0, spacing=0.0, anchor_patience=3)
+    # The character sits at the first anchor and never moves: the second anchor is 10 away and can never be reached.
+    seen = []
+    for _ in range(12):
+        point = follower.waypoint({"x": 0.0, "z": 0.0}, (40.0, 0.0))
+        seen.append(point)
+    assert follower.skipped >= 1, "the unreachable anchor is given up on"
+    assert seen[-1] != (10.0, 0.0), "and the follower is no longer aiming at it"
 
 
 def test_a_switch_outranks_a_nearer_container(workdir):

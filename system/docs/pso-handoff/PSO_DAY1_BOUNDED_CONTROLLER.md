@@ -578,3 +578,31 @@ First offline check with the offset applied: room 4 now produces routes at all (
 line - the 5-unit grid erosion plus a translation that may be a cell or two off - so the offset is a first solution, not
 a finished one; a finer search on the (dx, dz) lattice is the next step.
 
+
+
+## 17. Three ways a stuck character was invisible, and one session that stopped taking input
+
+The room-4 walk kept ending in the same place: 298 taps, sixty seconds, and the character sat at `(604, -151)`. Three
+separate mechanisms were hiding it, and each is fixed:
+
+* **A settled room counted as progress even when nothing moved.** The room value at that spot alternates with a
+  two-tick period, which settles on every flip, so `_account` reported `progress "room"` every ten seconds and every
+  clock that should have fired stayed alive. It now requires `delta["moved"] >= 1` - a transition you did not walk to is
+  not progress.
+* **The watchdog only saw per-tick movement.** The character wobbled between `(604, -151)` and `(605, -144)` - seven
+  units over sixty seconds - and every individual tap "moved", so liveness was never in doubt. `Watchdog.observe` now
+  keeps a `stall_s` window of positions and calls it a stall when the window never leaves a `net_units` (8) circle:
+  moving but going nowhere is a stall.
+* **An anchor the body cannot reach was ground on until the run failed.** "Still 13 units away" for twenty seconds at a
+  grid cell inside the eroded margin. `RouteFollower` gives each anchor `anchor_patience` (8) ticks and then skips it.
+
+With those in place the same walk now reports `progress start` honestly and the stall verdict fires at tick 210.
+
+**The session then stopped accepting input entirely.** At `(604, -151)` every input had zero effect - direction taps,
+a 0.3 s hold, a turn, A, Start - and even the heading did not change, while `/api/sessions/{sid}/rpc` reads worked and
+the frame counter advanced normally (94016 -> 94035 -> 94054, ~32 fps). `send_input` is "supported", the session says
+`PLAYING`. Nothing in the worker log. The only recovery was a session restart (`pso-session.py restart --force`), after
+which a tap moved the character 8 units immediately. Cause unknown; candidates are the pad-takeover lease dropping agent
+input and a wedged virtual pad. It is written down here because a silent input drop makes everything else look like
+bad navigation.
+

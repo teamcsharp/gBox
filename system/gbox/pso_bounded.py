@@ -197,8 +197,13 @@ class Watchdog:
     """
 
     def __init__(self, *, movement_epsilon: float = 2.0, heading_epsilon: float = 10.0, stall_s: float = 20.0,
-                 max_recoveries: int = 4, hard_progress_s: float = 300.0) -> None:
+                 max_recoveries: int = 4, hard_progress_s: float = 300.0, net_units: float = 8.0) -> None:
         self.movement_epsilon = float(movement_epsilon)
+        # A character can move every tick and still go nowhere: measured at (604..605, -144..-151) it wobbled seven
+        # units for sixty seconds while 298 taps fired, and the per-tick movement test saw a live character the whole
+        # time. Net displacement over the stall window is the honest signal.
+        self.net_units = float(net_units)
+        self.window: list = []
         self.heading_epsilon = float(heading_epsilon)
         self.stall_s = float(stall_s)
         self.max_recoveries = int(max_recoveries)
@@ -219,7 +224,16 @@ class Watchdog:
         position = (float(player.get("x") or 0), float(player.get("z") or 0))
         heading = player.get("heading_deg")
         self.heading = None if heading is None else float(heading) % 360.0
+        self.window.append((now, position))
+        horizon = self.stall_s
+        while len(self.window) > 2 and now - self.window[0][0] > horizon:
+            self.window.pop(0)
+        net = 0.0
+        if len(self.window) > 1:
+            net = max(math.dist(a[1], b[1]) for a in self.window[:2] for b in self.window[-2:])
         moved = self.position is None or math.dist(self.position, position) > self.movement_epsilon
+        if net <= self.net_units and len(self.window) > 3 and now - self.window[0][0] >= horizon * 0.5:
+            moved = False                    # moving, but the window never leaves a net_units circle
         if moved:
             # Translation is the liveness signal. A rotation is not: every blocked tap in the Pioneer 2 plaza still
             # rotated the character by ~90 degrees, so counting rotation as liveness let a completely wedged character
@@ -387,17 +401,20 @@ class RouteFollower:
     """
 
     def __init__(self, router, *, arrive: float = 10.0, replan_after: int = 4, spacing: float = 24.0,
-                 cell: float = 2.5) -> None:
+                 cell: float = 2.5, anchor_patience: int = 8) -> None:
         self.router = router
         self.arrive = float(arrive)
         self.replan_after = int(replan_after)
         self.spacing = float(spacing)
         self.cell = float(cell)
+        self.anchor_patience = int(anchor_patience)
         self.route = None
         self.index = 0
         self.goal = None
         self.plans = 0
         self.stalls = 0
+        self.stuck = {}                 # anchor index -> ticks spent chasing it without closing
+        self.skipped = 0
 
     def waypoint(self, player: dict, goal: tuple):
         """The point to walk toward now: the current anchor, advanced only when it is reached.
@@ -425,6 +442,17 @@ class RouteFollower:
                 self.index += 1
             else:
                 break
+        # An anchor inside the eroded margin is sometimes unreachable from the character's side (the grid keeps a cell
+        # the body cannot walk to), and the follower then grinds on it until the run fails - measured: 'still 13 units
+        # away' for 20 s in room 8. Skip an anchor that has consumed `anchor_patience` ticks without being reached.
+        if self.index < len(self.route) - 1:
+            anchor = self.route[self.index]
+            if math.dist(position, anchor) > self.arrive:
+                self.stuck[self.index] = self.stuck.get(self.index, 0) + 1
+                if self.stuck[self.index] > self.anchor_patience:
+                    self.index += 1
+                    self.skipped += 1
+                    self.stuck.pop(self.index - 1, None)
         if math.dist(position, tuple(goal)) <= self.arrive:
             return None
         return self.route[self.index]
@@ -1535,7 +1563,11 @@ class Automaton:
         delta = diff(before, after)
         progressed, kind = False, "none"
         room = (after.get("player") or {}).get("room")
-        if self._room_settled(room) is not None:
+        settled = self._room_settled(room)
+        if settled is not None and delta["moved"] >= 1.0:
+            # A settled room is a transition only if the character actually moved. A value that alternates with a
+            # two-tick period settles on every flip, and counting that as progress masked a character that was pinned
+            # in place: measured 347 actions and 60 s at (604,-151) with the room reporting 'progress' every 10 s.
             # A room value that alternates every tick is a boundary flicker, not a transition: measured at
             # (7..14, 180..192) the room flipped 10 -> 11 -> 10 nine times and each flip reset the progress clocks,
             # which is how a character can bounce on a threshold while everything reports progress.
