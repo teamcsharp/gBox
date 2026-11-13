@@ -119,6 +119,7 @@ class FlightRecorder:
                    'decision_stages_ms', 'decision_work_ms', 'decision_work_p95_ms',
                    'snapshot_stages_json', 'heal_inventory_read', 'heal_inventory_slots', 'heal_quick_slots',
                    'heal_status', 'heal_unavailable_reason', 'native_equip',
+                   'throw_equip_blocked_count', 'throw_equip_blocked_items', 'throw_equip_refusal',
                    'qte_auto', 'qte_auto_reason', 'qte_solved_ram', 'qte_unconfirmed_writes',
                    'qte_escape_flash', 'qte_escapes_observed', 'qte_escape_active', 'qte_escape_mines_due',
                    'aim_diag', 'aim_errdeg', 'laser_gate', 'sight_block_last', 'nav_status',

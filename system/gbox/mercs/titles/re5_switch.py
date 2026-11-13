@@ -4130,6 +4130,27 @@ class Bot:
             pol.observe(prof, now, snap.get("kills"))
             inv = snap.get("inventory") or ()
             held = next((s for s in inv if s.get("hand")), None)
+            # A center-grid grenade has no D-pad fallback. An explicitly
+            # quarantined native request must not spend another two neutral
+            # seconds on every throw opportunity. Keep all refused items for
+            # this life, independently of Controller's last-failure field.
+            owner = (self.stats.get('round_evidence_id'), p.get('ptr'), p.get('generation'))
+            observed = snap.get('player') or {}
+            same_observation = (observed.get('ptr'), observed.get('generation')) == owner[1:]
+            owned = (bool(owner[0]) and all(type(v) is int for v in owner[1:]) and same_observation
+                     and snap.get('mercenaries_phase') == PHASE_PLAYING and (p.get('hp') or 0) > DYING_HP
+                     and not self.stats.get('operator_control'))
+            refusal = d.get('_uc_throw_refusals')
+            if refusal is None or refusal['owner'] != owner:
+                refusal = d['_uc_throw_refusals'] = {'owner': owner, 'items': {}}
+                self.stats.pop('throw_equip_refusal', None)
+            blocked = refusal['items']
+            if owned and held is not None and held.get('type') == 1 and sum(bool(s.get('hand')) for s in inv) == 1:
+                # Actual current hand ownership permits using that grenade;
+                # it does not clear/replay the native controller's request.
+                blocked.pop(held.get('id'), None)
+            self.stats['throw_equip_blocked_items'] = ','.join(hex(v) for v in sorted(blocked))
+            self.stats['throw_equip_blocked_count'] = len(blocked)
             st = d.get("_uc_throw")
             fleeing = self.escape is not None and now < self.escape[1]
             if st is None:
@@ -4140,7 +4161,8 @@ class Bot:
                 rows = {}
                 for kind, item in THROW_ITEMS.items():
                     row = next((s for s in inv if s.get("type") == 1 and s.get("item") == item
-                                and (infinite or (s.get("rounds") or 0) > 0)), None)
+                                and (infinite or (s.get("rounds") or 0) > 0)
+                                and s.get('id') not in blocked), None)
                     if row is not None:
                         rows[kind] = row
                 if "flash" in rows and (now - self._grenade_last < FLASH_MIN_GAP_S or self._flashed_lately(now)):
@@ -4169,7 +4191,15 @@ class Bot:
                             return {"tap": QUICK[st["grid"]]}
                         return {"hold": ()}
                     if self.native_equip is not None and st["id"] is not None:
-                        self.native_equip.select(st["grid"], st["id"])
+                        result = self.native_equip.select(st["grid"], st["id"]) or {}
+                        if result.get('state') == 'unknown' and result.get('reason') == 'previous_request_unconfirmed':
+                            if owned:
+                                blocked[st['id']] = {'at': now, 'reason': result['reason']}
+                                self.stats['throw_equip_blocked_items'] = ','.join(hex(v) for v in sorted(blocked))
+                                self.stats['throw_equip_blocked_count'] = len(blocked)
+                                self.stats['throw_equip_refusal'] = {'owner': list(owner), 'at': now,
+                                    'item': st['id'], 'grid': st['grid'], 'reason': result['reason']}
+                            return self._throw_abort('native grenade request remains unconfirmed; continuing combat')
                         return {"hold": ()}
                     return self._throw_abort("the grenade on no D-pad slot and no native attach")
             if st["phase"] == "throw":
