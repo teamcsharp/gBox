@@ -151,6 +151,17 @@ def _install_images(ctl):
             raise Unavailable("shell research image installation unconfirmed")
 
 
+def _no_owned_remotes(ctl, epoch):
+    """Called under the shared native lock; stale/partial telemetry is no census."""
+    units = R.owned_throwables(ctl, ctl.base, epoch[0])
+    if ctl.ready() != epoch:
+        raise AllocationLost("player changed during shell probe bomb census")
+    if not isinstance(units, list) or any(not isinstance(u, dict) for u in units):
+        raise Unavailable("shell probe requires a fresh complete native bomb census")
+    if any(u.get('kind') == 'remote' for u in units):
+        raise Unavailable("shell probe waits for every native remote bomb to resolve")
+
+
 def probe_one(ctl, point, *, kind="shell1304", timeout_s=1.0, expected=None, allowed=None):
     """Explicit research only: one shell per player generation, never replayed.
 
@@ -172,6 +183,9 @@ separately establish the ice reaction and player clearance before rollout. There
         ctl.sp = ctl.q(ctl.base + R.S_PLAYER)
         ctl.manager = ctl.player + 0x13A8
         ctl.check()
+        _no_owned_remotes(ctl, epoch)
+        if allowed is not None and not allowed():
+            raise Unavailable("native bomb allocator became busy during shell probe admission")
         if 0x112 not in (R.inventory_guns(ctl, ctl.player) or {}):
             raise Unavailable("native grenade launcher resources are not present in this loadout")
         point = _safe_point(ctl, point)
@@ -201,6 +215,11 @@ separately establish the ice reaction and player clearance before rollout. There
             attached = True
             ctl.attach()
             _install_images(ctl)
+            # Image preparation and resource/baseline reads can outlast the
+            # admission snapshot. Recheck under the same lock immediately
+            # before consuming this life's single allocation opportunity.
+            _no_owned_remotes(ctl, epoch)
+            remaining()
             _safe_point(ctl, point)
             packet = ctl.heap + PACKET_OFFSET
             ctl.write(packet, struct.pack("<4fQI4x", *point, 0.0, 0, 0))

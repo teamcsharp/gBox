@@ -131,10 +131,81 @@ def probe(monkeypatch):
     m = Memory()
     monkeypatch.setattr(P, "_install_images", lambda _: None)
     monkeypatch.setattr(P.R, "inventory_guns", lambda *_: {0x112: 0})
+    monkeypatch.setattr(P.R, "owned_throwables", lambda *_: [])
     clock = iter(i * .02 for i in range(1000))
     monkeypatch.setattr(P.time, "monotonic", lambda: next(clock))
     monkeypatch.setattr(P.time, "sleep", lambda _: None)
     return m
+
+
+@pytest.mark.parametrize('units', [None, [None], [{'kind': 'remote', 'action': 'throw'}],
+                                 [{'kind': 'remote', 'action': 'setting'}],
+                                 [{'kind': 'remote', 'action': 'bomb'}]])
+def test_shell_probe_refuses_unknown_or_present_live_bombs_under_shared_lock(probe, monkeypatch, units):
+    def census(ctl, base, player):
+        assert ctl is probe and ctl.lock._is_owned()
+        assert (base, player) == (probe.base, probe.player)
+        return units
+    monkeypatch.setattr(P.R, 'owned_throwables', census)
+    with pytest.raises(P.Unavailable, match='bomb'):
+        P.probe_one(probe, (700., 0., 0.))
+    assert probe.calls == probe.writes == [] and probe.detach_count == 0
+    assert not getattr(probe, '_shell_probe_epochs', set())
+
+
+def test_shell_probe_rereads_census_after_preparation_before_spawning(probe, monkeypatch):
+    samples = iter(([], [{'kind': 'remote', 'action': 'setting'}]))
+    def census(ctl, *_):
+        assert ctl.lock._is_owned()
+        return next(samples)
+    monkeypatch.setattr(P.R, 'owned_throwables', census)
+    out = P.probe_one(probe, (700., 0., 0.))
+    assert out['state'] == 'failed' and out['spawned'] == 0
+    assert probe.calls == probe.writes == [] and probe.detach_count == 1
+    assert not getattr(probe, '_shell_probe_epochs', set())
+
+
+def test_shell_probe_census_cannot_cross_player_lifetimes(probe, monkeypatch):
+    def census(ctl, *_):
+        ctl.ready = lambda: (ctl.player, ctl.generation + 1)
+        return []
+    monkeypatch.setattr(P.R, 'owned_throwables', census)
+    with pytest.raises(P.AllocationLost, match='census'):
+        P.probe_one(probe, (700., 0., 0.))
+    assert not probe.calls and not probe.writes
+
+
+def test_shell_probe_allocator_change_during_census_refuses_before_attach(probe, monkeypatch):
+    idle = [True]
+    def census(ctl, *_):
+        idle[0] = False
+        return []
+    monkeypatch.setattr(P.R, 'owned_throwables', census)
+    with pytest.raises(P.Unavailable, match='allocator'):
+        P.probe_one(probe, (700., 0., 0.), allowed=lambda: idle[0])
+    assert not probe.calls and not probe.writes and probe.detach_count == 0
+
+
+def test_shell_probe_allocator_change_after_image_preparation_prevents_spawn(probe, monkeypatch):
+    idle = [True]
+    monkeypatch.setattr(P, '_install_images', lambda ctl: idle.__setitem__(0, False))
+    out = P.probe_one(probe, (700., 0., 0.), allowed=lambda: idle[0])
+    assert out['state'] == 'failed' and not out['spawned']
+    assert not probe.calls and not probe.writes
+    assert not getattr(probe, '_shell_probe_epochs', set())
+
+
+def test_shell_probe_rechecks_player_clearance_after_final_bomb_census(probe, monkeypatch):
+    reads = []
+    def census(ctl, *_):
+        reads.append(True)
+        if len(reads) == 2:
+            ctl.put(ctl.player + P.R.P_POS, '3f', 200., 0., 0.)
+        return []
+    monkeypatch.setattr(P.R, 'owned_throwables', census)
+    out = P.probe_one(probe, (700., 0., 0.))
+    assert out['state'] == 'failed' and not out['spawned'] and 'too close' in out['reason']
+    assert not probe.calls and not probe.writes
 
 
 def test_emission_stays_unverified_and_probe_is_not_replayed(probe):

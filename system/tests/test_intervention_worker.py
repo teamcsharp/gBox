@@ -189,7 +189,8 @@ def test_the_re4_selftest_op_runs_the_controllers_selftest(monkeypatch):
     assert results[0]["result"]["result"] == 0
 
 
-@pytest.mark.parametrize('change', ['none', 'player', 'operator', 'bombs', 'viewer'])
+@pytest.mark.parametrize('change', ['none', 'player', 'operator', 'bombs', 'viewer',
+                                   'pending', 'deadline', 'uncertain_allocation', 'late_pending'])
 def test_re6_shell_probe_uses_shared_owner_and_preserves_uncertainty(monkeypatch, change):
     import json
     import time
@@ -205,6 +206,10 @@ def test_re6_shell_probe_uses_shared_owner_and_preserves_uncertainty(monkeypatch
         assert controller is ctl and expected == (456, 2)
         assert allowed() and point == [700., 0., 0.] and kind == 'shell1304'
         calls.append(controller)
+        if change == 'late_pending':
+            stats['mine_ring_pending'] = True
+            assert not allowed()
+            return {'state': 'failed', 'verified': False, 'op': 'shell_probe', 'spawned': 0}
         return {'state': 'uncertain', 'verified': False, 'op': 'shell_probe',
                 'spawned': 1, 'detonated': 0, 'reason': 'no native emission observed'}
     monkeypatch.setattr(P, 'probe_one', probe)
@@ -217,6 +222,9 @@ def test_re6_shell_probe_uses_shared_owner_and_preserves_uncertainty(monkeypatch
             if change == 'player': life[0] += 1
             if change == 'operator': stats['operator_control'] = True
             if change == 'bombs': stats['mine_bombs_since_detonate'] = 1
+            if change == 'pending': stats['mine_ring_pending'] = True
+            if change == 'deadline': stats['mine_deadline_pending'] = 1
+            if change == 'uncertain_allocation': stats['mine_allocation_blocked_reason'] = 'unknown native completion'
             return httpx.Response(200, json={'requests': [{'id': 'probe', 'claim': 'once',
                 'op': 're6_shell_probe', 'source': 'viewer' if change == 'viewer' else 'probe',
                 'args': {'kind': 'shell1304', 'point': [700., 0., 0.], 'allow_unverified': True},
@@ -227,7 +235,7 @@ def test_re6_shell_probe_uses_shared_owner_and_preserves_uncertainty(monkeypatch
     original = httpx.Client
     monkeypatch.setattr(httpx, 'Client', lambda **kw: original(**kw, transport=httpx.MockTransport(handler)))
     I.worker_loop('sid', 'http://fixture', {}, SimpleNamespace(), lambda: stats, lambda: running[0])
-    assert calls == ([ctl] if change == 'none' else [])
+    assert calls == ([ctl] if change in ('none', 'late_pending') else [])
     if change == 'none':
         assert results[0]['result']['state'] == 'uncertain'
         assert results[0]['result']['detonated'] == 0

@@ -1533,6 +1533,9 @@ class RE4Switch(Driver):
     def snapshot(self, m) -> dict:
         snap = re4_nav.attach(snapshot(m))             # snap["nav"]: the stage's floor mesh (the tactical map's too)
         watch_into(m, snap, getattr(self, "stats", None))
+        if self.stats is not None:
+            from . import re4_traversal
+            re4_traversal.observe(m, snap, self.stats, self.clock())
         return snap
 
     def screen(self, m, snap: dict | None) -> str:

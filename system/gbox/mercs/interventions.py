@@ -706,8 +706,11 @@ def _worker_loop(sid, server, headers, ad, stats_of, alive, event, game=None):
                                     if type(ctl) is not N.Controller:
                                         raise N.Unavailable('shell probe requires the shared RE6 native controller')
                                     args = shell_probe_args(row['args'], row.get('source'))
-                                    if stats is None or stats.get('operator_control') or \
-                                            stats.get('mine_bombs_since_detonate') or stats.get('mine_avoid_positions'):
+                                    def probe_idle():
+                                        return stats is not None and not any(stats.get(key) for key in (
+                                            'operator_control', 'mine_bombs_since_detonate', 'mine_avoid_positions',
+                                            'mine_ring_pending', 'mine_deadline_pending', 'mine_allocation_blocked_reason'))
+                                    if not probe_idle():
                                         raise N.Unavailable('shell research waits for bot ownership and no pending remote bombs')
                                     from .titles.re6_switch_shell_probe import probe_one
                                     expected, round_id = ctl.ready(), stats.get('round_evidence_id')
@@ -715,9 +718,7 @@ def _worker_loop(sid, server, headers, ad, stats_of, alive, event, game=None):
                                         return (alive() and row['expires'] > time.time() and
                                                 row['epoch'] == context(full=False)['epoch'] and
                                                 stats.get('round_evidence_id') == round_id and
-                                                not stats.get('operator_control') and
-                                                not stats.get('mine_bombs_since_detonate') and
-                                                not stats.get('mine_avoid_positions'))
+                                                probe_idle())
                                     result = probe_one(ctl, args['point'], kind=args['kind'],
                                                        expected=expected, allowed=allowed_probe)
                                 elif row['op'] == 'remote_mines':

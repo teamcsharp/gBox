@@ -661,6 +661,11 @@ def control(ad, prof, *, ring=None):
             # allocation, player-life and blast-clearance checks still apply.
             decision = {**decision, **event, 'fire': True, 'flash_ok': True,
                         'reactive': True, 'ripple_ms': 0.0}
+        elif reactions is not None and policy_['enabled'] and decision['radius_cm'] <= policy_['max_radius_cm']:
+            from .titles.re4_traversal import claim_ring
+            traversal = claim_ring(snap, stats, now)
+            if traversal is not None:
+                decision.update(traversal)
         stats["ring_decision"] = (decision["reason"] if not decision["fire"] else "fire: " + decision["reason"])[:200]
         # The kind is recorded with the ATTEMPT, not only with the receipt: a session that rotates or ends mid-fire used
         # to leave ring_kind_fired empty while rings_attempted had counted the attempt, so the operator's 360 ring
@@ -677,16 +682,30 @@ def control(ad, prof, *, ring=None):
             return flight.submit(snap, stats, decision, now,
                 lambda d, s, t, guard: fire(ad, d, s, t, ring=ring, native_guard=guard, flash_only=True))
         if hold is not None and hold(set()) is False:
+            if decision.get('traversal'):
+                stats['traversal_ring_receipt'] = {'state': 'refused', 'verified': False, 'kind': 'hand',
+                    'requested': decision['count'], 'detonated': 0, 'event': decision.get('traversal_event'),
+                    'reason': "the bot's keys did not release before the ring"}
             return {**decision, "fire": False, "reason": "the bot's keys did not release before the ring"}
         try:
             receipt = fire(ad, decision, stats, now, ring=ring)
         except Exception as exc:                         # noqa: BLE001 - a ring never ends the round
             stats["ring_error"] = f"{type(exc).__name__}: {exc}"[:200]
+            if decision.get('traversal'):
+                stats['traversal_ring_receipt'] = {'state': 'uncertain', 'verified': False, 'kind': 'hand',
+                    'requested': decision['count'], 'event': decision.get('traversal_event'),
+                    'reason': stats['ring_error']}
             return {**decision, "fire": False, "reason": stats["ring_error"]}
         decision = {**decision, "attempted": True, "fired": receipt.get('state') == 'confirmed', "receipt": receipt}
         if decision.get('reactive'):
             stats['reactive_ring_receipt'] = {k: receipt.get(k) for k in
                 ('state', 'verified', 'kind', 'requested', 'detonated', 'reason', 'self_damage')}
+        if decision.get('traversal'):
+            stats['traversal_ring_receipt'] = {k: receipt.get(k) for k in
+                ('state', 'verified', 'kind', 'requested', 'detonated', 'reason', 'self_damage')}
+            stats['traversal_ring_receipt']['event'] = decision.get('traversal_event')
+            if receipt.get('state') == 'confirmed':
+                stats['traversal_rings_confirmed'] = int(stats.get('traversal_rings_confirmed', 0)) + 1
         stats["ring_last_reason"] = decision["reason"][:200]
         return decision
 
