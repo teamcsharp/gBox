@@ -21,7 +21,8 @@ MAX_PENDING, KEEP, TTL, FRESH = 64, 128, 10.0, 3.0
 TERMINAL = {"confirmed", "failed", "unavailable", "expired", "uncertain"}
 OPERATIONS = {"flash_now", "equip_primary", "magnum_quick4", "grenade_ring", "grenade_scatter",
               "re4_harness_selftest", "set_infinite_ammo", "remote_mines", "first_aid_now",
-              "proximity_mine_drop", "proximity_mine_ring", "detonate_mines", "re6_shell_probe"}
+              "proximity_mine_drop", "proximity_mine_ring", "detonate_mines", "re6_shell_probe",
+                        "re6_shell_barrage"}
 # The grenade-ring button's selectable types. "flash" is the default and the only one verified; the others
 # are refused by the native controller with a reason (never silently substituted). A longer TTL covers the
 # ten spawn/explode pairs the ring runs (each is the verified flash).
@@ -57,6 +58,28 @@ def shell_probe_args(args, source):
     if not valid:
         raise ValueError('shell probe needs three finite world coordinates')
     return {**args, 'point': [float(v) for v in point]}
+
+
+def shell_barrage_args(args, source):
+    """Research-only launcher ring: one shell kind, a bounded count and ring radius; no pointers/code input."""
+    if source not in ('agent', 'gbox-agent', 'mcp', 'probe'):
+        raise ValueError('shell barrage is an agent research operation')
+    if not isinstance(args, dict) or set(args) - {'kind', 'count', 'radius_cm', 'allow_unverified'} \
+            or args.get('allow_unverified') is not True:
+        raise ValueError('shell barrage needs an explicit allow_unverified=true')
+    kind = args.get('kind', 'shell1304')
+    if kind not in ('shell1302', 'shell1303', 'shell1304'):
+        raise ValueError('shell barrage needs one shell kind')
+    count = args.get('count', 6)
+    if type(count) is not int or not 1 <= count <= 16:
+        raise ValueError('shell barrage count must be an integer 1 to 16')
+    try:
+        radius = float(args.get('radius_cm', 700.0))
+    except (TypeError, ValueError):
+        raise ValueError('shell barrage radius must be a number of centimetres') from None
+    if not math.isfinite(radius) or not 601.0 <= radius <= 2600.0:
+        raise ValueError('shell barrage radius must be 601 to 2600 cm')
+    return {'kind': kind, 'count': count, 'radius_cm': radius, 'allow_unverified': True}
 
 
 @contextmanager
@@ -131,6 +154,8 @@ class Queue:
         args = {} if args is None else args
         if op == 're6_shell_probe':
             args = shell_probe_args(args, source)
+        elif op == 're6_shell_barrage':
+            args = shell_barrage_args(args, source)
         elif op == 'set_infinite_ammo':
             if not isinstance(args, dict) or set(args) != {'enabled'} or type(args['enabled']) is not bool:
                 raise ValueError('infinite ammo needs an explicit boolean enabled value')
@@ -514,6 +539,8 @@ def _worker_loop(sid, server, headers, ad, stats_of, alive, event, game=None):
             if type(ctl) is N.Controller:
                 # Agent-only research, deliberately absent from grenade-kind/UI choices.
                 caps.append('re6_shell_probe')
+                # The 360 launcher ring's research barrage: per-shell spawn/arm receipts on a ring around the player.
+                caps.append('re6_shell_barrage')
             if getattr(ctl, "first_aid_now", None) is not None:
                 caps.append("first_aid_now")
             if getattr(ctl, 'proximity_mines', None) is not None:
@@ -721,6 +748,26 @@ def _worker_loop(sid, server, headers, ad, stats_of, alive, event, game=None):
                                                 probe_idle())
                                     result = probe_one(ctl, args['point'], kind=args['kind'],
                                                        expected=expected, allowed=allowed_probe)
+                                elif row['op'] == 're6_shell_barrage':
+                                    if type(ctl) is not N.Controller:
+                                        raise N.Unavailable('shell barrage requires the shared RE6 native controller')
+                                    args = shell_barrage_args(row['args'], row.get('source'))
+                                    def barrage_idle():
+                                        return stats is not None and not any(stats.get(key) for key in (
+                                            'operator_control', 'mine_bombs_since_detonate', 'mine_avoid_positions',
+                                            'mine_ring_pending', 'mine_deadline_pending', 'mine_allocation_blocked_reason'))
+                                    if not barrage_idle():
+                                        raise N.Unavailable('shell research waits for bot ownership and no pending remote bombs')
+                                    from .titles.re6_switch_shell_probe import barrage
+                                    expected, round_id = ctl.ready(), stats.get('round_evidence_id')
+                                    def allowed_barrage():
+                                        return (alive() and row['expires'] > time.time() and
+                                                row['epoch'] == context(full=False)['epoch'] and
+                                                stats.get('round_evidence_id') == round_id and
+                                                barrage_idle())
+                                    result = barrage(ctl, count=args['count'], radius_cm=args['radius_cm'],
+                                                     kind=args['kind'],
+                                                     cancelled=lambda: not allowed_barrage())
                                 elif row['op'] == 'remote_mines':
                                     args = row.get('args') or {}
                                     from .titles import re6_switch_native
