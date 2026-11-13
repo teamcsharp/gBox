@@ -4221,6 +4221,16 @@ def autoplay_chord(sid: str, ctx) -> dict:
     return autoplay(AutoplayIn(session_id=sid, op="start", mode="auto"), ctx)["result"]
 
 
+class ParaIn(BaseModel):
+    session_id: str
+    seconds: float = 6.0                   # how long to hold the freeze
+    action_state: int | None = None        # optional calibrated stun value for the 0x326 action-state word
+
+
+class ParaOut(BaseModel):
+    result: dict
+
+
 class InvIn(BaseModel):
     session_id: str
     op: str = "list"                       # list | equip | give | set | meseta
@@ -4233,6 +4243,55 @@ class InvOut(BaseModel):
     result: dict
 
 INV: dict[str, int] = {}
+
+
+@tool("pso_paralyze", "1.0", ParaIn, ParaOut, capabilities=["runtime", "memory"], permissions=[P.MEMORY_WRITE],
+      timeout_s=180)
+def pso_paralyze(inp: ParaIn, ctx: Ctx):
+    """Paralyze every enemy in the current room, for training (PSO GameCube).
+
+    Holds each enemy at its own position every cycle, so any movement its AI attempts is overwritten - a real paralysis
+    in effect that needs no unknown constant from the game's AI. If a calibrated stun value is supplied it is also
+    written to the actor's `0x326` action-state word, which is the authentic freeze and also plays the stun animation.
+
+    Reports `max_drift` and `frozen` so the caller can see whether it actually worked.
+    """
+    import struct as _struct
+    import time as _time
+
+    ad, g = SESSIONS[inp.session_id]
+    _live = lambda: [e for e in (_semantic_state(ad, g, False).get("entities") or [])
+                     if str(e.get("kind")) == "enemy" and e.get("ptr") and float(e.get("hp") or 0) > 0]
+    targets = _live()
+    if not targets:
+        return {"result": {"targets": 0, "note": "no enemies with a pointer in this room"}}
+
+    if inp.action_state is not None:
+        for entity in targets:
+            ad.write_memory(int(entity["ptr"], 16) + 0x326, _struct.pack(">H", int(inp.action_state) & 0xFFFF))
+
+    start = {int(e["ptr"], 16): (float(e.get("x") or 0), float(e.get("z") or 0)) for e in targets}
+    writes, end = 0, _time.time() + max(0.0, float(inp.seconds))
+    while _time.time() < end:
+        live = _live()
+        if not live:
+            break
+        for entity in live:
+            ad.write_memory(int(entity["ptr"], 16) + 0x38,
+                            _struct.pack(">fff", float(entity.get("x") or 0),
+                                         float(entity.get("y") or 0), float(entity.get("z") or 0)))
+            writes += 1
+        _time.sleep(0.1)
+
+    drift = 0.0
+    for entity in _live():
+        key = int(entity["ptr"], 16)
+        if key in start:
+            drift = max(drift, ((float(entity.get("x") or 0) - start[key][0]) ** 2
+                                + (float(entity.get("z") or 0) - start[key][1]) ** 2) ** 0.5)
+    return {"result": {"targets": len(targets), "pin_writes": writes, "max_drift": round(drift, 1),
+                       "frozen": drift < 3.0, "seconds": float(inp.seconds),
+                       "action_state": inp.action_state}}
 
 
 @tool("pso_inventory", "1.0", InvIn, InvOut, capabilities=["runtime", "memory"], permissions=[P.MEMORY_WRITE], timeout_s=600)
