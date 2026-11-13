@@ -633,6 +633,7 @@ def play(pad: Pad, seconds: float = 120.0) -> str:
     reticle_hits = 0                                    # presses made because something actionable was close
     attacks = 0                                         # swing bursts aimed by sweeping the cone
     map_steps = 0                                       # steps chosen from the internalised Forest map
+    box_debug = 0                                       # box-approach samples logged
     last_enemy_hp = {}
 
     while time.time() - started < seconds:
@@ -689,6 +690,42 @@ def play(pad: Pad, seconds: float = 120.0) -> str:
         enemies = [e for e in (now.get("entities") or [])
                    if str(e.get("kind")) == "enemy" and e.get("hp") is not None
                    and float(e.get("hp")) > 0]
+        # BOXES FIRST. They are destructible at this level and do not fight back, so they are where the attack can
+        # be perfected - and the instrumented run showed the box branch never ran because enemies were always present.
+        nearby_boxes = [e for e in (now.get("entities") or [])
+                        if ("Container" in str(e.get("class")) or "Capsule" in str(e.get("class"))
+                            or "Trap" in str(e.get("class")))
+                        and e.get("x") is not None and e.get("z") is not None]
+        if nearby_boxes:
+            box = min(nearby_boxes, key=lambda e: (float(e.get("x") or 0) - x) ** 2
+                      + (float(e.get("z") or 0) - z) ** 2)
+            bx, bz = float(box.get("x") or 0), float(box.get("z") or 0)
+            bdist = math.hypot(bx - x, bz - z)
+            if bdist <= 220.0:
+                if bdist <= 8.0:
+                    for _ in range(3):
+                        tap(pad, "b")
+                        time.sleep(0.08)
+                        tap(pad, "a")
+                        time.sleep(0.3)
+                    hold(pad, "left" if int(time.time() * 3) % 2 else "right", 0.2)
+                    boxes_hit += 1
+                else:
+                    step = map_step(pad, bx, bz)
+                    if step:
+                        hold(pad, "left" if step[0] >= x else "right", 0.16)
+                        hold(pad, "up", 0.7)
+                        map_steps += 1
+                    else:
+                        hold(pad, "left" if int(time.time() * 3) % 2 else "right", 0.2)
+                        hold(pad, "up", 0.7)
+                    box_debug += 1
+                    if box_debug % 4 == 1:
+                        log(f"  box {box.get('class')} d={bdist:.1f} route={'yes' if step else 'no'}")
+                moved += 1
+                time.sleep(0.1)
+                continue
+
         if enemies:
             target = min(enemies, key=lambda e: (float(e.get("x") or 0) - x) ** 2
                          + (float(e.get("z") or 0) - z) ** 2)
@@ -823,6 +860,10 @@ def play(pad: Pad, seconds: float = 120.0) -> str:
                     side_b = globals().get("BOX_SIDE", 1)
                     before_b = bdist
                     step = map_step(pad, bx, bz)      # route on the internalised Forest map when it knows the way
+                    box_debug += 1
+                    if box_debug % 3 == 1:
+                        log(f"  box {box.get('class')} at ({bx:.0f},{bz:.0f}) d={bdist:.1f} "
+                            f"route={'yes' if step else 'no'}")
                     if step and math.dist((x, z), (bx, bz)) > 10.0:
                         side_toward = 1 if step[0] >= x else -1
                         hold(pad, "left" if side_toward > 0 else "right", 0.16)
