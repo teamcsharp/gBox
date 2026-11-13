@@ -567,6 +567,8 @@ def play_round(prof, m, send, stopped, stats: dict, lessons=None, sleep=time.sle
             if session_runtime is not None:
                 session_runtime.poll(m, drv, snap)
             stats["screen"] = where
+            if ring_step is not None and hasattr(ring_step, 'observe'):
+                ring_step.observe(snap, stats, where == 'playing')
             if where == "playing":
                 stats.pop("screen_note", None)
             if damage is not None:
@@ -761,13 +763,13 @@ def play_round(prof, m, send, stopped, stats: dict, lessons=None, sleep=time.sle
                     stats["doctrine_error"] = f"{type(exc).__name__}: {exc}"[:160]
             vi = frame_fn.vi(m) if frame_fn is not None and hasattr(frame_fn, "vi") else None
             lat.observe(bot, snap, act, held, vi)
-            if ring_step is not None and where == "playing":   # the ring takes its own tick: keys released first
+            if ring_step is not None and where == "playing":
                 try:
                     ring_out = decision_work.call('grenade_ring', ring_step, snap, stats, now, hold)
                 except Exception as exc:             # noqa: BLE001 - a ring never ends the round
                     stats["ring_error"] = f"{type(exc).__name__}: {exc}"[:200]
                 else:
-                    if ring_out.get("fired"):
+                    if ring_out.get("fired") and (ring_out.get('receipt') or {}).get('kind') != 'flash':
                         # Operator 2026-11-11 17:44: "grenades are bad for you ... they should definitely distance
                         # themselves from the explosives that they're throwing in order to survive." The ring's own
                         # blast is walked out of, not stood in (the driver's own inputs: the left stick back).
@@ -817,6 +819,8 @@ def play_round(prof, m, send, stopped, stats: dict, lessons=None, sleep=time.sle
             next_frame()
         return "stopped"
     finally:
+        if ring_step is not None and hasattr(ring_step, 'close'):
+            ring_step.close()
         read_retry.stopped()
         try:
             hold(set())

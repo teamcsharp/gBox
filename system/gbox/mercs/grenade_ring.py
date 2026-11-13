@@ -459,7 +459,7 @@ def launcher_rounds(target) -> list:
             if isinstance(r, dict) and str(r.get("kind")) in KINDS]
 
 
-def fire(ad, decision: dict, stats: dict, now: float, *, ring=None) -> dict:
+def fire(ad, decision: dict, stats: dict, now: float, *, ring=None, native_guard=None, flash_only=False) -> dict:
     """Run the native ring once and keep the stats. Never raises for a game-side refusal; reports it."""
     target = ring or controller(ad)
     kind = decision.get("kind") or "launcher"
@@ -504,6 +504,8 @@ def fire(ad, decision: dict, stats: dict, now: float, *, ring=None) -> dict:
         allow_unverified = not available
         stats["ring_defend_kind"] = kind
         stats["ring_kind_fired"] = kind
+    if flash_only and kind != 'flash':
+        return {'state': 'refused', 'reason': 'background ring only supports a verified native flash'}
     module = type(target).__module__.rsplit(".", 1)[-1]
     try:
         if module == "re4_gc_native":
@@ -511,7 +513,7 @@ def fire(ad, decision: dict, stats: dict, now: float, *, ring=None) -> dict:
         else:
             receipt = target.grenade_ring(kind, count=decision.get("count"), radius_cm=decision.get("radius_cm"),
                                           inner_cm=decision.get("inner_cm"), ripple_ms=decision.get("ripple_ms"),
-                                          allow_unverified=allow_unverified)
+                                          allow_unverified=allow_unverified, **(native_guard or {}))
     except Exception as exc:                             # noqa: BLE001 - a refused ring is a stat, not a crash
         stats["ring_last_at"] = now
         stats["ring_error"] = f"{type(exc).__name__}: {exc}"[:200]
@@ -591,8 +593,17 @@ def control(ad, prof, *, ring=None):
     if title == '010099A00BC1E000':
         from .re4_reactive_ring import Reactions
         reactions = Reactions()
+    # RE5's native flash path already reanchors each blast to the live player.
+    # Its multi-call batch can run beside ordinary movement/aiming. No other
+    # title or damaging round is admitted to this background path.
+    from .async_flash_ring import Flight
+    flight = Flight() if title == '010018100CD46000' and (ring is None or getattr(ring, 'async_flash_ring', False)) else None
 
     def step(snap: dict, stats: dict, now: float, hold=None) -> dict:
+        if flight is not None:
+            result = flight.poll(snap, stats)
+            if result is not None:
+                return result
         view = _scaled(snap, units)                      # the rule speaks cm; RE4's RAM speaks mm
         policy_ = policy(title_mod, stats)
         observe(stats, view, now, policy_)
@@ -614,6 +625,11 @@ def control(ad, prof, *, ring=None):
             if title in SCATTER_TITLES:                      # no ring this tick: the scatter barrage's own rule
                 return scatter_step(view, stats, now, hold)
             return decision
+        if flight is not None:
+            if stats.get('bot_grenade_state') == 'requested':
+                return {'fire': False, 'reason': 'a native flash request is already pending'}
+            return flight.submit(snap, stats, decision, now,
+                lambda d, s, t, guard: fire(ad, d, s, t, ring=ring, native_guard=guard, flash_only=True))
         if hold is not None and hold(set()) is False:
             return {**decision, "fire": False, "reason": "the bot's keys did not release before the ring"}
         try:
@@ -644,6 +660,9 @@ def control(ad, prof, *, ring=None):
             return {**decision, "fire": False, "reason": stats["scatter_error"]}
         return {**decision, "fired": True, "receipt": receipt}
 
+    if flight is not None:
+        step.observe = flight.observe
+        step.close = flight.close
     return step
 
 

@@ -7,6 +7,7 @@ Memory installation primitives are shared with the verified RE6 controller.
 from __future__ import annotations
 
 import hashlib
+from contextlib import contextmanager
 import math
 import os
 import struct
@@ -46,6 +47,16 @@ PRE_CLASS_REASON = "this emulator runs the pre-class pair; the next emulator get
 UNKNOWN_PAIR_REASON = ("this emulator's spawn/explode pair is neither the pre-class pair nor empty; "
                        "nothing is installed")
 _CREATE_LOCK = threading.Lock()
+
+
+@contextmanager
+def ring_lock(lock, wait):
+    if not lock.acquire(blocking=wait):
+        raise Unavailable('native controller busy; flash ring was not queued')
+    try:
+        yield
+    finally:
+        lock.release()
 
 # Grenade ring (operator 2026-10-31): a ring of grenades that bloom out from the player and detonate.
 # Only "flash" reuses the live-verified flash spawn/explode path (PRs ~#1597-#1600); it is the sole
@@ -490,7 +501,7 @@ class Controller(N.Controller):
         # RE5 shares dispatcher mechanics with RE6, not its projectile classes.
         return self.grenade_kinds()
 
-    def _ring_one(self, x, y, z, index, kind="flash"):
+    def _ring_one(self, x, y, z, index, kind="flash", guard=None):
         """One grenade of `kind` spawned, relocated to (x, y, z), and detonated.
 
         The spawn/explode pair is the parameterised class pair: the class DTI (from the game's own initialiser), the
@@ -501,13 +512,19 @@ class Controller(N.Controller):
         replaying a request.
         """
         self._require_kind(kind)
+        if guard is not None:
+            guard()
+        self.ring_projectile_pending = {'index': index, 'kind': kind, 'stage': 'spawn_requested'}
         unit, born = self._spawn(kind)
+        self.ring_projectile_pending.update(unit=unit, generation=born, stage='spawn_returned')
 
         def initialized():
             self.projectile(unit, born)
             return self.w(unit + 0x1B28) == 29 and self.rd(unit + 0x1B88, 1) == b"\x01"
         self.wait(initialized, timeout=RING_CALL_TIMEOUT_S)
         self.projectile(unit, born)
+        if guard is not None:
+            guard()
         carried = self.q(unit)                      # the class this allocation actually carries
         if kind == "flash" and carried != self.base + CLASSES.FLASH_VT:
             raise Uncertain(f"native flash allocation is not the verified class: {carried:#x}")
@@ -515,16 +532,18 @@ class Controller(N.Controller):
         pos = struct.pack("<3f", x, y, z)
         self.write(unit + RING_UNIT_POS, pos)
         self.write(unit + RING_UNIT_HOME, pos)
+        self.ring_projectile_pending['stage'] = 'detonation_requested'
         if self._detonate(unit, born, kind, carried) != 1:
             raise Unavailable(f"native {kind} resources or owner are unavailable")
         self.projectile(unit, born)
         if self.rd(unit + 0x28A0, 1) != b"\x01":
             raise Uncertain(f"native {kind} effect did not publish its explosion flag")
+        self.ring_projectile_pending = None
         return {"index": index, "kind": kind, "projectile_generation": born,
                 "pos": [round(x, 1), round(y, 1), round(z, 1)], "class_vtable": hex(carried)}
 
     def grenade_ring(self, kind="flash", *, count=None, radius_cm=None, inner_cm=None, ripple_ms=None, expand=None,
-                     allow_unverified=False):
+                     allow_unverified=False, expected=None, allowed=None, wait_for_lock=True):
         """Spawn `count` grenades in a ring around the player and detonate them in a quick ripple.
 
         kind="flash" is the live-verified path; "hand" and "incendiary" are built on the parameterised class pair and
@@ -553,8 +572,16 @@ class Controller(N.Controller):
         expand = d["expand"] if expand is None else bool(expand)
 
         self.ready()
-        with self.lock:
+        with ring_lock(self.lock, wait_for_lock):
             player, generation = self.ready()
+            if expected is not None and tuple(expected) != (player, generation):
+                raise Unavailable('flash ring player lifecycle changed before execution')
+            def guard():
+                if allowed is not None and not allowed():
+                    raise Unavailable('flash ring cancelled before the next native operation')
+                if self.ready() != (player, generation):
+                    raise Unavailable('flash ring player lifecycle changed during execution')
+            guard()
             self.sp = self.q(self.base + R.S_PLAYER)
             self.player, self.generation = player, generation
             self.original = self.q(player)
@@ -562,17 +589,19 @@ class Controller(N.Controller):
             hp_before = struct.unpack("<h", self.rd(player + R.P_HP, 2))[0]
             started = time.monotonic()
             grenades, abort = [], None
+            self.ring_projectile_pending = None
             try:
                 self.attach()
                 for i in range(count):
-                    self.check()
-                    # Re-read his position each grenade: he keeps playing while the ring blooms.
-                    px, py, pz = struct.unpack("<3f", self.rd(self.player + R.P_POS, 12))
-                    angle = 2.0 * math.pi * i / count
-                    r = radius_cm if not expand or count == 1 else inner_cm + (radius_cm - inner_cm) * i / (count - 1)
-                    gx, gz = px + r * math.cos(angle), pz + r * math.sin(angle)
                     try:
-                        grenades.append(self._ring_one(gx, py, gz, i, kind))
+                        guard()
+                        self.check()
+                        # Each blast follows the live player, not the admission position.
+                        px, py, pz = struct.unpack("<3f", self.rd(self.player + R.P_POS, 12))
+                        angle = 2.0 * math.pi * i / count
+                        r = radius_cm if not expand or count == 1 else inner_cm + (radius_cm - inner_cm) * i / (count - 1)
+                        gx, gz = px + r * math.cos(angle), pz + r * math.sin(angle)
+                        grenades.append(self._ring_one(gx, py, gz, i, kind, guard=guard))
                     except (Unavailable, AllocationLost) as exc:
                         abort = str(exc)
                         break
@@ -584,8 +613,9 @@ class Controller(N.Controller):
             finally:
                 self.detach_completed()
             try:
+                self.check()
                 hp_after = struct.unpack("<h", self.rd(player + R.P_HP, 2))[0]
-            except (OSError, struct.error):
+            except (OSError, struct.error, Unavailable):
                 hp_after = None
             detonated = len(grenades)
             self_damage = (hp_before - hp_after) if isinstance(hp_after, int) else None
@@ -594,6 +624,7 @@ class Controller(N.Controller):
                        "radius_cm": round(radius_cm, 1), "inner_cm": round(inner_cm, 1), "expand": expand,
                        "player_generation": self.generation, "hp_before": hp_before, "hp_after": hp_after,
                        "self_damage": self_damage, "grenades": grenades,
+                       'unconfirmed_projectile': self.ring_projectile_pending,
                        "elapsed_ms": round(1000 * (time.monotonic() - started), 1)}
             if full:
                 effect = "native_flash_ring" if kind == "flash" else f"native_{kind}_ring"
@@ -603,7 +634,8 @@ class Controller(N.Controller):
             if abort is not None:
                 self.failed, self.recoverable = True, True
             receipt["reason"] = abort or "the ring did not complete"
-            return {"state": "failed" if detonated == 0 else "uncertain", "verified": False, **receipt}
+            return {"state": "uncertain" if detonated or self.ring_projectile_pending else "failed",
+                    "verified": False, **receipt}
 
     def grenade_scatter(self, kind="random", *, count=None, toward=None, spread_deg=None, min_cm=None, max_cm=None,
                         gap_ms=None, safe_cm=None, rng=None, kinds=None):

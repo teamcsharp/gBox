@@ -1968,6 +1968,13 @@ def snapshot(m) -> dict:
     """The round from RAM: the player, the live enemies and the Mercenaries counters (None where a pointer is not)."""
     snap: dict = {"player": None, "enemies": [], "timer": None, "timer_start": None, "score": None, "kills": None,
                   "combo": None, "combo_timer": None, "max_combo": None, "mercenaries_phase": None}
+    stages = snap['snapshot_stages_ms'] = {}
+    last_stage = time.perf_counter()
+    def stage(name):
+        nonlocal last_stage
+        stamp = time.perf_counter()
+        stages[name] = round(1000 * (stamp - last_stage), 2)
+        last_stage = stamp
     base = module_base(m)
     if base is None:
         return snap
@@ -1993,9 +2000,12 @@ def snapshot(m) -> dict:
         except (ValueError, OSError):
             snap["player"] = None
         if snap["player"]:
+            stage('player')
             snap["laser"] = own_laser(m, p, index) if coop else laser(m, base)
+            stage('laser')
             snap["inventory"] = inventory(m, p)
             snap["aim_cam"] = re5_switch_aim.aim_state(m, base, p)
+            stage('equipment_aim')
             if PROMPTS and prompt_table_ok(m, base):     # the game's own prompt (re5_switch_prompt): None when none
                 # RAM first; a grab the reader missed (a torn read) is caught by vision while he is held (qte.grab_fallback)
                 pr = re5_switch_prompt.selected_prompt(m, base, p, index or 0)
@@ -2003,12 +2013,14 @@ def snapshot(m) -> dict:
                     prompt_owner(m, pr, snap["player"]["pos"])   # its owner's class, a stage object's position (doors)
                 snap["prompt"] = pr or qte.grab_fallback(MAP_ID, m, snap)
                 snap["prompt_read"] = True
+            stage('prompt')
             if any(s["id"] == MINE_ITEM for s in snap["inventory"]):   # the bombs on the ground (re5_switch_mines)
                 # uWp0a also represents the inventory's own mine stack. Its
                 # dormant position can be near a fight; it is not a planted
                 # explosive. Exclude by exact native object identity only.
                 owned = {s["object"] for s in snap["inventory"] if s.get("object")}
                 snap["ground_mines"] = [g for g in ground_mines(m, base) if g["ptr"] not in owned]
+            stage('mines')
             if snap["player"]["hp"] <= 0:                   # dead: "Continue?" and its cursor, once it is up
                 over = ui_units(m, base).get("uIdGameover00")
                 try:
@@ -2017,6 +2029,7 @@ def snapshot(m) -> dict:
                 except (ValueError, OSError):
                     snap["continue_cursor"] = snap["continue_ready"] = None
     snap["unit_enemies_alive"] = unit_enemies_alive(m, base)
+    stage('enemy_count')
     se = u64(m, base + S_ENEMY)
     ppos = (snap.get("player") or {}).get("pos")
     if ptr_ok(se):
@@ -2048,6 +2061,7 @@ def snapshot(m) -> dict:
                 if rot is not None:
                     row["rot"] = rot
                 snap["enemies"].append(row)
+    stage('enemy_rows')
     gs = game_sys(m, base)
     if ptr_ok(gs):
         raw = m.rd(gs + GS_PHASE, GS_SCORE + 4 - GS_PHASE)
@@ -2069,12 +2083,15 @@ def snapshot(m) -> dict:
     # the stage's own navmesh (re5_switch_native_nav): discovered once via find_sai,
     # cached; None until sAI is found or between rounds
     from . import re5_switch_native_nav
+    stage('counters')
     snap["nav"] = re5_switch_native_nav.get_navmesh(m, base)
+    stage('navmesh')
     player = snap.get('player') or {}
     snap['bonuses'] = time_bonuses(m, base, identity=(player.get('ptr'), player.get('generation'),
                                                    gs, snap.get('mercenaries_phase')))
     scan = getattr(m, '_re5_bonus_scan', None) or {}
     snap['bonus_scan'] = {k:scan.get(k) for k in ('status', 'nodes', 'work', 'read_ms', 'complete_at', 'error')}
+    stage('bonuses')
     return snap
 
 
@@ -6558,7 +6575,8 @@ class Bot:
         if now - self._grenade_last < FLASH_MIN_GAP_S or self._flashed_lately(now):
             self.stats["flash_gap_skips"] = self.stats.get("flash_gap_skips", 0) + 1
             return False                                     # one flash a minute, whichever rule asks (FLASH_MIN_GAP_S)
-        if (self._grenade_inflight or ad is None or getattr(self._m, "mercs_no_modifications", False)
+        if (self._grenade_inflight or self.stats.get('ring_async_pending')
+                or ad is None or getattr(self._m, "mercs_no_modifications", False)
                 or (p.get("hp") or 0) <= 0 or self.stats.get("operator_control")
                 or snap.get("mercenaries_phase") != PHASE_PLAYING):
             return False
@@ -6628,7 +6646,7 @@ class Bot:
         if not GRENADES:
             blocked('automatic flashes disabled')
             return
-        if self._grenade_inflight:
+        if self._grenade_inflight or self.stats.get('ring_async_pending'):
             return
         if now - self._grenade_last < max(GRENADE_EVERY_S, FLASH_MIN_GAP_S) or self._flashed_lately(now):
             return                                           # the minute (the sidebar's slider), whoever flashed last
@@ -8986,11 +9004,13 @@ class RE5Switch(Driver):
         return [tuple(str(button).split("+"))]
 
     def progress(self, snap: dict) -> dict:
+        import json
         scan = snap.get('bonus_scan') or {}
         return {"timer": snap.get("timer"), "combo": snap.get("combo"), "score": snap.get("score"),
                 "kills": snap.get("kills"), "max_combo": snap.get("max_combo"),
                 'bonus_scan_status':scan.get('status'), 'bonus_scan_read_ms':scan.get('read_ms'),
                 'bonus_scan_nodes':scan.get('nodes'), 'bonus_scan_error':scan.get('error'),
+                'snapshot_stages_json':json.dumps(snap.get('snapshot_stages_ms') or {}, separators=(',', ':')),
                 "mercenaries_phase": snap.get("mercenaries_phase"), "mode": "no_mercy"}
 
 
