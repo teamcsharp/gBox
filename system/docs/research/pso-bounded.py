@@ -354,6 +354,50 @@ def run(mode: str, args) -> int:
                     f"(this room is outside {name}'s frame) - moving directly, without a route")
                 router = None
 
+    if mode == "sweep":
+        # Serpentine the room. A bounded area has an exit somewhere on its edge, and random roaming does not find it:
+        # measured, 200 s of play in Forest 1 room 16 bounced inside x 460-590, z 380-500 without a room change.
+        clock2 = clock
+        motion = B.CommitMotion(arrive=15.0)
+        player = (world.observe(player_only=True) or {}).get("player") or {}
+        px, pz = float(player.get("x") or 0), float(player.get("z") or 0)
+        room = player.get("room")
+        half, step = float(args.half), float(args.spacing)
+        rows, z = [], pz - half
+        left = True
+        while z <= pz + half:
+            xs = range(int(px - half), int(px + half) + 1, int(step))
+            for x in (xs if left else reversed(list(xs))):
+                rows.append((float(x), float(z)))
+            left = not left
+            z += step
+        log(f"sweep room {room}: {len(rows)} waypoints around ({px:.0f},{pz:.0f}) +/-{half:.0f}")
+        for index, point in enumerate(rows):
+            deadline = time.monotonic() + float(args.per_point)
+            while time.monotonic() < deadline:
+                current = ((world.observe(player_only=True) or {}).get("player")) or {}
+                if current.get("room") != room:
+                    log(f"  EXIT: room {room} -> {current.get('room')} near {point}")
+                    world.release()
+                    release_ownership()
+                    return 0
+                here = (float(current.get("x") or 0), float(current.get("z") or 0))
+                if math.dist(here, point) <= 15.0:
+                    break
+                action = motion.step({"x": here[0], "z": here[1]}, point, "sweep")
+                if action is None:
+                    break
+                world.act(action, time.monotonic() + 2.0)
+                clock2.sleep(0.10)
+            if index % 6 == 0:
+                current = ((world.observe(player_only=True) or {}).get("player")) or {}
+                log(f"  sweep {index}/{len(rows)} at ({float(current.get('x') or 0):.0f},"
+                    f"{float(current.get('z') or 0):.0f})")
+        log("sweep finished without a room change")
+        world.release()
+        release_ownership()
+        return 0
+
     if mode == "climb":
         # Follow rising ground: the forest has a basin the character slides into, and a 2D motion cannot walk up the
         # cliff to the doors. Probing every key and taking the one that raises y climbed from y 6.9 to 22.7 live.
@@ -555,6 +599,23 @@ class _FixedTarget:
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(description="bounded PSO controller")
     sub = parser.add_subparsers(dest="mode", required=True)
+    sweep = sub.add_parser("sweep", help="serpentine the current room to find its exits")
+    sweep.add_argument("--half", type=float, default=150.0)
+    sweep.add_argument("--spacing", type=float, default=45.0)
+    sweep.add_argument("--per-point", type=float, default=18.0)
+    sweep.add_argument("--session", default="")
+    sweep.add_argument("--motion", default="commit")
+    sweep.add_argument("--seconds", type=float, default=600.0)
+    sweep.add_argument("--map", default="")
+    sweep.add_argument("--map-name", default="")
+    sweep.add_argument("--carve", action="store_true", default=False)
+    sweep.add_argument("--no-carve", dest="carve", action="store_false")
+    sweep.add_argument("--carve-radius", type=float, default=8.0)
+    sweep.add_argument("--trace-spacing", type=float, default=8.0)
+    sweep.add_argument("--calibration-ttl", type=float, default=900.0)
+    sweep.add_argument("--no-calibrate", action="store_true")
+    sweep.add_argument("--assisted", action="store_true")
+
     climb = sub.add_parser("climb", help="follow rising ground until the character reaches a height")
     climb.add_argument("--to-height", type=float, default=21.0)
     climb.add_argument("--max-steps", type=int, default=24)
