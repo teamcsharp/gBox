@@ -788,8 +788,8 @@ class CommitMotion:
     `slide` taps before aiming at the target again - the same idea as the wall follower, but with a live key map.
     """
 
-    def __init__(self, *, arrive: float = 6.0, keys: Iterable[str] = DIRECTIONS, commit: int = 3,
-                 slide: int = 2, blocked_units: float = 3.0, decay: float = 0.6) -> None:
+    def __init__(self, *, arrive: float = 6.0, keys: Iterable[str] = DIRECTIONS, commit: int = 1,
+                 slide: int = 2, blocked_units: float = 3.0, decay: float = 0.3) -> None:
         self.arrive = float(arrive)
         self.keys = tuple(keys)
         self.commit = max(1, int(commit))
@@ -811,6 +811,7 @@ class CommitMotion:
         self.probe_from = (0.0, 0.0)
         self.probe_target = (0.0, 0.0)
         self.probes = 0
+        self.last_aim = None
 
 
     def step(self, player: dict, target: tuple, reason: str = "") -> Action | None:
@@ -823,11 +824,22 @@ class CommitMotion:
                 # the position reached after that probe key, as a distance to the probe's target
                 self.probe_scores[self.last_key] = math.dist((x, z), self.probe_target)
             if moved >= self.blocked_units:
+                # Commit is broken the moment a tap moves *away* from the aim: measured in Forest 1 at (-108,2), the
+                # motion committed three westward taps at a time toward a door that was north, and a whole run went 470
+                # units the wrong way. The learned direction is also replaced outright by the observation rather than
+                # averaged - the camera can swing 125-180 degrees between taps, so an old sample is not evidence.
+                if self.last_aim is not None:
+                    before_d = math.dist(self.last_pos, self.last_aim)
+                    after_d = math.dist((x, z), self.last_aim)
+                    if after_d > before_d + 2.0:
+                        self.remaining = 0
+                        self.dirs.pop(self.last_key, None)
                 old = self.dirs.get(self.last_key)
                 new = (dx / moved, dz / moved)
                 self.dirs[self.last_key] = new if old is None else (
                     self.decay * old[0] + (1 - self.decay) * new[0],
                     self.decay * old[1] + (1 - self.decay) * new[1])
+                self.last_aim = (float(target[0]), float(target[1])) if self.steps >= self.slide_until else None
             else:
                 self.blocked += 1
                 self.remaining = 0
@@ -874,6 +886,7 @@ class CommitMotion:
         self.last_key = self.key
         self.last_pos = here
         self.steps += 1
+        self.last_aim = (float(target[0]), float(target[1])) if self.steps >= self.slide_until else None
         return press(self.key, f"tap {self.key} ({distance:.0f} units toward {reason or 'target'}, "
                               f"slide {self.slides})")
 
