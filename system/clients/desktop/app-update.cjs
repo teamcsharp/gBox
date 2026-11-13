@@ -44,13 +44,15 @@ async function pull({ root, run = git(), busy = async () => null, runtimeFiles =
     detail: `This PC's copy is ${on ? `on branch ${on}` : 'not on a branch'}, not ${branch}: nothing was pulled (switch it to ${branch} to let F5 update it)` };
   const changes = await run(root, ['status', '--porcelain', '--untracked-files=no']);
   if (!changes.ok) return { state: 'failed', reason: 'status', detail: `git could not read this PC's copy (${first(changes.err)}): nothing was pulled` };
-  if (changes.out) return { state: 'skipped', reason: 'changes', detail: 'This PC\'s copy has local changes: nothing was pulled (they are kept)' };
   const fetched = await run(root, ['fetch', '--quiet', '--no-tags', remote, branch], fetchMs);
   if (!fetched.ok) return { state: 'skipped', reason: 'fetch', detail: `GitHub did not answer (${first(fetched.err)}): nothing was pulled` };
   const [from, to] = await Promise.all([run(root, ['rev-parse', '--verify', 'HEAD^{commit}']),
     run(root, ['rev-parse', '--verify', 'FETCH_HEAD^{commit}'])]);
   if (!from.ok || !to.ok || !from.out || !to.out) return { state: 'failed', reason: 'rev', detail: `git could not name the commits to compare (${first(from.err || to.err)}): nothing was pulled` };
-  if (from.out === to.out) return { state: 'current', from: from.out, to: to.out, detail: `Up to date with GitHub ${branch} (${short(from.out)})` };
+  if (from.out === to.out) return { state: 'current', from: from.out, to: to.out, localChanges: !!changes.out,
+    detail: `Up to date with GitHub ${branch} (${short(from.out)})${changes.out ? '; local changes are kept' : ''}` };
+  if (changes.out) return { state: 'skipped', reason: 'changes', from: from.out, to: to.out,
+    detail: 'This PC\'s copy has local changes: nothing was pulled (they are kept)' };
   const behind = await run(root, ['merge-base', '--is-ancestor', 'HEAD', to.out]);
   if (!behind.ok) return { state: 'skipped', reason: 'diverged', from: from.out, to: to.out,
     detail: `This PC's ${branch} has commits that GitHub does not: nothing was pulled` };

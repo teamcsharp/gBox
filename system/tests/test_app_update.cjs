@@ -37,7 +37,8 @@ test('only a checkout on main without local changes is fast-forwarded; anything 
   const dirty = fake({ ...ON_MAIN, 'status --porcelain': { ok: true, out: ' M system/clients/desktop/index.html' } });
   out = await U.pull({ root: 'x', run: dirty.run });
   assert.deepEqual([out.state, out.reason], ['skipped', 'changes']); assert.match(out.detail, /local changes: nothing was pulled \(they are kept\)/);
-  assert.ok(!dirty.calls.some(c => /^(fetch|merge)/.test(c)));
+  assert.ok(dirty.calls.some(c => /^fetch /.test(c)), 'check GitHub without modifying local files');
+  assert.ok(!dirty.calls.some(c => /^(merge |switch |checkout |reset |stash )/.test(c)));
   const offline = fake({ ...ON_MAIN, fetch: { ok: false, err: 'fatal: unable to access \'https://github.com/teamcsharp/gBox.git/\': Could not resolve host: github.com\nmore' } });
   out = await U.pull({ root: 'x', run: offline.run });
   assert.deepEqual([out.state, out.reason], ['skipped', 'fetch']); assert.match(out.detail, /^GitHub did not answer \(fatal: unable to access .*Could not resolve host: github\.com\): nothing was pulled$/);
@@ -48,6 +49,13 @@ test('only a checkout on main without local changes is fast-forwarded; anything 
   out = await U.pull({ root: 'x', run: current.run });
   assert.deepEqual([out.state, out.detail], ['current', 'Up to date with GitHub main (aaaaaaa)']);
   assert.ok(current.calls.includes('fetch --quiet --no-tags origin main'));
+  const currentDirty = fake({ ...ON_MAIN,
+    'status --porcelain': { ok: true, out: ' M system/gbox/server.py' },
+    'rev-parse --verify FETCH_HEAD': { ok: true, out: 'a'.repeat(40) } });
+  out = await U.pull({ root: 'x', run: currentDirty.run, busy: async () => { throw new Error('no merge needed'); } });
+  assert.equal(out.state, 'current'); assert.equal(out.localChanges, true);
+  assert.match(out.detail, /^Up to date with GitHub main .*local changes are kept$/);
+  assert.ok(!currentDirty.calls.some(c => /^(merge |switch |checkout |reset |stash )/.test(c)));
 });
 
 test('client files are pulled at once; gBox\'s own code only while this PC is idle; packages are flagged', async () => {
@@ -104,6 +112,10 @@ test('a real checkout: main is fast-forwarded, gBox\'s own code waits for an idl
   assert.equal(waiting.state, 'waiting'); assert.equal(get(root, 'gbox/server.py'), 'v1');
   const pulled = await U.pull({ root, run: git, busy: async () => null });
   assert.deepEqual([pulled.state, pulled.runtime], ['updated', true]); assert.equal(get(root, 'gbox/server.py'), 'v2');
+  put(root, 'clients/desktop/index.html', 'local development');
+  const currentDirty = await U.pull({ root, run: git });
+  assert.deepEqual([currentDirty.state, currentDirty.localChanges], ['current', true]);
+  assert.equal(get(root, 'clients/desktop/index.html'), 'local development');
   put(up, 'system/clients/desktop/index.html', 'v3'); sh(up, 'commit', '-q', '-am', 'four');
   put(root, 'clients/desktop/index.html', 'mine');                                              // a local edit: kept
   const dirty = await U.pull({ root, run: git });
