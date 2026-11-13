@@ -711,17 +711,28 @@ def route_walk(pad: Pad, tx: float, tz: float, legs: int = 12) -> float:
         from forest_route import MapRouter
 
         data = json.loads(_pathlib.Path(r"D:\gBox\pso-ds\forest-maps.json").read_text(encoding="utf-8"))
-        row = data.get("Scene/map_forest01c.rel") or {}
-        cells = row.get("cells") or []
-        if cells:
-            router = MapRouter(cells)
+        # BOTH Forest maps contain the player's coordinates, and different doors resolve on different maps, so build a
+        # router for each and take the shortest route that exists rather than trusting one hardcoded name.
+        routers = []
+        for _name, _row in data.items():
+            _cells = (_row or {}).get("cells") or []
+            if _cells:
+                routers.append((_name, MapRouter(_cells)))
+        if routers:
             for _ in range(legs):
                 me = state(pad).get("player") or {}
                 x, z = float(me.get("x") or 0), float(me.get("z") or 0)
                 remaining = math.hypot(tx - x, tz - z)
                 if remaining <= 25.0:
                     return remaining
-                route = router.route((x, z), (tx, tz), limit=400000)
+                route = None
+                for _name, _router in routers:
+                    try:
+                        candidate = _router.route((x, z), (tx, tz), limit=400000)
+                    except Exception:                     # noqa: BLE001 - one bad map must not stop the walk
+                        candidate = None
+                    if candidate and (route is None or len(candidate) < len(route)):
+                        route = candidate
                 if not route:
                     break
                 # the furthest waypoint within one short leg, so each hop has a real chance of being reachable
