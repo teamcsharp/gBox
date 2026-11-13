@@ -182,7 +182,7 @@ def run(mode: str, args) -> int:
         # No policy: the objective is the point. The same bounded tick still issues the action, so the walk cannot
         # hold the loop, and the watchdog still recovers a wedge one action at a time. With --map the point is
         # pursued along the decoded collision grid's waypoints (the city railing is why a straight line is not enough).
-        walk_policy = _FixedTarget(policy, target)
+        walk_policy = _FixedTarget(policy, target, "door" if args.through else "walk")
         if router is not None:
             walk_policy = B.RoutedPolicy(walk_policy, router, arrive=max(arrive, 10.0))
         automaton = B.Automaton(
@@ -206,6 +206,7 @@ def run(mode: str, args) -> int:
         f"mode={bound_mode.value}, {len(automaton.pressed)} verified switch(es) remembered, {args.seconds:.0f}s")
     started = time.monotonic()
     last_report = 0.0
+    start_room = ((world.observe() or {}).get("player") or {}).get("room")
     try:
         while time.monotonic() - started < args.seconds and not automaton.stopped:
             loop_started = time.monotonic()
@@ -220,8 +221,15 @@ def run(mode: str, args) -> int:
                 log(f"  tick {tick.index}: {tick.outcome} - {tick.note}")
             if mode == "walk":
                 player = (world.observe() or {}).get("player") or {}
-                if B.math.hypot(args.to[0] - float(player.get("x") or 0),
-                                args.to[1] - float(player.get("z") or 0)) <= arrive:
+                distance = B.math.hypot(args.to[0] - float(player.get("x") or 0),
+                                        args.to[1] - float(player.get("z") or 0))
+                if args.through:
+                    # A doorway crossing is the evidence: stop when the room settles into a different value.
+                    if player.get("room") != start_room:
+                        log(f"  crossed a doorway: room {start_room} -> {player.get('room')} after "
+                            f"{automaton.stats()['ticks']} ticks")
+                        break
+                elif distance <= arrive:
                     log(f"  arrived within {arrive:.0f} units after {automaton.stats()['ticks']} ticks")
                     break
             if time.monotonic() - last_report > 10.0:
@@ -261,17 +269,22 @@ def run(mode: str, args) -> int:
 
 
 class _FixedTarget:
-    """A policy whose only objective is one coordinate: the walk test must not be distracted by loot."""
+    """A policy whose only objective is one coordinate: the walk test must not be distracted by loot.
 
-    def __init__(self, policy: B.ProgressionPolicy, point: tuple) -> None:
+    `kind="door"` makes the automaton walk *through* the coordinate (the door branch aims past the point) instead of
+    stopping at it, which is how a doorway crossing is tested.
+    """
+
+    def __init__(self, policy: B.ProgressionPolicy, point: tuple, kind: str = "walk") -> None:
         self.policy = policy
         self.point = point
+        self.kind = kind
 
     def choose(self, snap, now, *, pressed=None, avoid=None):
         player = snap.get("player") or {}
         distance = B.math.hypot(float(self.point[0]) - float(player.get("x") or 0),
                                 float(self.point[1]) - float(player.get("z") or 0))
-        return B.Objective(0, "walk", (float(self.point[0]), float(self.point[1])), distance,
+        return B.Objective(0, self.kind, (float(self.point[0]), float(self.point[1])), distance,
                            "coordinate", "", None, "walk target")
 
     def note(self, kind: str, progressed: bool) -> None:
@@ -283,6 +296,8 @@ def main(argv=None) -> int:
     sub = parser.add_subparsers(dest="mode", required=True)
     walk = sub.add_parser("walk", help="drive to one coordinate with bounded controller input")
     walk.add_argument("--to", type=float, nargs=2, required=True, metavar=("X", "Z"))
+    walk.add_argument("--through", action="store_true",
+                      help="walk through the coordinate (a doorway) instead of stopping at it")
     play = sub.add_parser("play", help="run the progression policy")
     for name, item in (("walk", walk), ("play", play)):
         item.add_argument("--seconds", type=float, default=60.0)

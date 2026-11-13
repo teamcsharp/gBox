@@ -313,6 +313,42 @@ the read, which is why `flag_wait_s` exists.
 character reached the room 10/11 boundary (the flicker above) but the door crossing is not yet captured; that is the
 first task of the next round, followed by G4 (enemy-gated door) and G5 (combo verification).
 
+## 9. Round 4 — the switch→flag link, read from the switch itself
+
+Round 3 proved two presses changed two bits. Round 4 closes the other half of that claim: **the switch carries its own
+flag index** at `+0xC8`, and it is exactly the bit that changed.
+
+| switch | `+0xC8` flag index | bit that changed | match |
+|---|---|---|---|
+| `TObjDoorKey` `80DB54C0` | **7** | floor 1, bit 7 | yes |
+| `TObjDoorKey` `80DB5650` | **6** | floor 1, bit 6 | yes |
+
+Read back live (`switch-flag-correlation-20261113-102305.json` in the ledger directory): the array holds exactly
+`[{group 1, index 6}, {group 1, index 7}]`, and those two switches declare those two indices. That is a controller
+press → a named switch → a declared flag index → that bit set, with the middle step read independently of the flag
+array. The same field gives the other switches their indices (30, 31, 32, 33, 8, 60, 61) and the energy barrier 10 —
+the map of what each one controls.
+
+**A doorway was crossed.** From `(-144, 276)` a walked path took the character through the door at
+`(-133.8, 271.7)` and the room settled **11 → 10** (three consecutive reads agree). What is *not* yet proven is that
+this door opened *because of* bits 6/7: plain `TObjDoor` actors carry no flag index (their `+0xC8` holds pointer-like
+data), so the door↔flag link must be made through gates that do — the `TLazerFenceSw` / laser-fence pairs. The crossing
+is recorded as a traversal, not yet as a linked-door transition.
+
+**Two bugs found and fixed by doing this:**
+
+* a verified switch was targeted again after ~60 s, because the "recently pressed" window compared a persisted
+  timestamp against a monotonic clock. Verification is now permanent for the session (`pressed` means done), which
+  stopped the bot walking 111 units back to a switch whose bit was already set;
+* a closed door is *wall* to the collision mesh, so the router goes around it even after its flag opens it. Doors are
+  now approached along a route to a point 18 units short and then walked through directly.
+
+**Still open:** long-range navigation orbits in the Forest. Measured on a 500-unit route: 138 ticks, a median 7.6 units
+per tick (the taps work), ~1,050 units of path for 105 units of net progress, and five room transitions back and forth.
+The steering is a frame-relative rule — `up`/`left`/`right` chosen from the last movement direction — and it does not
+survive repeated reversals. The next step is a hill-climbing controller that checks each tap against the *waypoint*
+distance and flips the key that made it worse, instead of inferring a frame.
+
 ```
 cd system
 python -m pytest tests/test_pso_bounded.py -q

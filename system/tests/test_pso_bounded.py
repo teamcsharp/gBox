@@ -426,6 +426,20 @@ def test_the_policy_sticks_to_its_current_objective_when_a_rival_is_the_same_ran
     assert second.ptr == "doorA", "a same-rank rival must not steal the objective"
 
 
+def test_a_verified_switch_is_never_targeted_again(workdir):
+    """Verification is permanent for the session: the demote window compared a persisted timestamp against a
+    monotonic clock, so a switch verified at t=1e6 became 'due' again once 60 s of monotonic time had passed, and the
+    bot walked 111 units back to a switch whose flag bit was already set."""
+    clock = FakeClock()
+    world = FakeWorld(clock)
+    world.entities = [entity("TObjDoorKey", "80DB5650", 40.0, 0.0)]
+    policy = B.ProgressionPolicy()
+    snap = B.snapshot(world.observe())
+    assert policy.choose(snap, 1000.0).kind == "switch"
+    later = policy.choose(snap, 1000.0 + 3600.0, pressed={"80DB5650": 1000.0})
+    assert later is None, "a switch whose flag changed is done, however long ago that was"
+
+
 def test_a_switch_outranks_a_nearer_container(workdir):
     clock = FakeClock()
     world = FakeWorld(clock)

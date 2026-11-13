@@ -461,9 +461,18 @@ class RoutedPolicy:
             # Several ticks without closing on this waypoint: it is blocked, so route around it from the current cell
             # instead of pushing against it until the no-close budget ends the run.
             self.follower.replan(player)
-        point = self.follower.waypoint(player, objective.point)
+        goal = objective.point
+        if objective.kind == "door" and real_distance > 22.0:
+            # A closed door is *wall* to the collision mesh, so A* routes around it even after its flag opens it. Route
+            # to a point just short of the door instead, and let the direct door logic walk the last 22 units through
+            # the doorway (measured: the router delivered the character 25 units from the door and then took it 60
+            # units away around the wall).
+            ux, uz = _unit(objective.point[0] - float(player.get("x") or 0),
+                           objective.point[1] - float(player.get("z") or 0))
+            goal = (objective.point[0] - ux * 18.0, objective.point[1] - uz * 18.0)
+        point = self.follower.waypoint(player, goal)
         if point is None:
-            return objective                                 # the goal itself is reached
+            return objective                                 # the approach point or the goal itself is reached
         distance = math.hypot(float(player.get("x") or 0) - point[0], float(player.get("z") or 0) - point[1])
         return Objective(objective.rank, objective.kind, point, distance, objective.cls, objective.ptr,
                          objective.hp, objective.why, target_distance=real_distance)
@@ -777,10 +786,10 @@ class ProgressionPolicy:
                     candidates.append(Objective(1, "wave", (float(entity["x"]), float(entity["z"])),
                                                 distance, cls, ptr, float(hp), "live enemy in the room"))
                 elif cls in SWITCH_CLASSES:
-                    last = pressed.get(ptr, 0.0)
-                    if not last or (now - last) > self.switch_demote_s:
-                        candidates.append(Objective(2, "switch", (float(entity["x"]), float(entity["z"])),
-                                                    distance, cls, ptr, None, "switch for the way on"))
+                    if ptr in pressed:
+                        continue                              # verified this session: a flag bit changed for it
+                    candidates.append(Objective(2, "switch", (float(entity["x"]), float(entity["z"])),
+                                                distance, cls, ptr, None, "switch for the way on"))
                 elif cls in DOOR_CLASSES:
                     candidates.append(Objective(3, "door", (float(entity["x"]), float(entity["z"])),
                                                 distance, cls, ptr, None, "door on the way on"))
