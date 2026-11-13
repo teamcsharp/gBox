@@ -294,10 +294,10 @@ def run(mode: str, args) -> int:
     elif args.motion == "probe":
         # Measure all four directions, then move the best one: the hand-run loop that crossed the Pioneer 2 plaza in six
         # hops where the committing motion wandered.
-        motion = B.CommitMotion(arrive=arrive, probe_every_move=True)
+        motion = B.CommitMotion(arrive=arrive, probe_every_move=True, lock_points=load_lock_points())
     elif args.motion == "commit":
         # Commit to a heading, learn each key's direction live, slide when blocked: for long walks in unmapped rooms.
-        motion = B.CommitMotion(arrive=arrive)
+        motion = B.CommitMotion(arrive=arrive, lock_points=load_lock_points())
     elif args.motion == "vector":
         motion = B.VectorMotion(arrive=arrive, primitive="tap")
         if calibration is not None:
@@ -366,7 +366,7 @@ def run(mode: str, args) -> int:
         # Serpentine the room. A bounded area has an exit somewhere on its edge, and random roaming does not find it:
         # measured, 200 s of play in Forest 1 room 16 bounced inside x 460-590, z 380-500 without a room change.
         clock2 = clock
-        motion = B.CommitMotion(arrive=15.0)
+        motion = B.CommitMotion(arrive=15.0, lock_points=load_lock_points())
         # Wait for a settled room: starting during a loading screen (room 0) makes the first observation look like an
         # exit, which is exactly what happened - "EXIT: room 0 -> 10" on the first tick.
         player = {}
@@ -625,6 +625,23 @@ class _FixedTarget:
     def note(self, kind: str, progressed: bool) -> None:
         self.policy.note(kind, progressed)
 
+
+
+LOCK_POINTS_FILE = pathlib.Path(r"D:\gBox\pso-ds\lock-points.json")
+
+
+def load_lock_points():
+    """Positions where this character has locked up before, from the ledgers: a tap-driven body gets pushed into
+    geometry it cannot leave, and only a session restart recovers it. The motion treats landing there as a bad move."""
+    try:
+        rows = json.loads(LOCK_POINTS_FILE.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return []
+    out = []
+    for row in rows if isinstance(rows, list) else []:
+        if isinstance(row, dict) and "x" in row and "z" in row:
+            out.append((float(row["x"]), float(row["z"])))
+    return out
 
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(description="bounded PSO controller")

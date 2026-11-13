@@ -685,11 +685,6 @@ class WallFollowMotion:
         self.effects = {str(key): (float(value[0]), float(value[1])) for key, value in (effects or {}).items()
                         if len(value) >= 2}
         self.cal_heading = float(cal_heading)
-        # Probe every move instead of committing. Measured: a hand-run loop that measured all four directions and then
-        # took the best one crossed the whole Pioneer 2 plaza in six hops (d 11, 8, 9, 13, 23, 6) and warped, where the
-        # committing motion wandered and failed from the same start. It costs four probe taps per move - slow, but it
-        # does not need a direction model that stays true.
-        self.probe_every_move = bool(probe_every_move)
         self.key = None
         self.last_key = None
         self.last_pos = None
@@ -796,7 +791,8 @@ class CommitMotion:
 
     def __init__(self, *, arrive: float = 6.0, keys: Iterable[str] = DIRECTIONS, commit: int = 1,
                  slide: int = 2, blocked_units: float = 3.0, decay: float = 0.3,
-                 probe_every_move: bool = False) -> None:
+                 probe_every_move: bool = False, lock_points: Iterable | None = None,
+                 lock_radius: float = 12.0) -> None:
         self.arrive = float(arrive)
         self.keys = tuple(keys)
         self.commit = max(1, int(commit))
@@ -820,6 +816,8 @@ class CommitMotion:
         self.probes = 0
         self.turns = 0
         self.probe_every_move = bool(probe_every_move)
+        self.lock_points = [(float(p[0]), float(p[1])) for p in (lock_points or ())]
+        self.lock_radius = float(lock_radius)
         self.last_y = None
         self.best_distance = None
         self.stuck_taps = 0
@@ -840,7 +838,15 @@ class CommitMotion:
             moved = math.hypot(dx, dz)
             if self.probe_scores is not None and self.last_key is not None and self.probes:
                 # the position reached after that probe key, as a distance to the probe's target
-                self.probe_scores[self.last_key] = math.dist((x, z), self.probe_target)
+                score = math.dist((x, z), self.probe_target)
+                # Avoid the places where this character has locked up before. Measured across 214 ledgers: 31 locks,
+                # and they cluster - (550,380) locked three separate runs (239 ticks each), (244,221) locked two. Those
+                # spots are where a tap-driven body gets pushed into geometry it cannot leave, and only a session
+                # restart recovers it, so a probe that lands there is scored as if it were far from the target.
+                if self.lock_points and self.lock_radius > 0:
+                    if any(math.dist((x, z), point) <= self.lock_radius for point in self.lock_points):
+                        score += 1000.0
+                self.probe_scores[self.last_key] = score
             self.last_ok = False
             if moved >= 4.0 and self.last_dir is not None:
                 toward = (x - self.last_pos[0]) * self.last_dir[0] + (z - self.last_pos[1]) * self.last_dir[1]
