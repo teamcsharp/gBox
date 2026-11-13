@@ -293,7 +293,7 @@ class DriftingWorld(FakeWorld):
         super().act(action, deadline)
         self.side = -self.side
         self.pos[0] += 4.0 * self.side
-        self.pos[1] += 2.0
+        self.pos[1] += 6.0          # always away from the origin, so the (0,0) target is never closed
 
 
 class _FixedWalk:
@@ -315,7 +315,7 @@ class _FixedWalk:
 def test_a_walk_that_moves_without_closing_escalates(workdir):
     clock = FakeClock()
     world = DriftingWorld(clock)
-    box = automaton(world, workdir, policy=_FixedWalk((500.0, 500.0)),
+    box = automaton(world, workdir, policy=_FixedWalk((0.0, 0.0)),
                     bounds=B.Bounds(max_no_close_ticks=10))
     box.run_for(60.0)
 

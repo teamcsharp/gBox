@@ -65,6 +65,7 @@ class Bounds:
     hard_progress_s: float = 300.0      # no room/HP/flag progress for this long is a failure, not a slow room
     max_objective_ticks: int = 150      # ticks one objective may consume without progress before escalating
     max_no_close_ticks: int = 40        # ticks a point objective may spend without getting measurably closer
+    max_escapes: int = 3                # hold-based escapes tried before a no-close failure is reported
     max_switch_attempts: int = 3        # presses of one switch with no flag change before it is a reported failure
 
 
@@ -1009,6 +1010,7 @@ class Automaton:
         self.objective_since = 0
         self.best_distance = None
         self.no_close = 0
+        self.escapes = 0
 
     # -- public -----------------------------------------------------------------------------------------------------
     def run_for(self, seconds: float) -> list:
@@ -1053,6 +1055,12 @@ class Automaton:
         action = self._plan(objective, before, started)
         if action is None:
             action = WAIT if objective is not None else self._explore(player, started)
+        if objective is not None and self.no_close >= max(8, self.bounds.max_no_close_ticks // 3) \
+                and self.escapes < self.bounds.max_escapes:
+            # Moving but not closing: taps are the wrong size for this pocket. Try a hold before reporting failure.
+            action = self._escape()
+            self.no_close = 0
+            self.escapes += 1
         action = action.clipped(self.bounds)
 
         press_tick = objective is not None and objective.kind == "switch" and action.kind == "press"
@@ -1225,9 +1233,25 @@ class Automaton:
             return ""
         self.no_close += 1
         if self.no_close > self.bounds.max_no_close_ticks:
-            return (f"{objective.kind} {objective.cls or objective.ptr} not closed for {self.no_close} ticks "
-                    f"(still {distance:.0f} units away); the character is moving without approaching it")
+            if self.escapes < self.bounds.max_escapes:
+                self.no_close = 0
+                return ""                                # the escape in tick() gets another budget
+            return (f"{objective.kind} {objective.cls or objective.ptr} not closed for {self.no_close} ticks after "
+                    f"{self.escapes} hold escapes (still {distance:.0f} units away); the character is moving without "
+                    f"approaching it")
         return ""
+
+    def _escape(self) -> Action:
+        """A hold in a rotating direction, used when the character moves but cannot close on the objective.
+
+        Measured: taps move ~8 units and a hold moves ~33, and pockets that swallow taps do not swallow holds. The
+        no-close budget therefore tries escapes before it reports a failure - three of them, each mirrored in the
+        ledger, and only then the fixture.
+        """
+        plan = ("down", "left", "right", "up")
+        key = plan[self.escapes % len(plan)]
+        return hold(key, 0.45, f"escape {self.escapes + 1}/{self.bounds.max_escapes}: hold {key} out of a pocket "
+                               f"that swallowed {self.bounds.max_no_close_ticks} taps")
 
     def _budget(self, objective: Objective, progressed: bool) -> str:
         """One objective may not consume the session: bounded attempts, then a fixture instead of a loop."""
@@ -1313,6 +1337,7 @@ class Automaton:
     def stats(self) -> dict:
         return {"ticks": self.ticks, "actions": self.actions, "overruns": self.overruns,
                 "stalls": self.watchdog.stalls, "recoveries": self.watchdog.recoveries,
+                "escapes": self.escapes, "no_close": self.no_close,
                 "progress_kind": self.watchdog.progress_kind,
                 "progress_age": round(self.watchdog.progress_age(self.clock.now()), 1),
                 "combos": {"attempts": self.combat.attempts, "hits": self.combat.hits,

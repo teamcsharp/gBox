@@ -269,7 +269,14 @@ useful single measurement of the round:
 
 So the watchdog recovery is a **hold**, not a tap. A hold's distance is non-deterministic (it depends on release
 latency) which is why movement uses taps — but for an escape, a large immediate displacement is exactly what is
-needed.
+needed. The same reasoning applies when the character *is* moving but cannot close: the no-close budget now spends up
+to three hold escapes (`Bounds.max_escapes`) before it reports a failure, and each escape is a ledger line with the
+pocket's tick count.
+
+Live, that is the difference between stopping and progressing: the corner that ended one run at `(349.6,-45.0)` was
+left by the escapes, and the next run walked from `(300,-43)` through `(278,-20)` and `(323,-5)` — out of the pocket
+and into the warp area — ending 48 units from the pad with 0 overruns and 0 failures. It has not reached the pad yet;
+that is where the next round starts.
 
 ## 7. Reproduce
 
