@@ -968,22 +968,6 @@ class ShiftingWorld(FakeWorld):
         self.pos[1] += rdz * step
 
 
-def test_steering_follows_the_character_turn(workdir):
-    """The stick is camera-relative: the key that moves east at heading 0 moves north at heading 270.
-
-    Measured live: at heading 186 every direction pushed into the same wall for seventy seconds, and one turn made the
-    same key move 7 units. The calibrated table is rotated by the heading delta before the key is chosen.
-    """
-    effects = {"up": (0.0, 8.0), "down": (0.0, -8.0), "left": (-8.0, 0.0), "right": (8.0, 0.0)}
-    straight = B.WallFollowMotion(effects=effects, cal_heading=0.0)
-    turned = B.WallFollowMotion(effects=effects, cal_heading=0.0)
-    # "up" points +z at heading 0; the target is +z, so `up` is right.
-    assert straight.step({"x": 0.0, "z": 0.0, "heading_deg": 0.0}, (0.0, 100.0)).key == "up"
-    # At heading 270 every effect has rotated 270 degrees clockwise: `right` (+x at heading 0) now points +z, so it is
-    # the key that chases the +z target. Without the rotation the motion would still choose `up` and push sideways.
-    assert turned.step({"x": 0.0, "z": 0.0, "heading_deg": 270.0}, (0.0, 100.0)).key == "right"
-
-
 def test_wall_follow_steps_around_a_wall_where_hill_climb_grinds(workdir):
     """A wall dead ahead is not a gain-table problem: every key that closes the distance hits the wall, so the hill
     climber grinds in place - which is exactly what the bot did in Forest 1 room 4. The wall follower aims sideways for

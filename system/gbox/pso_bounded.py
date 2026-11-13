@@ -720,9 +720,12 @@ class WallFollowMotion:
             return None
         ux, uz = _unit(dx, dz)
         if self.effects:
-            heading = player.get("heading_deg")
-            delta = 0.0 if heading is None else float(heading) - self.cal_heading
-            self.key = self._steer(ux, uz, delta)
+            # No heading rotation. `heading_deg` is the CAMERA azimuth (gBox's own autoplay keeps it as `self.cam`), and
+            # the follow camera snaps behind the character on every move - measured: one tap changed it by 125-180
+            # degrees. Rotating the calibrated table by that delta double-counts the camera and corrupts the steering:
+            # with the rotation a 55-unit hop walked 120 units the wrong way. The calibrated table is only valid for the
+            # camera it was measured in, which is why the hill climber (per-tap learning, no table) is the default.
+            self.key = self._steer(ux, uz)
         elif self.key is None or self.misses >= self.patience:
             self.key = self._next_key()
             self.misses = 0

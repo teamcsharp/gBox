@@ -650,3 +650,24 @@ moved the aim direction), which is why it is the most reliable motion in unmappe
 What is still missing is a **heading-aware model**: the calibration should be re-measured (or rotated by the heading
 delta) whenever the character turns, so the motion model's frame stays current instead of relying on per-tap learning.
 
+
+
+## 20. heading_deg is the camera, not the facing - the rotation was wrong and is reverted
+
+Round 22 added a heading rotation to the steering table, on the theory that the stick is camera-relative and the table
+should rotate with the character. Measuring the live keys showed the flaw in that: one tap moved the reported heading by
+**125-180 degrees**. That is not a character turning; it is the **follow camera snapping behind the character**, and
+gBox's own autoplay code already treats the same field as the camera (`self.cam = p["heading_deg"]`). The relative-tap
+motion's docstring had said it too - "the facing comes from the last tap, not from `heading_deg`".
+
+So rotating the calibrated table by that delta **double-counts the camera**. It is reverted: `WallFollowMotion` steers
+from the table as measured, with the reason written into the code. The consequence is bigger than one flag: **a
+calibrated direction table is only valid for the camera position it was measured in**, and the camera moves on every
+step - which is exactly why `HillClimbMotion` (per-tap learning, no table) is the default motion and the most reliable
+one in unmapped rooms.
+
+What the round did establish about precision: on a 100-unit hop the hill motion gets within **23 units** and orbits;
+it cannot close the last stretch because one tap is 8 units and the approach is against geometry. That is inside the
+melee attack range (30), so reaching an enemy does not require touching it - but combat itself is still unproven
+(6 attempts, 0 hits) because no enemy has been within range during a run.
+
