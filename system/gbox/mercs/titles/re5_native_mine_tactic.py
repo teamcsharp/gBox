@@ -37,6 +37,7 @@ class Cadence:
         self.event_id = None
         self.traversal_id = None
         self.roulette_id = None
+        self.reserved_credit = None
 
     def observe(self, snap, stats, now, enabled=True):
         from . import re5_switch as R
@@ -58,6 +59,7 @@ class Cadence:
         self.previous = (now, tuple(p['pos'])) if moving else None
         if not enabled:
             self.distance = 0.
+            self.reserved_credit = None
             event = stats.get('automine_event') or {}
             self.event_id = event.get('id')
             self.traversal_id = (stats.get('traversal_mine_event') or {}).get('id')
@@ -90,8 +92,13 @@ class Cadence:
             return 'distance', None
         return None
 
-    def claimed(self, demand, now):
+    def claimed(self, demand, now, *, request_id=None):
         self.last_request = now
+        # Travel during a pending placement earns the next bounded credit.
+        # Save only this claim's prior travel; restore it only after Flight's
+        # positive zero-activation reconciliation releases this exact request.
+        self.reserved_credit = ({'id': request_id, 'owner': self.owner, 'distance': self.distance}
+                                if isinstance(request_id, str) and request_id and self.distance > 0 else None)
         self.distance = 0.                           # no burst of catch-up drops after a long request
         if demand[1] is not None:
             if demand[0] == 'traversal':
@@ -100,6 +107,25 @@ class Cadence:
                 self.roulette_id = demand[1]
             else:
                 self.event_id = demand[1]
+
+    def reconcile(self, release, stats):
+        """Consume one private Flight release, never infer it from old telemetry."""
+        saved = self.reserved_credit
+        if (saved is None or not isinstance(release, dict)
+                or release.get('state') != 'verified_inactive'
+                or release.get('id') != saved['id'] or release.get('owner') != saved['owner']
+                or self.owner != saved['owner']):
+            return False
+        self.reserved_credit = None
+        before = self.distance
+        self.distance = min(DISTANCE_CM, self.distance + saved['distance'])
+        restored = self.distance - before
+        stats.update(automine_distance_cm=round(self.distance, 1),
+                     automine_credit_restorations=stats.get('automine_credit_restorations', 0) + 1,
+                     automine_credit_restore={'id': saved['id'], 'owner': list(self.owner),
+                         'restored_cm': round(restored, 1), 'carried_cm': round(before, 1),
+                         'total_cm': round(self.distance, 1)})
+        return True
 
 
 def enabled(memory):
@@ -138,6 +164,7 @@ class Flight:
         self.seen = -math.inf
         self.guard = None
         self.refused_candidate = None
+        self.refusal_release = None
         self.clearance_cm = 500.
         self.emergency = False
         self.deployments = queue.Queue(maxsize=40)
@@ -162,6 +189,8 @@ class Flight:
                          and (p.get('hp') or 0) > R.DYING_HP
                          and (self.emergency or p.get('motion') not in R.MOTION_HELD))
         self.owner = owner
+        if self.refusal_release is not None and self.refusal_release['owner'] != owner:
+            self.refusal_release = None
         if self.refused_candidate is not None and self.refused_candidate['owner'] != owner:
             self.refused_candidate = None
         if self.job is not None and (not self.live or owner != self.job['owner']):
@@ -198,11 +227,22 @@ class Flight:
         if proof['state'] == 'verified_inactive' and allowed():
             self.blocked_owner = None
             self.refused_candidate = None
+            # Combat-thread handoff, one use, issued only after admission and
+            # full native inactive/detached proof both succeed. Diagnostic
+            # receipt dictionaries are not authority to restore travel credit.
+            self.refusal_release = {'state': 'verified_inactive', 'id': item['id'], 'owner': owner}
             stats['native_mine_refusal_recoveries'] = stats.get('native_mine_refusal_recoveries', 0) + 1
             if stats.get('mine_blocked_reason') == 'native mine unavailable or previous placement uncertain':
                 stats.pop('mine_blocked_reason', None)
         elif proof['state'] == 'unsafe':
             self.refused_candidate = None  # preserve the owner lock; never reconsider an active/uncertain actor
+
+    def take_refusal_release(self):
+        release, self.refusal_release = self.refusal_release, None
+        if (release is not None and release['owner'] == self.owner and self.live and not self.closed
+                and self.blocked_owner is None and self.job is None):
+            return release
+        return None
 
     def poll(self, snap, stats):
         self.observe(snap, stats)
