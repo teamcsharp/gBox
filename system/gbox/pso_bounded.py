@@ -813,6 +813,7 @@ class CommitMotion:
         self.probe_target = (0.0, 0.0)
         self.probes = 0
         self.turns = 0
+        self.last_y = None
         self.last_aim = None
         self.last_ok = False
         self.last_dir = None
@@ -1708,7 +1709,19 @@ class Automaton:
 
         stall = self.watchdog.observe(player, started)
         if stall is not None:
-            action = self.watchdog.recovery()
+            # Probe the four keys instead of trusting a fixed rotation: measured at (557,384) in Forest 1, three of the
+            # four keys moved 7.7 units while the rotation kept choosing the blocked one, and the run reported "every
+            # recovery failed" for a character that was not wedged at all.
+            motion = self.motion
+            if hasattr(motion, "probe_queue") and not getattr(motion, "probe_queue"):
+                motion.probe_queue = list(getattr(motion, "keys", DIRECTIONS))
+                motion.probe_scores = {}
+                target = self._last_target() or (0.0, 0.0)
+                motion.probe_target = (float(target[0]), float(target[1]))
+            if getattr(motion, "probe_queue", None):
+                action = press(motion.probe_queue.pop(0), "stall probe: test a direction instead of trusting a rotation")
+            else:
+                action = self.watchdog.recovery()
             self._execute(action, started)
             self._record("stall", action, before, None, extra=stall.to_dict)
             if self.watchdog.exhausted():
@@ -1971,7 +1984,22 @@ class Automaton:
                     f"approaching it")
         return ""
 
+    def _last_target(self):
+        """The point of the objective the last tick was working on, for the probe's scoring."""
+        objective = getattr(self, "last_objective", None)
+        point = getattr(objective, "point", None) if objective is not None else None
+        return point
+
     def _escape(self) -> Action:
+        # Prefer the motion's own probe: a fixed rotation of keys can keep picking blocked directions, which is how a
+        # play run reported "every recovery failed" at (557,384) while three of the four keys moved 7.7 units.
+        motion = self.motion
+        if hasattr(motion, "probe_queue") and not getattr(motion, "probe_queue"):
+            motion.probe_queue = list(getattr(motion, "keys", DIRECTIONS))
+            motion.probe_scores = {}
+            target = self._last_target() or (0.0, 0.0)
+            motion.probe_target = (float(target[0]), float(target[1]))
+            return WAIT
         """A hold in a rotating direction, used when the character moves but cannot close on the objective.
 
         Measured: taps move ~8 units and a hold moves ~33, and pockets that swallow taps do not swallow holds. The
