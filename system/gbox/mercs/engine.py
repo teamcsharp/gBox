@@ -385,6 +385,14 @@ def play_round(prof, m, send, stopped, stats: dict, lessons=None, sleep=time.sle
             stats["run_map_error"] = str(exc)[:200]
     start_capture()
 
+    transport_send = send
+    def recorded_send(events):
+        receipt = transport_send(events)
+        if capture is not None:
+            capture.input(clock(), events, receipt)
+        return receipt
+    send = recorded_send
+
     def finish_evidence(at, reason, final_stats):
         nonlocal trace, round_closed, capture
         if round_closed:
@@ -554,7 +562,9 @@ def play_round(prof, m, send, stopped, stats: dict, lessons=None, sleep=time.sle
                 # it can latch a preceding round's stage from the reused autoplay stats.
                 stats.update(drv.progress(snap))
             if capture is not None:                   # the run map: a sample 5 times a second (appends; never raises)
-                capture.observe(now, where, snap, bot, stats)
+                capture.observe(now, where, snap, bot, stats,
+                                controls={'keys': sorted(held), 'timing': 'pre_decision',
+                                          'source': 'transport_tracked_held_state'})
             if where not in D.IN_ROUND:
                 if where == "results":
                     last_stats = dict(stats)

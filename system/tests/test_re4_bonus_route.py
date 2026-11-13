@@ -72,3 +72,45 @@ def test_native_bonus_preserves_the_upper_floor_height():
     s["player"]["pos"] = [2000, 0, 3000]
     assert g.resolve(s, g.received_at + 1) is not None
     assert g.goal["state"] == "active", "standing underneath is not arrival on the upper floor"
+
+
+def test_fresh_runtime_snapshot_gets_its_mesh_before_bonus_selection(monkeypatch):
+    from types import SimpleNamespace
+    b = D.Bot(stats={}, director=False)
+    snap = {'module_base': 100, 'player': {'pos': (0, 0, 0), 'ptr': 1}}
+    def attach(s):
+        s['nav'] = SimpleNamespace(bonuses=[{'source': 'native', 'stand': [1000, 0, 0], 'seconds': 30}])
+        return s
+    monkeypatch.setattr(re4_nav, 'attach', attach)
+    assert B.bonus_goal(b, snap, 10)
+    assert re4_walk.goals_of(b).goal['source'] == 'time_bonus'
+
+
+def test_automatic_weapon_pool_has_no_pistols_and_riot_gun_uses_shotgun_aim():
+    from gbox.mercs.titles import re4_weapons as W
+    assert not set(W.HIGH_POWER) & W.PISTOL_ITEMS
+    assert {0x29, 0x2A, 0x37, 0x2C, 0x2D, 0x94} <= set(W.HIGH_POWER)
+    assert D.CLASS_FAMILY[W.CLASS_OF[0x94]] == 'shotgun'
+
+
+def test_arrival_activates_bonus_and_waits_for_clock_evidence():
+    b = D.Bot(stats={}, director=False)
+    s = snap_at(VILLAGE_FIRST) | {'timer': 100., 'kills': 0}
+    B.bonus_goal(b, s, 10.)
+    g = re4_walk.goals_of(b)
+    now = g.received_at + 1
+    action = re4_walk.operator_goal_act(b, s, now, lambda _: {})
+    assert action.get('tap') == D.ACTION_BTN and g.goal['state'] == 'active'
+    assert g.resolve(s | {'timer': 189.5}, now + .5) is None
+    assert g.goal['confirmation'] == 'clock_gain_without_kills'
+
+
+def test_kill_time_gain_cannot_confirm_a_bonus_pickup():
+    b = D.Bot(stats={}, director=False)
+    s = snap_at(VILLAGE_FIRST) | {'timer': 100., 'kills': 0}
+    B.bonus_goal(b, s, 10.)
+    g = re4_walk.goals_of(b)
+    now = g.received_at + 1
+    g.resolve(s, now)
+    assert g.resolve(s | {'timer': 190., 'kills': 1}, now + .5) is not None
+    assert not g.goal.get('confirmation')

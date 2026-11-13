@@ -169,20 +169,20 @@ def test_a_laser_that_never_comes_up_does_not_hold_the_trigger_for_ever():
     act = b.tick(s, now=10.0)
     assert act == {"hold": {D.AIM_BTN}} and "comes up onto the book" in b.why, "it does try the rise first"
     assert not b.stats.get("aim_rise_fallbacks"), "not yet: the raise is still running"
-    b.tick(s, now=10.0 + D.AIM_RISE_MAX_S + 0.01)
-    assert b.stats.get("aim_rise_fallbacks") == 1, "past AIM_RISE_MAX_S the old gate fires instead of holding"
+    act = b.tick(s, now=10.0 + D.AIM_READY_S + 0.01)
+    assert act.get('tap') == D.FIRE_BTN, 'ready gun fires while the absent laser is reacquired'
 
 
-def test_the_steady_aim_fires_only_while_the_games_sight_names_a_ganado():
+def test_the_steady_aim_corrects_while_firing_before_sight_contact():
     b = ram_bot()
     b.tick(fight_snap(), now=10.0)                      # the gun up
     assert D.AIM_REQUEST.get("steady") is True and D.AIM_REQUEST.get("wep") == WEP
     act = b.tick(fight_snap(sight=None), now=10.5)
-    assert not act.get("tap") and b.doing == "aim" and b.stats["aim_ram_holds"] >= 1
+    assert act.get('tap') == D.FIRE_BTN and b.doing == 'fire' and b.stats['spray_shots'] == 1
     assert not set(act.get("hold") or ()) & set(D.AIM_TURN.values()), "no right-stick taps: the RAM holds the aim"
     act = b.tick(fight_snap(sight=GANADO), now=10.6)
     assert act.get("tap") == D.FIRE_BTN and b.stats["aim_ram_shots"] == 1
-    assert b.stats["aimbook_shots"] == 1
+    assert b.stats["aimbook_shots"] == 2
 
 
 def test_the_pitch_closes_on_the_books_point_through_the_line():
@@ -197,15 +197,15 @@ def test_the_pitch_closes_on_the_books_point_through_the_line():
     assert D.AIM_REQUEST["pitch"] < 0.1, "the line high: the pitch comes down"
 
 
-def test_a_sight_that_never_reads_hands_the_shot_back_to_the_old_gate():
+def test_a_sight_that_never_reads_does_not_delay_a_twenty_request_burst():
     b = ram_bot()
     b.tick(fight_snap(), now=10.0)
     t, taps = 10.3, []
     while t < 10.3 + D.AIM_SIGHT_STALL_S + 0.5:
         taps.append(b.tick(fight_snap(sight=None), now=t).get("tap"))
         t += 0.05
-    assert b.stats["aim_ram_sight_fallbacks"] >= 1 and D.FIRE_BTN in taps
-    assert D.FIRE_BTN not in taps[:int(D.AIM_SIGHT_STALL_S / 0.05) - 1], "no shot before the stall"
+    assert taps.count(D.FIRE_BTN) >= 20
+    assert taps[0] == D.FIRE_BTN, 'aim correction must not wait for a sight stall'
 
 
 def test_the_sight_on_another_ganado_shoots_him():
@@ -244,7 +244,7 @@ def test_a_hit_from_the_census_resolves_the_shot_and_the_book_learns_it():
     assert next(iter(core.book.cells)).startswith("magnum|"), "the family from the class byte (0x05 Broken Butterfly)"
 
 
-def test_a_close_sight_stall_hands_the_shot_back_sooner():
+def test_a_close_sight_stall_keeps_correcting_and_firing():
     """Operator 2026-11-11: "the bot just sits there instead of firing on the enemies ... watching him just watch them
     come up." A Ganado already inside 3 m must get the old body-angle gate after AIM_SIGHT_STALL_CLOSE_S, not 1.5 s."""
     b = ram_bot()
@@ -253,4 +253,4 @@ def test_a_close_sight_stall_hands_the_shot_back_sooner():
     while t < 10.3 + D.AIM_SIGHT_STALL_CLOSE_S + 0.9:
         taps.append(b.tick(fight_snap(sight=None, ganado_z=2500.0), now=t).get("tap"))
         t += 0.05
-    assert b.stats["aim_ram_sight_fallbacks"] >= 1 and D.FIRE_BTN in taps
+    assert b.stats['spray_shots'] >= 1 and D.FIRE_BTN in taps

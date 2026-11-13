@@ -118,6 +118,17 @@ def test_pending_functions_are_attempted_before_retrying_failures(tmp_path):
     assert b.calls == ["00001000", "00002000", "00003000"]
 
 
+def test_bounded_retry_batches_do_not_starve_later_failures(tmp_path):
+    b, out = Exporter(tmp_path), tmp_path / 'export'
+    b.fail = {address: RuntimeError('persistent failure') for address in ('00001000', '00002000', '00003000')}
+    b.export(out)
+    for _ in range(3):
+        result = b.export(out, limit=1, retry_failed=True, retry_below_attempts=2)
+        assert result['attempted_this_batch'] == 1
+    assert all(row['attempts'] == 2 for row in read(out)['outcomes'].values())
+    assert b.export(out, retry_failed=True, retry_below_attempts=2)['attempted_this_batch'] == 0
+
+
 def test_an_unanalyzed_program_cannot_report_complete(tmp_path):
     b = Exporter(tmp_path)
     b.rows.clear()

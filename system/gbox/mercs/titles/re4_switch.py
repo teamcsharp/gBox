@@ -2140,13 +2140,10 @@ FIRE_CLOSE_MM = 3000.0                   # no deliberate scatter on a body insid
 FIRE_CAP_HZ = 10.0                       # static: FR 3.0 frames at 30 Hz (the shot gate's floor), not counted live
 FIRE_DEFAULT_FAMILY = None
 CLASS_FAMILY = {0x01: None, 0x02: None, 0x03: None, 0x04: None, 0x11: None,   # handguns: no scatter
-                # 0x01 is also the Riot Gun's class (items 0x21/0x40) and it read None here, so weapon 33 fired with
-                # no fire-pattern family - 9 shots, 0 hits (live 2026-11-11 23:23). Giving the class a scatter family
-                # was tried and then reverted: RE4 then churned 19 rounds with 0 kills (live 2026-11-12 00:17), so a
-                # shotgun model on a class that was verified with none is worse than the misfire it was meant to fix.
-                # The item-id entry that used to sit here (0x21) was an ITEM in a class-keyed table and is gone.
+                # Riot Gun is item 0x94, native class 0x21. Punisher item 0x21
+                # maps to class 0x01; item IDs must not replace this class mapping.
                 0x05: "magnum", 0x06: "magnum", 0x0F: "magnum",      # Broken Butterfly, Killer7, Handcannon
-                0x07: "shotgun", 0x08: "shotgun",                    # Shotgun, Striker
+                0x07: "shotgun", 0x08: "shotgun", 0x21: "shotgun",   # Shotgun, Striker, Riot Gun
                 0x09: "rifle", 0x0A: "rifle",
                 0x0B: None, 0x0C: None, 0x0D: None, 0x0E: None, 0x10: None, 0x1C: None, 0x2E: None}   # automatics,
                                          # launchers, the knife, the bow, the P.R.L.: no pattern
@@ -2920,6 +2917,10 @@ class Bot:
             self.stats["aim_ram"] = "line" if fresh else "rising"
             if not fresh:
                 self._ram_since = None
+                if up and SPRAY_ALWAYS:
+                    # The RAM correction above remains active while the ordinary
+                    # fire path runs. A missing laser must not create an aim-only stall.
+                    return None
                 # The laser has to come up before the steady aim can measure anything - but it may never read at all
                 # (live 2026-11-12, Waterworld: laser_gate stat=0 up=False for the whole round, so `fresh` was never
                 # true and this branch held AIM_BTN from the first tick to the last: kills 0, aimbook_shots 0,
@@ -2938,6 +2939,11 @@ class Bot:
             sight = aim.get("sight")
             on = alive.get(sight)
             if on is None:
+                if SPRAY_ALWAYS and now - self._last_fire >= FIRE_GAP_S:
+                    self.stats['spray_shots'] = self.stats.get('spray_shots', 0) + 1
+                    self._aim_shot(p, e, snap, now, plan=plan, contact=False)
+                    self.why = 'correcting the aim while firing at the live target'
+                    return self._tap(e, dist, err, snap, now)
                 since = self.__dict__.get("_ram_since")
                 if since is None:
                     since = self._ram_since = now

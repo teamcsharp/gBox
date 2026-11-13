@@ -112,10 +112,18 @@ def bonus_goal(bot, snap, now) -> bool:
             stats = getattr(bot, "stats", None)
             if isinstance(stats, dict):
                 stats["bonus_approaches"] = stats.get("bonus_approaches", 0) + 1
-                stats["bonus_unconfirmed"] = stats.get("bonus_unconfirmed", 0) + 1
+                if goals.goal.get('confirmation') == 'clock_gain_without_kills':
+                    stats['bonus_clock_credits'] = stats.get('bonus_clock_credits', 0) + 1
+                    stats['bonus_seconds_observed'] = stats.get('bonus_seconds_observed', 0) + float(prev.get('seconds') or 0)
+                else:
+                    stats["bonus_unconfirmed"] = stats.get("bonus_unconfirmed", 0) + 1
             bot.__dict__["_bonus_prev"] = None
         if goals.goal is not None and goals.goal.get("state") not in terminal:
             return False                                  # his own mark, or a bonus still on its way
+        if (snap or {}).get('module_base') is not None and 'nav' not in snap:
+            # This selector runs BEFORE Bot.tick, whose decorator attaches the
+            # mesh. Waiting for that decorator meant no goal on every fresh read.
+            re4_walk.re4_nav.attach(snap)
         nav = (snap or {}).get("nav")
         pos = ((snap or {}).get("player") or {}).get("pos")
         if nav is None or not pos:
@@ -144,6 +152,8 @@ def bonus_goal(bot, snap, now) -> bool:
         # floor is inappropriate here, especially for stairs and upper floors.
         if goals.goal is not None and goals.goal.get("id") == bid:
             goals.goal["floor_y"] = float(at[1])
+            goals.goal['source'] = 'time_bonus'
+            goals.goal['seconds'] = row.get('seconds')
         issued.add(bid)
         bot.__dict__["_bonus_prev"] = {"id": bid, "seconds": row.get("seconds")}
         stats = getattr(bot, "stats", None)
@@ -437,7 +447,6 @@ def play(ad, send, stopped, sleep=time.sleep, stats: dict | None = None, *, cloc
         stats["queued_selection_error"] = str(exc)[:160]
     m = m if m is not None else _memory(ad)
     stats["ram"] = m is not None
-    keys = Keys(send, sleep=sleep)
     bot = driver.Bot(stats=stats, clock=clock) if m is not None else None
     driver.WEAPON_ASK.clear()                        # a weapon request never survives from the run before this one
     ring_step = _ring_step(ad, stats)                # the bot's own ring rule (gbox.mercs.grenade_ring)
@@ -446,6 +455,15 @@ def play(ad, send, stopped, sleep=time.sleep, stats: dict | None = None, *, cloc
     ticks = 0
     in_round = False
     rnd: Round | None = None
+    transport_send = send
+    def recorded_send(events):
+        receipt = transport_send(events)
+        cap = getattr(rnd, 'capture', None)
+        if cap is not None:
+            cap.input(clock(), events, receipt)
+        return receipt
+    send = recorded_send
+    keys = Keys(send, sleep=sleep)
     last_snap: dict | None = None
     pace = driver.Pace()
     # the walk's clock (gbox.mercs.core.menu_pace.Clock): the boot from the session's launch (the game dict's
@@ -952,8 +970,14 @@ def _snapshot(m, stats: dict) -> dict | None:
         stats["snapshot_error"] = f"{type(exc).__name__}: {exc}"[:160]
         return None
     driver.watch_into(m, snap, stats)                        # the E3 .bss watch (the harness's mailbox evidence)
+    re4_walk.re4_nav.attach(snap)
     if snap.get("weapon_unmapped") is not None:              # (named on the snap: snapshot() has no stats to write)
         stats["weapon_unmapped"] = snap["weapon_unmapped"]
+    else:
+        stats.pop('weapon_unmapped', None)
+    stats['equipped_item'] = snap.get('equipped_id')
+    stats['equipped_class'] = snap.get('weapon_class')
+    stats['weapon_object_item'] = (snap.get('aim') or {}).get('item')
     stats["timer"] = snap.get("timer")
     stats["clock_addr"] = hex(snap["clock_addr"]) if isinstance(snap.get("clock_addr"), int) else None
     stats["enemies_read"] = len(snap.get("enemies") or ())

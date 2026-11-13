@@ -33,6 +33,27 @@ class FlightRecorder:
         self.first = None
         self.findings = []
         self._reported = {}
+        self.inputs = deque(maxlen=4096)
+        self.input_batches = self.input_events = self.input_tail_dropped = 0
+
+    def input(self, now, events, receipt):
+        """Every emitted input transition, independently of the snapshot sampling rate.
+
+        Transport acceptance is not proof that the engine fired a shot or moved.
+        A legacy sender's None result remains an unavailable acknowledgment.
+        """
+        while self.inputs and now - self.inputs[0]['t'] > 60:
+            self.inputs.popleft()
+        if len(self.inputs) == self.inputs.maxlen:
+            self.input_tail_dropped += 1
+        self.input_batches += 1
+        self.input_events += len(events)
+        refused = receipt is False or isinstance(receipt, dict) and (
+            receipt.get('stopped') or receipt.get('held') or receipt.get('skipped') or receipt.get('sent') != len(events))
+        state = 'refused_or_partial' if refused else 'accepted' if receipt is True or isinstance(receipt, dict) else 'no_receipt'
+        self.inputs.append({'t': round(now, 3), 'events': safe(events), 'transport': state,
+                            'receipt': {k: safe(receipt[k]) for k in ('sent', 'held', 'stopped', 'skipped') if k in receipt}
+                            if isinstance(receipt, dict) else None})
 
     def point(self, value):
         if not isinstance(value, (list, tuple)) or len(value) < 3:
@@ -58,12 +79,18 @@ class FlightRecorder:
                'target': safe(target), 'route': [self.point(v) for v in (plan.get('route') or [])[:12]],
                'route_source': safe(plan.get('route_source')),
                'timer': safe(snap.get('timer')), 'kills': safe(snap.get('kills')),
-               'weapon': safe(snap.get('equipped_id', snap.get('weapon_class'))),
+               'weapon': safe(snap.get('equipped_id', snap.get('weapon_class', p.get('weapon_id')))),
                'aim': safe(snap.get('aim')), 'aim_plan': safe(plan.get('aim')),
+               'laser': safe(snap.get('laser')), 'camera': safe(snap.get('camera')),
+               'native_action': safe(p.get('action')), 'fire_cooldown_s': safe(p.get('fire_cooldown_s')),
+               'throwables': safe(snap.get('throwables')),
                'diagnostics': {k: safe(stats[k]) for k in (
                    'aim_diag', 'aim_errdeg', 'laser_gate', 'sight_block_last', 'nav_status',
                    'shots', 'hits', 'aimbook_hits', 'aimbook_misses', 'heals', 'first_aid_last',
-                   'bonuses_taken', 'bonus_approaches', 'bonus_unconfirmed', 'nav_stuck') if k in stats}}
+                   'bonuses_taken', 'bonus_approaches', 'bonus_unconfirmed', 'nav_stuck',
+                   'fire_burst_goal', 'fire_burst_remaining', 'fire_burst_state', 'fire_burst_requests',
+                   'native_fire_rearms_observed', 'fire_contact_verified', 'fire_while_correcting',
+                   'throw_aim_last', 'throw_aim_observed', 'throw_aim_unresolved') if k in stats}}
         if isinstance(row['target'], dict) and 'pos' in row['target']:
             row['target']['pos'] = self.point(target.get('pos'))
         goal = plan.get('operator_goal')
@@ -100,7 +127,8 @@ class FlightRecorder:
             return
         if any(b['t'] - a['t'] > .6 for a, b in zip(rows, rows[1:])):
             return
-        nav = {'walk', 'locate', 'relocate', 'explore', 'route', 'approach', 'escape'}
+        nav = {'walk', 'locate', 'relocate', 'explore', 'route', 'approach', 'escape',
+               'bonus_run', 'gather_time', 'break_for_time', 'roam', 'retreat'}
         if any(r['pos'] is None or r['game_phase'] in ('grabbed', 'held', 'case', 'dead', 'intro')
                or r['phase'] not in nav for r in rows):
             return
@@ -110,14 +138,16 @@ class FlightRecorder:
             destination = next((p for p in reversed(rows[-1]['route']) if p), None)
         if not destination:
             return
-        if goal.get('id') and any((r.get('goal') or {}).get('id') != goal['id'] for r in rows):
+        if not isinstance(goal, dict):
+            goal = {}
+        if goal.get('id') and any(not isinstance(r.get('goal'), dict) or r['goal'].get('id') != goal['id'] for r in rows):
             return
         distance = math.dist(rows[-1]['pos'], destination)
         travel = sum(math.dist(a['pos'], b['pos']) for a, b in zip(rows, rows[1:]))
         progress = math.dist(rows[0]['pos'], destination) - distance
         if distance < 75 or travel >= 30 or progress >= 20:
             return
-        controls = [r.get('controls') or {} for r in rows]
+        controls = [r['controls'] if isinstance(r.get('controls'), dict) else {} for r in rows]
         moving = sum(bool({'lup', 'ldown'} & set(c.get('keys') or [])) for c in controls)
         turning = [(-1 if 'lleft' in c.get('keys', []) else 1 if 'lright' in c.get('keys', []) else 0)
                    for c in controls]
@@ -138,9 +168,26 @@ class FlightRecorder:
                                   'goal': safe(goal), 'cause': 'unknown; inspect route, geometry and game state'})
 
     def snapshot(self):
+        tail = list(self.tail)
+        if tail:
+            while self.inputs and tail[-1]['t'] - self.inputs[0]['t'] > 60:
+                self.inputs.popleft()
+        gaps = [b['t'] - a['t'] for a, b in zip(tail, tail[1:])]
+        fields = ('pos', 'hp', 'controls', 'weapon', 'aim', 'aim_plan', 'route')
+        present = {field: sum(r.get(field) is not None and r.get(field) != [] for r in tail) for field in fields}
+        quality = {'tail_samples': len(tail), 'tail_observed_s': round(tail[-1]['t']-tail[0]['t'], 3) if tail else 0,
+                   'tail_max_gap_s': round(max(gaps), 3) if gaps else None,
+                   'tail_gaps_over_1s': sum(g > 1 for g in gaps), 'tail_field_samples': present,
+                   'shooting_analysis': 'commands and observations only; projectile hits and obstruction need native witnesses',
+                   'warnings': (['no input evidence'] if tail and not present['controls'] else []) +
+                               (['sampling gaps exceed one second'] if any(g > 1 for g in gaps) else []) +
+                               (['no samples'] if not tail else [])}
         return {'format': 'gbox.flight/1', 'units': 'cm', 'source_position_scale_to_cm': self.scale,
                 'coordinate_order': 'x,y,z', 'tail_window_s': 60, 'sample_s': .2,
-                'first': self.first, 'tail': list(self.tail), 'timeline': list(self.timeline),
+                'first': self.first, 'tail': tail, 'timeline': list(self.timeline), 'signal_quality': quality,
                 'findings': list(self.findings), 'raw_aim_units': 'source reader; position fields alone normalized',
                 'timeline_dropped': self.timeline_dropped,
+                'inputs': list(self.inputs), 'input_batches': self.input_batches, 'input_events': self.input_events,
+                'input_tail_dropped': self.input_tail_dropped,
+                'input_evidence': 'emitted transport commands; no claim of game-confirmed movement, shots or hits',
                 'attribution': 'nearby enemies are context; damage source and obstruction are unknown unless witnessed'}

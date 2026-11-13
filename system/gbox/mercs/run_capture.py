@@ -233,15 +233,22 @@ class RunCapture:
         self._finished = None
 
     # --- the bot loop's side: appends only -------------------------------------------------------------------------
-    def observe(self, now: float, where: str, snap: dict, bot=None, stats: dict | None = None) -> bool:
+    def input(self, now, events, receipt):
+        if self._finished is None:
+            try:
+                self.flight.input(now, events, receipt)
+            except Exception as exc:
+                self.status['input_error'] = f'{type(exc).__name__}: {exc}'[:160]
+
+    def observe(self, now: float, where: str, snap: dict, bot=None, stats: dict | None = None, *, controls=None) -> bool:
         """One engine tick: a sample when SAMPLE_S has passed and the round is up (playing / dead). Never raises."""
         try:
-            return self._observe(now, where, snap or {}, bot, stats if stats is not None else {})
+            return self._observe(now, where, snap or {}, bot, stats if stats is not None else {}, controls)
         except Exception as exc:                            # noqa: BLE001 - the map never costs the round a tick
             self.status["observe_error"] = f"{type(exc).__name__}: {exc}"[:160]
             return False
 
-    def _observe(self, now, where, snap, bot, stats) -> bool:
+    def _observe(self, now, where, snap, bot, stats, controls=None) -> bool:
         if self._finished is not None:
             return False
         if where in ("playing", "dead"):
@@ -249,6 +256,8 @@ class RunCapture:
             plan = take_plan(bot) if bot is not None else {}
             plan.setdefault("phase", getattr(bot, "doing", None))
             plan.setdefault("note", getattr(bot, "why", None))
+            if controls is not None:
+                plan['controls'] = controls
             self.flight.observe(now, snap, plan, stats,
                                 force=where == "dead")
         if self.flight.scale != 1:

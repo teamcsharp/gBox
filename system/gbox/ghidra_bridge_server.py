@@ -268,7 +268,8 @@ class Bridge:
         out, err = run(path, None, self._need(), [str(a) for a in args], echo_stdout=False, echo_stderr=False)
         return {"script": os.path.basename(path), "stdout": str(out)[-20000:], "stderr": str(err)[-5000:]}
 
-    def export(self, export_dir, limit=0, budget_s=120, function_timeout_s=30, retry_failed=False, **_):
+    def export(self, export_dir, limit=0, budget_s=120, function_timeout_s=30, retry_failed=False,
+               retry_below_attempts=None, **_):
         """Resume a bounded batch. The manifest inventories every function; errors never count as decompiled source.
 
         `limit` is the attempts in this batch (0 uses 100), not a truncated program inventory. Each function and
@@ -332,7 +333,8 @@ class Bridge:
         manifest["summary"] = {"complete": False, "all_success": False, "batch_running": True}
         save()
         pending = [a for a in functions if outcomes.get(a, {}).get("state", "pending") == "pending"]
-        retries = [a for a in functions if outcomes.get(a, {}).get("state") in ("error", "timeout")] if retry_failed else []
+        retries = [a for a in functions if outcomes.get(a, {}).get("state") in ("error", "timeout")
+                   and (retry_below_attempts is None or outcomes[a].get('attempts', 0) < int(retry_below_attempts))] if retry_failed else []
         attempted = 0
         for addr in pending + retries:
             remaining = deadline - time.monotonic() - 3

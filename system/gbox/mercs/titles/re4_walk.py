@@ -541,6 +541,23 @@ class Goals(map_goals.Goals):
             floor = goal.get("floor_y")
             on_floor = floor is None or (at and abs(at[1] - floor) <= LEVEL_DY_MM)
             if at and on_floor and math.hypot(at[0] - goal["pos"][0], at[2] - goal["pos"][2]) <= GOAL_ARRIVE_MM:
+                if goal.get('source') == 'time_bonus':
+                    pending = goal.get('pickup')
+                    if pending is None:
+                        pending = goal['pickup'] = {'at': now, 'timer': snap.get('timer'), 'kills': snap.get('kills')}
+                    timer, before, seconds = snap.get('timer'), pending['timer'], goal.get('seconds')
+                    if (isinstance(timer, (int, float)) and isinstance(before, (int, float))
+                            and isinstance(seconds, (int, float)) and seconds > 0
+                            and pending['kills'] is not None and snap.get('kills') == pending['kills']
+                            and timer - before >= seconds - min(3., now - pending['at'] + .5)):
+                        goal.update(state='completed', confirmation='clock_gain_without_kills',
+                                    reason='Clock gained the bonus duration during the pickup with no intervening kills')
+                        return None
+                    if now - pending['at'] > 4:
+                        goal.update(state='unavailable', reason='Bonus approach reached; pickup not confirmed')
+                        return None
+                    goal.update(state='active', reason='At the time bonus: activating it and watching the round clock')
+                    return {'kind': 'point', 'pos': tuple(goal['pos']), 'pickup': True}
                 goal.update(state="completed", reason="He is at the marked spot; back to his own play")
                 return None
             goal.update(state="active", reason="On his way to the marked spot by the map")
@@ -610,7 +627,17 @@ def operator_goal_act(bot, snap: dict, now: float, fight) -> dict | None:
     flat = lambda e: math.hypot(e["pos"][0] - px, e["pos"][2] - pz)       # noqa: E731
     live = [e for e in snap.get("enemies") or () if e.get("pos") and (e.get("hp") is None or e.get("hp") > 0)]
     if row.get("kind") == "point":
-        near = [e for e in live if flat(e) <= GOAL_THREAT_MM]
+        bonus = g.goal.get('source') == 'time_bonus'
+        if bonus and row.get('pickup'):
+            bot.doing, bot.why = 'bonus_run', 'activating the time bonus; waiting for its clock gain'
+            if now - g.goal.get('pickup_press_at', -1e9) >= .4:
+                g.goal['pickup_press_at'] = now
+                return {'hold': (), 'tap': ACTION}
+            return {'hold': ()}
+        # A bonus route is interrupted only by an immediate threat on this
+        # floor. A distant or upstairs enemy cannot keep switching its heading.
+        near = [e for e in live if flat(e) <= (1500.0 if bonus else GOAL_THREAT_MM)
+                and (not bonus or abs(e['pos'][1] - py) <= LEVEL_DY_MM)]
         if near:
             g.defer(f"Fighting off {len(near)} at arm's length")
             stats["map_goal_fight_ticks"] = stats.get("map_goal_fight_ticks", 0) + 1
@@ -629,8 +656,9 @@ def operator_goal_act(bot, snap: dict, now: float, fight) -> dict | None:
             g.goal.update(state="unavailable", reason=str(stats.get("nav_status") or "no usable exit")[:140])
             return None
         stats["map_goal_walk_ticks"] = stats.get("map_goal_walk_ticks", 0) + 1
-        bot.doing = "walk"
-        bot.why = f"the operator's spot on the map, {math.hypot(gx - px, gz - pz) / 1000:.0f} m off - by the map"
+        bot.doing = 'bonus_run' if bonus else 'walk'
+        bot.why = (f"collecting the next time bonus, {math.hypot(gx - px, gz - pz) / 1000:.0f} m away"
+                   if bonus else f"the operator's spot on the map, {math.hypot(gx - px, gz - pz) / 1000:.0f} m off - by the map")
         return {"hold": set(keys)}
     marked = row.get("ptr", row.get("slot"))
     near = [e for e in live if e.get("ptr", e.get("slot")) != marked
@@ -710,7 +738,15 @@ def attach(cls):
                 act = tick(self, snap, *args, **kw)        # not in control (re4_switch.game_state): the mark waits
             else:
                 act = operator_goal_act(self, snap or {}, now, lambda s: tick(self, s, *args, **kw))
-                act = tick(self, snap, *args, **kw) if act is None else act
+                if act is None:
+                    act = tick(self, snap, *args, **kw)
+                elif getattr(self, 'doing', '') in ('walk', 'bonus_run'):
+                    # Route movement owns facing. Do not leave the previous
+                    # gun target's RAM aim request fighting the walker's turns.
+                    from . import re4_switch
+                    re4_switch.AIM_REQUEST.clear()
+                    self._aim_since = None
+                    self._gun_down_telemetry(False, now)
             self.__dict__["_re4_last_act"] = (now, act)    # what he pressed this tick (plan(): the map's controls)
             return act
         wrapped._re4_walk = True
