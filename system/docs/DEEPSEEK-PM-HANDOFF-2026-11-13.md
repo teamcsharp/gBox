@@ -220,7 +220,7 @@ native mailbox/build/player life and both collision volumes. Only confirmed
 inactive, detached actors are reusable. In round6a33 nine mines had armed at the
 midround check: four distance singles plus a five-mine ring; native trigger and
 retirement evidence exists. At least76 hit-ring floor refusals included14 ray
-misses and62 results outside61cm floor tolerance, some3ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã¢â‚¬Â¦Ãƒâ€šÃ‚Â¡ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¦ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã¢â‚¬Å“11m below the player.
+misses and62 results outside61cm floor tolerance, some3ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â‚¬Å¾Ã‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¦ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¡ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã¢â‚¬Â¦Ãƒâ€šÃ‚Â¡ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚Â¦ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã¢â‚¬Â¦ÃƒÂ¢Ã¢â€šÂ¬Ã…â€œ11m below the player.
 Keep the floor checks. Provisional escape sites are not armed mines.
 
 `c2d71665e` repairs consumed distance on such a refusal: preserve travel already
@@ -554,14 +554,14 @@ same worker modules serve every title).
 
 ## DeepSeek PM round 3 (2026-11-13 12:57 onward): the operator's mine-ring button, and what the reels show
 
-### The "Mine ring ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â· 5 ft" button on RE6 is fixed in the client (no restart)
+### The "Mine ring ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â· 5 ft" button on RE6 is fixed in the client (no restart)
 
 The root cause was not a missing backend: RE6 already exposes the interventions op **`remote_mines`** ->
 `re6_switch_native.bomb_ring_now` / `Controller.drop_bomb_ring` (armed native remote bombs ejected from the body,
 no throw/animation, placements recorded for the deadline controller). What never existed was any UI control that
 sent it; the topbar icon the operator pressed was the RE5 proximity-mine lane, which RE6 does not advertise.
 
-- `95c958138` adds a **"Remote mine ring ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â· 5 ft"** topbar control, shown only where the worker advertises
+- `95c958138` adds a **"Remote mine ring ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â· 5 ft"** topbar control, shown only where the worker advertises
   `remote_mines` (hidden on RE5/RE4 and on any title without the lane). Each click posts
   `{op:'remote_mines', args:{action:'ring', count:5, radius_cm:152.4}}`; the bot's own deadline controller then
   escapes the blast distance and sets the set off through the native flag. It sits beside the existing grenade-ring
@@ -733,3 +733,32 @@ Live after reload (RE6, Leon / High Seas Fortress):
 Manual ring control remains verified (round 5: 5 armed bombs in 83.8 ms, escaped, detonated, 0 self-hits).
 MercMode queue restored to `[]`; the switch to RE6 for this measurement used the operator `command: switch`
 control, not a config change. Hermes gate unchanged/healthy.
+
+### Round 7: the escape now explains itself, and the sets actually detonate
+
+`cb110f7a6` adds the scalars the escape needed: `escape_sprint_cm` / `escape_sprint_window` (how far the current
+sprint window actually runs from where it started), `escape_route_goal_cm`, `escape_route_path_n`,
+`escape_route_heading_deg`, and `mine_escape_best_clear_cm` (best clearance this set reached).
+
+Live read (RE6, after reload; `escape_route_used` 348, no failures):
+
+- the plan runs: goal 1279-1626 cm away, 14-22 waypoints, a sprint window ran up to **847 cm**;
+- clearance reached **1208 cm**, `mine_escape_required` flipped false and the native flag fired:
+  **3 sets cleared, 3 `mine_flag_detonations`, best `mine_escape_clear_s_last` 11.88 s**, `bomb_self_hits` 0,
+  `deaths` 0, kills 65+ on the round and combo up to 58 in the previous round;
+- 34 `mine_deadline_misses` still - easy/nearby sets clear in ~12 s now, wall-trapped sets and the 5 s target
+  remain unmet. The guard/crowd still limits sprint distance, so the next lever is sprint continuity (non-escape
+  actions interrupting the walk) rather than planning.
+
+Earlier RE6 results under these fixes: 20:23 "lost" 100 280 / 109 kills / combo 32; 20:13 "lost" 23 560 / 35 /
+combo 12; the 20:37 round (stopped for the reload) 162 060 / 118 / combo 58. Round outcomes are still "lost" at
+2-4 minutes - survival and length, not the bomb lane, are what S-rank needs next.
+
+### First attributed death (RE5, from the upgraded watcher)
+
+`gbox-data/mercs/deepseek-deaths/20261113-142733-telemetry.json`: RE5 round, 60 kills, combo 57, then
+`heal_status: "critical retreat at 0% (heals outside quick slots)"`, `heal_unavailable_reason: "heals outside
+quick slots"`, `heal_quick_slots: 0`, `prompts_seen_dying: 34`, `dying: 2`; the decision log ends
+"held dying" -> "dead (Continue?)". The bot fought a crowd to 0 % health with **no heal item in a quick slot**.
+That is an actionable RE5 survival cause: keep the heal usable (quick-slot assignment / inventory heal path)
+rather than only learning to retreat.
