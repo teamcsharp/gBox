@@ -13,7 +13,7 @@ from gbox import merc_live_controls as LC
 SID='pc-round'
 
 
-@pytest.mark.parametrize('op', ['proximity_mine_drop', 'proximity_mine_ring'])
+@pytest.mark.parametrize('op', ['proximity_mine_drop', 'proximity_mine_ring', 'detonate_mines'])
 def test_proximity_mine_mcp_contract_is_fixed_count_and_radius(op):
     request = {'session_id': SID, 'op': op, 'request_id': str(uuid.uuid4())}
     assert LC.validate_request(request) == op

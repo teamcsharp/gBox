@@ -1,6 +1,18 @@
 const {test}=require('node:test'); const assert=require('node:assert/strict');
 const {create,RING_KINDS,ringKindLabel,readRingKind,ammoView,createAmmoControl,ringKindOptions,bindRing}=require('../clients/web/viz/stream-interventions.js');
 const {current}=require('../clients/web/viz/mercs-current.js');
+
+test('RE4 detonate darts sends one durable request and reports native initiation accurately',async()=>{
+  const posts=[],notes=[];
+  const c=create({uuid:()=> 'mine-id',schedule:()=>1,cancel:()=>{},notify:text=>notes.push(text),
+    api:async(path,body)=>{
+      if(body){posts.push(body);return {request:{id:body.request_id,state:'queued'}};}
+      return {requests:[{id:'mine-id',op:'detonate_mines',state:'confirmed',result:{initiated:3,requested:3}}]};
+    }});
+  await c.detonateMines('re4-round');await c.poll();await c.poll();
+  assert.deepEqual(posts,[{op:'detonate_mines',request_id:'mine-id'}]);
+  assert.deepEqual(notes,['Mine darts entering explosion: 3/3.']);c.dispose();
+});
 test('live maps follow the playing title while the previous emulator remains warm',()=>{
   const warm={session_id:'worker-old',game_id:'re5',state:'running'},live={session_id:'worker-new',game_id:'re6',state:'running'};
   const h={id:'worker',name:'Spark',online:true,current_run:{phase:'playing',session_id:live.session_id,game_id:'re6'}};

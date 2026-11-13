@@ -2409,12 +2409,11 @@ class Bot:
 
     @staticmethod
     def _near_own_hazard(p, snap) -> bool:
-        """No standing on own mines: True if Leon is within MINE_CLEAR_CM of an own explosive. RE4 classic Mercenaries
-        has none, so snap has no hazard list and this stays False; kept for parity with the RE5 rule."""
+        """Keep clear of mine darts using their native power-dependent blast reach."""
         px, _, pz = p["pos"]
         for h in (snap.get("own_hazards") or snap.get("ground_mines") or []):
             hp = h.get("pos")
-            if hp and math.hypot(hp[0] - px, hp[2] - pz) < MINE_CLEAR_CM:
+            if hp and math.hypot(hp[0] - px, hp[2] - pz) < h.get('safe_mm', MINE_CLEAR_CM):
                 return True
         return False
 

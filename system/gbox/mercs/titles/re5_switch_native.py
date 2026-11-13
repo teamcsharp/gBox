@@ -244,7 +244,7 @@ class Controller(N.Controller):
         if self.pair() == "pre_class":
             unit = self.call(0x118E820, self.player, self.generation, timeout=timeout)
         else:
-            unit = self.call(0x118E820, self.player, self.generation, CLASSES.CLASSES[kind].dti, timeout=timeout)
+            unit = self.call(0x118E820, self.player, self.generation, self.base + CLASSES.CLASSES[kind].dti, timeout=timeout)
         if not R.ptr_ok(unit):
             raise Unavailable(f"native {kind} allocation refused")
         return unit, self.q(unit + 0x1A00)

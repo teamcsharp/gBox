@@ -152,7 +152,7 @@ def test_flash_requires_native_effect_flag_and_always_restores_class_table(explo
         assert ctl.failed and ctl.recoverable
         assert ctl.recover_completed_call()  # a new click is allowed; this one is never retried
     flash = N.CLASSES.CLASSES['flash']
-    assert calls == [(0x118E820, (ctl.player, ctl.generation, flash.dti)),
+    assert calls == [(0x118E820, (ctl.player, ctl.generation, ctl.base + flash.dti)),
                      (0x118E9D0, (unit, born, ctl.player, ctl.generation, ctl.base + N.CLASSES.FLASH_VT,
                                   flash.item, ctl.base + N.CLASSES.FLASH_UPDATE_OFF))]
     assert ctl.q(ctl.player) == ctl.original

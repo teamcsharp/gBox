@@ -66,24 +66,10 @@ HAND_BLAST = 0x2E48B0
 #: spawn at +0x28. The incendiary's spawn is the persistent fire: it calls EFFECT 0x26 and no AREA_ATTACK (no 0x16 area
 #: class exists in the image), so its damage is the burning field, not an instant blast.
 INCENDIARY_CANDIDATE = 0x2E4BA0
-#: The operator 2026-11-12: "In RE4 have the bot spraying a 360 ring of mine thrower rounds during the match". The
-#: class behaviour table lists a FOURTH entry after the hand / incendiary / flash triple (`0xB05C08`: spawn
-#: `0x2E5050`, secondary `0x2E51E0`) whose spawn is the only one that creates an object (CREATE at 0x8330, effects
-#: 0x42/0x43, sound 6) WITHOUT an AREA_ATTACK - the shape of a placed mine-dart rather than a grenade blast. It is a
-#: CANDIDATE, not an identified kind (the earlier pass recorded why a mine ring is not a fourth grenade-table blast):
-#: the spawn is called at the ring points behind allow_unverified, the receipt says probe, and the status refuses it
-#: until a live receipt shows the object arming/exploding. The hand grenade's 7000 mm floor is reused: a placed mine
-#: inside it would be a self-damage risk with no measured blast reach yet.
-MINE_CANDIDATE = 0x2E5050
-MINE_MIN_MM = 7000.0
+# Mine darts are created by 0x1B43C0 and detonated by 0x1B4D20;
+# see re4_switch_mines.py. The old 0x2E5050 candidate is an egg path,
+# not a mine spawn, and must never be invoked as a mine probe.
 HAND_MIN_MM = 7000.0
-#: A MINE ring is NOT a fourth entry in that table, checked 2026-11-12 for the operator's "360 blast around them using
-#: the mine thrower ... I don't want them equipping the mine thrower": the Mine Thrower (item 0x36, and 0xAB with its
-#: scope) is class 0x0E and the Mine-Darts (0x46) are class 0x00, while that table holds only the grenade classes
-#: 0x13/0x16/0x17 in item order. 0x0E is a WEAPON class (beside the shotgun 0x07 and the rifle 0x09), so the thrower
-#: fires its darts through the ordinary weapon path and has no spawn/detonate helper to point at a coordinate the way
-#: FLASH_BLAST and HAND_BLAST can. A mine ring therefore needs the mine-dart's own projectile spawn found in the image
-#: (the FLASH_BLAST-style research), and cannot be derived by the table's 0x58 stride.
 #: The ring (checkpoint G1/G2): N blasts round him, the inner ring at the kind's floor.
 RING_COUNT_DEFAULT, RING_COUNT_MAX = 10, 16
 RING_RADIUS_MM_DEFAULT, RING_INNER_MM_DEFAULT = 9000.0, 4000.0
@@ -533,14 +519,82 @@ class Controller(N.Controller):
             {"kind": "incendiary", "available": False,
              "reason": "the incendiary blast is not identified on this build yet (checkpoint G3): probe only"},
             {"kind": "mine", "available": False,
-             "reason": "the mine thrower's placed round is the class table's fourth spawn (0x2E5050), a probe: "
-                       "no live mine-ring receipt yet"},
+             "reason": "mine rings use the bot's real Mine Thrower; native radial spawn is not yet verified"},
         ]
 
     def launcher_kinds(self):
         # This title has no RE6 uWp1302/1303/1304 shell classes. Its radial
         # barrage uses the title's own native grenade blasts.
         return [row for row in self.grenade_kinds() if row['kind'] in ('flash', 'hand', 'incendiary')]
+
+    def _mine_rows(self, now):
+        from . import re4_switch_mines as M
+        self.ready()
+        if self.rd(self.base + M.DETONATE, len(M.DETONATE_PROLOGUE)) != M.DETONATE_PROLOGUE:
+            raise Unavailable('mine detonation native signature differs from the pinned build')
+        fuses = getattr(self, '_mine_fuses', None)
+        if fuses is None:
+            self._mine_fuses = fuses = M.Fuses()
+        rows = fuses.observe((self.pid, self.identity, self.player, self.player_id), M.read_mines(self), now)
+        return rows
+
+    def _detonate_mine_rows(self, rows, now, manual=False):
+        self.ensure_attached()
+        image = verify_dispatch(CODE.MINE_DETONATE)
+        if self.rd(self.base + CODE.MINE_DETONATE_AT, len(image)) != image:
+            self.stopped(lambda: self.install(self.base + CODE.MINE_DETONATE_AT, image))
+        receipts = []
+        abort = None
+        for row in rows:
+            # Only consume the individual dispatch. A timeout on one dart must
+            # not discard all the other due darts without ever attempting them.
+            sent_at = time.monotonic()
+            if not self._mine_fuses.claim([row], sent_at, manual=manual):
+                continue
+            try:
+                result = self.call(CODE.MINE_DETONATE_AT, row['ptr'], row['generation'], self.player, self.player_id)
+            except (Unavailable, Uncertain, AllocationLost) as exc:
+                abort = f'{type(exc).__name__}: {exc}'[:240]
+                receipts.append({'ptr': row['ptr'], 'generation': row['generation'], 'initiated': False,
+                                 'state': 'uncertain', 'reason': abort})
+                break
+            if result == 2:  # wrapper explicitly returned before native dispatch
+                self._mine_fuses.submitted.discard((row['ptr'], row['generation']))
+            receipts.append({'ptr': row['ptr'], 'generation': row['generation'], 'initiated': result == 1,
+                             'state': 'deferred_player_in_range' if result == 2 else 'confirmed' if result == 1 else 'refused',
+                             'late_s': round(max(0.0, sent_at - row['fuse_due_at']), 3) if not manual else None})
+        started = sum(r['initiated'] for r in receipts)
+        return {'op': 'detonate_mines', 'state': 'uncertain' if abort else 'confirmed' if started == len(receipts) else 'unavailable',
+                'verified': not abort and started == len(receipts), 'requested': len(receipts), 'initiated': started,
+                'mines': receipts, 'effect': 'native_mine_explosion_state',
+                'reason': abort or ('native mine explosion state entered' if started else
+                                   'pending darts deferred or refused' if receipts else 'no pending mine darts to detonate')}
+
+    @_serialized
+    def detonate_mines(self):
+        now = time.monotonic()
+        return self._detonate_mine_rows(self._mine_rows(now), now, manual=True)
+
+    @_serialized
+    def maintain_mines(self, snap, stats):
+        from . import re4_switch_mines as M
+        round_id = stats.get('round_evidence_id') or stats.get('rounds')
+        if getattr(self, '_mine_round', None) != round_id:
+            self._mine_round, self._mine_fuses = round_id, M.Fuses()
+        if (snap.get('game') or {}).get('phase') not in ('playing', 'grabbed'):
+            self._mine_fuses = M.Fuses()
+            return
+        now = time.monotonic()
+        rows = self._mine_rows(now)
+        snap['own_hazards'] = rows
+        stats['mine_darts_live'] = len(rows)
+        stats['mine_dart_fuse_s'] = M.FUSE_S
+        stats['mine_dart_fuse_clock'] = 'first_observed_spawn'
+        if any(now >= row['fuse_due_at'] and (row['ptr'], row['generation']) not in self._mine_fuses.submitted
+               for row in rows):
+            receipt = self._detonate_mine_rows(rows, now)
+            stats['mine_dart_detonation'] = receipt
+            stats['mine_darts_initiated'] = int(stats.get('mine_darts_initiated', 0)) + receipt['initiated']
 
     def grenade_ring(self, kind="flash", *, count=None, radius_cm=None, inner_cm=None, ripple_ms=None,
                      expand=None, allow_unverified=False):
@@ -556,10 +610,12 @@ class Controller(N.Controller):
         """
         self.ensure_attached()
         kind = (kind or "flash").lower()
-        if kind in ("incendiary", "mine") and not allow_unverified:
+        if kind == 'mine':
+            raise Unavailable('mine rings require actual Mine Thrower projectiles; the old probe was not a mine spawn')
+        if kind == "incendiary" and not allow_unverified:
             raise Unavailable(f"the {kind} ring is not identified on this build yet; pass allow_unverified for the probe")
         blasts = {"flash": (FLASH_BLAST, FLASH_MIN_MM), "hand": (HAND_BLAST, HAND_MIN_MM),
-                  "incendiary": (INCENDIARY_CANDIDATE, FLASH_MIN_MM), "mine": (MINE_CANDIDATE, MINE_MIN_MM)}
+                  "incendiary": (INCENDIARY_CANDIDATE, FLASH_MIN_MM)}
         if kind not in blasts:
             raise Unavailable(f"unknown grenade kind {kind!r}")
         blast, floor_mm = blasts[kind]

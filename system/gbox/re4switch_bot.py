@@ -818,6 +818,14 @@ def _maintain_mods(ad, snap: dict, stats: dict, release_inputs=None) -> None:
             stats[key] = v                                   # a record (a round's weapon): shown, never summed
             continue
         stats[key] = stats.get(key, 0) + v
+    if ad is not None and (snap.get('game') or {}).get('phase') in ('playing', 'grabbed'):
+        try:
+            from .mercs.interventions import native_controller
+            ctl = native_controller(ad)
+            if ctl is not None and callable(getattr(ctl, 'maintain_mines', None)):
+                ctl.maintain_mines(snap, stats)
+        except (OSError, ValueError, RuntimeError) as exc:
+            stats['mine_dart_error'] = f'{type(exc).__name__}: {exc}'[:180]
     # The live states the mods keep (not numeric: shown, never summed): the bow's class/routine and the aim lock's
     # counters, so the watch panel can say whether the 40x / the steady aim is actually on (live 2026-11-11: the
     # Krauser rounds' shots/hits needed exactly this to be readable).

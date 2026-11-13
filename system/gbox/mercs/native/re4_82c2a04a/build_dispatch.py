@@ -30,10 +30,21 @@ def assemble_first_aid() -> bytes:
     return bytes(Ks(KS_ARCH_ARM64, KS_MODE_LITTLE_ENDIAN).asm(source, addr=C.FIRST_AID_AT)[0])
 
 
+def assemble_mine_detonate() -> bytes:
+    from keystone import Ks, KS_ARCH_ARM64, KS_MODE_LITTLE_ENDIAN
+    source = Path(__file__).with_name('detonate_mine.S').read_text(encoding='utf-8')
+    return bytes(Ks(KS_ARCH_ARM64, KS_MODE_LITTLE_ENDIAN).asm(source, addr=C.MINE_DETONATE_AT)[0])
+
+
 def check() -> dict:
     image = assemble()
     problems = []
     aid = assemble_first_aid()
+    mine = assemble_mine_detonate()
+    if mine != C.MINE_DETONATE[4] or hashlib.sha256(mine).hexdigest() != C.MINE_DETONATE[3]:
+        problems.append('the mine-detonation wrapper differs from its pinned source/image')
+    if not C.FIRST_AID_AT + len(aid) <= C.MINE_DETONATE_AT < C.MINE_DETONATE_AT + len(mine) <= C.CAVE_END:
+        problems.append('the mine-detonation wrapper overlaps another image or exceeds the cave')
     if aid != C.FIRST_AID[4] or hashlib.sha256(aid).hexdigest() != C.FIRST_AID[3]:
         problems.append("the first-aid wrapper differs from its pinned source/image")
     if not C.CLONE_AT + C.CLONE_SIZE <= C.FIRST_AID_AT < C.FIRST_AID_AT + len(aid) <= C.CAVE_END:

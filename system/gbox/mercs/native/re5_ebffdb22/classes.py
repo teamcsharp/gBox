@@ -175,8 +175,8 @@ def class_for(kind: str) -> GrenadeClass:
 # `spawn.c` builds FLASH_DTI in x1 at words 12-13, but x1 already carries the caller's `generation`; x2 is free until
 # word 14 overwrites w2 with the item line. So the class arrives in **x2** and the image moves it to x1.
 # `explode.c` builds FLASH_VT in x4 at words 4-5 (x4 is free: the wrapper's arguments are x0..x3), and configures the
-# hit volumes with the flash's item id as the immediate `movz w3, #0x108` at word 47. Both are two/one instruction
-# replacements on pinned, verified images - no compiler and no new code cave (RE5's .text tail has none left).
+# hit volumes with the flash's item id as the immediate `movz w3, #0x108` at word 47. The parameterized wrapper preserves the extra arguments through its guards
+# and native calls without increasing the image size - no compiler and no new code cave (RE5's .text tail has none left).
 
 NOP = 0xD503201F
 MOV_X1_X2 = 0xAA0203E1          # orr x1, xzr, x2  - the class DTI, from the caller's third argument
@@ -202,8 +202,8 @@ def spawn_with_class() -> bytes:
 def explode_with_class() -> bytes:
     """`explode.c` with its three class-specific constants replaced.
 
-    The class vtable arrives in **x4** (the wrapper's own arguments are x0..x3), the item id in **w5** and the update
-    function in **x6** - the flash keeps its own 0x820E50, the other uWpBomb classes get the bomb base 0x806B80.
+    The class vtable arrives in **x4**, the item id in **w5** and the update
+    function in **x6**. Preserve the latter two across register reuse and CONFIGURE - the flash keeps its own 0x820E50, the other uWpBomb classes get the bomb base 0x806B80.
     """
     words = list(struct.unpack(f"<{len(IMAGES['explode']) // 4}I", IMAGES["explode"]))
     if (words[4], words[5]) != (0x90005684, 0x913D6084):        # adrp x4 / add x4, x4, #0xf58 (FLASH_VT)
@@ -212,7 +212,19 @@ def explode_with_class() -> bytes:
         raise ValueError("the pinned explode image no longer configures the flash item where it was verified")
     if words[55] != 0x97DA48E9:                                  # bl 0x820E50 (the flash update)
         raise ValueError("the pinned explode image no longer calls the flash update where it was verified")
-    words[4], words[5], words[47], words[55] = NOP, NOP, MOV_W3_W5, BLR_X6
+    # x5 is overwritten by the wrapper's own vtable load, and CONFIGURE may
+    # clobber x6 (AAPCS caller-saved). Preserve item in w7 until CONFIGURE and
+    # unit/update on the stack across it. The two removed address instructions
+    # supply the space; no executable image grows or overlaps its neighbour.
+    if words[3] != 0xA9BE7BFD or words[14] != 0xA8C27BFD or words[52] != 0xAA1303E0:
+        raise ValueError('the pinned explosion wrapper frame changed')
+    words[3] = 0xA9BD7BFD       # stp x29, x30, [sp, #-0x30]!
+    words[4] = 0x2A0503E7       # mov w7, w5
+    words[5] = 0xA9021BE0       # stp x0, x6, [sp, #0x20]
+    words[14] = 0xA8C37BFD      # ldp x29, x30, [sp], #0x30
+    words[47] = 0x2A0703E3      # mov w3, w7
+    words[52] = 0xA9421BE0      # ldp x0, x6, [sp, #0x20]
+    words[55] = BLR_X6
     return struct.pack(f"<{len(words)}I", *words)
 
 

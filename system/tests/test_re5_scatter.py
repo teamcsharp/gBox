@@ -50,7 +50,7 @@ def test_a_random_barrage_is_a_flash_cone_from_near_to_far_at_chest_height():
     assert all(d <= result["far_cm"] + 300.0 for d in dists)
     # every round goes through the verified wrappers with the flash's own DTI
     spawns = [a for o, a in ctl.calls if o == SPAWN]
-    assert all(args[2] == C.CLASSES["flash"].dti for args in spawns)
+    assert all(args[2] == ctl.base + C.CLASSES["flash"].dti for args in spawns)
 
 
 def test_an_explicit_class_is_the_probe_and_carries_its_class_arguments():
@@ -59,7 +59,7 @@ def test_an_explicit_class_is_the_probe_and_carries_its_class_arguments():
     assert result["state"] == "confirmed" and result["probe"] is True
     assert result["kinds"] == ["hand"] and result["effect"] == "native_hand_scatter"
     spawns = [a for o, a in ctl.calls if o == SPAWN]
-    assert all(args[2] == C.CLASSES["hand"].dti for args in spawns)
+    assert all(args[2] == ctl.base + C.CLASSES["hand"].dti for args in spawns)
     detonations = [a for o, a in ctl.calls if o == EXPLODE]
     assert all(args[4] == ctl.base + HAND_VT and args[5] == 0x106 for args in detonations)
 

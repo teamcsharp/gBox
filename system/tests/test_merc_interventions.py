@@ -25,6 +25,18 @@ def post(q, rid=None):
     return q.post('sid', 'flash_now', rid or str(uuid.uuid4()), 'viewer')
 
 
+def test_mine_detonation_is_fenced_to_the_round_and_cannot_take_raw_pointers(queue):
+    q, now = queue
+    q.claim('sid', 'life-1', ['detonate_mines'])
+    for args in ({'ptr': 1234}, {'force': True}, {'fuse_s': 0}):
+        with pytest.raises(ValueError):
+            q.post('sid', 'detonate_mines', str(uuid.uuid4()), 'viewer', args)
+    rid = str(uuid.uuid4())
+    q.post('sid', 'detonate_mines', rid, 'viewer')
+    assert q.claim('sid', 'life-2', ['detonate_mines']) == []
+    assert q.status('sid')['requests'][-1]['state'] == 'expired'
+
+
 def test_re5_mine_probe_gate_epoch_and_durable_partial_receipt(queue):
     q, now = queue
     caps = ['proximity_mine_drop', 'proximity_mine_ring']

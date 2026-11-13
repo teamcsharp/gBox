@@ -82,7 +82,7 @@ def pair_controller(holds="class", position=(1000.0, 800.0, -2000.0)):
         put(ctl.base + SPAWN, b"\x11" * len(C.IMAGES["spawn"]))
         put(ctl.base + EXPLODE, b"\x22" * len(C.IMAGES["explode"]))
 
-    def call(off, *args):
+    def call(off, *args, timeout=1.0):
         ctl.calls.append((off, args))
         if off == SPAWN:
             n = len(ctl.spawns)
@@ -134,7 +134,7 @@ def test_a_zero_cave_installs_the_class_pair_and_runs_the_class_shape():
     installed = {at for at, _data in ctl.installs}
     assert {ctl.base + SPAWN, ctl.base + EXPLODE} <= installed
     spawn = next(args for off, args in ctl.calls if off == SPAWN)
-    assert spawn == (ctl.player, ctl.generation, C.CLASSES["flash"].dti)
+    assert spawn == (ctl.player, ctl.generation, ctl.base + C.CLASSES["flash"].dti)
     explode = next(args for off, args in ctl.calls if off == EXPLODE)
     assert explode[4:7] == (ctl.base + FLASH_VT, 0x108, ctl.base + C.FLASH_UPDATE_OFF)
 
@@ -164,3 +164,14 @@ def test_a_half_installed_pair_is_not_guessed_between_the_two():
     with pytest.raises(N.Unavailable, match="neither the pre-class pair"):
         ctl.flash()
     assert ctl.calls == [] and ctl.installs == []
+
+
+def test_prior_class_image_with_clobbered_arguments_is_refused_without_overwrite():
+    ctl=pair_controller('class')
+    old=list(struct.unpack('<62I',C.IMAGES['explode']))
+    old[4],old[5],old[47],old[55]=C.NOP,C.NOP,C.MOV_W3_W5,C.BLR_X6
+    ctl.put(ctl.base+SPAWN,C.SPAWN_CLASS_BYTES)
+    ctl.put(ctl.base+EXPLODE,struct.pack('<62I',*old))
+    with pytest.raises(N.Unavailable,match='neither the pre-class pair'):
+        ctl.flash()
+    assert not ctl.calls and not ctl.installs

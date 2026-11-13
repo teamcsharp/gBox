@@ -65,6 +65,7 @@ ALLOWED = {
     "set": {"session_id", "op", "control", "value"},
     "flash_now": {"session_id", "op", "request_id"},
     "first_aid_now": {"session_id", "op", "request_id"},
+    "detonate_mines": {"session_id", "op", "request_id"},
     "proximity_mine_drop": {"session_id", "op", "request_id"},
     "proximity_mine_ring": {"session_id", "op", "request_id"},
     "magnum_quick4": {"session_id", "op", "request_id"},
@@ -81,7 +82,7 @@ ALLOWED = {
 }
 DETONATE_TITLES = {"re6"}
 BOMB_OPS = {"detonate": "detonate", "bomb_detonate": "detonate", "bomb_drop": "bomb_drop"}   # op -> the worker's op
-CLICKS = ("flash_now", "first_aid_now", "proximity_mine_drop", "proximity_mine_ring", "equip_primary", "magnum_quick4", "grenade_ring", "grenade_scatter", "set_infinite_ammo", "model_swap")
+CLICKS = ("flash_now", "first_aid_now", "detonate_mines", "proximity_mine_drop", "proximity_mine_ring", "equip_primary", "magnum_quick4", "grenade_ring", "grenade_scatter", "set_infinite_ammo", "model_swap")
 # The grenade-ring button's selectable types, cross-title (the operator 2026-11-11/12: "choose any sort of 360
 # protective deployment of any sort of grenade launcher shell or grenade type"). Every one is refused by a title that
 # does not build it, with that title's own reason; the controller is the source of what may actually fire.
