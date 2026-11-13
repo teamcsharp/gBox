@@ -6,10 +6,11 @@ Found statically in main EBFFDB22 and read live (read-only, MercMode 2026-10-27 
 sUnit move line 9 holds two uCameraCtrl units (vtable main+0x1ACB410); the player's is the one whose +0x130 points at
 the player. Its +0x198 is the ACTIVE camera: the uCameraQFPS embedded at ctrl+0xDB0 (vtable main+0x1ACBCF0, size 0x680:
 the class RE6's #1367 locks, there at camera+0x16A0). Its update is main+0x249400.
-  QFPS+0x1B0 f32  the PITCH, radians, + = up, clamped to [-1, +1] (0x2499b4..0x2499cc; 1 rad = the aim's +-57 deg
-                  limits seen live), integrated from the right stick each frame (0x249970 ldr / 0x249978 fadd /
-                  0x24997c str): persistent state. Live: player +0x3F5C = -0.9989 x QFPS+0x1B0 + 0.004 (sd 1.0 deg), and
-                  it keeps its value with the gun down - the pitch the next raise starts from (the +57 deg raises).
+  QFPS+0x1B0 f32  the PITCH, radians, + = up. In normal gun aim (+195 != 0), 0x249578 overwrites this each
+                  frame with -player+3A48. That value is player+3A4C's persistent input plus the native action
+                  offset (0x79CB80..79CBD8). A camera-only write reads back but is lost on the next frame.
+                  Alternate controls select player+3F60, copied from the owned input controller's +818 accumulator.
+                  The +195 == 0 camera branch can integrate input (0x249970..24997C); it is not the aimed branch.
   QFPS+0x1B4 f32  this frame's yaw delta (recomputed: not a state).
 The yaw's state is the player's own heading, the quaternion at +0x70: the aiming motion (0x96cd30) reads the rotation,
 adds the frame's turn and sets it back (0x96cf54 / 0x96cf78), so a written heading should persist (one held with the
@@ -29,6 +30,10 @@ from . import re5_switch_pose as posed
 CTRL_VT, QFPS_VT = 0x1ACB410, 0x1ACBCF0
 CTRL_PLAYER, CTRL_ACTIVE, CTRL_QFPS = 0x130, 0x198, 0xDB0
 QF_PITCH = 0x1B0
+P_PITCH_DERIVED, P_PITCH_INPUT = 0x3A48, 0x3A4C
+P_INPUT_CTRL, INPUT_CTRL_VT, INPUT_AIM_VT = 0x3EE8, 0x1C31460, 0x1C31420
+C_AIM, C_PITCH_INPUT, P_ALT_PITCH = 0x350, 0x818, 0x3F60
+S_MAIN, S_PAD, S_AIM_PARAMS = 0x26A1BA8, 0x26A2288, 0x1CF1C30
 PITCH_LIMIT = 1.0                        # rad: the game's clamp
 P_ROT = 0x70
 CAM_LINE, S_UNIT, UNIT_LINES, LINE_STRIDE, UNIT_NEXT = 9, 0x26A3270, 0x18, 0x30, 0x18
@@ -87,13 +92,15 @@ def aim_state(m, base: int, player: int) -> dict | None:
 
 def aim_writer(m):
     """The aim lock's writer for this session: write(state, pitch, heading) -> True once each written value reads back
-    (pitch into QFPS+0x1B0, clamped; the heading as the player's quaternion about y; either may be None). None without
-    the session's adapter or with modifications off."""
+    (aimed pitch into its persistent player/controller input; the free camera into QFPS+0x1B0; heading into the player's
+    quaternion). Native camera convergence is observed later, never inferred from this write's success."""
     ad = getattr(m, "adapter", None)
     if ad is None or getattr(m, "mercs_no_modifications", False):
         return None
 
     def write(st: dict, pitch: float | None, heading: float | None) -> bool:
+        write.pitch_state = None
+        started = time.monotonic()
         try:
             # A camera pointer from a previous life/raise is never a write capability.
             if any(v is not None and not math.isfinite(v) for v in (pitch, heading)):
@@ -108,9 +115,46 @@ def aim_writer(m):
                 return False
             if pitch is not None:
                 p = max(-PITCH_LIMIT, min(PITCH_LIMIT, float(pitch)))
-                ad.write_memory(st["qfps"] + QF_PITCH, struct.pack("<f", p))
-                if abs(struct.unpack("<f", ad.read_memory(st["qfps"] + QF_PITCH, 4))[0] - p) > LOCK_TOL:
+                source = _pitch_source(m, st)
+                write.pitch_state = dict(source, requested=p)
+                if source['mode'] == 'unavailable':
                     return False
+                if source['mode'] in ('player', 'controller'):
+                    low, high = source['limits']
+                    offset = source['offset']
+                    # Both the accumulator and its derived native aim must stay
+                    # inside both native clamp branches. Preserve action recoil/
+                    # offset; do not zero or write its derived output.
+                    low, high = max(low, low-offset), min(high, high-offset)
+                    if low > high:
+                        write.pitch_state['reason'] = 'native offset leaves no pitch interval'
+                        return False
+                    value = max(low, min(high, -p-offset))
+                    address = (st['player'] + P_PITCH_INPUT if source['mode'] == 'player'
+                               else source['binding'][-1] + C_PITCH_INPUT)
+                else:
+                    value, address = p, st['qfps'] + QF_PITCH
+                if time.monotonic() - st['sampled_at'] > MAX_SAMPLE_AGE \
+                        or player_qfps(m, st['base'], st['player']) != st['qfps'] \
+                        or _q(m, st['player'] + 0x1A00) != st['generation']:
+                    return False
+                check = _pitch_source(m, st)
+                if check != source or time.monotonic() - st['sampled_at'] > MAX_SAMPLE_AGE:
+                    write.pitch_state['reason'] = 'pitch ownership or source changed before write'
+                    return False
+                ad.write_memory(address, struct.pack('<f', value))
+                if abs(struct.unpack('<f', ad.read_memory(address, 4))[0] - value) > LOCK_TOL:
+                    write.pitch_state['reason'] = 'pitch input read-back changed'
+                    return False
+                after = _pitch_source(m, st)
+                if after['mode'] != source['mode'] or after.get('binding') != source.get('binding') \
+                        or _q(m, st['player'] + 0x1A00) != st['generation'] \
+                        or player_qfps(m, st['base'], st['player']) != st['qfps']:
+                    write.pitch_state['reason'] = 'pitch ownership changed during write'
+                    return False
+                # Read-back of the accumulator is intention, not proof that the
+                # native camera/laser consumed it or that a bullet hit anything.
+                write.pitch_state['written'] = value
             if heading is not None:
                 h = wrap(float(heading))
                 q = struct.unpack("<4f", ad.read_memory(st["player"] + P_ROT, 16))
@@ -133,10 +177,74 @@ def aim_writer(m):
                 _qx2, qy2, _qz2, qw2 = struct.unpack("<4f", ad.read_memory(st["player"] + P_ROT, 16))
                 if abs(wrap(2.0 * math.atan2(qy2, qw2) - h)) > LOCK_TOL:
                     return False
+            if time.monotonic() - st['sampled_at'] > MAX_SAMPLE_AGE:
+                if isinstance(write.pitch_state, dict):
+                    write.pitch_state['reason'] = 'pitch validation exceeded sample age'
+                return False
         except ERRORS:
             return False
+        finally:
+            if isinstance(write.pitch_state, dict):
+                write.pitch_state['writer_ms'] = round(1000 * (time.monotonic()-started), 3)
         return True
     return write
+
+
+def _pitch_source(m, st):
+    """Current native pitch authority; unknown/control-transition modes fail closed.
+
+    RVA249518..249578 selects the normal derived input or the alternate +3F60
+    input. The alternate input comes from the owned controller's +818 accumulator
+    (7D91B0), copied to player+3F60 by the native action dispatcher. +3F5C is the
+    separate animated output including sway, not that accumulator.
+    No mode flag, derived output, recoil/sway term or health field is written.
+    """
+    base, player, qf = st['base'], st['player'], st['qfps']
+    flags = tuple(m.rd(qf + 0x194, 4))
+    if len(flags) != 4:
+        return {'mode': 'unavailable', 'reason': 'short camera mode read'}
+    if not flags[1]:
+        return {'mode': 'camera', 'binding': flags} if not flags[3] else {
+            'mode': 'unavailable', 'reason': 'native camera reset'}
+    if _q(m, qf + 0x130) != player:
+        return {'mode': 'unavailable', 'reason': 'native camera player changed'}
+    main, pad, params = (_q(m, base + off) for off in (S_MAIN, S_PAD, S_AIM_PARAMS))
+    if not all(_ok(p) for p in (main, pad, params)):
+        return {'mode': 'unavailable', 'reason': 'native pitch globals unavailable'}
+    config = _q(m, main + 0x584E0)
+    if not _ok(config):
+        return {'mode': 'unavailable', 'reason': 'native pitch configuration unavailable'}
+    mode = (m.rd(pad + 0x8D0C, 1), m.rd(config + 0xA74, 1))
+    if any(len(v) != 1 for v in mode):
+        return {'mode': 'unavailable', 'reason': 'short native pitch configuration'}
+    if any(v != b'\0' for v in mode):
+        controller = _q(m, player + P_INPUT_CTRL)
+        if not _ok(controller) or _q(m, controller) != base + INPUT_CTRL_VT \
+                or _q(m, controller + 0x48) != player \
+                or _q(m, controller + C_AIM) != base + INPUT_AIM_VT \
+                or struct.unpack('<i', m.rd(controller + 0x34C, 4))[0] != 0:
+            return {'mode': 'unavailable', 'reason': 'alternate controller ownership unavailable'}
+        source = struct.unpack('<f', m.rd(controller + C_PITCH_INPUT, 4))[0]
+        derived = struct.unpack('<f', m.rd(player + P_ALT_PITCH, 4))[0]
+        limit = struct.unpack('<f', m.rd(params + 0x29C, 4))[0]
+        if not all(math.isfinite(v) for v in (source, derived, limit)) or limit <= 0 \
+                or abs(source) > PITCH_LIMIT or abs(derived) > PITCH_LIMIT:
+            return {'mode': 'unavailable', 'reason': 'invalid alternate pitch limits or input'}
+        limit = min(PITCH_LIMIT, limit)
+        return {'mode': 'controller', 'source': source, 'derived': derived, 'offset': 0.,
+                'limits': (-limit, limit),
+                'binding': (main, pad, config, params, flags, mode, controller)}
+    derived, source = struct.unpack('<2f', m.rd(player + P_PITCH_DERIVED, 8))
+    high0, low0, high1, low1 = struct.unpack('<4f', m.rd(params + 0x440, 16))
+    values = (derived, source, high0, low0, high1, low1)
+    if not all(math.isfinite(v) for v in values) or not low0 < high0 or not low1 < high1:
+        return {'mode': 'unavailable', 'reason': 'invalid native pitch limits or input'}
+    low, high = max(-PITCH_LIMIT, low0, low1), min(PITCH_LIMIT, high0, high1)
+    if low >= high or not -PITCH_LIMIT <= source <= PITCH_LIMIT \
+            or not -PITCH_LIMIT <= derived <= PITCH_LIMIT:
+        return {'mode': 'unavailable', 'reason': 'native pitch outside verified bounds'}
+    return {'mode': 'player', 'source': source, 'derived': derived, 'offset': derived-source,
+            'limits': (low, high), 'binding': (main, pad, config, params, flags, mode)}
 
 
 # Target feedback lives beside the established camera writer so existing workers
@@ -396,7 +504,7 @@ def apply(bot, snap, act, now):
                      target_feedback_target=None, target_feedback_yaw_deg=None,
                      target_feedback_pitch_deg=None, target_feedback_block_why=None,
                      target_feedback_refresh_ms=None, target_feedback_refresh_error=None,
-                     target_feedback_pose=None,
+                     target_feedback_pose=None, target_feedback_pitch_source=None,
                      target_feedback_dt_ms=0.)
     previous, previous_context = getattr(bot, '_feedback_at', None), getattr(bot, '_feedback_context', None)
     # Only an accepted correction below can keep the next interval alive.
@@ -525,6 +633,9 @@ def apply(bot, snap, act, now):
         pitch = max(-1.0, min(1.0, cam['pitch'] + step(pitch_error, PITCH_RATE, dt)))
         heading = R.wrap(cam['heading'] + step(yaw_error, YAW_RATE, dt))
         written = writer(cam, pitch, heading)
+        if isinstance(getattr(writer, 'pitch_state', None), dict):
+            bot.stats['target_feedback_pitch_source'] = {
+                k: v for k, v in writer.pitch_state.items() if k != 'binding'}
         key = 'target_feedback_writes' if written else 'target_feedback_write_failures'
         bot.stats[key] = bot.stats.get(key, 0) + 1
         if not written:
