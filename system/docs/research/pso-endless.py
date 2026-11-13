@@ -52,10 +52,22 @@ def tap(pad: Pad, key: str) -> None:
     pad.send([{"key": key, "down": True}, {"key": key, "down": False}])
 
 
+DIRECTIONS = ("up", "down", "left", "right")
+
+
+def release_all(pad: Pad) -> None:
+    """Return the stick to neutral.
+
+    Releasing a single direction is unsafe on this pad: `up:False` pins the stick fully LEFT and `down:False` pins it
+    fully RIGHT (measured). Only releasing all four together produces (lx 0, ly 0), so this is how every hold ends.
+    """
+    pad.send([{"key": key, "down": False} for key in DIRECTIONS])
+
+
 def hold(pad: Pad, key: str, seconds: float) -> None:
     pad.send([{"key": key, "down": True}])
     time.sleep(seconds)
-    pad.send([{"key": key, "down": False}])
+    release_all(pad)
 
 
 def bearing(fx, fz, tx, tz) -> float:
@@ -236,14 +248,18 @@ def unstick(pad: Pad, attempts: int = 3) -> str:
             if math.dist(start, end) > 1.0:
                 log(f"unstick: {key} freed it ({math.dist(start, end):.1f} units)")
                 return key
-        # nothing physical worked: a menu or a dialogue is the remaining explanation
-        log(f"unstick: no direction moved it (attempt {attempt + 1}) - pressing START and B")
-        tap(pad, "start")
-        time.sleep(0.6)
+        # Nothing physical moved it. Cancel any menu - with B only: START *opens* the pause menu, and pressing it
+        # here is what turned a temporary jam into a permanent one. Then back off and go round, alternating sides so
+        # the same corner cannot trap it twice.
+        log(f"unstick: no direction moved it (attempt {attempt + 1}) - cancelling, backing off, going round")
         tap(pad, "b")
-        time.sleep(0.4)
-        tap(pad, "a")
-        time.sleep(0.4)
+        time.sleep(0.5)
+        hold(pad, "down", 0.8)
+        time.sleep(0.15)
+        hold(pad, "left" if attempt % 2 == 0 else "right", 0.5)
+        time.sleep(0.15)
+        hold(pad, "up", 0.6)
+        time.sleep(0.2)
     return ""
 
 
