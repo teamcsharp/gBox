@@ -61,6 +61,16 @@ def test_missing_goal_is_preserved_as_unknown_but_commanded_immobility_is_report
     assert m.active['waypoint'] is None and m.active['goal_progress_cm'] is None
 
 
+def test_frozen_game_timer_is_explicitly_distinguished_from_proven_wall_contact():
+    m = Monitor()
+    for k in range(17):
+        r = row(k*.2); r['timer'] = 120.
+        m.observe(r)
+    assert m.active['game_timer_span_s'] == 0
+    assert 'stalled simulation' in m.active['evidence_warnings'][0]
+    assert m.active['collision_confirmed'] is None
+
+
 def test_report_is_written_before_round_end_with_input_and_geometry_context(tmp_path):
     cap = RunCapture(tmp_path/'round_maps', 'RE4', 'round1', threaded=False,
                      position_scale_to_cm=.1, provenance={'source_session_id': 'session1'})

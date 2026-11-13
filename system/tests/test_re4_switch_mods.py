@@ -802,6 +802,23 @@ def test_a_close_crowd_gets_one_random_shotgun_and_retains_the_round_draw(ad):
     assert st["round_weapon"]["id"] == 0x27
 
 
+def test_laser_dropout_never_re_equips_an_already_held_shotgun(ad):
+    _, s = _boss_scene(ad, held=0x2c)
+    s['aim'] = None
+    s['enemies'] = [{'pos': [i*500, 0, 2500], 'hp': 400} for i in range(3)]
+    ad.writes.clear()
+    assert M._crowd_weapon(ad, s, {}) is None
+    assert not ad.writes
+
+
+def test_laser_dropout_never_re_equips_an_already_held_boss_weapon(ad):
+    _, s = _boss_scene(ad, held=0x37)
+    s['aim'] = None
+    ad.writes.clear()
+    assert M._boss_weapon(ad, s, {})['already']
+    assert not ad.writes
+
+
 def test_distant_dead_or_other_floor_enemies_do_not_trigger_a_crowd_swap(ad):
     _, s = _boss_scene(ad, held=0x27)
     s["enemies"] = [{"pos": [0, 0, 2000], "hp": 400}, {"pos": [0, 0, 3000], "hp": 0},

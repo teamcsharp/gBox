@@ -72,10 +72,16 @@ class FlightRecorder:
         p = snap.get('player') or {}
         plan = plan or {}
         target = plan.get('target') or {}
+        if isinstance(target, dict) and target.get('pos') is None and target.get('id') is not None:
+            entity = next((e for e in tuple(snap.get('enemies') or ()) + tuple(snap.get('bonuses') or ())
+                           if isinstance(e, dict) and e.get('ptr', e.get('slot')) == target['id']), None)
+            if entity and entity.get('pos') is not None:
+                target = dict(target, pos=entity['pos'])
         held_weapon = next((i.get('item') for i in snap.get('inventory') or () if i.get('hand')), None)
         row = {'t': round(now, 3), 'pos': self.point(p.get('pos')),
                'hp': safe(p.get('hp')), 'hp_max': safe(p.get('hp_max')),
                'player': safe(p.get('ptr')), 'heading': safe(p.get('rot', p.get('facing'))),
+               'player_generation': safe(p.get('generation', p.get('id'))),
                'phase': safe(plan.get('phase', stats.get('phase'))), 'why': safe(plan.get('note')),
                'game_phase': safe((snap.get('game') or {}).get('phase', snap.get('mercenaries_phase'))),
                'in_control': safe((snap.get('game') or {}).get('in_control')),

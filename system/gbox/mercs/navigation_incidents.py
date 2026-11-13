@@ -69,7 +69,8 @@ class Monitor:
         if self.active:
             old = self.active['waypoint']
             changed = (dest is None) != (old is None) or (dest is not None and old is not None and math.dist(dest, old) > 50)
-            if changed or row.get('player') != self.active['player']:
+            if changed or (row.get('player'), row.get('player_generation')) != \
+                    (self.active['player'], self.active['player_generation']):
                 self.close(now, 'goal_or_player_changed')
         self.window.append(row)
         if self.active:
@@ -126,9 +127,13 @@ class Monitor:
         if not kinds:
             return
         self.sequence += 1
+        timers = [r.get('timer') for r in rows]
+        timer_span = (max(timers)-min(timers)) if all(
+            type(v) in (int, float) and math.isfinite(v) for v in timers) else None
         self.active = {'id': self.sequence, 'state': 'open', 'outcome': 'unresolved', 'kinds': kinds,
                        'from_t': rows[0]['t'], 'to_t': now, 'detected_at': now,
                        'player': row.get('player'), 'position_cm': row['pos'], 'waypoint': dest,
+                       'player_generation': row.get('player_generation'),
                        'goal': row.get('goal'), 'distance_metric': metric,
                        'distance_at_open_cm': round(distance, 2) if distance is not None else None,
                        'goal_progress_cm': round(progress, 2) if progress is not None else None,
@@ -136,6 +141,9 @@ class Monitor:
                        'movement_command_coverage': round(coverage, 3), 'turn_command_reversals': reversals,
                        'max_sample_gap_s': max(b['t']-a['t'] for a,b in zip(rows,rows[1:])),
                        'before': list(self.window), 'collision_confirmed': None,
+                       'game_timer_span_s': timer_span,
+                       'evidence_warnings': ['game timer unchanged; paused or stalled simulation remains possible']
+                           if timer_span is not None and timer_span < .01 else [],
                        'cause': 'unknown; inspect route, geometry, interactions and applied inputs',
                        'analysis_state': 'needs_triage', 'learning_applied': False}
         self.emit(now)

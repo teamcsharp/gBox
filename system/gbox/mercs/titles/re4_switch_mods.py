@@ -816,6 +816,27 @@ def _round_weapon(ad, snap: dict, st: dict) -> dict | None:
     return given
 
 
+def _active_weapon_item(ad, snap):
+    """Read the held object independently of optional laser/aim validation.
+
+    A missing laser cannot imply a missing shotgun: repeated equip calls lower
+    the gun and interrupt firing even when the correct weapon is already held.
+    """
+    try:
+        player = (snap.get('player') or {}).get('ptr')
+        if not D.ptr_ok(player):
+            return None
+        wep = struct.unpack('<Q', bytes(ad.read_memory(player + D.PL_WEP, 8)))[0]
+        if not D.ptr_ok(wep):
+            return None
+        obj = struct.unpack('<Q', bytes(ad.read_memory(wep + D.WEP_OBJ, 8)))[0]
+        if not D.ptr_ok(obj):
+            return None
+        return struct.unpack('<H', bytes(ad.read_memory(obj + D.OBJ_ITEM, 2)))[0]
+    except (ValueError, OSError, TypeError, struct.error):
+        return None
+
+
 def _crowd_weapon(ad, snap: dict, st: dict, rng=None) -> dict | None:
     """A random shotgun for a nearby pack, with a clear interval before the next encounter redraws it."""
     game, p = snap.get("game") or {}, snap.get("player") or {}
@@ -838,7 +859,7 @@ def _crowd_weapon(ad, snap: dict, st: dict, rng=None) -> dict | None:
         held = W.Reader(lambda a, n: bytes(ad.read_memory(a, n)), snap["module_base"]).equipped()
     except (ValueError, OSError, RuntimeError, struct.error):
         return None
-    actual = (snap.get('aim') or {}).get('item')
+    actual = _active_weapon_item(ad, snap)
     if not held or held.get("id") not in SWAPPABLE or held.get("id") in SHOTGUNS and actual == held.get('id'):
         return None
     if now < float(st.get("crowd_retry_at") or 0):
@@ -898,7 +919,7 @@ def _boss_weapon(ad, snap: dict, st: dict, rng=None) -> dict | None:
         return None
     if held is None or not held.get("addr"):
         return None
-    if held.get("id") in BOSS_GUNS and (snap.get('aim') or {}).get('item') == held.get('id'):
+    if held.get("id") in BOSS_GUNS and _active_weapon_item(ad, snap) == held.get('id'):
         # Already a magnum/shotgun: nothing to write, and the receipt says so rather than a silent no-op.
         st["boss_weapon"] = {"verified": True, "already": True, "id": held.get("id"), "name": held.get("name")}
         return st["boss_weapon"]
@@ -1485,7 +1506,7 @@ def maintain(ad, snap: dict | None = None, *, release_inputs=None) -> dict:
                 ask.clear()
             elif time.monotonic() >= float(ask.get("until") or 0):
                 ask.clear()
-            elif snap.get("equipped_id") == int(ask["item"]) and (snap.get("aim") or {}).get("item") == int(ask["item"]):
+            elif snap.get("equipped_id") == int(ask["item"]) and _active_weapon_item(ad, snap) == int(ask["item"]):
                 ask["verified"] = True  # hold ownership without repeatedly giving the same weapon
                 if ask.get("why") == "restore after mine ring":
                     ask.clear()
