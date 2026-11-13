@@ -29,6 +29,7 @@ from pso_pad import Pad, call
 try:
     from walk_to import walk_to                    # VISIBLY WALK to a target: one tap, measure, repeat
     from weapons import ensure_equipped            # class-aware weapon choice + the 2-5 min timer
+    from npc_guard import is_npc                   # never talk to anyone: a dialog swallows input
 except Exception:                                # noqa: BLE001
     walk_to = None
 
@@ -224,7 +225,9 @@ def teleport(pad: Pad, x: float, y: float, z: float) -> bool:
     time.sleep(0.8)
     after = state(pad).get("player") or {}
     moved = math.dist((x, z), (float(after.get("x") or 0), float(after.get("z") or 0)))
-    return moved < 40.0
+    # 3 units, not 40: a relocation moves 15 units, so a 40-unit tolerance passed even when the write did nothing at
+    # all - which is exactly how "relocating" logged four attempts while the character never moved.
+    return moved < 3.0
 
 
 def where_am_i(state_now: dict) -> str:
@@ -498,6 +501,20 @@ def unstick(pad: Pad, attempts: int = 3) -> str:
             if gained < 0.5:
                 break                                  # backing up is blocked too - stop wasting time
         log(f"  retreated {retreated:.1f} units")
+        if retreated < 0.5:
+            # NOTHING MOVED: the signature of a STORY DIALOG, not a wall. Measured: with one open a forward step
+            # moved 0.0 and four B presses did nothing; a single A press freed it (7.5 units).
+            tap(pad, "a")
+            time.sleep(0.5)
+            probe = state(pad).get("player") or {}
+            start_probe = (float(probe.get("x") or 0), float(probe.get("z") or 0))
+            hold(pad, "up", 0.45)
+            time.sleep(0.2)
+            end_probe = state(pad).get("player") or {}
+            if math.dist(start_probe, (float(end_probe.get("x") or 0), float(end_probe.get("z") or 0))) > 2.0:
+                log("  a story dialog was blocking it - A dismissed it")
+                TELEPORT_ATTEMPTS["count"] = 0
+                return "up"
         if retreated < 0.5 and TELEPORT_ATTEMPTS["count"] < 2:
             # Every direction blocked and the retreat blocked: the character is wedged. Relocate it a short distance
             # AT ITS OWN HEIGHT - writing y=0.1 buried it in terrain when it stood at y 32.3, which is why earlier
@@ -510,8 +527,14 @@ def unstick(pad: Pad, attempts: int = 3) -> str:
             hz = float(here.get("z") or 0)
             freed = False
             for dx, dz in ((15.0, 0.0), (-15.0, 0.0), (0.0, 15.0), (0.0, -15.0)):
-                log(f"  wedged at ({hx:.0f},{hy:.0f},{hz:.0f}) - relocating {dx:+.0f},{dz:+.0f} at the same height")
-                if not teleport(pad, hx + dx, hy, hz + dz):
+                landed = teleport(pad, hx + dx, hy, hz + dz)
+                # Log where it ACTUALLY is, not where it started - the old line printed hx/hy/hz for every attempt and
+                # made four failed relocations look like four identical successes.
+                now_at = state(pad).get("player") or {}
+                log(f"  wedged at ({hx:.0f},{hy:.0f},{hz:.0f}) - relocating {dx:+.0f},{dz:+.0f} at the same height"
+                    f" -> ({float(now_at.get('x') or 0):.0f},{float(now_at.get('z') or 0):.0f})"
+                    f" {'landed' if landed else 'DID NOT LAND'}")
+                if not landed:
                     continue
                 time.sleep(1.2)                     # let the game settle the character before judging the move
                 before_move = state(pad).get("player") or {}
@@ -762,6 +785,13 @@ def play(pad: Pad, seconds: float = 120.0) -> str:
             bx, bz = float(box.get("x") or 0), float(box.get("z") or 0)
             bdist = math.hypot(bx - x, bz - z)
             if bdist <= 220.0:
+                if any(is_npc(e) and e.get("x") is not None and e.get("z") is not None
+                       and math.hypot(float(e.get("x") or 0) - x, float(e.get("z") or 0) - z) < 25.0
+                       for e in (now.get("entities") or [])):
+                    # An NPC is close: step away rather than press A and open a dialog that freezes us.
+                    hold(pad, "down", 0.6)
+                    time.sleep(0.1)
+                    continue
                 if bdist <= 20.0:        # real PMT range is 13-30 units (was 8, from the fallback)
                     for _ in range(3):
                         tap(pad, "b")
@@ -837,6 +867,13 @@ def play(pad: Pad, seconds: float = 120.0) -> str:
             # Nothing here trusts `heading_deg`: presses in one direction produced +130, +21, 0 and +145 degrees, so
             # it is not a signal to servo on. Instead hill-climb on DISTANCE - turn a side, step, and keep that side
             # only if it made us closer. That is how an enemy was closed from 210 units to 12 and killed.
+                if any(is_npc(e) and e.get("x") is not None and e.get("z") is not None
+                       and math.hypot(float(e.get("x") or 0) - x, float(e.get("z") or 0) - z) < 25.0
+                       for e in (now.get("entities") or [])):
+                    # An NPC is close: do NOT press A, it would start a dialog that freezes the character.
+                    hold(pad, "down", 0.6)
+                    time.sleep(0.1)
+                    continue
             if distance <= 22.0:      # real PMT range is 13-30 units (was 10, from the fallback)
                 # SWEEP the aim cone here too. An attack only connects inside 8 degrees and heading_deg cannot be
                 # trusted to aim (presses in one direction gave +130, +21, 0 and +145 degrees), so swing three times
