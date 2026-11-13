@@ -806,6 +806,11 @@ class CommitMotion:
         self.steps = 0
         self.blocked = 0
         self.slides = 0
+        self.probe_queue: list = []
+        self.probe_scores: dict = {}
+        self.probe_from = (0.0, 0.0)
+        self.probe_target = (0.0, 0.0)
+        self.probes = 0
 
     def step(self, player: dict, target: tuple, reason: str = "") -> Action | None:
         x, z = float(player.get("x") or 0), float(player.get("z") or 0)
@@ -813,6 +818,9 @@ class CommitMotion:
         if self.last_key is not None and self.last_pos is not None:
             dx, dz = x - self.last_pos[0], z - self.last_pos[1]
             moved = math.hypot(dx, dz)
+            if self.probe_scores is not None and self.last_key is not None and self.probes:
+                # the position reached after that probe key, as a distance to the probe's target
+                self.probe_scores[self.last_key] = math.dist((x, z), self.probe_target)
             if moved >= self.blocked_units:
                 old = self.dirs.get(self.last_key)
                 new = (dx / moved, dz / moved)
@@ -822,13 +830,35 @@ class CommitMotion:
             else:
                 self.blocked += 1
                 self.remaining = 0
-                if self.steps >= self.slide_until:
+                # A wall dead ahead: probe every key once instead of sliding blind. Measured in Forest 1 room 16, a
+                # hand-run probe loop closed 118 units where commit-slide had circled for two minutes - the open
+                # direction there was not any of the ones the slide guessed.
+                if self.steps >= self.slide_until and not self.probe_queue and self.blocked >= 2:
+                    self.probe_queue = list(self.keys)
+                    self.probe_scores = {}
+                    self.probe_from = (x, z)
+                    self.probe_target = (float(target[0]), float(target[1]))
+                if self.steps >= self.slide_until and self.blocked < 2:
                     # Slide 90 degrees from the aim for a few taps, then aim again: a wall dead ahead is not something
                     # more pushing can solve.
                     ux, uz = _unit(float(target[0]) - x, float(target[1]) - z)
                     self.slide_dir = (-uz, ux) if self.slides % 2 == 0 else (uz, -ux)
                     self.slide_until = self.steps + self.slide
                     self.slides += 1
+        if self.probe_queue:
+            key = self.probe_queue.pop(0)
+            self.key = key
+            self.last_key, self.last_pos = key, (x, z)
+            self.steps += 1
+            self.probes += 1
+            if not self.probe_queue:
+                # every key has been tried: commit to the one whose resulting position was closest to the target
+                ranked = sorted(self.probe_scores.items(), key=lambda kv: kv[1])
+                if ranked:
+                    self.key = ranked[0][0]
+                    self.remaining = self.commit
+                self.blocked = 0
+            return press(key, f"probe {key} around the obstruction ({self.probes} probes)")
         distance = math.hypot(float(target[0]) - x, float(target[1]) - z)
         if distance <= self.arrive:
             return None

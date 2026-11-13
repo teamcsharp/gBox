@@ -390,7 +390,10 @@ def run(mode: str, args) -> int:
         automaton = B.Automaton(
             world, ledger=ledger, clock=clock, operator=operator, mode=bound_mode,
             motion=motion, policy=play_policy,
-            bounds=B.Bounds(), watchdog=B.Watchdog(stall_s=20.0, max_recoveries=4),
+            # An objective can be hundreds of units away in these rooms: a 20 s no-improvement clock failed a switch
+        # objective at 344 units while the character was still travelling. 45 s, with the net-stall watchdog for a
+        # body that is genuinely pinned.
+        bounds=B.Bounds(max_no_close_s=45.0), watchdog=B.Watchdog(stall_s=20.0, max_recoveries=4),
             flag_address=STAGE_FLAGS, flag_length=576,
             fixture_path=OUT / f"failure-{mode}-{stamp}.json")
 
