@@ -124,6 +124,15 @@ def test_a_bomb_escape_runs_radially_to_the_largest_clearance():
     out = S.guard(b, snap, {'hold': ('lup',)}, 100.)
     assert out['hold'] == ('lright',)              # world left: 280 cm from it, versus 198 cm stepping north
 
+def test_a_planned_escape_heading_wins_over_the_radial_step():
+    # re6_switch._escape_route plans around railings; when it publishes a heading the guard follows the plan among
+    # the floor-proven options instead of taking the merely-radial step (which can be a dead end).
+    b, snap = bot(), view(pos=(200., 0., 200.))
+    b.stats.update(mine_escape_required=True, mine_avoid_positions=[[330., 0., 200.]])
+    b._escape_heading = 0.0            # north, toward the planned clear point
+    out = S.guard(b, snap, {'hold': ('lup',)}, 100.)
+    assert out['hold'] == ('lup',)     # the plan (198 cm from the bomb), not the radial west (280 cm)
+
 def test_identified_surrounding_remote_ring_permits_escape_without_weakening_external_clearance():
     b, snap = bot(), view()
     center = snap['player']['pos']

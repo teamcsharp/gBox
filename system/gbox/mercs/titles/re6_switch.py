@@ -1236,7 +1236,7 @@ def _screen_impl(m, merc=None, now: float | None = None) -> dict:
             where, cursor, target = "main_menu", _i32(m, ui["uIdStartUp00"] + MENU_CURSOR), MAIN_PLAY_GAME
         elif "uIdTitle00" in ui and getattr(m, "mercs_split_screen", False) is True                 and snap.get("mercenaries_mode") == "no_mercy":
             # split screen's lobby (a live run 2026-10-27, real frames): after the stage select, "THE MERCENARIES NO
-            # MERCY Â· <stage>", Player 1 joined, Player 2's slot "Press -/+ to join", A starts the game. Its own unit is
+            # MERCY Ã‚Â· <stage>", Player 1 joined, Player 2's slot "Press -/+ to join", A starts the game. Its own unit is
             # not named yet; the title unit stays listed under it, and a real title never has the No Mercy mode set
             where = "split_lobby"
         elif "uIdTitle00" in ui:
@@ -4603,7 +4603,7 @@ class Bot:
         if any(now - t <= 1.5 and isinstance(h, (int, float)) and isinstance(hp_now, (int, float))
                and h > hp_now for t, h, _ in self.hp_hist):
             self._burst().end('damage_response')  # emergency flash/heal may interrupt the commitment
-        # #5056: just took HP loss with no enemy within HAZARD_CONTACT_R â€” the damage came from a ranged enemy
+        # #5056: just took HP loss with no enemy within HAZARD_CONTACT_R Ã¢â‚¬â€ the damage came from a ranged enemy
         # (or a hazard), not a melee attacker. Break out of the current decision mode (cc_kick, quick_turn,
         # bonus_run, etc.) and turn to fight the ranged enemy or move to safety, rather than continuing the
         # current action that left the bot exposed.
@@ -5702,7 +5702,7 @@ class Bot:
     def _prompt(self, p, snap, now) -> dict | None:
         """A shown prompt's button, pressed at once and again every PROMPT_REPEAT_S while it stays. None: no prompt to
         take this tick. A flanking crowd (4+ within CC_CROWD_R) defers the press: lowering the gun to take a prompt
-        in a surround is the crowd_gun_down trigger (cluster b294c62b554c77fd) â€” the bot waits for the crowd to
+        in a surround is the crowd_gun_down trigger (cluster b294c62b554c77fd) Ã¢â‚¬â€ the bot waits for the crowd to
         thin before pressing, matching the crowd_hold convention used by the other decision paths."""
         shown = getattr(self, "_prompt_shown", None) or []
         if not PROMPTS or not shown:
@@ -5719,7 +5719,7 @@ class Bot:
             if (key is None or (prompt_skipped(q) and not heal)
                     or (key != 'stick' and now - live["at"] < PROMPT_REPEAT_S)):
                 continue
-            # crowd guard: 4+ live enemies on his level within CC_CROWD_R â†’ defer the press (gun stays up)
+            # crowd guard: 4+ live enemies on his level within CC_CROWD_R Ã¢â€ â€™ defer the press (gun stays up)
             n = sum(1 for e in (snap.get("enemies") or ()) if (e.get("hp") or 0) > 0
                     and abs(e["pos"][1] - p["pos"][1]) <= MAX_DY
                     and math.hypot(e["pos"][0] - px, e["pos"][2] - pz) <= CC_CROWD_R)
@@ -7472,6 +7472,54 @@ class Bot:
         self.hp_hist = []
         self.bomb_phase, self.bomb_at, self.bomb_walk, self.bomb_walk_since = None, None, None, None
 
+    def _escape_route(self, p, now) -> float | None:
+        """The heading along a mesh A* route to the nearest floor point already clear of every armed bomb.
+
+        The greedy open heading - and even the guard's radial stick choice - can point into a railing corner, so a
+        set never reaches the detonation clearance (live 2026-11-13: one set cleared in 124 s, another never).
+        NavMesh.path plans around the walls; the goal is a triangle centre at least the rule's clearance plus a
+        margin from every known bomb, nearest to him, and the guard follows the first far-enough waypoint. The goal
+        is recomputed when the bomb set changes, the path every 0.5 s from his current position.
+        """
+        mesh, stats = getattr(self, '_mesh', None), self.stats
+        if mesh is None or not hasattr(mesh, 'path') or not getattr(mesh, 'C', None):
+            stats['escape_route_failed'] = stats.get('escape_route_failed', 0) + 1
+            return None
+        sites = [tuple(s) for s in (stats.get('mine_avoid_positions') or ())
+                 if isinstance(s, (list, tuple)) and len(s) == 3]
+        if not sites:
+            return None
+        required = stats.get('mine_required_clearance_cm')
+        need = float(required) if isinstance(required, (int, float)) and math.isfinite(required) else 1150.0
+        px, py, pz = p['pos']
+        key = (stats.get('round_evidence_id'), stats.get('mine_oldest_placed_at'), len(sites))
+        cache = getattr(self, '_escape_route_cache', None)
+        if cache is None or cache.get('key') != key:
+            goal = None
+            for c in mesh.C:
+                if abs(c[1] - py) > MAX_DY:
+                    continue
+                d = math.hypot(c[0] - px, c[2] - pz)
+                if d < 600. or d > 2600.:
+                    continue
+                if min(math.hypot(c[0] - s[0], c[2] - s[2]) for s in sites) < need + 50.:
+                    continue
+                if goal is None or d < goal[0]:
+                    goal = (d, c)
+            cache = {'key': key, 'goal': goal[1] if goal is not None else None, 'path': None, 'at': -1e9}
+            self._escape_route_cache = cache
+        if cache['goal'] is None:
+            stats['escape_route_failed'] = stats.get('escape_route_failed', 0) + 1
+            return None
+        if now - cache['at'] >= 0.5 or not cache['path']:
+            cache['path'] = mesh.path((px, py, pz), cache['goal'])
+            cache['at'] = now
+        for w in cache['path'] or ():
+            if math.hypot(w[0] - px, w[2] - pz) >= 80.:
+                stats['escape_route_used'] = stats.get('escape_route_used', 0) + 1
+                return heading(w[0] - px, w[2] - pz)
+        return None
+
     def _bomb_walk(self, p, at, yaw, me, on, now, act="bomb_walk", why=None, live=()) -> dict | None:
         """Off the bomb: the camera turned to it and the stick back (he runs away from it); not 30 cm further in
         BOMB_STUCK_S (a wall behind), a side step for BOMB_SIDE_S, the side swapped each time. None: one within
@@ -7507,6 +7555,13 @@ class Bot:
         # checks the actual pad direction against every outstanding bomb.
         pushing = not deadline_escape and self.push is not None and now <= self.push["until"]
         way = self.push["h"] if pushing else self._open_heading(p, live, avoid=at)
+        # While the sprint window is open, follow a planned mesh route to clear floor instead of the greedy open
+        # heading: live 2026-11-13 a set took 124 s to clear and another never did, both against railings where the
+        # greedy heading pointed at a wall. The guard follows this heading among its floor-proven options.
+        route_heading = self._escape_route(p, now) if deadline_escape else None
+        if route_heading is not None:
+            way = route_heading
+        self._escape_heading = route_heading
         stunned = self.flashed if now < self.fever_until else set()   # (flashed: walked through, kicked)
         if not deadline_escape and any(math.hypot(e["pos"][0] - px, e["pos"][2] - pz) <= ESCAPE_FIGHT_R
                and e.get("ptr", e.get("slot")) not in stunned

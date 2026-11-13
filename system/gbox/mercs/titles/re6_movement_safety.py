@@ -178,19 +178,23 @@ def guard(bot, snap, action, now):
             # continuous heading and then quantize it back toward the ledge.
             options = sorted(STICK_REL, key=lambda keys: abs(R.wrap(stick_heading(keys, yaw) - heading)))
             short = False
+            want_route = getattr(bot, '_escape_heading', None) if escaping else None
             if escaping and sites:
-                # While a bomb is pending the escape is a RADIAL run, not "the requested stick if it happens to be
-                # safe": live 2026-11-13 sprints crawled 130 cm in 20 s because every safe parallel step was taken
-                # instead of the one that actually leaves the blast. Pick the verified direction with the largest
-                # clearance at the step's end (still floor-proven and under _bomb_clear).
-                safe_opts = [k for k in options if safe(k, detour=True)]
-                if safe_opts:
-                    keys = max(safe_opts, key=clearance)
+                # Follow the planned escape route's heading when the bot published one (re6_switch._escape_route):
+                # it plans around railings. Without a route, take the verified direction with the largest clearance
+                # at the step's end - a radial run - because a safe parallel step never leaves the blast.
+                opts = [k for k in options if safe(k, detour=True)]
+                look = LOOKAHEAD_CM
+                if not opts and LOOKAHEAD_FALLBACK_CM > 0:
+                    opts = [k for k in options if safe(k, detour=True, lookahead=LOOKAHEAD_FALLBACK_CM)]
+                    look = LOOKAHEAD_FALLBACK_CM
+                    short = bool(opts)
+                if opts and want_route is not None:
+                    keys = min(opts, key=lambda k: abs(R.wrap(stick_heading(k, yaw) - want_route)))
+                elif opts:
+                    keys = max(opts, key=lambda k: clearance(k, look))
                 else:
-                    safe_opts = [k for k in options if LOOKAHEAD_FALLBACK_CM > 0
-                                 and safe(k, detour=True, lookahead=LOOKAHEAD_FALLBACK_CM)]
-                    keys = max(safe_opts, key=lambda k: clearance(k, LOOKAHEAD_FALLBACK_CM)) if safe_opts else ()
-                    short = bool(keys)
+                    keys = ()
             else:
                 keys = next((keys for keys in options if safe(keys, detour=True)), ())
                 short = False
