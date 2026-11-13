@@ -968,6 +968,39 @@ class ShiftingWorld(FakeWorld):
         self.pos[1] += rdz * step
 
 
+def test_commit_motion_learns_a_rotating_frame_and_gets_there(workdir):
+    """The key -> direction map rotates while walking (the camera snaps on every move), so a motion must learn it live.
+
+    The world here rotates the mapping by 90 degrees every 12 taps and blocks one direction with a wall; the committing
+    motion still reaches the target, because it re-learns each key's direction from the displacement it just saw.
+    """
+    frame = {"rot": 0}
+
+    def effect(key, rot):
+        base = {"up": (0.0, 8.0), "down": (0.0, -8.0), "left": (-8.0, 0.0), "right": (8.0, 0.0)}[key]
+        return B._rotate_world(base[0], base[1], rot)
+
+    def travel(motion, limit=400):
+        pos = [0.0, 0.0]
+        seen = 0
+        for _ in range(limit):
+            action = motion.step({"x": pos[0], "z": pos[1]}, (0.0, 120.0))
+            if action is None:
+                return tuple(pos)
+            seen += 1
+            if seen % 12 == 0:
+                frame["rot"] = (frame["rot"] + 90) % 360
+            dx, dz = effect(action.key, frame["rot"])
+            nxt = (pos[0] + dx, pos[1] + dz)
+            if abs(nxt[0]) > 6.0:                       # a wall either side, leaving a corridor along z
+                continue
+            pos = [nxt[0], nxt[1]]
+        return tuple(pos)
+
+    got = travel(B.CommitMotion(arrive=6.0))
+    assert math.dist(got, (0.0, 120.0)) <= 10.0, f"reached the target through a rotating frame, ended at {got}"
+
+
 def test_wall_follow_steps_around_a_wall_where_hill_climb_grinds(workdir):
     """A wall dead ahead is not a gain-table problem: every key that closes the distance hits the wall, so the hill
     climber grinds in place - which is exactly what the bot did in Forest 1 room 4. The wall follower aims sideways for

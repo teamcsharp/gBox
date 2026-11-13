@@ -770,6 +770,86 @@ class WallFollowMotion:
         return ranked[0]
 
 
+class CommitMotion:
+    """Commit to a heading for several taps, learn each key's direction from what it actually did, and slide sideways
+    when blocked.
+
+    Why this exists: `HillClimbMotion` re-ranks keys every tap from an accumulated gain, which makes it oscillate when
+    two keys pay about the same (measured: 8 stalls in a 180 s Forest run, the character circling at (270,531) for a
+    minute). And a calibration table is only valid for the camera it was measured in - one tap can swing the camera
+    125-180 degrees - so a static table cannot be trusted.
+
+    This motion learns **online**: every tap updates the observed direction of that key (an exponential average of its
+    displacement), so the estimate follows the camera. It then commits to the key that best matches the aim for
+    `commit` taps, which stops the dithering, and on a blocked tap (under `blocked_units`) it slides 90 degrees for
+    `slide` taps before aiming at the target again - the same idea as the wall follower, but with a live key map.
+    """
+
+    def __init__(self, *, arrive: float = 6.0, keys: Iterable[str] = DIRECTIONS, commit: int = 3,
+                 slide: int = 2, blocked_units: float = 2.0, decay: float = 0.6) -> None:
+        self.arrive = float(arrive)
+        self.keys = tuple(keys)
+        self.commit = max(1, int(commit))
+        self.slide = max(1, int(slide))
+        self.blocked_units = float(blocked_units)
+        self.decay = float(decay)
+        self.dirs: dict = {}             # key -> running unit vector of its displacement
+        self.key = None
+        self.remaining = 0
+        self.last_key = None
+        self.last_pos = None
+        self.slide_until = 0
+        self.slide_dir = (0.0, 0.0)
+        self.steps = 0
+        self.blocked = 0
+        self.slides = 0
+
+    def step(self, player: dict, target: tuple, reason: str = "") -> Action | None:
+        x, z = float(player.get("x") or 0), float(player.get("z") or 0)
+        here = (x, z)
+        if self.last_key is not None and self.last_pos is not None:
+            dx, dz = x - self.last_pos[0], z - self.last_pos[1]
+            moved = math.hypot(dx, dz)
+            if moved >= self.blocked_units:
+                old = self.dirs.get(self.last_key)
+                new = (dx / moved, dz / moved)
+                self.dirs[self.last_key] = new if old is None else (
+                    self.decay * old[0] + (1 - self.decay) * new[0],
+                    self.decay * old[1] + (1 - self.decay) * new[1])
+            else:
+                self.blocked += 1
+                self.remaining = 0
+                if self.steps >= self.slide_until:
+                    # Slide 90 degrees from the aim for a few taps, then aim again: a wall dead ahead is not something
+                    # more pushing can solve.
+                    ux, uz = _unit(float(target[0]) - x, float(target[1]) - z)
+                    self.slide_dir = (-uz, ux) if self.slides % 2 == 0 else (uz, -ux)
+                    self.slide_until = self.steps + self.slide
+                    self.slides += 1
+        distance = math.hypot(float(target[0]) - x, float(target[1]) - z)
+        if distance <= self.arrive:
+            return None
+        if self.steps < self.slide_until:
+            aim = self.slide_dir
+        else:
+            aim = _unit(float(target[0]) - x, float(target[1]) - z)
+        if self.remaining <= 0 or self.key is None:
+            self.key = self._best(aim)
+            self.remaining = self.commit
+        self.remaining -= 1
+        self.last_key = self.key
+        self.last_pos = here
+        self.steps += 1
+        return press(self.key, f"tap {self.key} ({distance:.0f} units toward {reason or 'target'}, "
+                              f"slide {self.slides})")
+
+    def _best(self, aim: tuple) -> str:
+        if not self.dirs:
+            return self.keys[0]
+        return max(self.keys, key=lambda key: (self.dirs.get(key) or (0.0, 0.0))[0] * aim[0]
+                   + (self.dirs.get(key) or (0.0, 0.0))[1] * aim[1])
+
+
 @dataclass
 class Calibration:
     """What each key actually did, measured once at the start of a session.

@@ -287,6 +287,9 @@ def run(mode: str, args) -> int:
         motion = B.WallFollowMotion(arrive=arrive,
                                     effects=(calibration.effects if calibration is not None else None),
                                     cal_heading=(calibration.heading if calibration is not None else 0.0))
+    elif args.motion == "commit":
+        # Commit to a heading, learn each key's direction live, slide when blocked: for long walks in unmapped rooms.
+        motion = B.CommitMotion(arrive=arrive)
     elif args.motion == "vector":
         motion = B.VectorMotion(arrive=arrive, primitive="tap")
         if calibration is not None:
@@ -534,7 +537,7 @@ def main(argv=None) -> int:
         item.add_argument("--carve-radius", type=float, default=8.0)
         item.add_argument("--trace-spacing", type=float, default=8.0,
                           help="waypoint spacing when replaying a recorded trace")
-        item.add_argument("--motion", default="hill", choices=("hill", "wall", "vector", "relative"),
+        item.add_argument("--motion", default="hill", choices=("hill", "wall", "commit", "vector", "relative"),
                           help="movement controller: hill climbs measured gains, vector/relative infer a frame")
         item.add_argument("--map-name", default="", help="substring of the grid entry to use (e.g. forest01)")
         item.add_argument("--calibration-ttl", type=float, default=900.0,
