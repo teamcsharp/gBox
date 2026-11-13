@@ -792,3 +792,31 @@ TLazerFenceSw (-435,-482) index 31  TLazerFenceSw (-244,-337) index 32
 TLazerFenceSw (470,-152) index 33
 ```
 
+
+
+## 25. The forest has floors: the west basin is 12 units below the doors
+
+After opening the room-10 door (bit 7) the character walked into an area it had never reached, and then could not get
+out of it. The reason is **height**, not walls:
+
+| entity | y |
+|---|---|
+| player, in the western area (room 9) | **8.9** |
+| door `(-134,272)` | 20.9 |
+| door `(-193,100)` | 22.9 |
+| capsule `(-133,150)` | 28.2 |
+| capsule `(-332,405)` | 0.5 |
+
+The doors that lead onward sit **12-13 units above** the character, and the area it fell into slopes further down (y
+decreasing from 10.2 to 6.9 during a short walk). A 2D motion cannot fix that: every key it can press moves it along
+the floor it is on, and the objective is above it. That is why the same walk oscillated between `(-264,98)` and
+`(-293,175)` with no stalls and no progress - it was not failing to steer, it was trying to walk up a cliff.
+
+**What the controller needs:** `y` in the objective test. A target more than a few units above or below the player is not
+reachable by walking, and the policy should prefer objectives at a similar height (or one door away), instead of
+measurably walking at a wall at the bottom of a basin.
+
+Also added this round: when no measured key points at the target (alignment < 0.5), the motion **turns** - clearing the
+learned map and re-dealing the four directions - instead of walking the least-bad way. Taps rotate the follow camera
+125-180 degrees, so a turn is how a new direction becomes available.
+
