@@ -165,6 +165,7 @@ WARP_CELL = (361.2, 0.0, 28.8)      # the cell that actually triggers the city w
 
 TELEPORT_ATTEMPTS = {"count": 0}
 ARMED_SESSIONS: set = set()      # armed once per session: re-giving fills the inventory
+GIVE_UP_AFTER = 8                # swings with no HP change before leaving the enemy and taking a gate
 GOOD_POSITION = {}
 
 
@@ -254,6 +255,50 @@ def go_to_field(pad: Pad) -> bool:
     return False
 
 
+STAGE_FLAG_BASE = 0x80515CC8
+STAGE_FLAG_GROUP_PTR = 0x805D5FC0
+STAGE_GROUP_SIZE = 32
+
+
+def open_all_gates(pad: Pad) -> str:
+    """Set every stage flag for the current floor - the door recomputes from these each frame.
+
+    Returns a short description of what happened, for the arm log.
+    """
+    raw = call("/api/sessions/%s/rpc" % pad.sid,
+               {"op": "read_memory", "args": {"address": STAGE_FLAG_GROUP_PTR, "length": 4}}, "POST")
+    try:
+        floor = int.from_bytes(bytes.fromhex(raw), "big")
+    except Exception:                                  # noqa: BLE001
+        return "could not read the floor"
+    address = STAGE_FLAG_BASE + floor * STAGE_GROUP_SIZE
+    before = call("/api/sessions/%s/rpc" % pad.sid,
+                  {"op": "read_memory", "args": {"address": address, "length": STAGE_GROUP_SIZE}}, "POST")
+    try:
+        already = bytes.fromhex(before)
+    except Exception:                                  # noqa: BLE001
+        already = b""
+    if already and all(byte == 0xFF for byte in already):
+        return f"floor {floor}: gates already open"
+    job = call("/api/jobs", {"tool": "write_memory", "require_worker": pad.worker,
+                             "input": {"session_id": pad.sid, "address": address,
+                                       "hex_bytes": ("ff" * STAGE_GROUP_SIZE)}}, "POST")
+    job_id = job.get("id") if isinstance(job, dict) else None
+    for _ in range(10):
+        time.sleep(0.4)
+        row = call("/api/jobs/" + job_id) if job_id else {}
+        if row.get("state") in ("succeeded", "failed", "cancelled"):
+            break
+    time.sleep(0.4)
+    after = call("/api/sessions/%s/rpc" % pad.sid,
+                 {"op": "read_memory", "args": {"address": address, "length": STAGE_GROUP_SIZE}}, "POST")
+    try:
+        ok = bytes.fromhex(after) == b"\xff" * STAGE_GROUP_SIZE
+    except Exception:                                  # noqa: BLE001
+        ok = False
+    return f"floor {floor}: {'all gates open' if ok else 'flag write did not stick'}"
+
+
 def arm(pad: Pad) -> None:
     """Make this cycle's character able to play: unblockable, armed, and unable to stay dead.
 
@@ -273,6 +318,7 @@ def arm(pad: Pad) -> None:
         answer = mods(pad, payload)
         log(f"  {payload['op']} {payload.get('code', '')}: {answer.get('state')} "
             f"{str(answer.get('error'))[:70]}")
+    log(f"  gates: {open_all_gates(pad)}")
     ARMED_SESSIONS.add(pad.sid)
 
 
@@ -361,6 +407,7 @@ def play(pad: Pad, seconds: float = 120.0) -> str:
     started = time.time()
     last_position, stuck, killed, moved, closest = None, 0, 0, 0.0, 999.0
     gates_seen, crossed = set(), []
+    unproductive, walked_out = 0, 0
     last_enemy_hp = {}
 
     while time.time() - started < seconds:
@@ -396,7 +443,21 @@ def play(pad: Pad, seconds: float = 120.0) -> str:
             hp = float(target.get("hp"))
             if name in last_enemy_hp and hp < last_enemy_hp[name]:
                 log(f"  {name} HIT: {last_enemy_hp[name]:.0f} -> {hp:.0f}")
+                unproductive = 0
+            elif name in last_enemy_hp:
+                unproductive += 1
             last_enemy_hp[name] = hp
+            if unproductive >= GIVE_UP_AFTER:
+                # cannot hurt this one: leave it and take the way out rather than standing in front of it
+                log(f"  {name} untouched after {unproductive} swings - leaving it and heading for a gate")
+                unproductive = 0
+                last_enemy_hp = {}
+                tap(pad, "down")
+                time.sleep(0.15)
+                hold(pad, "down", 0.6)
+                walked_out += 1
+                time.sleep(0.1)
+                continue
 
             # Nothing here trusts `heading_deg`: presses in one direction produced +130, +21, 0 and +145 degrees, so
             # it is not a signal to servo on. Instead hill-climb on DISTANCE - turn a side, step, and keep that side
@@ -472,7 +533,7 @@ def play(pad: Pad, seconds: float = 120.0) -> str:
         time.sleep(0.15)
 
     return (f"played {seconds:.0f}s, {moved} travel steps, closest approach {closest:.1f}, "
-            f"gates approached {len(gates_seen)}, crossed {len(crossed)}")
+            f"gates approached {len(gates_seen)}, crossed {len(crossed)}, left {walked_out} unwinnable")
 
 
 # ---- outer loop ------------------------------------------------------------------------------------------------------
