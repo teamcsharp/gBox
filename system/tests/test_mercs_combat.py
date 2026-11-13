@@ -71,6 +71,7 @@ def test_re6s_shared_hit_tests_answer_as_its_own_did_for_a_standing_zombie(monke
 
 
 def test_re4s_shot_tolerance_is_the_target_classs_own_width(monkeypatch):
+    monkeypatch.setattr(R4, 'SPRAY_ALWAYS', False)  # exercise precision tolerance, not the requested spray mode
     err = math.radians(4.0)
     pos = (1000.0 * math.sin(err) * R4.MM_PER_CM, 0.0, 1000.0 * math.cos(err) * R4.MM_PER_CM)   # 10 m, 4 deg off
     snap = {"player": {"pos": (0.0, 0.0, 0.0), "rot": 0.0, "hp": 1000, "ptr": 1},
@@ -281,6 +282,21 @@ def test_a_learned_wind_up_comes_first_and_one_that_lands_through_his_shots_is_s
     assert th.step_out(p, [calm, walking], 12.0) is None
 
 
+@pytest.mark.parametrize('action', ['cEm1000ActDmgFlash', 'cEm1000ActDeadErase', 'cEm1000ActWalkGunR'])
+def test_re6_ignores_old_false_attack_lessons_when_the_enemy_is_not_attacking(tmp_path, action):
+    th = C.Threats(R6.combat_profile(), {}, path=tmp_path / 'threats.json')
+    e = {'ptr': 9, 'class': 'uEm1200', 'action': action, 'pos': (0,0,100), 'hp': 700}
+    normalized = th.row(e)
+    cls = normalized['class']
+    cell = th.tm._cls(cls)
+    cell.update(through=20)
+    cell['hits'][action] = 20
+    cell['starts'][action] = 20
+    assert th.tm.lethal(normalized)  # reproduce the already-persisted bad lesson
+    assert not th.learned(e)
+    assert th.step_out({'pos': (0,0,0)}, [e], 1.) is None
+
+
 # --- (d) the target scorer ---------------------------------------------------------------------------------------------
 def cand(key, d, err=0.0, dy=0.0, windup=False, grudge=0, reach=300.0, tier="normal", clear=None):
     return {"e": {"ptr": key}, "key": key, "d": d, "err": err, "dy": dy, "windup": windup, "grudge": grudge,
@@ -483,8 +499,8 @@ def test_re6_the_one_that_hurt_him_is_the_next_target_before_a_nearer_one(monkey
     b = R6.Bot(stats={}, clock=lambda: 0.0)
     p = {"ptr": 1, "pos": (0.0, 0.0, 0.0), "rot": 0.0, "hp": 900, "hp_max": 900}
     th = b._uc("threats")
-    th.observe(1.0, p, re6_rows(), R6.combat_profile())
-    th.observe(1.1, dict(p, hp=800), re6_rows(), R6.combat_profile())
+    th.observe(1.0, p, re6_rows(action='cEm5200ActAtkKnife'), R6.combat_profile())
+    th.observe(1.1, dict(p, hp=800), re6_rows(action='cEm5200ActAtkKnife'), R6.combat_profile())
     hitter, other = re6_rows(dist_hitter=600.0)
     assert b._choose(p, 0.0, [hitter, other], 2.0) is hitter and b.stats["grudge_picks"] == 1
     monkeypatch.setattr(R6, "UNIVERSAL_CORE", False)

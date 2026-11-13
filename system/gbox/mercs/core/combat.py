@@ -495,7 +495,8 @@ class Threats:
         self.prof = prof
         self.stats = stats if stats is not None else {}
         self.tm = threat_memory.ThreatMemory(path if path is not None else prof.threat_file,
-                                             default_reach_cm=prof.windup_r_cm, held_needs_flag=True)
+                                             default_reach_cm=prof.windup_r_cm, held_needs_flag=True,
+                                             attack_required=prof.attacking is not None)
         self._hp = None
         self._hit_at = -1e9
         self._bo = None
@@ -553,6 +554,11 @@ class Threats:
 
     # --- what the bot asks ---
     def learned(self, e) -> bool:
+        # Old nearest-enemy correlations can contain walking, flinching and
+        # dying motions. A title with native attack evidence must validate the
+        # CURRENT action before those persisted rows can interrupt combat.
+        if self.prof.attacking is not None and not self.prof.attacking(e):
+            return False
         return self.tm.lethal(self.row(e))
 
     def winding(self, e) -> bool:
@@ -607,7 +613,7 @@ class Threats:
             self._bo = None
             return None
         d, e = min(hot, key=lambda t: t[0])
-        k = (e.get("ptr", e.get("slot")), self.prof.motion_key(e))
+        k = (e.get("ptr", e.get("slot")), e.get('generation'))
         if self._bo is None or self._bo[0] != k:
             self._bo = (k, now)
             self.stats["lethal_backoffs"] = self.stats.get("lethal_backoffs", 0) + 1

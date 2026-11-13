@@ -2616,7 +2616,9 @@ def attack_named(e) -> bool:
     """His action names an attack under way, melee or ranged (not a hit reaction): the attack flag threat memory
     weighs a hit's attacker by."""
     a = (e or {}).get("action") or ""
-    return bool(a) and "Dmg" not in a and any(k in a for k in WINDUP_KEYS + RANGED_KEYS)
+    return bool(a) and not any(k in a for k in ('Dmg', 'Dead', 'Die', 'Erase')) and any(
+        k in a for k in ('Atk', 'Attack', 'Catch', 'Grab', 'Bite', 'Lunge', 'Throw', 'Shoot', 'Shot', 'Rocket',
+                        'Tackle', 'Charge', 'Rush', 'Punch', 'Kick', 'Slash', 'Smash'))
 
 
 def windup_named(e) -> bool:
@@ -4369,8 +4371,8 @@ class Bot:
             return None
         if self.stats.get("phase") == "bonus_run" and self.doing == "bonus" and not empty_fallback:
             return None                                      # the capsule run: no weapon switch interrupting it
-        if now < self.weapon_rest or (p.get("bomb") or {}).get("out") or self.nade is not None \
-                or self.bomb_phase is not None:
+        if now < self.weapon_rest or self.nade is not None \
+                or self.bomb_phase not in (None, 'wait', 'mind'):
             return None
         settling = empty_fallback and self.native_equip is not None
         if settling:
@@ -7010,10 +7012,10 @@ class Bot:
                 del log[:-BOMB_LOG_N]
                 return self._bomb_press(eq, now, detonate=True)
             self.bomb_phase = "wait"
-            self._gun_down()
             if on_him or me < self.book.safe + 150.0:           # off it, kicking the ones on him as he goes
                 walked = self._bomb_walk(p, (bx, bz), yaw, me, on, now, live=live)
                 if walked is not None:
+                    self._gun_down()
                     return walked
                 return None                                      # the crowd in the way out: the fight goes on
             self.bomb_walk = None
@@ -7213,7 +7215,6 @@ class Bot:
             self.bomb_phase = "wait"
         if me >= self.book.safe:
             return None
-        self._gun_down()
         if self.bomb_phase not in ("wait", None):
             self.bomb_phase = "wait"
         if self.bomb_walk_since is None:
@@ -7225,9 +7226,12 @@ class Bot:
                 if (self._equip_result or {}).get("state") in ("requested", "pending", "equipped"):
                     self.stats["bomb_gun_backs"] += 1
         cam = snap.get("camera")
-        return self._bomb_walk(p, (bx, bz), cam["yaw"] if cam else p["rot"], me, 0, now, act="bomb_escape",
-                               why=f"inside the bomb clearance margin ({me:.0f} of {self.book.safe:.0f} cm): out first",
-                               live=live)
+        walked = self._bomb_walk(p, (bx, bz), cam["yaw"] if cam else p["rot"], me, 0, now, act="bomb_escape",
+                                why=f"inside the bomb clearance margin ({me:.0f} of {self.book.safe:.0f} cm): out first",
+                                live=live)
+        if walked is not None:
+            self._gun_down()
+        return walked
 
     def _blast_tick(self, p, snap, now) -> None:
         """A blast's toll, BOMB_LEARN_S after it showed: the zombies it hurt and spared by their distance from it, his

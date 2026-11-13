@@ -68,3 +68,30 @@ def test_throwable_census_cannot_miss_a_remote_bomb_on_another_line():
     assert len(found) == 1 and found[0]['unit'] == bomb
     g.q(bomb + R.UNIT_NEXT, bomb)
     assert R.owned_throwables(g, BASE, player) is None
+
+
+def test_blocked_bomb_escape_keeps_gun_raised_to_clear_the_crowd():
+    bot, snap = crowd()
+    p = snap['player']
+    p['bomb'] = {'out': True, 'armed': True}
+    bot.bomb_at = (0, 200)
+    bot.aim_since = 1.
+    bot._bomb_walk = lambda *a, **kw: None  # the escape corridor needs fighting first
+    for now in (1.1, 1.2, 1.3):
+        assert bot._bomb_escape(p, snap, now) is None
+        assert bot._bomb(p, snap['enemies'], lambda e: 100, 0, snap, now) is None
+        assert bot.aim_since == 1.
+
+
+def test_waiting_remote_bombs_do_not_prevent_a_loaded_crowd_shotgun_switch(monkeypatch):
+    bot, snap = crowd(weapon=12)
+    monkeypatch.setattr(R, 'AUTO_SWITCH', True)
+    p = snap['player']
+    p.update(equipped=0, guns={0x10C: 0, 0x104: 1}, gun_ammo={0: 20, 1: 10},
+             bomb={'out': True, 'armed': True})
+    snap['enemies'] *= 3
+    bot.bomb_phase = 'wait'
+    bot._equip_result = {'state': 'requested'}
+    bot._equip_keys = lambda player, wanted: {'hold': ()}
+    assert bot._weapon_switch(p, 10.) is not None
+    assert bot.stats['weapon_switches'] == 1

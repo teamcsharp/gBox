@@ -44,7 +44,8 @@ def _key(e):
 
 
 class ThreatMemory:
-    def __init__(self, path: Path | None = None, *, default_reach_cm: float = 300.0, held_needs_flag: bool = False):
+    def __init__(self, path: Path | None = None, *, default_reach_cm: float = 300.0,
+                 held_needs_flag: bool = False, attack_required: bool = False):
         self.path = Path(path) if path else None
         self.default_reach = float(default_reach_cm)
         # The motion the attacker is IN at the hit (not begun in the window) is counted as the attack's signature only
@@ -52,6 +53,7 @@ class ThreatMemory:
         # "walking" as lethal for the rest of the round (the universal core, gbox.mercs.core.combat, sets it; RE5
         # Switch's own wiring keeps the first rule: a long charge begun before the window counts).
         self.held_needs_flag = bool(held_needs_flag)
+        self.attack_required = bool(attack_required)
         self.data = self._load()
         self.hist: dict = {}          # enemy key -> deque of (t, motion, attacking, dist, hp)
         self.rows: dict = {}          # enemy key -> its row at the last observe
@@ -162,6 +164,8 @@ class ThreatMemory:
             if not h or h[-1][3] > REACH_MAX_CM:
                 continue
             win, began = self._window(h, now)
+            if self.attack_required and not any(x[2] for x in win):
+                continue  # nearby motion alone cannot identify a damaging attack
             score = (3.0 if any(x[2] for x in win) else 0.0) + (2.0 if began else 0.0)
             if self.lethal(self.rows.get(k) or {}):
                 score += 2.0
@@ -175,7 +179,10 @@ class ThreatMemory:
         h, e = self.hist[best], self.rows.get(best) or {}
         cls = e.get("class")
         win, motions = self._window(h, now)                            # the motions begun in the window ...
+        if self.attack_required:
+            motions = list(dict.fromkeys(x[1] for x in win if x[2] and x[1] is not None))
         if win and win[-1][1] is not None and win[-1][1] not in motions \
+                and (not self.attack_required or win[-1][2]) \
                 and (not self.held_needs_flag or any(x[2] for x in win)):
             motions.append(win[-1][1])                                 # ... and the one it is in (a long charge)
         hp_seen = [x[4] for x in win if isinstance(x[4], (int, float))]

@@ -82,6 +82,23 @@ def test_nobody_in_reach_is_an_unattributed_hit(tmp_path):
     assert tm.hurt(1.5, ORIGIN) is None and tm.stats["tm_hits_unattributed"] == 1
 
 
+def test_named_attack_evidence_does_not_teach_flash_reactions_as_attacks():
+    tm = T.ThreatMemory(attack_required=True, held_needs_flag=True)
+    for t, m in [(0, 'Walk'), (.2, 'DmgFlash'), (.4, 'DeadErase')]:
+        tm.observe(t, [row(0, at(100), motion=m)], ORIGIN, attacking=lambda e: False)
+    assert tm.hurt(.5, ORIGIN, 200) is None
+    assert not tm.round_hits and tm.stats['tm_hits_unattributed'] == 1
+
+
+def test_only_attacking_motions_in_the_damage_window_are_learned():
+    tm = T.ThreatMemory(attack_required=True, held_needs_flag=True)
+    for t, m in [(0, 'Walk'), (.2, 'AtkKnife'), (.4, 'DmgFlash')]:
+        tm.observe(t, [row(0, at(100), motion=m)], ORIGIN,
+                   attacking=lambda e: e['motion'] == 'AtkKnife')
+    assert tm.hurt(.5, ORIGIN, 200)['motions'] == ['AtkKnife']
+    assert not tm.lethal_motion(HAMMER, 'DmgFlash')
+
+
 # --- the RE5 Switch bot ------------------------------------------------------------------------------------------
 @pytest.fixture
 def switch_fight(monkeypatch):
