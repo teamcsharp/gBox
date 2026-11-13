@@ -148,6 +148,52 @@ def mods(pad: Pad, payload: dict, wait: float = 45.0) -> dict:
     return {"state": "timeout"}
 
 
+WARP_CELL = (361.2, 0.0, 28.8)      # the cell that actually triggers the city warp (found by searching Corridor.safe)
+
+
+def go_to_field(pad: Pad) -> bool:
+    """Leave the city for a field, where there are enemies and doors to progress through.
+
+    The city has ~31 entities and no enemies; a field has 80+ and `gate`-kind entries. Writing the warp platform's centre does not land on the warp because the raised disc is
+    not walkable, so the specific trigger cell is used instead.
+    """
+    now = state(pad)
+    player = now.get("player") or {}
+    entities = now.get("entities") or []
+    if len(entities) > 60 and any(str(e.get("kind")) == "gate" for e in entities):
+        return True                                     # already in a field
+
+    import struct
+    pointer = player.get("ptr")
+    if not pointer:
+        return False
+    log(f"in the city ({len(entities)} entities) - warping to a field")
+    job = call("/api/jobs", {"tool": "write_memory", "require_worker": pad.worker,
+                             "input": {"session_id": pad.sid, "address": int(pointer, 16) + 0x38,
+                                       "hex_bytes": struct.pack(">fff", *WARP_CELL).hex()}}, "POST")
+    job_id = job.get("id") if isinstance(job, dict) else None
+    for _ in range(12):
+        time.sleep(1)
+        row = call("/api/jobs/" + job_id) if job_id else {}
+        if row.get("state") in ("succeeded", "failed", "cancelled"):
+            break
+    time.sleep(1.5)
+    tap(pad, "a")
+
+    # A warp tears the old area's entity table down before the new one is built, so a single check right after the
+    # press sees "1 entity" for a warp that is working. Poll until the field exists.
+    for attempt in range(13):
+        time.sleep(2)
+        after = state(pad)
+        entities = after.get("entities") or []
+        count = len(entities)
+        gates = [e for e in entities if str(e.get("kind")) == "gate"]
+        log(f"  warp +{(attempt + 1) * 2}s: {count} entities, {len(gates)} gates")
+        if count > 60:
+            return True
+    return False
+
+
 def arm(pad: Pad) -> None:
     """Make this cycle's character able to play: unblockable, armed, and unable to stay dead.
 
@@ -252,6 +298,8 @@ if __name__ == "__main__":
                 continue
 
             arm(pad)
+            if not go_to_field(pad):
+                log("could not reach a field this cycle - playing where we are")
 
             while live_sessions():
                 outcome = play(pad, seconds=45)
