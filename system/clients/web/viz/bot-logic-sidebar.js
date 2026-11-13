@@ -108,6 +108,9 @@
       + menus
       + `<p class="${state.ok && message ? "bl-ok" : "bl-msg"}" role="status">${ESC(message || (state.busy ? "Reading or applying settings…" : ""))}</p>`
       + `<button type="button" data-bl-refresh ${scope}${state.busy ? " disabled" : ""}>Refresh current settings</button>`
+      + (title === 're5' ? `<h4>Proximity mines</h4><p><button type="button" data-bl-mine="drop" ${scope}${locked || !state.mines?.available ? ' disabled' : ''}>Drop mine</button> `
+        + `<button type="button" data-bl-mine="ring" ${scope}${locked || !state.mines?.available ? ' disabled' : ''}>Mine ring · 5 ft</button></p>`
+        + `<p class="bl-note">${ESC(state.mines?.reason || 'Native placement keeps the current weapon. The ring places eight mines five feet from the player.')}</p>` : '')
       + (mods ? `<h4>Live mods</h4>${mods}${blueprint}<p class="bl-note">Fire rate is a multiplier; 1× restores the game's rate. Actual shots per second vary.${title === "re5" ? " The rotten egg and bow rates speed up that weapon's own animation while it is in hand." : ""}</p>` : blueprint ? `<h4>Live mods</h4>${blueprint}` : "")
       + `<fieldset${locked || !view ? " disabled" : ""}>${rows}`
       + `<p><button type="button" data-bl-reset ${scope}>Reset behavior to the bot's defaults</button></p></fieldset>`;
@@ -117,6 +120,9 @@
     let tab = null, panel = null, style = null, target = null, open = false, generation = 0, disposed = false;
     const empty = () => ({ view: null, status: null, busy: false, pending: null, stale: true, message: "" });
     let state = empty();
+    const nativeActions = root.GBoxStreamInterventions?.create({api,notify(text,row){
+      if(row.sid!==target?.sid)return;state.message=text;state.ok=row.state==='confirmed';paint();
+    }});
     function ensure() {
       if (tab || !doc) return;
       style = doc.createElement("style"); style.textContent = CSS; doc.head.append(style);
@@ -137,6 +143,7 @@
         if (data.blScope !== target?.scope) return;
         if ("blReset" in data) reset(data.blScope);
         if ("blRefresh" in data) refresh();
+        if ("blMine" in data) placeMines(data.blMine, data.blScope);
       });
       doc.body.append(tab, panel);
     }
@@ -209,6 +216,13 @@
         s.view = logic(out.view, bound);
         s.status = mods(out.status);
         s.blueprint = await blueprintState(bound);
+        if(bound.title==='re5')try {
+          const report=await api(`/api/sessions/${encodeURIComponent(bound.sid)}/interventions`);
+          alive(bound);const mine=report?.options?.proximity_mines;
+          s.mines={available:!!nativeActions&&report.available===true&&mine?.available===true&&
+            ['proximity_mine_drop','proximity_mine_ring'].every(op=>report.capabilities?.includes(op)),
+            reason:mine?.reason||report?.reason||''};
+        } catch(e) {s.mines={available:false,reason:e.message||String(e)};}
         s.stale = false;
       }, target?.scope, true);
     }
@@ -217,6 +231,14 @@
       if (!BLUEPRINT) return null;
       try { return await BLUEPRINT.fetch(api, { sid: bound.sid, pc: bound.pc, worker: bound.worker }); }
       catch (e) { return { host: null, on: null, reason: "MercMode settings unavailable: " + (e.message || e) }; }
+    }
+    function placeMines(kind, scope) {
+      return act(async(bound,s)=>{
+        if(bound.title!=='re5'||!s.mines?.available||!nativeActions||!['drop','ring'].includes(kind))
+          throw Error('Native proximity-mine placement is unavailable for this session.');
+        const out=await (kind==='ring'?nativeActions.proximityMineRing:nativeActions.proximityMineDrop)(bound.sid);
+        if(out?.request?.state==='queued')s.message='Mine placement queued; waiting for native receipt.';
+      },scope);
     }
     function setBlueprint(value, scope = target?.scope) {
       // POST /api/mercmode {host, blueprint_look}: the PC's setting; the scheduler loads the `<build>-blueprint`
@@ -338,6 +360,7 @@
     }
     function dispose() {
       disposed = true; target = null; shown = null; open = false; generation++;
+      nativeActions?.dispose();
       tab?.remove(); panel?.remove(); style?.remove();
       tab = panel = style = null;
     }

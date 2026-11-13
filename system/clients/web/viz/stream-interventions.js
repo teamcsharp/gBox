@@ -101,8 +101,9 @@
                    schedule = root.setTimeout.bind(root), cancel = root.clearTimeout.bind(root)}) {
     const pending = new Map(); let timer = null, dead = false, polling = false;
     function message(row) {
-      const weapon = row.op === 'equip_primary', ring = row.op === 'grenade_ring', ammo = row.op === 'set_infinite_ammo', aid = row.op === 'first_aid_now';
+      const weapon = row.op === 'equip_primary', ring = row.op === 'grenade_ring', ammo = row.op === 'set_infinite_ammo', aid = row.op === 'first_aid_now', mine = row.op?.startsWith('proximity_mine_');
       if (row.state === 'confirmed') {
+        if (mine) return `Proximity mines placed: ${row.result?.placed ?? 0}/${row.result?.requested ?? 0}; arming observed: ${row.result?.armed ?? 0}; triggers observed: ${row.result?.triggered ?? 0}.`;
         if (aid) return row.result?.consumed ? 'First aid spray used.' : (row.result?.reason || 'First aid checked.');
         if (ammo) return typeof row.result?.enabled==='boolean' ? `Infinite ammo ${row.result.enabled?'on':'off'} confirmed.` : 'Infinite ammo change reported; waiting for live state.';
         if (weapon) return `${row.result?.weapon || 'Primary weapon'} equipped. Held as primary for three minutes.`;
@@ -112,7 +113,7 @@
         if (ring) return `${ringKindLabel(row.result?.kind)} ring detonated (${row.result?.detonated ?? row.result?.requested ?? ''} grenades).`;
         return 'Flashbang detonated.';
       }
-      const what = weapon ? 'Weapon selection' : ring ? 'Grenade ring' : ammo ? 'Infinite ammo' : aid ? 'First aid' : 'Flashbang';
+      const what = mine ? 'Proximity mines' : weapon ? 'Weapon selection' : ring ? 'Grenade ring' : ammo ? 'Infinite ammo' : aid ? 'First aid' : 'Flashbang';
       return `${what} ${row.state}: ${row.result?.reason || row.reason || 'no confirmed effect'}`;
     }
     function wake() { if (!dead && !timer && pending.size) timer = schedule(poll, 100); }
@@ -132,8 +133,8 @@
             }
           } catch { /* Receipt lookup may retry. The effect request never does. */ }
         }
-        for (const [id, row] of pending) if (now() - row.at > 15000) {
-          pending.delete(id); notify(`${row.op === 'equip_primary' ? 'Weapon selection' : row.op==='set_infinite_ammo'?'Infinite ammo':row.op==='grenade_ring'?'Grenade ring':row.op==='first_aid_now'?'First aid':'Flashbang'} receipt unavailable. The request will not be repeated.`, {id,op:row.op,sid:row.sid,state:'uncertain'});
+        for (const [id, row] of pending) if (now() - row.at > (row.op?.startsWith('proximity_mine_') ? 30000 : 15000)) {
+          pending.delete(id); notify(`${row.op?.startsWith('proximity_mine_')?'Proximity mines':row.op === 'equip_primary' ? 'Weapon selection' : row.op==='set_infinite_ammo'?'Infinite ammo':row.op==='grenade_ring'?'Grenade ring':row.op==='first_aid_now'?'First aid':'Flashbang'} receipt unavailable. The request will not be repeated.`, {id,op:row.op,sid:row.sid,state:'uncertain'});
         }
       } finally { polling = false; wake(); }
     }
@@ -150,20 +151,22 @@
       return out;
     }
     return {flash:sid=>send(sid,'flash_now'), firstAid:sid=>send(sid,'first_aid_now'), equipPrimary:(sid,item)=>send(sid,'equip_primary',{item}),
+      proximityMineDrop:sid=>send(sid,'proximity_mine_drop'), proximityMineRing:sid=>send(sid,'proximity_mine_ring'),
       grenadeRing:(sid,kind,extra)=>send(sid,'grenade_ring',{kind:kind||'flash',...(extra||{})}),
       setInfiniteAmmo:(sid,enabled)=>{if(typeof enabled!=='boolean')return Promise.reject(Error('Infinite ammo needs an explicit on/off value.'));return send(sid,'set_infinite_ammo',{enabled});},
       poll, dispose() { dead=true; if(timer)cancel(timer); pending.clear(); }};
   }
   function bindFirstAid(button,{api,firstAid,sid,enabled=()=>true,
-      schedule=(fn,ms)=>root.setTimeout(fn,ms),cancel=id=>root.clearTimeout(id)}={}) {
+      schedule=(fn,ms)=>root.setTimeout(fn,ms),cancel=id=>root.clearTimeout(id),
+      operation='first_aid_now',label='First aid',description='Use a first aid spray',supported=()=>true}={}) {
     let dead=false,busy=false,timer=null,last='',bound=null,available=false;
     const selected=()=>typeof sid==='function'?sid():sid;
-    function paint(){button.textContent='First aid';button.disabled=busy||!available||!enabled();
-      button.title=last||'Use a first aid spray now';button.setAttribute('aria-label','Use a first aid spray');}
+    function paint(){button.textContent=label;button.disabled=busy||!available||!enabled();
+      button.title=last||description;button.setAttribute('aria-label',description);}
     async function poll(){timer=null;const session=selected();if(dead)return;
       if(session!==bound){bound=session;available=false;last='';paint();}
       if(session)try{const report=await api(`/api/sessions/${encodeURIComponent(session)}/interventions`);
-        if(!dead&&session===selected()){available=report.available===true&&report.capabilities?.includes('first_aid_now');paint();}}
+        if(!dead&&session===selected()){available=report.available===true&&report.capabilities?.includes(operation)&&supported(report);paint();}}
       catch{if(!dead){available=false;paint();}}
       if(!dead)timer=schedule(poll,3000);
     }
@@ -172,6 +175,12 @@
       finally{busy=false;if(!dead)paint();}}
     button.addEventListener('click',click);paint();poll();
     return {receipt(text,row){if(row?.sid&&row.sid!==selected())return;last=text;paint();},dispose(){dead=true;if(timer)cancel(timer);button.removeEventListener('click',click);}};
+  }
+  function bindProximityMine(button,{ring=false,action,...options}={}) {
+    return bindFirstAid(button,{...options,firstAid:action,
+      operation:ring?'proximity_mine_ring':'proximity_mine_drop',label:ring?'Mine ring · 5 ft':'Drop mine',
+      description:ring?'Place eight RE5 proximity mines in a circle five feet away':'Drop an RE5 proximity mine without changing weapons',
+      supported:report=>report.options?.proximity_mines?.available===true});
   }
   // The grenade ring produces native blasts around the player. The type is
   // chosen beside the button. Each live worker advertises its verified types; older workers default to flash.
@@ -741,12 +750,14 @@
         finally { opening=false; }
       };
     }
-    let flashControl,weaponControl,ringControl,aidControl,iconPanel;
+    let flashControl,weaponControl,ringControl,aidControl,mineDropControl,mineRingControl,iconPanel;
     const client = create({...options, notify(text,row) {
       if(row.op==='flash_now')flashControl?.receipt(text,row);
       else if(row.op==='equip_primary')weaponControl?.receipt(text,row);
       else if(row.op==='grenade_ring')ringControl?.receipt(text,row);
       else if(row.op==='first_aid_now')aidControl?.receipt(text,row);
+      else if(row.op==='proximity_mine_drop')mineDropControl?.receipt(text,row);
+      else if(row.op==='proximity_mine_ring')mineRingControl?.receipt(text,row);
       else {status.textContent=text; options.notify?.(text,row);}
       options.onReceipt?.(row);
     }});
@@ -757,6 +768,12 @@
     flashControl=bindFlash(button,{flash:client.flash,sid:selected,enabled:()=>!disposed});
     const aid=doc.createElement('button');aid.type='button';bar.insertBefore(aid,status);
     aidControl=bindFirstAid(aid,{api:options.api,firstAid:client.firstAid,sid:selected,enabled:()=>!disposed});
+    for(const ring of [false,true]) {
+      const mine=doc.createElement('button');mine.type='button';bar.insertBefore(mine,status);
+      const control=bindProximityMine(mine,{api:options.api,action:ring?client.proximityMineRing:client.proximityMineDrop,
+        ring,sid:selected,enabled:()=>!disposed});
+      if(ring)mineRingControl=control;else mineDropControl=control;
+    }
     // The grenade ring sits beside the flash button, with its own small type chooser.
     const ring = doc.createElement('button'); ring.type='button'; ring.innerHTML=ringIcon;
     const ringKind = doc.createElement('button'); ringKind.type='button'; ringKind.className='ring-kind';
@@ -764,8 +781,8 @@
     ringControl=bindRing(ring,{api:options.api,ring:client.grenadeRing,sid:selected,enabled:()=>!disposed,kindButton:ringKind});
     const swapButton = doc.createElement('button'); swapButton.type='button'; bar.insertBefore(swapButton,status);
     const swapControl=bindModelSwap(swapButton,{api:options.api,sid:selected,enabled:()=>!disposed,status});
-    return {dispose() {disposed=true;iconPanel.dispose();flashControl.dispose();weaponControl.dispose();ringControl.dispose();aidControl.dispose();swapControl.dispose();client.dispose();sidebar?.dispose();if(activeSidebar===sidebar)activeSidebar=null;bar.remove();}, client, swapControl};
+    return {dispose() {disposed=true;iconPanel.dispose();flashControl.dispose();weaponControl.dispose();ringControl.dispose();aidControl.dispose();mineDropControl.dispose();mineRingControl.dispose();swapControl.dispose();client.dispose();sidebar?.dispose();if(activeSidebar===sidebar)activeSidebar=null;bar.remove();}, client, swapControl};
   }
-  const out = {create,mount,bindFlash,bindFirstAid,bindWeapon,bindRing,bindIconPanel,bindReplayGesture,createRoundControls,bindModelSwap,swapText,stageWeights,roundReport,ammoView,createAmmoControl,sortedWeapons,RING_KINDS,ringKindLabel,readRingKind,ringKindOptions}; root.GBoxStreamInterventions=out;
+  const out = {create,mount,bindFlash,bindFirstAid,bindProximityMine,bindWeapon,bindRing,bindIconPanel,bindReplayGesture,createRoundControls,bindModelSwap,swapText,stageWeights,roundReport,ammoView,createAmmoControl,sortedWeapons,RING_KINDS,ringKindLabel,readRingKind,ringKindOptions}; root.GBoxStreamInterventions=out;
   if(typeof module==='object' && module.exports)module.exports=out;
 })(typeof globalThis==='object'?globalThis:this);

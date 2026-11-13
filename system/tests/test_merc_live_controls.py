@@ -11,6 +11,17 @@ from fastapi.testclient import TestClient
 from gbox import merc_live_controls as LC
 
 SID='pc-round'
+
+
+@pytest.mark.parametrize('op', ['proximity_mine_drop', 'proximity_mine_ring'])
+def test_proximity_mine_mcp_contract_is_fixed_count_and_radius(op):
+    request = {'session_id': SID, 'op': op, 'request_id': str(uuid.uuid4())}
+    assert LC.validate_request(request) == op
+    for field, value in [('radius_cm', 200), ('count', 4), ('allow_unverified', True)]:
+        with pytest.raises(ValueError):
+            LC.validate_request({**request, field: value})
+
+
 class Plane:
     def __init__(self):
         self.session={'session_id':SID,'state':'running','game_id':'115f9cdbba115432','adapter':'eden','title':'RE6'}

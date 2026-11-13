@@ -18,7 +18,8 @@ KIND = "merc_interventions"
 MAX_PENDING, KEEP, TTL, FRESH = 64, 128, 10.0, 3.0
 TERMINAL = {"confirmed", "failed", "unavailable", "expired", "uncertain"}
 OPERATIONS = {"flash_now", "equip_primary", "magnum_quick4", "grenade_ring", "grenade_scatter",
-              "re4_harness_selftest", "set_infinite_ammo", "remote_mines", "first_aid_now"}
+              "re4_harness_selftest", "set_infinite_ammo", "remote_mines", "first_aid_now",
+              "proximity_mine_drop", "proximity_mine_ring"}
 # The grenade-ring button's selectable types. "flash" is the default and the only one verified; the others
 # are refused by the native controller with a reason (never silently substituted). A longer TTL covers the
 # ten spawn/explode pairs the ring runs (each is the verified flash).
@@ -29,7 +30,7 @@ GRENADE_RING_KINDS = ("flash", "hand", "incendiary", "launcher", "shell1302", "s
 # The scatter barrage (RE6 Switch, 2026-11-10): a random kind a round ("random", the default) or one named; the native
 # controller refuses an unverified one with its reason. Its TTL is the ring's.
 GRENADE_SCATTER_KINDS = ("random",) + GRENADE_RING_KINDS
-TIMED_OPS = ("grenade_ring", "grenade_scatter", "remote_mines")
+TIMED_OPS = ("grenade_ring", "grenade_scatter", "remote_mines", "proximity_mine_drop", "proximity_mine_ring")
 GRENADE_RING_TTL = 25.0
 
 _WAKE_LOCK = threading.Lock()
@@ -109,6 +110,10 @@ class Queue:
         if op == 'set_infinite_ammo':
             if not isinstance(args, dict) or set(args) != {'enabled'} or type(args['enabled']) is not bool:
                 raise ValueError('infinite ammo needs an explicit boolean enabled value')
+        elif op in ('proximity_mine_drop', 'proximity_mine_ring'):
+            if not isinstance(args, dict) or set(args) - {'allow_unverified'} or (
+                    'allow_unverified' in args and type(args['allow_unverified']) is not bool):
+                raise ValueError('invalid proximity mine arguments')
         elif op == 'grenade_ring':
             args = dict(args)
             kind = args.setdefault('kind', 'flash')
@@ -148,6 +153,9 @@ class Queue:
             if op == 'set_infinite_ammo' and d.get('options', {}).get('infinite_ammo', {}).get('available') is not True:
                 raise ValueError('infinite ammo is unavailable for this session')
             kinds = d.get('options', {}).get('grenade_kinds')
+            if op in ('proximity_mine_drop', 'proximity_mine_ring') and args.get('allow_unverified') is not True \
+                    and d.get('options', {}).get('proximity_mines', {}).get('available') is not True:
+                raise ValueError('native proximity-mine placement is unavailable for this session')
             # allow_unverified is the research probe's path (a kind whose first live receipt is being taken): it is
             # never sent by the PiP, and without it a refused kind stays refused. The queue still needs the title's
             # capability and a live worker.
@@ -297,7 +305,14 @@ def install(app, store, auth):
         ammo = options.get('infinite_ammo')
         primary = options.get('primary_weapon')
         kinds = options.get('grenade_kinds')
+        mines = options.get('proximity_mines')
         options = {'weapons': weapons, 'current_weapon': current}
+        if mines is not None:
+            if not isinstance(mines, dict) or type(mines.get('available')) is not bool \
+                    or mines.get('radius_cm') != 152.4 or type(mines.get('count')) is not int or mines['count'] != 8:
+                raise HTTPException(422, 'invalid proximity mine status')
+            options['proximity_mines'] = {'available': mines['available'], 'radius_cm': 152.4, 'count': 8,
+                                          'reason': str(mines.get('reason') or '')[:300]}
         if kinds is not None:
             if (not isinstance(kinds, list) or len(kinds) > len(GRENADE_RING_KINDS) or any(
                     not isinstance(k, dict) or k.get('kind') not in GRENADE_RING_KINDS or
@@ -417,6 +432,8 @@ def _worker_loop(sid, server, headers, ad, stats_of, alive, event, game=None):
                 caps.append("re4_harness_selftest")
             if getattr(ctl, "first_aid_now", None) is not None:
                 caps.append("first_aid_now")
+            if getattr(ctl, 'proximity_mines', None) is not None:
+                caps.extend(('proximity_mine_drop', 'proximity_mine_ring'))
             if getattr(ctl, 'grenade_ring', None) is not None:
                 caps.append("grenade_ring")
             if getattr(ctl, 'grenade_scatter', None) is not None:
@@ -435,6 +452,8 @@ def _worker_loop(sid, server, headers, ad, stats_of, alive, event, game=None):
                 rows = kinds()
                 if rows:
                     catalogue['options']['grenade_kinds'] = rows
+                if getattr(ctl, 'proximity_mine_status', None) is not None:
+                    catalogue['options']['proximity_mines'] = ctl.proximity_mine_status()
                 if ammo_status:
                     try:
                         catalogue['options']['infinite_ammo'] = ammo_status()
@@ -577,6 +596,18 @@ def _worker_loop(sid, server, headers, ad, stats_of, alive, event, game=None):
                                                                         "kills": kills if isinstance(kills, int) else None}
                                         else:
                                             stats["scatter_failures"] = stats.get("scatter_failures", 0) + 1
+                                elif row['op'] in ('proximity_mine_drop', 'proximity_mine_ring'):
+                                    round_id = (stats or {}).get('round_evidence_id')
+                                    def allowed_mines():
+                                        return (alive() and row['expires'] > time.time() and
+                                                row['epoch'] == context(full=False)['epoch'] and
+                                                (stats or {}).get('round_evidence_id') == round_id)
+                                    result = ctl.proximity_mines(8 if row['op'] == 'proximity_mine_ring' else 1,
+                                        allow_unverified=row['args'].get('allow_unverified') is True,
+                                        allowed=allowed_mines)
+                                    if stats is not None:
+                                        stats['proximity_mines_last'] = result
+                                        stats['proximity_mines_placed'] = stats.get('proximity_mines_placed', 0) + int(result.get('placed') or 0)
                                 elif row['op'] == 'first_aid_now':
                                     result = ctl.first_aid_now()
                                     if stats is not None and result.get('consumed'):

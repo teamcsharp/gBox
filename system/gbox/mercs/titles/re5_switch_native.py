@@ -170,6 +170,18 @@ def table_bytes(base, vt):
 
 
 class Controller(N.Controller):
+    # RE6's inherited remote-bomb hook addresses do not belong to RE5.
+    drop_bomb = None
+
+    def proximity_mines(self, count=1, *, allow_unverified=False, allowed=None):
+        from .re5_proximity_native import place
+        return place(self, count, allow_unverified=allow_unverified, allowed=allowed)
+
+    def proximity_mine_status(self):
+        from .re5_proximity_native import LIVE_VERIFIED, RADIUS_CM, RING_COUNT
+        return {'available': LIVE_VERIFIED, 'radius_cm': RADIUS_CM, 'count': RING_COUNT,
+                'reason': '' if LIVE_VERIFIED else 'Native proximity-mine placement awaits live validation.'}
+
     def _ammo_backend(self):
         from . import re5_switch_mods as mods
         return mods, mods.RE5Switch

@@ -1,5 +1,27 @@
 # DeepSeek takeover: RE4/5/6 MercMode, Spark decompilation and live replacement
 
+## Continuing work: RE5 native proximity mines (2026-11-13 UTC)
+
+Codex is still working; this is a progress record, not an immediate transfer to DeepSeek.
+The operator explicitly wants mines dropped while running/fleeing with no weapon switch, plus an eight-mine
+circle five feet (152.4 cm) away, available through MCP, the MercMode sidebar and the topbar. These are RE5
+proximity mines, not RE6 remote bombs. Separate durable operations are `proximity_mine_drop` and
+`proximity_mine_ring`; RE5 no longer advertises the inherited RE6 `drop_bomb` hook.
+
+The native implementation is currently gated pending live validation. Its research probe follows the native
+RE5 drop path: uWp0a DTI `1D715A8`, vtable `1C5E478`, reset `7E51A0`, configure `60D6D0`, state `790FE0`,
+detach/ground `793AB0`. It observes activation `27B9`, arm timer `2890`, volume `28C8` and explosion latch
+`28C1`; it does not write a detonation flag, select a weapon, release movement or consume inventory.
+Receipts retain individual placements, native calls, arming/trigger observations, partial failures and measured
+placement duration. Native grounding is requested but a successful ground-ray hit is not yet verified. The
+game-thread calls are sequential; investigate combining activation/state/ground into a single callback after
+the first instrumented probe. Do not equate a native-call return with complete live gameplay acceptance.
+
+The approved between-round restart activated `205dc521` at 2026-11-13 03:14:47 UTC while RE6 was at character
+selection. Worker became `28ec38c4b01e472d`. Subsequent telemetry showed an actual RE6 death counted once,
+then another active round; the next scheduled title is RE5. The new recorder is running. Full-circle model
+replacement and complete live model-binding acceptance remain outstanding as documented below.
+
 Prepared 2026-11-12 America/Chicago (continuing live checks on 2026-11-13 UTC).
 Workspace: `C:\_tools\gBox`. HEAD at preparation: `f8b13f2742481ccd20ae87c329fe76f6cea824e8`.
 

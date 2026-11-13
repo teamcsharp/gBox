@@ -25,6 +25,30 @@ def post(q, rid=None):
     return q.post('sid', 'flash_now', rid or str(uuid.uuid4()), 'viewer')
 
 
+def test_re5_mine_probe_gate_epoch_and_durable_partial_receipt(queue):
+    q, now = queue
+    caps = ['proximity_mine_drop', 'proximity_mine_ring']
+    opts = {'proximity_mines': {'available': False, 'count': 8, 'radius_cm': 152.4}}
+    q.claim('sid', 'life-1', caps, options=opts)
+    for op in caps:
+        with pytest.raises(ValueError, match='unavailable'):
+            q.post('sid', op, str(uuid.uuid4()), 'viewer')
+    for args in ({'count': 100}, {'radius_cm': 300}, {'allow_unverified': 1}):
+        with pytest.raises(ValueError):
+            q.post('sid', caps[0], str(uuid.uuid4()), 'probe', args)
+    rid = str(uuid.uuid4())
+    row = q.post('sid', caps[1], rid, 'probe', {'allow_unverified': True})
+    assert row['expires'] == now[0] + I.GRENADE_RING_TTL
+    claimed = q.claim('sid', 'life-1', caps, options=opts)[0]
+    result = {'state': 'uncertain', 'requested': 8, 'placed': 3, 'armed': 2, 'triggered': 1}
+    q.finish('sid', rid, claimed['claim'], result)
+    assert not q.claim('sid', 'life-1', caps, options=opts)
+    assert q.post('sid', caps[1], rid, 'probe', {'allow_unverified': True})['result'] == result
+    q.post('sid', caps[0], str(uuid.uuid4()), 'probe', {'allow_unverified': True})
+    assert not q.claim('sid', 'life-2', caps, options=opts)
+    assert q.status('sid')['requests'][-1]['state'] == 'expired'
+
+
 def test_twenty_clicks_remain_distinct_and_complete_once(queue):
     q, now = queue
     with concurrent.futures.ThreadPoolExecutor(max_workers=8) as pool:
