@@ -589,7 +589,7 @@ class Controller:
             # projectile registration inside it carries the round; the wrapper's detonate refuses the shell's action
             # class (0, a clean refusal), so the receipt names the spawned shell - the launcher's fire/explode path is
             # the shell's own (operator 2026-11-11 18:12: the 360 launcher-shot ring).
-            unit = self.call(CLASSES.SPAWN_CLASS[0], self.player, spec.dti, timeout=CLASS_SPAWN_TIMEOUT_S)
+            unit = self.call(CLASSES.SPAWN_CLASS[0], self.player, self.base + spec.dti, timeout=CLASS_SPAWN_TIMEOUT_S)
             if not R.ptr_ok(unit):
                 raise Unavailable(f"native {kind} allocation refused")
             born = self.w(unit + 0x1308)
@@ -604,7 +604,7 @@ class Controller:
         if kind == "flash":
             unit = self.call(0x18F2880, self.player)
         else:
-            unit = self.call(CLASSES.SPAWN_CLASS[0], self.player, spec.dti, timeout=CLASS_SPAWN_TIMEOUT_S)
+            unit = self.call(CLASSES.SPAWN_CLASS[0], self.player, self.base + spec.dti, timeout=CLASS_SPAWN_TIMEOUT_S)
         if not R.ptr_ok(unit):
             raise Unavailable(f"native {kind} allocation refused")
         born = self.w(unit + 0x1308)

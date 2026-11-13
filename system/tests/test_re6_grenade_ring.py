@@ -202,6 +202,7 @@ def test_the_parameterised_hand_ring_gets_its_own_spawn_budget(monkeypatch):
     def recording(off, *args, **kw):
         if off == N.CLASSES.SPAWN_CLASS[0]:
             seen["spawn"] = kw.get("timeout")
+            assert args == (ctl.player, ctl.base + N.CLASSES.CLASSES["hand"].dti)
             unit = 0x240000000
             ctl.put(unit + 0x1308, struct.pack("<I", 5001))
             ctl.put(unit + 0x1300, struct.pack("<Q", ctl.player))
