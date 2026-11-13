@@ -5,13 +5,14 @@
   const ESC = s => String(s ?? "").replace(/[&<>"']/g, c => `&#${c.charCodeAt(0)};`);
   const RE5 = root.GBoxRE5Modifiers || (typeof require === "function" ? require("./re5-modifiers.js") : null);
   const RE6 = root.GBoxRE6Modifiers || (typeof require === "function" ? require("./re6-modifiers.js") : null);
+  const PSO = root.GBoxPsoControls || (typeof require === "function" ? (() => { try { return require("./pso-controls.js"); } catch { return null; } })() : null);
   // the blueprint look: a MercMode setting of the PC (blueprint-look.js), shown among the live mods, next round
   const BLUEPRINT = root.GBoxBlueprintLook || (typeof require === "function" ? (() => { try { return require("./blueprint-look.js"); } catch { return null; } })() : null);
-  const TITLES = { "52d15709be0fda1a": "re5", "115f9cdbba115432": "re6" };
+  const TITLES = { "52d15709be0fda1a": "re5", "115f9cdbba115432": "re6", "436e0bb84d5337d1": "pso" };
   const workerOf = s => s?.worker_id || s?.worker || String(s?.session_id || "").split("-")[0];
   const pcOf = s => String(s?.detail?.worker_name || s?.pc || workerOf(s) || "");
   function eligible(s) {
-    return !!TITLES[s?.game_id] && ["citron", "eden"].includes(s.adapter) && s.state === "running"
+    return !!TITLES[s?.game_id] && ["citron", "eden", "dolphin"].includes(s.adapter) && s.state === "running"
       && !s.warm && !s.stopping && s.worker_online !== false && typeof s.session_id === "string" && s.session_id.includes("-");
   }
   function definitions(title) {
@@ -103,6 +104,7 @@
     // the last round-to-round menu walk and the best so far, from the worker's menu learner (bot_logic menus)
     const menus = typeof view?.menus?.text === "string" && view.menus.text
       ? `<p class="bl-target bl-menus" title="${ESC(view.menus.screens || "")}">${ESC(view.menus.text)}</p>` : "";
+    if (title === "pso" && PSO) return PSO.html(state.psoView || {}, { ...state, title: state.psoTitle || "PSO" });
     return `<div class="bl-head"><h3>Live controls · ${ESC(String(title || "").toUpperCase())}</h3>${pick}</div>`
       + (state.pc ? `<p class="bl-target">${ESC(state.pc)} · the game shown in this PiP</p>` : "")
       + menus
@@ -125,7 +127,7 @@
     }});
     function ensure() {
       if (tab || !doc) return;
-      style = doc.createElement("style"); style.textContent = CSS; doc.head.append(style);
+      style = doc.createElement("style"); style.textContent = (PSO ? PSO.CSS : "") + CSS; doc.head.append(style);
       tab = doc.createElement("button"); tab.id = "bot-logic-tab"; tab.type = "button"; tab.textContent = "‹";
       tab.title = "Live controls: fire rate, mods and bot behavior"; tab.onclick = () => toggle();
       panel = doc.createElement("aside"); panel.id = "bot-logic-panel"; panel.setAttribute("aria-label", "Live MercMode controls");
@@ -136,6 +138,10 @@
         if (data.blModSeconds) setModSeconds(data.blModSeconds, value, data.blScope);
         if ("blBlueprint" in data) setBlueprint(value, data.blScope);
         if ("blWeapon" in data && value !== "") equip(Number(value), data.blScope);
+        if (data.psoEquip && value) psoAct(s => psoJob(target, s, "pso_inventory", { op: "equip", code: value })
+          .then(() => { s.message = "Weapon equipped."; s.ok = true; }).then(() => psoRefresh(target, s)));
+        if (data.psoSearch !== undefined) psoAct(s => { s.q = value; return Promise.resolve(); }, true);
+        if (data.psoCat !== undefined) psoAct(s => { s.cat = value; return Promise.resolve(); }, true);
       });
       panel.addEventListener("input", e => { const n = e.target?.dataset?.bl; const o = n && panel.querySelector(`[data-bl-out="${n}"]`); if (o) o.textContent = e.target.value; });
       panel.addEventListener("click", e => {
@@ -144,6 +150,17 @@
         if ("blReset" in data) reset(data.blScope);
         if ("blRefresh" in data) refresh();
         if ("blMine" in data) placeMines(data.blMine, data.blScope);
+        const pd = e.target?.closest?.("[data-pso-refresh],[data-pso-paralyze],[data-pso-drops],[data-pso-give],[data-pso-equip],[data-pso-cat],[data-pso-search]")?.dataset;
+        if (pd && target?.title === "pso") {
+          if ("psoRefresh" in pd) refresh();
+          if ("psoParalyze" in pd) psoAct(s => psoJob(target, s, "pso_paralyze", { seconds: 8.0 }).then(r => {
+            s.message = r.targets ? `Froze ${r.targets} enem${r.targets === 1 ? "y" : "ies"} (drift ${r.max_drift}${r.frozen ? ", confirmed" : ", NOT confirmed"})`
+              : (r.note || "No enemies here."); s.ok = !!r.frozen; }));
+          if ("psoDrops" in pd) psoAct(s => psoJob(target, s, "pso_drops", { op: pd.psoDrops === "floor" ? "floor_rares" : "enemy_drops" })
+            .then(() => { s.message = "Drops applied."; s.ok = true; }));
+          if ("psoGive" in pd) psoAct(s => psoJob(target, s, "pso_inventory", { op: "give", code: pd.psoGive, count: 1 })
+            .then(() => { s.message = "Item given."; s.ok = true; }).then(() => psoRefresh(target, s)));
+        }
       });
       doc.body.append(tab, panel);
     }
@@ -165,6 +182,44 @@
       if (!eligible(row) || row.game_id !== bound.gameId || row.adapter !== bound.adapter
           || workerOf(row) !== bound.worker || pcOf(row) !== bound.pc)
         throw new Error("This session ended, paused or moved. Open the active game's controls.");
+    }
+    // PSO posts its own tools, not re5_mods: inventory, paralysis and drops are separate worker tools.
+    async function psoJob(bound, s, tool, input) {
+      alive(bound);
+      const j = await api("/api/jobs", { tool, agent_use: false, require_worker: bound.worker,
+        input: { session_id: bound.sid, ...input } }, "POST");
+      alive(bound);
+      if (!j?.id) throw new Error(j?.error?.message || j?.error || "The worker refused that request.");
+      for (let i = 0; i < 300 && ["queued", "running"].includes(j.state); i++) {
+        s.pending = j.id;
+        await delay(i < 10 ? 120 : 500); alive(bound);
+        const next = await api("/api/jobs/" + encodeURIComponent(j.id), undefined, "GET"); alive(bound);
+        if (!["queued", "running"].includes(next.state)) {
+          s.pending = null;
+          if (next.state !== "succeeded") throw new Error(next.error?.message || next.error || "That PSO control failed.");
+          return next.output?.result || {};
+        }
+      }
+      s.pending = null;
+      throw new Error("That PSO control is still running. Refresh to check its result.");
+    }
+    async function psoRefresh(bound, s) {
+      const [catalog, snapshot] = await Promise.all([
+        api("/api/pso/items?version=gc", undefined, "GET"),
+        api(`/api/sessions/${encodeURIComponent(bound.sid)}/rpc`, { op: "state", args: {} }, "POST"),
+      ]);
+      alive(bound);
+      const ents = Array.isArray(snapshot?.entities) ? snapshot.entities : [];
+      const enemies = ents.filter(e => String(e.kind) === "enemy" && Number(e.hp) > 0).length;
+      let equipped = null;
+      try {
+        const inv = await psoJob(bound, s, "pso_inventory", { op: "list" });
+        const held = (inv.items || []).find(i => i.equipped);
+        if (held) equipped = (Array.isArray(catalog) ? catalog : []).find(r => r.code === held.code) || { code: held.code, name: held.name };
+      } catch { equipped = null; }
+      s.psoView = { items: Array.isArray(catalog) ? catalog : [], room: snapshot?.player?.room,
+        enemies, equipped, title: state.psoTitle || bound.title };
+      s.message = ""; s.ok = false;
     }
     async function finish(j, bound, s) {
       for (let i = 0; i < 200 && ["queued", "running"].includes(j?.state); i++) {
@@ -211,6 +266,7 @@
     }
     function refresh() {
       return act(async (bound, s) => {
+        if (bound.title === "pso") { await psoRefresh(bound, s); s.stale = false; return; }
         if (s.pending) await finish(await api("/api/jobs/" + encodeURIComponent(s.pending), undefined, "GET"), bound, s);
         const out = await job(bound, s, "live_controls");
         s.view = logic(out.view, bound);
@@ -316,6 +372,14 @@
     const reset = (scope = target?.scope) => act(async (bound, s) => {
       s.view = logic(await job(bound, s, "bot_logic", { reset: true }), bound);
     }, scope);
+    function psoAct(work, repaintOnly = false) {
+      const bound = target, s = state;
+      if (!bound || s.busy) return Promise.resolve(false);
+      if (repaintOnly) { return Promise.resolve(work(s)).then(() => { paint(); return true; }); }
+      s.busy = true; s.message = ""; paint();
+      return Promise.resolve(work(s)).catch(e => { s.message = e.message || String(e); s.ok = false; })
+        .then(() => { s.busy = false; paint(); return true; });
+    }
     function toggle(force) {
       if (disposed) return;
       open = force ?? !open;
