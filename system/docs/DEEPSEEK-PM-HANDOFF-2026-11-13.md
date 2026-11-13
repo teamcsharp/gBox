@@ -220,7 +220,7 @@ native mailbox/build/player life and both collision volumes. Only confirmed
 inactive, detached actors are reusable. In round6a33 nine mines had armed at the
 midround check: four distance singles plus a five-mine ring; native trigger and
 retirement evidence exists. At least76 hit-ring floor refusals included14 ray
-misses and62 results outside61cm floor tolerance, some3â€“11m below the player.
+misses and62 results outside61cm floor tolerance, some3Ã¢â‚¬â€œ11m below the player.
 Keep the floor checks. Provisional escape sites are not armed mines.
 
 `c2d71665e` repairs consumed distance on such a refusal: preserve travel already
@@ -485,3 +485,69 @@ Time-bonus policy remains: prioritize eligible time bonuses below a 300-second b
 QTEs and bomb clearance first. Once the clock exceeds that bank, combat has priority. Improve route commitment
 using observed paths and movement; do not turn off floor checks or continually drop bombs before clearing the
 old set. S-rank on every run, perpetual combos and every-stage traversal remain unproven goals.
+
+## DeepSeek PM round 2 (2026-11-13 12:46 onward): took over the Codex repair, activated and measured it
+
+The operator handed over after the Codex PM hit its usage limit. State found: `0257a5eb2` (Restore RE6 native
+bomb cycles and escape movement) and `9b1b02126` were committed and pushed, the share had them
+(`gbox-data/deployed-main.txt` = `9b1b02126`), but the bot modules were **not** loaded - the only activation
+receipt was a `busy` at the first attempt. The documented bot-only reload was the right path (the service
+restart stayed deferred from older unrelated share files; no game restart was used).
+
+### Activation
+
+`re6-recovery-activation.json` on Spark now records attempt 2, `ok: true` at epoch 1794595628: "1 of 1
+autobot(s) back in 4.2 s; reloaded engine, re6_remote_control, re6_movement_safety, re6_switch", autobot
+restarted in session `cc17261888594ab1-f417214aece5477b`. Counters that only exist in the repair
+(`remote_mines_status`, `mine_detonate_last_failure`, `bomb_escape_aim_yields`, required clearance 1200) were
+present in the next round, so the loaded code was confirmed - not merely copied.
+
+### What the repair actually fixed (measured, not assumed)
+
+Full round `9a5af764a3524df2978ebf51f39fa5fe`, sampled every 2 s into
+`gbox-data/analysis/merc-tuning-20261113/deepseek-verify-round2.jsonl` (262 s, 116 samples):
+
+| signal | before (round-1 complaint) | after the repair |
+| --- | --- | --- |
+| native ring production | none after the first | 5 requests, 46 bombs placed, 3 rings + travel drops |
+| native detonations | 266-347 failures | **0 failures, 5 native flag detonations** |
+| oldest pending bomb age | 258 s | still up to 111 s (5 s deadline still missed) |
+| escape required | - | 76 % of samples |
+| combat | stationary, combo breaking | kills 6 -> 103, 4 combo breaks, path 5618 cm / net 3251 cm |
+| deaths | - | 1 (the round ended `died`) |
+
+So the lane now cycles and detonates, but each set still takes tens of seconds to clear 1200 cm instead of 5 s,
+and the round still ended in a death.
+
+### New findings and commits this round
+
+1. `c7605c6c8` "Keep every armed ring escapable and expose why movement blocks". A later travel receipt
+   overwrites `mine_ring_last`, so the movement guard lost the only radial-escape proof while a confirmed ring
+   still lay around him; every strict monotone step was then refused (`floor_safety_blocks` 307 in the round).
+   The controller now keeps the last four rings' constructor geometry (`mine_rings`) and the guard accepts radial
+   escape from any of them; external bombs keep the nondecreasing clearance rule unchanged. New live scalars:
+   `mine_ring_last_op/units/armed`, `mine_escapes_started/cleared`, `mine_escape_clear_s_last`,
+   `floor_safety_why`, `floor_safety_applied` (the nested `floor_safety_last` never reaches the telemetry mirror).
+2. `8c2edf5c0` "Carry a death cause on a scalar out of the live bot". Two captured RE6 deaths showed only
+   `act=weapon_switch`, `tablets 6 / 22 presses / 11 misses` and no cause, because the nested `death_log` is
+   dropped from telemetry. `death_cause` now carries doing/why/held/health-lost-by-doing/hp samples/near counts/
+   bomb phase. Death watcher (Spark `/tmp/ds-death-watch.sh`, captures into `gbox-data/mercs/deepseek-deaths/`)
+   is running so each death keeps its frame and pre-death scalars.
+
+Both commits are pushed and deployed to the share (`deployed-main.txt` = `8c2edf5c0`); activation is pending a
+finalized boundary (MercMode rotated to Resident Evil 4, so the reload will land at an RE4 round boundary; the
+same worker modules serve every title).
+
+### Next measured priorities
+
+1. After activation, read `floor_safety_why` / `mine_escape_clear_s_last` / `mine_escapes_cleared`: the ring
+   geometry fix should cut the 111 s pending age. If escape still takes >10 s, the escape needs a planned
+   navmesh route to a point 1200 cm out (the current greedy `_open_heading` walk is not a route).
+2. The 5-second detonation deadline remains unmet on crowd rings. Do not loosen the native 1200 cm gate; the
+   cause to fix is placement without a planned exit.
+3. Healing: 22 presses for 6 confirmed tablets and 11 misses in one round. With infinite tablets the count never
+   falls, so confirmation rests on the hp rise; a hit taken just after a press reads as a miss. Either confirm
+   from the game's item action or accept a heal that was consumed without a net rise. Do not spam extra tablets.
+4. Deaths: use `death_cause` from the next deaths; the died-round report path still has no death detail
+   (`metrics.survival.death_hp` etc. null, `player_damage_events` counted but no hit rows), so live capture is
+   the only evidence for now.
