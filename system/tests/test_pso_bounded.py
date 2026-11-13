@@ -1,0 +1,598 @@
+"""The bounded controller must be bounded. These tests are the proof, not the description.
+
+Every test drives `gbox.pso_bounded` through a simulated world. The simulated world is adversarial on purpose: keys
+map to different world directions as the camera turns, forward can be blocked, an enemy can refuse to take damage,
+and the operator can grab the pad mid-action. The assertions are the mandate's Day-1 requirements:
+
+* exactly one action per tick, never longer than the bound, and a tick that overruns is *detected*;
+* the operator's takeover releases the pad before anything else happens, and is checked again after every input;
+* a wedged character is recovered a bounded number of times and then produces a failure fixture - not a loop;
+* progression objectives outrank containers, and containers cannot starve progression;
+* a switch press is recorded with a stage-flag delta (and with "no change" when nothing changed);
+* a combo is three spaced presses verified by HP, and a target that cannot be hurt is abandoned.
+"""
+import json
+import math
+import os
+import pathlib
+import shutil
+import tempfile
+import time
+import uuid
+
+import pytest
+
+from gbox import pso_bounded as B
+from gbox import pso_evidence as E
+
+
+# ---------------------------------------------------------------------------------------------------------------------
+# A simulated world with a camera that turns and geometry that blocks
+# ---------------------------------------------------------------------------------------------------------------------
+class FakeClock:
+    def __init__(self, start=1000.0):
+        self.t = float(start)
+
+    def now(self):
+        return self.t
+
+    def sleep(self, seconds):
+        self.t += max(0.0, float(seconds))
+
+
+class FakeWorld:
+    def __init__(self, clock, *, mode="tank", speed=14.0, heading=0.0):
+        self.clock = clock
+        self.mode = mode
+        self.speed = float(speed)
+        self.pos = [0.0, 0.0]
+        self.facing = float(heading)
+        self.room = 1
+        self.hp = 76
+        self.entities = []
+        self.actions = []
+        self.log = []
+        self.releases = 0
+        self.blocked = set()
+        self.flags = bytearray(576)
+        self.flag_reads = []
+        self.attack_lands = True
+        self.attack_damage = 9.0
+        self.attack_range = 30.0
+        self.press_range = 25.0
+        self.door = None
+        self.door_locked = False
+        self.switch_works = True
+        self.tick_seconds = 0.0          # extra time an action "takes" (for the overrun test)
+
+    # -- World protocol -------------------------------------------------------------------------------------------
+    def observe(self):
+        return {"player": {"ptr": "80DA62A0", "class": "TObjPlayer", "room": self.room,
+                           "x": round(self.pos[0], 3), "y": 0.0, "z": round(self.pos[1], 3),
+                           "heading_deg": round(math.degrees(self.facing) % 360.0, 1),
+                           "hp": self.hp, "hp_max": 76},
+                "entities": [dict(entity) for entity in self.entities]}
+
+    def act(self, action, deadline):
+        self.actions.append(action)
+        self.log.append((self.clock.now(), action))
+        if action.kind == "release":
+            self.releases += 1
+        elif action.kind == "wait":
+            self.clock.t += action.seconds
+        elif action.kind == "hold":
+            self._move(action.key, action.seconds)
+            self.clock.t += action.seconds
+        elif action.kind == "press":
+            if action.key in B.DIRECTIONS:
+                self._move(action.key, 0.12)          # a tap: the pad holds the key for one TAP_S
+            else:
+                self._press(action.key)
+            self.clock.t += 0.05
+        self.clock.t += self.tick_seconds
+
+    def read(self, address, length):
+        raw = bytes(self.flags[:length])
+        self.flag_reads.append(raw)
+        return raw
+
+    def release(self):
+        self.releases += 1
+
+    # -- world mechanics ------------------------------------------------------------------------------------------
+    def _move(self, key, seconds):
+        if key in self.blocked:
+            return
+        step = self.speed * seconds
+        if self.mode == "tank":
+            if key == "left":
+                self.facing += math.pi / 4
+                return
+            if key == "right":
+                self.facing -= math.pi / 4
+                return
+            if key == "down":
+                self.pos[0] -= math.sin(self.facing) * step
+                self.pos[1] -= math.cos(self.facing) * step
+                return
+            self.pos[0] += math.sin(self.facing) * step
+            self.pos[1] += math.cos(self.facing) * step
+        else:
+            vectors = {"up": (0.0, 1.0), "down": (0.0, -1.0), "left": (-1.0, 0.0), "right": (1.0, 0.0)}
+            dx, dz = vectors[key]
+            self.pos[0] += dx * step
+            self.pos[1] += dz * step
+        if self.door is not None and math.dist(self.pos, self.door) <= 5.0 and not self.door_locked:
+            self.room += 1
+            self.door = None
+
+    def _press(self, key):
+        for entity in list(self.entities):
+            distance = math.hypot(entity["x"] - self.pos[0], entity["z"] - self.pos[1])
+            if entity.get("kind") == "enemy" and distance <= self.attack_range and self.attack_lands:
+                entity["hp"] = max(0.0, float(entity["hp"]) - self.attack_damage)
+                if entity["hp"] <= 0:
+                    self.entities.remove(entity)
+            elif entity.get("kind") == "gate" and distance <= self.press_range:
+                if entity.get("class") in B.SWITCH_CLASSES and self.switch_works:
+                    self.flags[3 * 32 + 2] |= 0x04        # group 3, index 21: a switch's linked flag
+                    self.door_locked = False
+
+
+@pytest.fixture()
+def workdir():
+    """A scratch directory that does not depend on pytest's temp machinery.
+
+    `tempfile.mkdtemp` (which pytest's `tmp_path` uses) creates its directory with mode 0o700, and on this Windows
+    host such a directory carries a DACL the confined test process cannot even list, so a test that takes
+    `tmp_path` fails before it runs. This fixture creates an ordinary directory in the same temp area instead.
+    """
+    path = pathlib.Path(tempfile.gettempdir()) / f"pso-bounded-{os.getpid()}-{uuid.uuid4().hex[:8]}"
+    path.mkdir()
+    try:
+        yield path
+    finally:
+        shutil.rmtree(path, ignore_errors=True)
+
+
+def automaton(world, workdir, **overrides):
+    clock = world.clock
+    options = dict(ledger=E.Ledger(workdir / "ledger.jsonl", clock=clock.now, run="test"),
+                   clock=clock, motion=B.VectorMotion(arrive=10.0), policy=B.ProgressionPolicy(engage=40.0),
+                   watchdog=B.Watchdog(stall_s=2.0, max_recoveries=2),
+                   bounds=B.Bounds(max_objective_ticks=60),
+                   fixture_path=workdir / "failure.json",
+                   flag_address=0x80515CC8, flag_length=576)
+    options.update(overrides)
+    return B.Automaton(world, **options)
+
+
+def entity(cls, ptr, x, z, *, kind="gate", hp=None, room=1, slot=0):
+    row = {"class": cls, "ptr": ptr, "entity_id": slot, "kind": kind, "room": room, "slot": slot,
+           "x": float(x), "y": 0.0, "z": float(z)}
+    if hp is not None:
+        row["hp"] = float(hp)
+    return row
+
+
+# ---------------------------------------------------------------------------------------------------------------------
+# Actions are bounded, and a tick issues exactly one
+# ---------------------------------------------------------------------------------------------------------------------
+def test_tick_issues_exactly_one_action_and_never_exceeds_the_bound(workdir):
+    clock = FakeClock()
+    world = FakeWorld(clock, mode="vector")
+    world.entities = [entity("TLazerFenceSw", "80DADF10", 120.0, 0.0)]
+    box = automaton(world, workdir, motion=B.VectorMotion(arrive=10.0, step_s=0.3),
+                    bounds=B.Bounds(max_objective_ticks=200))
+    ticks = box.run_for(30.0)
+
+    assert ticks, "the loop must tick"
+    assert len(world.actions) == len(ticks), "one world action per tick, never two"
+    assert all(action.seconds <= box.bounds.action_s for action in world.actions)
+    assert all(tick.elapsed < box.bounds.tick_s for tick in ticks)
+    assert box.overruns == 0
+    assert box.stats()["actions"] == len(ticks)
+
+
+def test_a_tick_that_overruns_its_bound_is_detected_and_recorded(workdir):
+    clock = FakeClock()
+    world = FakeWorld(clock, mode="vector")
+    world.entities = [entity("TLazerFenceSw", "80DADF10", 300.0, 0.0)]
+    world.tick_seconds = 5.0                 # a world adapter that ignores its deadline
+    box = automaton(world, workdir)
+    tick = box.tick()
+
+    assert tick.elapsed >= 5.0
+    assert box.overruns == 1
+    assert any(entry["kind"] == "overrun" for entry in _entries(box))
+
+
+def test_action_validation_rejects_unknown_inputs():
+    with pytest.raises(ValueError):
+        B.Action("press", "select", 0.0, "not on this pad")
+    with pytest.raises(ValueError):
+        B.Action("teleport", None, 0.0, "not an action")
+    assert B.hold("up", 9.0, "too long").clipped(B.Bounds(action_s=0.5)).seconds == 0.5
+
+
+# ---------------------------------------------------------------------------------------------------------------------
+# Operator ownership: checked before and after every input
+# ---------------------------------------------------------------------------------------------------------------------
+def test_operator_takeover_before_the_tick_releases_and_presses_nothing(workdir):
+    clock = FakeClock()
+    world = FakeWorld(clock)
+    state = {"playing": True}
+    box = automaton(world, workdir, operator=B.OperatorGuard(source=lambda: state["playing"]))
+    tick = box.tick()
+
+    assert tick.outcome == "preempted"
+    assert world.actions == []
+    assert world.releases == 1
+    assert _entries(box)[-1]["kind"] == "preempted"
+
+
+def test_operator_takeover_after_an_input_is_detected_and_the_pad_is_released(workdir):
+    clock = FakeClock()
+    world = FakeWorld(clock)
+    world.entities = [entity("TLazerFenceSw", "80DADF10", 300.0, 0.0)]
+    calls = {"n": 0}
+
+    def operator():
+        calls["n"] += 1
+        return calls["n"] > 1                 # not playing at the start of the tick, playing right after the action
+
+    box = automaton(world, workdir, operator=B.OperatorGuard(source=operator))
+    tick = box.tick()
+
+    assert tick.outcome == "preempted"
+    assert len(world.actions) == 1             # the action in flight completed
+    assert world.releases == 1                 # and was released immediately afterwards
+    assert "after the input" in tick.note
+
+
+# ---------------------------------------------------------------------------------------------------------------------
+# The watchdog: bounded recovery, then a failure fixture instead of a loop
+# ---------------------------------------------------------------------------------------------------------------------
+def test_a_wedged_character_is_recovered_a_bounded_number_of_times_then_fixtured(workdir):
+    clock = FakeClock()
+    world = FakeWorld(clock)
+    world.blocked = set(B.DIRECTIONS)          # nothing moves: the measured (487, 0) wedge
+    world.entities = [entity("TObjDoor", "80DAD5C0", 40.0, 0.0)]
+    box = automaton(world, workdir, watchdog=B.Watchdog(stall_s=2.0, max_recoveries=2),
+                    bounds=B.Bounds(max_recoveries=2, max_objective_ticks=60))
+    ticks = box.run_for(120.0)
+
+    assert box.stopped, "a wedge must end in a reported failure, not a silent loop"
+    assert box.watchdog.stalls >= 1
+    assert ticks[-1].outcome == "failed"
+    fixture = json.loads((workdir / "failure.json").read_text(encoding="utf-8"))
+    assert "stalled" in fixture["reason"]
+    assert fixture["state"]["player"]["x"] == 0.0
+    assert fixture["history"], "the fixture carries the ticks that led to it"
+    assert len(ticks) < 60, "bounded: it must not spend the session discovering the same wedge"
+    assert box.world.releases >= 1
+
+
+def test_no_objective_progress_for_the_limit_ends_the_run_with_a_fixture(workdir):
+    clock = FakeClock()
+    world = FakeWorld(clock)
+    world.entities = [entity("TObjDoor", "80DAD5C0", 40.0, 0.0)]
+    box = automaton(world, workdir, bounds=B.Bounds(max_objective_ticks=8))
+    box.run_for(60.0)
+
+    assert box.stopped
+    assert "without progress" in box.stopped
+    assert (workdir / "failure.json").exists()
+
+
+def test_no_player_tick_presses_nothing(workdir):
+    clock = FakeClock()
+    world = FakeWorld(clock)
+    world.observe = lambda: {"player": {}, "entities": []}
+    box = automaton(world, workdir)
+    tick = box.tick()
+    assert tick.outcome == "no-player"
+    assert world.actions == []
+
+
+# ---------------------------------------------------------------------------------------------------------------------
+# Progression order and container starvation
+# ---------------------------------------------------------------------------------------------------------------------
+def test_a_switch_outranks_a_nearer_container(workdir):
+    clock = FakeClock()
+    world = FakeWorld(clock)
+    world.entities = [entity("TObjContainerItem", "80DAD830", 8.0, 0.0, kind="object"),
+                      entity("TLazerFenceSw", "80DADF10", 60.0, 0.0)]
+    box = automaton(world, workdir)
+    objective = box.policy.choose(box._observe(), clock.now())
+    assert objective.kind == "switch", "the dependency chain outranks loot even when the loot is closer"
+
+
+def test_containers_are_optional_and_cannot_starve_progression(workdir):
+    clock = FakeClock()
+    world = FakeWorld(clock)
+    world.entities = [entity("TObjContainerItem", "80DAD830", 8.0, 0.0, kind="object")]
+    box = automaton(world, workdir, motion=B.VectorMotion(arrive=10.0))
+    box.run_for(40.0)
+
+    chosen = [entry["extra"]["objective"]["kind"] for entry in _entries(box)
+              if entry["kind"] == "tick" and entry["extra"].get("objective")]
+    assert "container" in chosen, "loot is allowed when nothing in the chain is reachable"
+    assert box.policy.optional_streak >= box.policy.optional_limit
+    late = [entry for entry in _entries(box)[-6:] if entry["kind"] == "tick"]
+    assert all(entry["extra"]["objective"] is None for entry in late), \
+        "after the optional budget the controller explores instead of farming containers"
+
+
+def test_an_enemy_wave_outranks_a_switch_and_a_warp_outranks_both(workdir):
+    clock = FakeClock()
+    world = FakeWorld(clock)
+    world.entities = [entity("TObjEneBeast", "80DB6F40", 20.0, 0.0, kind="enemy", hp=40.0),
+                      entity("TLazerFenceSw", "80DADF10", 15.0, 0.0),
+                      entity("TObjWarpForest", "80DB7000", 200.0, 0.0)]
+    box = automaton(world, workdir)
+    assert box.policy.choose(box._observe(), clock.now()).kind == "warp"
+    del world.entities[2]
+    assert box.policy.choose(box._observe(), clock.now()).kind == "wave"
+    del world.entities[0]
+    assert box.policy.choose(box._observe(), clock.now()).kind == "switch"
+
+
+# ---------------------------------------------------------------------------------------------------------------------
+# Switch causality: a press is recorded with the flag delta, and "no change" is reported as such
+# ---------------------------------------------------------------------------------------------------------------------
+def test_switch_press_records_the_stage_flag_delta(workdir):
+    clock = FakeClock()
+    world = FakeWorld(clock)
+    world.entities = [entity("TLazerFenceSw", "80DADF10", 10.0, 0.0)]
+    box = automaton(world, workdir)
+    tick = box.tick()
+
+    assert tick.objective.kind == "switch"
+    assert tick.action.kind == "press" and tick.action.key == "a"
+    entry = [row for row in _entries(box) if row["kind"] == "tick"][-1]
+    assert entry["extra"]["flag_access"] is True
+    assert entry["delta"]["stage_flags"][0] != entry["delta"]["stage_flags"][1], \
+        "the flag array must actually differ across the press"
+    raw_before, raw_after = world.flag_reads[0], world.flag_reads[1]
+    changed = E.changed_bits(raw_before, raw_after)
+    assert changed["turned_on"] == [{"group": 3, "index": 21}]
+    assert "80DADF10" in box.pressed, "a verified press is what marks a switch done - not the press itself"
+    assert "80DADF10" in box.switch_ok
+
+
+def test_a_switch_that_changes_nothing_is_reported_as_no_change(workdir):
+    clock = FakeClock()
+    world = FakeWorld(clock)
+    world.switch_works = False
+    world.entities = [entity("TLazerFenceSw", "80DADF10", 10.0, 0.0)]
+    box = automaton(world, workdir)
+    box.tick()
+
+    entry = [row for row in _entries(box) if row["kind"] == "tick"][-1]
+    assert entry["delta"]["stage_flags"][0] == entry["delta"]["stage_flags"][1], \
+        "pressing A is not evidence of a flag change, and the ledger must say so"
+    assert box.switch_misses["80DADF10"] == 1
+    assert "80DADF10" not in box.switch_ok
+
+
+def test_a_switch_that_never_changes_a_flag_ends_in_a_named_fixture(workdir):
+    clock = FakeClock()
+    world = FakeWorld(clock)
+    world.switch_works = False
+    world.entities = [entity("TLazerFenceSw", "80DADF10", 10.0, 0.0)]
+    box = automaton(world, workdir)
+    box.run_for(30.0)
+
+    assert box.stopped, "three unverified presses must stop the run, not become a habit"
+    assert "no stage-flag bit changed" in box.stopped
+    assert box.switch_presses["80DADF10"] == box.bounds.max_switch_attempts
+    fixture = json.loads((workdir / "failure.json").read_text(encoding="utf-8"))
+    assert "80DADF10" in fixture["reason"]
+
+
+def test_an_unverifiable_switch_is_never_claimed_as_success(workdir):
+    clock = FakeClock()
+    world = FakeWorld(clock)
+    world.entities = [entity("TLazerFenceSw", "80DADF10", 10.0, 0.0)]
+    box = automaton(world, workdir, flag_address=None)      # this world cannot read the flag array
+
+    for _ in range(box.bounds.max_switch_attempts + 2):
+        box.tick()
+
+    assert box.switch_ok == set()
+    assert "80DADF10" not in box.switch_ok
+    assert box.switch_presses["80DADF10"] >= box.bounds.max_switch_attempts
+    assert "80DADF10" in box.pressed, "an unverifiable switch is set aside rather than pressed forever"
+
+
+# ---------------------------------------------------------------------------------------------------------------------
+# Combat: three spaced presses, verified by HP; unkillable targets are abandoned
+# ---------------------------------------------------------------------------------------------------------------------
+def test_a_combo_is_three_spaced_presses_verified_by_enemy_hp(workdir):
+    clock = FakeClock()
+    world = FakeWorld(clock)
+    world.attack_damage = 9.0
+    world.entities = [entity("TObjEneBeast", "80DB6F40", 5.0, 0.0, kind="enemy", hp=200.0)]
+    box = automaton(world, workdir, bounds=B.Bounds(max_objective_ticks=200))
+    box.run_for(6.0)
+
+    presses = [action for _, action in world.log if action.kind == "press" and action.key == "a"]
+    assert len(presses) >= 3
+    times = [when for when, action in world.log if action.kind == "press" and action.key == "a"]
+    gaps = [round(b - a, 2) for a, b in zip(times, times[1:])]
+    assert any(gap >= box.combat.gap_s for gap in gaps), "the combo must respect the cancel window gap"
+    assert box.combat.attempts >= 1
+    assert box.combat.hits >= 1
+    assert box.combat.stage_transitions == 0, "no action-state reader in this world, so none may be claimed"
+
+
+def test_an_enemy_that_takes_no_damage_is_abandoned_after_bounded_attempts(workdir):
+    clock = FakeClock()
+    world = FakeWorld(clock)
+    world.attack_lands = False
+    world.entities = [entity("TObjEneBeast", "80DB6F40", 5.0, 0.0, kind="enemy", hp=200.0)]
+    box = automaton(world, workdir, bounds=B.Bounds(max_objective_ticks=200))
+    box.run_for(25.0)
+
+    assert box.combat.attempts >= box.combat.whiff_limit
+    assert "80DB6F40" in box.avoid, "a target that cannot be hurt is avoided, not swung at forever"
+    objective = box.policy.choose(box._observe(), clock.now(), pressed=box.pressed, avoid=box.avoid)
+    assert objective is None or objective.ptr != "80DB6F40"
+
+
+# ---------------------------------------------------------------------------------------------------------------------
+# Motion reaches a target even while the camera turns; a door is crossed, not pressed
+# ---------------------------------------------------------------------------------------------------------------------
+def test_vector_motion_closes_on_a_switch_and_presses_it_in_range(workdir):
+    clock = FakeClock()
+    world = FakeWorld(clock, mode="vector")
+    world.entities = [entity("TLazerFenceSw", "80DADF10", 60.0, 20.0)]
+    box = automaton(world, workdir, motion=B.VectorMotion(arrive=10.0, step_s=0.4),
+                    bounds=B.Bounds(max_objective_ticks=200))
+    box.run_for(40.0)
+
+    assert box.switch_ok == {"80DADF10"}, "the switch should have been reached and its flag change verified"
+    entry = [row for row in _entries(box) if row["kind"] == "tick" and row["extra"].get("flag_access")][-1]
+    assert entry["delta"]["stage_flags"][0] != entry["delta"]["stage_flags"][1]
+    assert box.overruns == 0
+
+
+def test_a_door_is_walked_through_and_the_room_change_is_the_progress(workdir):
+    clock = FakeClock()
+    world = FakeWorld(clock)
+    world.door = (30.0, 0.0)
+    world.entities = [entity("TObjDoor", "80DAD5C0", 30.0, 0.0)]
+    box = automaton(world, workdir, motion=B.HeadingMotion(arrive=10.0))
+    for _ in range(80):
+        box.tick()
+        if world.room != 1:
+            break
+
+    assert world.room == 2, "walking into the door must change the room; pressing A is not the mechanism"
+    assert any(entry["kind"] == "tick" and entry["delta"]["room"] == [1, 2] for entry in _entries(box))
+    presses = [action for action in world.actions if action.kind == "press"]
+    assert presses == [], "a door is not an A-press interaction"
+
+
+def test_heading_motion_turns_with_bounded_taps_then_steps(workdir):
+    clock = FakeClock()
+    world = FakeWorld(clock, mode="vector")
+    world.entities = [entity("TLazerFenceSw", "80DADF10", 0.0, 60.0)]
+    motion = B.HeadingMotion(arrive=10.0)
+    action = motion.step(world.observe()["player"], (0.0, 60.0), "switch")
+    assert action.kind == "hold" and action.key == "up", "already facing the target: take a step, do not turn"
+
+
+# ---------------------------------------------------------------------------------------------------------------------
+# Calibration: measure the primitives before trusting a motion model
+# ---------------------------------------------------------------------------------------------------------------------
+def test_calibration_measures_a_vector_key_build(workdir):
+    clock = FakeClock()
+    world = FakeWorld(clock, mode="vector")
+    ledger = E.Ledger(workdir / "cal.jsonl", clock=clock.now, run="cal")
+    calibration = B.calibrate(world, ledger=ledger, clock=clock)
+
+    assert calibration.model == "vector", "four translating keys are a vector keypad, not a turn-and-step build"
+    assert calibration.effects["up"] == (0.0, pytest.approx(14.0 * 0.12, abs=0.01))
+    assert calibration.effects["right"] == (pytest.approx(14.0 * 0.12, abs=0.01), 0.0)
+    assert calibration.speed > 0
+    ok, why = ledger.verify()
+    assert ok, why
+    assert [entry["kind"] for entry in _entries(ledger) if entry["kind"] == "calibration"] == ["calibration"]
+    assert _entries(ledger)[-1]["extra"]["model"] == "vector"
+
+
+def test_calibration_recognises_a_turning_build(workdir):
+    clock = FakeClock()
+    world = FakeWorld(clock, mode="tank")
+    calibration = B.calibrate(world, ledger=E.Ledger(workdir / "cal.jsonl", clock=clock.now))
+
+    assert calibration.model == "heading", "left/right that only rotate are a turn-and-step build"
+    assert calibration.effects["left"] == (0.0, 0.0) and calibration.effects["right"] == (0.0, 0.0)
+    assert abs(calibration.turn["left"]) >= 12.0
+    assert abs(calibration.turn["up"]) < 12.0
+
+
+# ---------------------------------------------------------------------------------------------------------------------
+# The live session adapter: a hold always ends released, even when the job outlives the tick
+# ---------------------------------------------------------------------------------------------------------------------
+def test_session_world_always_releases_a_hold_even_when_the_job_never_finishes():
+    jobs = []
+    releases = []
+    sleeps = []
+
+    def call(path, payload=None, method="GET", timeout=60):
+        if path == "/api/jobs":
+            events = payload["input"]["args"]["events"]
+            job_id = f"job{len(jobs) + 1}"
+            jobs.append({"id": job_id, "events": events})
+            if all(not event["down"] for event in events):
+                releases.append(events)
+            return {"id": job_id}
+        if path.startswith("/api/jobs/"):
+            job_id = path.rsplit("/", 1)[-1]
+            return {"state": "succeeded"} if job_id == "job2" else {"state": "running"}
+        return {}
+
+    world = B.SessionWorld("abc-123", call, sleep=sleeps.append, poll_s=0.0)
+    world.act(B.hold("up", 0.3, "test hold"), deadline=time.monotonic() + 0.05)
+
+    assert jobs[0]["events"] == [{"key": "up", "down": True}]
+    assert releases and all(event["down"] is False for event in releases[-1])
+    assert {event["key"] for event in releases[-1]} == set(B.DIRECTIONS)
+    assert sleeps, "a hold sleeps between the down and the release"
+
+
+# ---------------------------------------------------------------------------------------------------------------------
+# Evidence: deterministic snapshots and a tamper-evident ledger
+# ---------------------------------------------------------------------------------------------------------------------
+def _entries(box):
+    path = box.ledger.path if hasattr(box, "ledger") else box.path
+    return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
+
+
+def test_snapshot_is_deterministic_and_independent_of_entity_order():
+    state = {"player": {"ptr": "80DA62A0", "x": 1.23456, "z": -2.0, "room": 4, "hp": 76},
+             "entities": [entity("TObjDoor", "80DAD5C0", 4.0, 5.0),
+                          entity("TObjContainerItem", "80DAD830", 9.0, 8.0, kind="object")]}
+    shuffled = {"player": dict(state["player"]),
+                "entities": list(reversed(state["entities"]))}
+    assert E.snapshot(state)["digest"] == E.snapshot(shuffled)["digest"]
+    assert E.snapshot(state)["player"]["x"] == 1.235
+    assert E.snapshot(state)["entities"]["gate"][0]["distance"] == round(math.hypot(4.0 - 1.235, 7.0), 3)
+
+
+def test_ledger_is_hash_chained_and_detects_tampering(workdir):
+    clock = FakeClock()
+    ledger = E.Ledger(workdir / "l.jsonl", clock=clock.now)
+    state = {"player": {"ptr": "80DA62A0", "x": 0.0, "z": 0.0, "room": 1},
+             "entities": [entity("TObjDoor", "80DAD5C0", 1.0, 1.0)]}
+    first = E.snapshot(state)
+    state["player"]["x"] = 5.0
+    second = E.snapshot(state)
+    ledger.record("tick", action={"kind": "press", "key": "a"}, before=first, after=second, note="x")
+    ledger.record("tick", action={"kind": "press", "key": "b"}, before=second, after=second, note="y")
+    ok, why = ledger.verify()
+    assert ok, why
+    assert ledger.summary()["entries"] == 2
+
+    lines = (workdir / "l.jsonl").read_text(encoding="utf-8").splitlines()
+    tampered = json.loads(lines[0])
+    tampered["note"] = "the switch opened the door"
+    lines[0] = E.canonical(tampered)
+    (workdir / "l.jsonl").write_text("\n".join(lines) + "\n", encoding="utf-8")
+    ok, why = ledger.verify()
+    assert not ok and "hash" in why
+
+
+def test_diff_reports_enemy_hp_room_and_flag_changes():
+    before = E.snapshot({"player": {"ptr": "p", "x": 0.0, "z": 0.0, "room": 1},
+                         "entities": [entity("TObjEneBeast", "e1", 3.0, 0.0, kind="enemy", hp=40.0)]})
+    after = E.snapshot({"player": {"ptr": "p", "x": 6.0, "z": 0.0, "room": 2},
+                        "entities": [entity("TObjEneBeast", "e1", 3.0, 0.0, kind="enemy", hp=31.0)]})
+    delta = E.diff(before, after)
+    assert delta["moved"] == 6.0
+    assert delta["room"] == [1, 2]
+    assert delta["enemies"][0]["hp"] == [40.0, 31.0] and delta["enemies"][0]["delta"] == -9.0
+    assert delta["enemies"][0]["died"] is False
