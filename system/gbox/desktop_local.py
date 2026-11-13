@@ -239,6 +239,7 @@ def create_app(cfg, key, *, worker_name=None, start_worker=True):
 def main():
     parser=argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--config',required=True);parser.add_argument('--port',type=int,default=DEFAULT_PORT)
+    parser.add_argument('--host',default='127.0.0.1',help='bind address: 0.0.0.0 serves the UI to the LAN (API calls still need the token)')
     parser.add_argument('--name');parser.add_argument('--no-worker',action='store_true')
     args=parser.parse_args()
     # A remote worker's inherited pairing token must not become this authority's
@@ -249,7 +250,7 @@ def main():
                       'token_file':str(cfg.data_dir/'api_token')}),flush=True)
     app=create_app(cfg,key,worker_name=args.name,start_worker=not args.no_worker)
     import uvicorn
-    server=uvicorn.Server(uvicorn.Config(app,host='127.0.0.1',port=cfg.api_port,log_level='warning',
+    server=uvicorn.Server(uvicorn.Config(app,host=args.host,port=cfg.api_port,log_level='warning',
                                        timeout_graceful_shutdown=3))
     app.state.desktop_worker.on_stopped=lambda:setattr(server,'should_exit',True)
     server.run()
