@@ -812,6 +812,8 @@ class CommitMotion:
         self.probe_target = (0.0, 0.0)
         self.probes = 0
         self.last_aim = None
+        self.last_ok = False
+        self.last_dir = None
 
 
     def step(self, player: dict, target: tuple, reason: str = "") -> Action | None:
@@ -823,6 +825,10 @@ class CommitMotion:
             if self.probe_scores is not None and self.last_key is not None and self.probes:
                 # the position reached after that probe key, as a distance to the probe's target
                 self.probe_scores[self.last_key] = math.dist((x, z), self.probe_target)
+            self.last_ok = False
+            if moved >= 4.0 and self.last_dir is not None:
+                toward = (x - self.last_pos[0]) * self.last_dir[0] + (z - self.last_pos[1]) * self.last_dir[1]
+                self.last_ok = toward > 1.0
             if moved >= self.blocked_units:
                 # Commit is broken the moment a tap moves *away* from the aim: measured in Forest 1 at (-108,2), the
                 # motion committed three westward taps at a time toward a door that was north, and a whole run went 470
@@ -879,13 +885,19 @@ class CommitMotion:
             aim = self.slide_dir
         else:
             aim = _unit(float(target[0]) - x, float(target[1]) - z)
-        if self.remaining <= 0 or self.key is None:
+        if self.last_ok and self.last_key is not None:
+            # Straight-line stickiness. Measured: six presses of the same key walked (221)->(183) dead straight - the
+            # follow camera settles behind the movement, so repeating a key continues the line. Re-deciding every tap
+            # (commit=1) threw that away and made the motion zigzag between two nearly-equal keys.
+            self.key = self.last_key
+        elif self.remaining <= 0 or self.key is None:
             self.key = self._best(aim)
             self.remaining = self.commit
         self.remaining -= 1
         self.last_key = self.key
         self.last_pos = here
         self.steps += 1
+        self.last_dir = aim
         self.last_aim = (float(target[0]), float(target[1])) if self.steps >= self.slide_until else None
         return press(self.key, f"tap {self.key} ({distance:.0f} units toward {reason or 'target'}, "
                               f"slide {self.slides})")
