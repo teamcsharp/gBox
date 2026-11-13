@@ -28,6 +28,7 @@ from pso_pad import Pad, call
 
 # The operator's controller relay (controller_relay.py) creates this while they are playing, so the bot stands down.
 OPERATOR_PLAYING = pathlib.Path(r"D:\gBox\pso-ds\operator-playing.flag")
+FLAG_STALE_S = 15.0        # a pause flag older than this is a dead relay, not a playing operator
 
 # The game's own affordance classifier, so a door key is recognised from its entity CLASS in RAM rather than guessed
 # from distance: SWITCH_CLASSES {'TLazerFenceSw', 'TObjDoorKey'} must be PRESSED, DOOR_CLASSES {'TObjDoor',
@@ -586,14 +587,21 @@ def play(pad: Pad, seconds: float = 120.0) -> str:
     while time.time() - started < seconds:
         # The operator's controller relay drops this file while they are touching the pad: stand down so the bot does
         # not fight them for it. They get the game; the bot waits.
+        # Stand down while the operator plays - but never trust a stale marker. If the relay dies with the flag set,
+        # an endless stand-down is indistinguishable from a dead bot, so the flag expires on its own age.
+        operator_active = False
         if OPERATOR_PLAYING.exists():
+            try:
+                operator_active = (time.time() - OPERATOR_PLAYING.stat().st_mtime) < FLAG_STALE_S
+            except OSError:
+                operator_active = False
+        if operator_active:
             if not globals().get("_PAUSED_LOGGED"):
                 log("  operator is playing - bot standing down")
                 globals()["_PAUSED_LOGGED"] = True
             time.sleep(0.4)
             continue
-        else:
-            globals()["_PAUSED_LOGGED"] = False
+        globals()["_PAUSED_LOGGED"] = False
 
         # The operator types notes into operator-notes.txt; they are read and acted on every iteration.
         read_notes(pad)
