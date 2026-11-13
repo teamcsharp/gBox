@@ -34,6 +34,8 @@ from gbox import gamepads                     # noqa: E402
 BASE = "http://127.0.0.1:18765"
 TOKEN_PATH = pathlib.Path(r"C:\_tools\gBox\system\gbox-data\api_token")
 TRACE_DIR = pathlib.Path(r"D:\gBox\pso-ds\bounded")
+# The bot stands down while this is fresh (`pso_bounded.OperatorGuard`): the operator always wins.
+OPERATOR_FLAG = pathlib.Path(r"D:\gBox\pso-ds\operator-playing.flag")
 
 # XInput button bits (xinput.h).
 BUTTONS = ((0x1000, "a"), (0x2000, "b"), (0x4000, "x"), (0x8000, "y"),
@@ -117,6 +119,8 @@ def main(argv=None) -> int:
     parser.add_argument("--hz", type=float, default=60.0)
     parser.add_argument("--no-sticks", action="store_true")
     parser.add_argument("--seconds", type=float, default=3600.0)
+    parser.add_argument("--idle-seconds", type=float, default=10.0,
+                        help="how long after their last input the operator keeps the pad")
     parser.add_argument("--latch-seconds", type=float, default=900.0,
                         help="how long to wait for the first button press that identifies the operator pad")
     args = parser.parse_args(argv)
@@ -171,8 +175,15 @@ def main(argv=None) -> int:
     watcher.start()
     log(f"relaying XInput slot {slot} -> session {sid} at {args.hz:.0f} Hz "
         f"({'without sticks' if args.no_sticks else 'with sticks'}), recording to {trace_path.name}")
+    last_activity = 0.0
+    flagged = False
     while time.monotonic() - started < args.seconds:
-        state = read(slot)
+        try:
+            state = read(slot)
+        except Exception as exc:                                   # noqa: BLE001 - a pad read must never end the relay
+            log(f"pad read failed: {type(exc).__name__}")
+            time.sleep(0.5)
+            continue
         if state is None:
             time.sleep(0.5)
             continue
@@ -183,11 +194,36 @@ def main(argv=None) -> int:
         for key in held - wanted:
             events.append({"key": key, "down": False})
         if events:
-            call(f"/api/sessions/{sid}/input", {"events": events}, "POST", timeout=5)
+            try:
+                call(f"/api/sessions/{sid}/input", {"events": events}, "POST", timeout=5)
+            except Exception as exc:                                # noqa: BLE001 - keep the pad alive
+                log(f"input post failed: {type(exc).__name__}")
             log("keys " + ", ".join(f"{'+' if event['down'] else '-'}{event['key']}" for event in events))
             held = wanted
+            last_activity = time.monotonic()
+        # The bot yields while the operator is playing, through the same flag the human relay always used.
+        if wanted or (time.monotonic() - last_activity) < args.idle_seconds:
+            try:
+                OPERATOR_FLAG.parent.mkdir(parents=True, exist_ok=True)
+                OPERATOR_FLAG.write_text("operator pad relay", encoding="ascii")
+                if not flagged:
+                    log("operator owns the pad - the bot will stand down")
+                    flagged = True
+            except OSError:
+                pass
+        elif flagged:
+            try:
+                OPERATOR_FLAG.unlink()
+            except OSError:
+                pass
+            log("operator idle - the bot may resume")
+            flagged = False
         time.sleep(interval)
     stop.set()
+    try:
+        OPERATOR_FLAG.unlink()
+    except OSError:
+        pass
     watcher.join(timeout=3.0)
     trace.close()
     if held:
