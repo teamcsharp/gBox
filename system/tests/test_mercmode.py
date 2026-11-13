@@ -74,6 +74,22 @@ def boundary(run,now,**witness):
                        'tally_ready':True,'timer':0,'game_routine':3,'room':0x400,**witness}}
 
 
+def test_skin_deadline_does_not_cut_off_a_productive_live_round():
+    store,w,saver,calls,now,tick,run,job=playing()
+    M.configure(store,w['name'],{'skin_swap':'random'})
+    start=run['playing_since']
+    for elapsed,kills in ((M.SKIN_ROTATE_S-1,90),(M.SKIN_ROTATE_S+1,92),(M.SKIN_ROTATE_S+60,107)):
+        at=start+elapsed
+        S.telemetry_put(run['session_id'],{'running':True,'source_autoplay_job_id':job['id'],
+            'stats':{'screen':'playing','source_autoplay_job_id':job['id'],
+                     'kills':kills,'score':kills*1000,'round_evidence_id':'b'*32}},now=at)
+        tick(at-now[0])
+        active=store.get(S.STATE,w['name'])
+        assert active['session_id']==run['session_id']
+        assert not active.get('mercmode_rotate_requested')
+    assert not [c for c in calls if c['tool']=='session_op' and c['input'].get('op') in ('stop','pause')]
+
+
 def adoptable():
     store,w,saver,calls,now,tick=rig()
     M.configure(store,w['name'],{'enabled':True,'keep_warm':False,'rounds_per_title':1})
