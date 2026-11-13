@@ -4275,9 +4275,12 @@ def pso_inventory(inp: InvIn, ctx: Ctx):
     raw = ad.read_memory(base, psoitems.SLOT * psoitems.SLOTS)
     slots = [psoitems.decode_slot(raw[i * psoitems.SLOT:(i + 1) * psoitems.SLOT], E) for i in range(psoitems.SLOTS)]
     cat = {}
+    rows = {}
     try:
-        cat = {i["code"]: i["name"] for i in httpx.get(f"{ctx.server}/api/pso/items", params={"version": version},
-                                                        headers=ctx.headers, timeout=60).json()}
+        payload = httpx.get(f"{ctx.server}/api/pso/items", params={"version": version},
+                            headers=ctx.headers, timeout=60).json()
+        cat = {i["code"]: i["name"] for i in payload}
+        rows = {i["code"]: i for i in payload}
     except Exception:
         pass
     changed = None
@@ -4287,6 +4290,11 @@ def pso_inventory(inp: InvIn, ctx: Ctx):
             raise ValueError("code = 3 bytes hex, e.g. 000105")
         data = bytearray(12)
         data[0:3] = code
+        if code[0] != 3:
+            # GRIND TO THE WEAPON'S OWN MAXIMUM. data[3] is the grind byte. The cap is per weapon (50 for the handgun
+            # and the J-Sword, 0 for Dark Flow), never a flat 99 - the game clamps by the weapon's own PMT entry.
+            grind = int((rows.get(code.hex()) or {}).get("max_grind") or 0)
+            data[3] = max(0, min(99, grind))
         if code[0] == 3:
             data[5] = max(1, min(10, inp.count)) if code[1] in (0, 1, 3, 4, 5, 6, 7, 8, 9, 10) else 0
         if inp.op == "set" and inp.slot is not None:
