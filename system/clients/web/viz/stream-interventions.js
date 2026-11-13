@@ -118,6 +118,11 @@
         if (ring) return `${ringKindLabel(row.result?.kind)} ring detonated (${row.result?.detonated ?? row.result?.requested ?? ''} grenades).`;
         return 'Flashbang detonated.';
       }
+      // The native ring call returns placed units without a separate "verified" flag, so the queue reports
+      // uncertain even when the receipt names armed bombs. Say what actually landed instead of "no confirmed effect".
+      if (remote && (row.result?.placed ?? 0) > 0) {
+        return `Armed remote bombs: ${row.result.placed}/${row.result?.requested ?? 0} (${row.state}); the bot escapes and detonates them.`;
+      }
       const what = row.op==='detonate_mines' ? 'Mine detonation' : remote ? 'Remote mines' : mine ? 'Proximity mines' : weapon ? 'Weapon selection' : ring ? 'Grenade ring' : ammo ? 'Infinite ammo' : aid ? 'First aid' : 'Flashbang';
       return `${what} ${row.state}: ${row.result?.reason || row.reason || 'no confirmed effect'}`;
     }
@@ -204,7 +209,7 @@
   }
   function bindProximityMine(button,{ring=false,action,...options}={}) {
     return bindFirstAid(button,{...options,firstAid:action,
-      operation:ring?'proximity_mine_ring':'proximity_mine_drop',label:ring?'Mine ring · 5 ft':'Drop mine',
+      operation:ring?'proximity_mine_ring':'proximity_mine_drop',label:ring?'Mine ring Â· 5 ft':'Drop mine',
       description:ring?'Flashbang, deploy five armed mines five feet away, and escape':'Drop an armed proximity mine without changing weapons',
       supported:report=>report.options?.proximity_mines?.available===true});
   }
@@ -214,7 +219,7 @@
   // version of the ring the bot already drops - the topbar control the operator called "isnt working" on RE6.
   function bindRemoteMines(button,{action,count=5,radius_cm=152.4,...options}={}) {
     return bindFirstAid(button,{...options,firstAid:sid=>action(sid,{action:'ring',count,radius_cm}),
-      operation:'remote_mines',label:'Remote mine ring · 5 ft',
+      operation:'remote_mines',label:'Remote mine ring Â· 5 ft',
       description:`Deploy ${count} armed native remote bombs five feet around him; the bot escapes and detonates them`,
       supported:report=>report?.capabilities?.includes('remote_mines')===true});
   }
@@ -441,7 +446,7 @@
       const session=selected(),version=++revision;menuSid=session;
       menu=doc.createElement('div');menu.className='merc-weapon-menu';menu.setAttribute('role','dialog');menu.setAttribute('aria-label','Choose primary weapon');
       Object.assign(menu.style,{position:'fixed',zIndex:'10000',width:'350px',maxWidth:'calc(100vw - 8px)',maxHeight:'calc(100vh - 40px)',boxSizing:'border-box',display:'flex',flexDirection:'column',gap:'8px',background:'#1d1d22',color:'#eee',border:'1px solid #666',borderRadius:'7px',padding:'10px',font:'13px sans-serif',webkitAppRegion:'no-drag',boxShadow:'0 6px 24px #0008'});
-      const title=doc.createElement('strong');title.textContent='Choose weapon · hold for 3:00';
+      const title=doc.createElement('strong');title.textContent='Choose weapon Â· hold for 3:00';
       const heading=doc.createElement('div');Object.assign(heading.style,{display:'flex',alignItems:'center',justifyContent:'space-between',gap:'8px',flexWrap:'wrap'});
       const ammo=doc.createElement('button');ammo.type='button';ammo.dataset.infiniteAmmo='';
       const ammoLabel=doc.createElement('span');ammo.innerHTML=ammoIcon;ammo.append(ammoLabel);
@@ -451,7 +456,7 @@
       const info=doc.createElement('div');info.textContent='Highest damage first';info.style.color='#bbb';
       const search=doc.createElement('input');search.type='search';search.placeholder='Find a weapon';search.setAttribute('aria-label','Find a weapon');
       Object.assign(search.style,{boxSizing:'border-box',width:'100%',padding:'7px',background:'#111',color:'#fff',border:'1px solid #666',borderRadius:'4px'});
-      const status=doc.createElement('div');status.setAttribute('role','status');status.textContent='Loading weapons…';
+      const status=doc.createElement('div');status.setAttribute('role','status');status.textContent='Loading weaponsâ€¦';
       const list=doc.createElement('div');list.setAttribute('role','group');list.setAttribute('aria-label','Weapons, highest damage first');Object.assign(list.style,{overflowY:'auto',minHeight:'0',overscrollBehavior:'contain'});
       menu.append(heading,ammoStatus,info,search,status,list);doc.body.append(menu);button.setAttribute('aria-expanded','true');onOpen(true);position();search.focus();
       let state=null,signature=null;
@@ -470,7 +475,7 @@
         list.replaceChildren();
         const available=state.available && (state.capabilities||[]).includes('equip_primary');
         const rows=sortedWeapons(state.options?.weapons),query=search.value.trim().toLocaleLowerCase();
-        info.textContent=rows.some(r=>r.damage_basis==='live_level0_firepower')?'Highest damage first · gun firepower at level 0':'Highest damage first';
+        info.textContent=rows.some(r=>r.damage_basis==='live_level0_firepower')?'Highest damage first Â· gun firepower at level 0':'Highest damage first';
         const lock=state.options?.primary_weapon;
         if(lock?.locked===true&&Number.isFinite(lock.lock_remaining_s)&&lock.lock_remaining_s>=0){const seconds=Math.ceil(lock.lock_remaining_s);info.textContent+=` | ${lock.weapon||'Selected weapon'} locked ${Math.floor(seconds/60)}:${String(seconds%60).padStart(2,'0')}`;}
         info.title='Gun values include live damage mods. Reference values are unmodified base damage. Actual hits depend on distance, target and ammunition.';
@@ -483,11 +488,11 @@
           const name=doc.createElement('div');name.textContent=row.weapon;name.style.fontWeight='600';
           const detail=doc.createElement('div');detail.style.cssText='font-size:11px;color:#bbb;margin-top:3px';
           const damage=damageValue(row);
-          detail.textContent=[damage===null?'Damage varies / unmeasured':`Damage ${damage.toLocaleString()}${row.damage_basis==='reference_base_damage'?' (reference)':''}`,equipped?'Equipped · In inventory':row.in_inventory===true?'In inventory':row.in_inventory===false?'Not in inventory':'Inventory not reported',row.available===false?row.reason||'Unavailable now':''].filter(Boolean).join(' · ');
+          detail.textContent=[damage===null?'Damage varies / unmeasured':`Damage ${damage.toLocaleString()}${row.damage_basis==='reference_base_damage'?' (reference)':''}`,equipped?'Equipped Â· In inventory':row.in_inventory===true?'In inventory':row.in_inventory===false?'Not in inventory':'Inventory not reported',row.available===false?row.reason||'Unavailable now':''].filter(Boolean).join(' Â· ');
           item.append(name,detail);list.append(item);
           item.onclick=e=>{
             e.preventDefault();e.stopPropagation();if(!current() || item.disabled){update();return;}
-            close();receipt(`Equipping ${row.weapon}…`,{state:'sending',sid:session});
+            close();receipt(`Equipping ${row.weapon}â€¦`,{state:'sending',sid:session});
             Promise.resolve().then(()=>equipPrimary(session,row.item)).catch(error=>receipt(error.message,{state:'unavailable',sid:session}));
           };
         }
@@ -766,7 +771,7 @@
   function mount(host, options) {
     const doc = host.ownerDocument, bar = doc.createElement('div'); bar.className = 'stream-interventions';
     bar.setAttribute('role','toolbar');bar.setAttribute('aria-label','Icon panel');
-    const button = doc.createElement('button'); button.type='button'; button.textContent='⚡ Instant flashbang';
+    const button = doc.createElement('button'); button.type='button'; button.textContent='âš¡ Instant flashbang';
     const status = doc.createElement('span'); status.setAttribute('role','status');
     bar.append(button, status); host.append(bar);
     let sidebar = null, disposed = false, opening = false;
