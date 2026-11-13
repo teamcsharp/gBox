@@ -237,13 +237,18 @@ class Watchdog:
         return self.progress_age(now) > self.hard_progress_s
 
     def recovery(self) -> Action:
-        """One bounded recovery action, rotating. Never a nested unstick routine."""
-        plan = (("down", 0.40, "reverse out of the obstruction"),
-                ("left", 0.45, "turn away and probe"),
-                ("right", 0.45, "turn the other way and probe"),
-                ("up", 0.45, "advance again after the turn"))
-        key, seconds, why = plan[min(self.recoveries, len(plan)) - 1]
-        return hold(key, seconds, f"watchdog recovery {self.recoveries}/{self.max_recoveries}: {why}")
+        """One bounded recovery action, rotating. Never a nested unstick routine.
+
+        A tap: one job, self-releasing, ~8 units on this control plane (measured). A hold would be one more job whose
+        real duration depends on release latency, which is exactly the non-determinism the recovery is trying to
+        escape.
+        """
+        plan = (("down", "reverse out of the obstruction"),
+                ("left", "strafe away and probe"),
+                ("right", "strafe the other way and probe"),
+                ("up", "advance again after the sidestep"))
+        key, why = plan[min(self.recoveries, len(plan)) - 1]
+        return press(key, f"watchdog recovery {self.recoveries}/{self.max_recoveries}: {why}")
 
     def exhausted(self) -> bool:
         return self.recoveries > self.max_recoveries
@@ -345,16 +350,27 @@ class VectorMotion:
     Model-free on purpose: on the builds measured so far the same key has moved the character in different world
     directions as the camera turned, so a fixed key->direction table is wrong within a second. Every press is
     followed by a measurement, and the table is replaced with what actually happened.
+
+    `primitive="tap"` is the calibrated default for this control plane. Measured live on 2026-11-13 with the character
+    standing in the open: every direction tap moved **7.8-8.0 units** (n=4 per key, range 7.0-8.0), while a 0.30 s
+    hold moved **38.9 units** - the release job lands about a second after the down job, so a "0.3 s" hold is really
+    a 1.3 s run. A tap is one job, self-releasing, and its distance does not depend on job latency, which makes it the
+    only primitive on this channel whose displacement is predictable. Holds remain available for a world whose
+    release is prompt.
     """
 
     def __init__(self, *, arrive: float = 12.0, step_s: float = 0.3, min_move: float = 1.0,
-                 max_blocked: int = 2, keys: Iterable[str] = DIRECTIONS, speed: float = 14.0) -> None:
+                 max_blocked: int = 2, keys: Iterable[str] = DIRECTIONS, speed: float = 14.0,
+                 primitive: str = "tap") -> None:
+        if primitive not in ("tap", "hold"):
+            raise ValueError("primitive must be 'tap' or 'hold'")
         self.arrive = float(arrive)
         self.step_s = float(step_s)
         self.min_move = float(min_move)
         self.max_blocked = int(max_blocked)
         self.keys = tuple(keys)
         self.speed = float(speed)
+        self.primitive = primitive
         self.effects = {key: None for key in self.keys}     # None = unmeasured, (0, 0) = measured dead
         self.blocked = {key: 0 for key in self.keys}
         self.last = None
@@ -384,17 +400,21 @@ class VectorMotion:
         # unless the known key points almost straight at the target.
         if scored and (not unmeasured or max(entry[0] for entry in scored) >= 0.85):
             _, key = max(scored)
-            seconds = min(self.step_s, max(0.12, distance / max(self.speed, 1e-6)))
             self.last = key
+            if self.primitive == "tap":
+                return press(key, f"tap toward {reason or 'target'} ({distance:.0f} units)")
+            seconds = min(self.step_s, max(0.12, distance / max(self.speed, 1e-6)))
             return hold(key, seconds, f"step toward {reason or 'target'} ({distance:.0f} units)")
         key = unmeasured[0] if unmeasured else min(self.keys, key=lambda k: self.blocked[k])
         self.last = key
+        if self.primitive == "tap":
+            return press(key, f"measure {key} toward {reason or 'target'}")
         return hold(key, self.step_s, f"measure {key} toward {reason or 'target'}")
 
     def learn(self, action: Action, before: dict, after: dict) -> float:
         """Update the key table from one measured press. Returns the distance actually moved."""
-        if action.kind not in ("hold", "press") or action.key is None:
-            return 0.0
+        if action.kind not in ("hold", "press") or action.key not in self.keys:
+            return 0.0                                     # an attack button is not a movement measurement
         b = (float(before.get("x") or 0), float(before.get("z") or 0))
         a = (float(after.get("x") or 0), float(after.get("z") or 0))
         moved = math.dist(b, a)
@@ -404,7 +424,7 @@ class VectorMotion:
             if action.seconds > 0:
                 observed = moved / action.seconds
                 self.speed = 0.7 * self.speed + 0.3 * observed if self.speed else observed
-        elif action.kind == "hold":
+        elif action.kind in ("hold", "press"):
             self.blocked[action.key] += 1
             if self.blocked[action.key] >= self.max_blocked:
                 self.effects[action.key] = (0.0, 0.0)
@@ -900,7 +920,7 @@ class Automaton:
         """A deterministic bounded sweep when nothing in the dependency chain is in reach."""
         room = str(player.get("room") or "0").strip()
         direction = DIRECTIONS[int(room) % 4] if room.isdigit() else "up"
-        return hold(direction, 0.3, f"explore room {room}: sweep {direction}")
+        return press(direction, f"explore room {room}: one step {direction}")
 
     def _account(self, objective: Objective | None, action: Action, before: dict, after: dict, now: float):
         """Turn the observed delta into progression, and feed it back to the policy and the watchdog.

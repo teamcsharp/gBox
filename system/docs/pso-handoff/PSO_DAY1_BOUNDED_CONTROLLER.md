@@ -105,31 +105,40 @@ and the chain verified every time (`~26 entries verified`).
 Representative run (`D:\gBox\pso-ds\bounded\walk-20261113-090518.jsonl`): 16 ticks, 12 actions, 0 overruns, 0 stalls,
 final distance 39.1 units from a target 60 units away, no memory writes, no position writes.
 
-### 3.4 The finding: the motion model is not right yet
+### 3.4 The finding: the motion model — resolved by settling the measurement
 
-Calibration is already earning its place. Five live calibration passes:
+The first five live calibrations disagreed with each other (`up` read dead in four of five; a tap appeared to swing the
+heading 60–170°). The reason was **momentum**: the position was read the moment the input job acknowledged, while the
+character was still coasting. `docs/research/pso-calibrate.py` fixes that by polling until two consecutive reads agree
+before every sample, and the picture is now stable and repeatable (4 samples per key, 09:11–09:12):
 
-| pass | `up` | `down` | `left` | `right` | heading swing, left / right tap |
-|---|---|---|---|---|---|
-| 1 | dead | (2.36, 1.83) | (2.85, 5.01) | (−2.17, −1.58) | −63°, −158° |
-| 2 | dead | (3.82, −0.75) | (3.82, −0.62) | (−0.74, 3.37) | −44°, −165° |
-| 3 | dead | dead | dead | (0.95, 4.54) | —, −151° |
-| 4 | dead | (−3.71, 1.34) | (−4.95, −3.25) | (−0.60, 1.95) | −88°, +135° |
-| 5 | (1.14, −3.81) | (−1.66, 0.56) | (−3.41, 2.96) | (−0.66, −2.32) | −65°, −148° |
+| primitive | up | down | left | right |
+|---|---|---|---|---|
+| one tap (down+up in one job) | 7.82 (7.00–8.00) | 7.99 (7.55–8.00) | 7.98 (7.85–8.00) | 7.99 (7.59–8.00) |
+| five taps in one batch | 15.85 (3.17/tap) | 15.52 (3.10/tap) | 15.74 (3.15/tap) | 15.51 (3.10/tap) |
+| hold 0.30 s | 38.88 | — | — | — |
 
-Three facts come out of this, and none of them is in the old documentation:
+Three facts, all new:
 
-* **the key→world mapping is camera-relative and rotates**, exactly as `pso_kbwalk` says — so a fixed vector table
-  is wrong within a second, and the same key can read "dead" against geometry;
-* **a tap can rotate the character by 60–170°**, not the documented 8–11°. Either the reported `heading_deg` is not the
-  character's facing, or a tap is not the primitive the old measurement assumed. This must be resolved by a dedicated
-  measurement before any steering loop is tuned further;
-* **a single tap is not enough to declare a key dead** (pass 4 has `up` moving after pass 1 called it dead); the
-  calibration now takes a second sample and picks the better one.
+* **every direction key works** — a tap moves 7.8–8.0 units with a spread of under a unit. The earlier "dead `up`" was
+  the character pressed against geometry, not a dead binding;
+* **a tap is the only primitive with a predictable distance.** A 0.30 s hold moves **38.9 units**, because the release
+  job lands about a second after the down job: the hold is really ~1.3 s of running. Its displacement depends on job
+  latency, which is exactly what a controller must not depend on;
+* **a batch of taps is not 5× a tap** — it moves about 15.5 units (~3.1/tap), because each 35 ms press restarts the
+  movement. Batching is a way to nudge, not a way to step.
 
-The controller's structure does not depend on which model wins — motion is one bounded action per tick either way —
-but its convergence does, so the runner currently keeps the heading model (the one that measurably closed 60.8 → 9.5
-units) and the vector model stays in the library, tested, for a build whose keys are fixed.
+So movement is now `VectorMotion(primitive="tap")`: one tap per tick, each tap's world displacement re-measured and put
+back into the key table, which is what handles the camera-relative mapping. Live result, first attempt:
+
+```
+walk to 498,-261:  86 units away  ->  arrived within 6 units after 16 ticks
+                    final distance 4.9      overruns 0   stalls 0   ledger 17 entries verified
+```
+
+That is the first walk in this project that closed a real distance under controller-only input without a position
+write. The heading-based model (`HeadingMotion`) remains in the library and tested, but nothing in these runs justified
+using it: `heading_deg` moved unpredictably while position was reliable.
 
 ### 3.5 The finding: this session cannot produce switch→door evidence
 
@@ -175,10 +184,9 @@ success.
 
 ## 4. What is not done, stated plainly
 
-* **The motion model is not solved.** The character moves and the loop never blocks, but a 60-unit walk ends 39 units
-  away rather than within 8. The next step is a dedicated primitive calibration (open ground, ten samples per key,
-  single tap versus a five-tap batch) and then either a corrected heading model or a per-tick re-calibrated vector
-  model — not another steering algorithm written from guesswork.
+* **The motion model is solved for this control plane, by measurement.** Taps move a predictable 7.8–8.0 units and
+  the tap-vector model closed 86 → 4.9 units in 16 ticks. The remaining gap is not steering; it is the room graph and
+  the switch/door chain.
 * **No switch→flag evidence in this session** — see 3.5. The verifier is implemented, tested and ran live; it has
   nothing clean to verify against.
 * **The movement watchdog counted turning as standing still.** The first live `play` run recorded three recoveries
@@ -192,11 +200,13 @@ success.
 
 1. **Fresh session without global writes.** Relaunch, drive the menus, and confirm `groups_set_bits` is all zero
    except the city's own flags before leaving town. Record the array as the session's opening state.
-2. **Primitive calibration on open ground.** Per key: five single taps and one five-tap batch, positions and heading
-   before/after; publish the distributions. Decide the motion model from that table.
+2. **Primitive calibration on open ground.** ✅ Done — `docs/research/pso-calibrate.py`, results in §3.4: every tap
+   7.8–8.0 units, holds unusable on this channel, batches do not accumulate.
 3. **One switch→flag→door chain.** Nearest `TLazerFenceSw`, bounded approach, press, flag read before/after, then walk
    the linked door and record the room change. Failure means a fixture with the distances.
-4. **Wire the same evidence into the combo path**: action-state at `ptr+0x326` before/after each hit.
+4. **City → Forest 1 with controller input only** (walk to the warp trigger, activate it, choose the destination), so
+   the fresh session reaches a switch without a position write.
+5. **Wire the same evidence into the combo path**: action-state at `ptr+0x326` before/after each hit.
 
 ## 6. Reproduce
 

@@ -60,6 +60,8 @@ class FakeWorld:
         self.attack_damage = 9.0
         self.attack_range = 30.0
         self.press_range = 25.0
+        self.tap_units = 8.0             # measured live: every direction tap moved 7.8-8.0 units
+        self.tap_seconds = 0.6           # and cost one input-job round trip, ~0.6 s
         self.door = None
         self.door_locked = False
         self.switch_works = True
@@ -85,10 +87,11 @@ class FakeWorld:
             self.clock.t += action.seconds
         elif action.kind == "press":
             if action.key in B.DIRECTIONS:
-                self._move(action.key, 0.12)          # a tap: the pad holds the key for one TAP_S
+                self._move(action.key, self.tap_units / self.speed)   # a tap: one calibrated step
+                self.clock.t += self.tap_seconds                  # a tap costs one job round trip
             else:
                 self._press(action.key)
-            self.clock.t += 0.05
+                self.clock.t += 0.05
         self.clock.t += self.tick_seconds
 
     def read(self, address, length):
@@ -491,6 +494,25 @@ def test_a_door_is_walked_through_and_the_room_change_is_the_progress(workdir):
     assert presses == [], "a door is not an A-press interaction"
 
 
+def test_motion_can_use_the_calibrated_tap_primitive_and_never_holds_a_key(workdir):
+    """A tap is one job, self-releasing, and its distance does not depend on release latency.
+
+    Measured live 2026-11-13: every direction tap moved 7.8-8.0 units, while a 0.30 s hold moved 38.9 units because
+    the release job landed about a second later. So the tap is the predictable primitive, and movement must not hold.
+    """
+    clock = FakeClock()
+    world = FakeWorld(clock, mode="vector")
+    world.entities = [entity("TLazerFenceSw", "80DADF10", 48.0, 0.0)]
+    box = automaton(world, workdir, motion=B.VectorMotion(arrive=6.0, primitive="tap"),
+                    bounds=B.Bounds(max_objective_ticks=200))
+    box.run_for(30.0)
+
+    moves = [action for _, action in world.log if action.key in B.DIRECTIONS]
+    assert moves, "the controller must move"
+    assert all(action.kind == "press" for action in moves), "tap motion must never hold a direction key"
+    assert box.switch_ok == {"80DADF10"}
+
+
 def test_heading_motion_turns_with_bounded_taps_then_steps(workdir):
     clock = FakeClock()
     world = FakeWorld(clock, mode="vector")
@@ -510,8 +532,8 @@ def test_calibration_measures_a_vector_key_build(workdir):
     calibration = B.calibrate(world, ledger=ledger, clock=clock)
 
     assert calibration.model == "vector", "four translating keys are a vector keypad, not a turn-and-step build"
-    assert calibration.effects["up"] == (0.0, pytest.approx(14.0 * 0.12, abs=0.01))
-    assert calibration.effects["right"] == (pytest.approx(14.0 * 0.12, abs=0.01), 0.0)
+    assert calibration.effects["up"] == (0.0, pytest.approx(8.0, abs=0.01))
+    assert calibration.effects["right"] == (pytest.approx(8.0, abs=0.01), 0.0)
     assert calibration.speed > 0
     ok, why = ledger.verify()
     assert ok, why

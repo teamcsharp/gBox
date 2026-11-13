@@ -127,18 +127,14 @@ def run(mode: str, args) -> int:
         table = calibration.as_dict()
         log(f"calibration: model={calibration.model} speed={calibration.speed} "
             f"effects={table['effects']} turn={table['turn_deg']}")
-    # Heading-driven taps are the motion model that measurably converged on this build (60.8 -> 9.5 units without a
-    # position write). The vector model stays in the library and is covered by tests, but this run's calibration
-    # showed the key->world mapping is camera-relative and rotates with the character, so the model is not selected
-    # from a single calibration pass here. The calibration's turn rate sizes the tap.
-    arrive = 8.0 if mode == "walk" else 12.0
-    turn_per_tap = 10.0
+    # Movement is the calibrated TAP, not a hold. Measured live on 2026-11-13 (pso-calibrate.py, 4 samples per key,
+    # settling after each action): every direction tap moved 7.8-8.0 units, while a 0.30 s hold moved 38.9 units
+    # because the release job lands about a second after the down job. A tap is one job, self-releasing, and its
+    # distance does not depend on job latency, so it is the only primitive here whose displacement is predictable.
+    arrive = 6.0 if mode == "walk" else 8.0
+    motion = B.VectorMotion(arrive=arrive, primitive="tap")
     if calibration is not None:
-        taps = [abs(calibration.turn.get("left") or 0), abs(calibration.turn.get("right") or 0)]
-        taps = [value for value in taps if value >= 1.0]
-        if taps:
-            turn_per_tap = max(4.0, min(30.0, sum(taps) / len(taps)))
-    motion = B.HeadingMotion(arrive=arrive, turn_rate_deg_per_s=turn_per_tap / 0.11)
+        motion.seed(calibration.effects, speed=calibration.speed or None)
 
     if mode == "walk":
         target = tuple(args.to)
