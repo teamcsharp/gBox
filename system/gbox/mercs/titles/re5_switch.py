@@ -2736,8 +2736,10 @@ class Bot:
         self._learn_dir = learn_dir
         self._lock_last, self._lock_score, self._lock_off = None, [0, 0], False   # did the writes hold (next frame)
         self._wu, self._windup_e, self._grab_at, self._was_held = {}, None, -1e9, False   # the wind-ups (WINDUP)
-        self._tm = threat_memory.ThreatMemory(THREAT_FILE, default_reach_cm=WINDUP_R)    # who hurt him (THREAT_FILE)
+        self._tm = threat_memory.ThreatMemory(THREAT_FILE, default_reach_cm=WINDUP_R,
+                                             held_needs_flag=True, attack_required=True)
         self._lethal_bo, self._grudge_e = None, None     # the learned back-off under way; the nearest grudge
+        self._lethal_clear_since = None
         for k in TM_COUNTERS:
             self.stats.setdefault(k, 0)
         self._dyn, self._dynamite_e = {}, None             # the lit dynamite carriers, the nearest one (DYNAMITE)
@@ -3551,10 +3553,8 @@ class Bot:
         return {"hold": tuple(sorted(keys))}
 
     def _winding(self, e) -> bool:
-        """His own motion is a wind-up (WINDUP_MOTIONS), his attack flag is up, or his motion is one his class has
-        been learned to hurt with (THREAT_FILE)."""
-        return bool(WINDUP and (e.get("motion") in WINDUP_MOTIONS or (e.get("act") or 0) & E_ATTACKING
-                                or self._tm.lethal(e)))
+        """Current native wind-up evidence. Old damage correlations are not an attack flag."""
+        return bool(WINDUP and (e.get("motion") in WINDUP_MOTIONS or (e.get("act") or 0) & E_ATTACKING))
 
     def _wind_r(self, e) -> float:
         """How near a wind-up counts: WINDUP_R, or the reach his class has hurt him from (learned) when farther."""
@@ -3636,14 +3636,21 @@ class Bot:
         (_escape_keys), B to run - for at most LETHAL_BACKOFF_MAX_S of one wind-up (then he fights it: cornered, or a
         long charge). Returns the action or None."""
         py = p["pos"][1]
-        hot = [e for e in live if abs(e["pos"][1] - py) <= LEVEL_DY and self._tm.lethal(e) and self._tm.unstoppable(e)
+        hot = [e for e in live if self._winding(e)
+               and abs(e["pos"][1] - py) <= LEVEL_DY and self._tm.lethal(e) and self._tm.unstoppable(e)
                and flat(e) <= self._wind_r(e) * LETHAL_KEEP_X]
         if not hot:
-            self._lethal_bo = None
+            if self._lethal_clear_since is None:
+                self._lethal_clear_since = now
+            elif now - self._lethal_clear_since >= 0.6:
+                self._lethal_bo = None
             return None
+        self._lethal_clear_since = None
         e = min(hot, key=flat)
-        k = (e.get("ptr", e.get("slot")), e.get("motion"))
-        if self._lethal_bo is None or self._lethal_bo[0] != k:
+        # One continuous danger episode has one allowance. Changes of enemy or
+        # animation cannot keep the gun down forever; a calm interval resets it.
+        k = (e.get("ptr", e.get("slot")), e.get('generation'))
+        if self._lethal_bo is None:
             self._lethal_bo = (k, now)
             self.stats["lethal_backoffs"] += 1
         if now - self._lethal_bo[1] > LETHAL_BACKOFF_MAX_S:
@@ -5765,6 +5772,7 @@ class Bot:
         self._wu, self._windup_e = {}, None
         self._tm.new_round()                             # the grudges are this round's; the learned classes stay
         self._lethal_bo, self._grudge_e = None, None
+        self._lethal_clear_since = None
         self._dyn, self._dynamite_e = {}, None
         self._noshot, self._giveup, self._giveup_n, self._reach_c, self._off_run = {}, {}, {}, {}, None
         self._door_after, self._door_watch, self._explore_st = None, None, None   # (DOOR_* above: this round's own)

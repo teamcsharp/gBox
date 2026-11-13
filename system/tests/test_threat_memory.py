@@ -122,7 +122,7 @@ def bot():
 
 def test_the_bot_steps_out_of_a_charge_that_hurt_him_through_his_shots(switch_fight):
     b, clock = bot()
-    hammer = lambda m, hp: row(0, at(420), m, hp)
+    hammer = lambda m, hp: row(0, at(420), m, hp, act=R.E_ATTACKING if m == CHARGE else 0)
     for t, m, hp, php in ((1.0, WALK, 2000, 1000), (2.0, CHARGE, 2000, 1000), (3.0, CHARGE, 1700, 1000),
                           (3.2, CHARGE, 1700, 700)):                 # charged, shot, landed anyway
         clock[0] = t
@@ -130,7 +130,7 @@ def test_the_bot_steps_out_of_a_charge_that_hurt_him_through_his_shots(switch_fi
     assert b.stats["tm_hits_attributed"] == 1 and b.stats["tm_last_hit"]["class"] == HAMMER
     assert b.stats["threats"][HAMMER]["through"] == 1
     before = b.stats["lethal_backoffs"]                              # (the charge that hit him: out of it already)
-    for t, m in ((8.0, WALK), (9.0, CHARGE)):                        # the same hammer charges again, 4.2 m away
+    for t, m in ((7.0, WALK), (8.0, WALK), (9.0, CHARGE)):            # a witnessed calm interval, then another charge
         clock[0] = t
         act = b.tick(snap([hammer(m, 1700)], hp=700))
     assert b.doing == "backoff" and b.stats["lethal_backoffs"] == before + 1
@@ -142,7 +142,7 @@ def test_the_bot_steps_out_of_a_charge_that_hurt_him_through_his_shots(switch_fi
 
 def test_the_one_that_hurt_him_is_the_next_target_before_a_nearer_calm_one(switch_fight):
     b, clock = bot()
-    first = lambda m: row(0, at(500, 20), m, 300, cls="uEm10")
+    first = lambda m: row(0, at(500, 20), m, 300, cls="uEm10", act=R.E_ATTACKING if m == 81 else 0)
     calm = row(1, at(300, -10), WALK, 300, cls="uEm10")
     for t, m, php in ((1.0, WALK, 1000), (1.5, 81, 1000), (2.2, 81, 850)):
         clock[0] = t

@@ -85,3 +85,55 @@ def test_a_far_wind_up_is_no_concern():
     b, clock = bot()
     b.tick(snap([foe(0, at(200, 10)), foe(1, at(900, -20), motion=80)]))
     assert b.target == 10 and b.stats["windup_seen"] == 0
+
+
+def learned_threat(bot, motions):
+    bot._tm.data = {'version':1, 'classes':{'uEm10':{
+        'starts':{str(m):10 for m in motions}, 'hits':{str(m):5 for m in motions},
+        'hit_count':20, 'through':10, 'reach_cm':700}}}
+
+
+def test_old_walking_damage_correlations_do_not_lower_the_gun(monkeypatch):
+    monkeypatch.setattr(R, 'THREAT_FILE', None)
+    b, clock = bot()
+    learned_threat(b, [42])
+    enemy = dict(foe(0, at(140, 0), motion=42), **{'class':'uEm10', 'generation':1})
+    scene = snap([enemy], motion=R.MOTION_AIMED, dot=(0, 140, 140))
+    assert b._tm.lethal(enemy) and b._tm.unstoppable(enemy)  # reproduce the contaminated saved evidence
+    assert not b._winding(enemy)
+    assert b._lethal_tick(scene['player'], [enemy], lambda e:140, 0) is None
+    b.tick(scene)
+    assert b.doing != 'backoff' and b.stats['lethal_backoffs'] == 0
+
+
+def test_native_attack_animation_changes_cannot_restart_backoff_forever(monkeypatch):
+    monkeypatch.setattr(R, 'THREAT_FILE', None)
+    b, clock = bot()
+    learned_threat(b, [60, 80, 81])
+    enemy = dict(foe(0, at(140, 0), motion=60, act=R.E_ATTACKING), **{'class':'uEm10', 'generation':1})
+    player = snap([enemy])['player']
+    assert b._lethal_tick(player, [enemy], lambda e:140, 0) is not None
+    enemy['motion'] = 80
+    assert b._lethal_tick(player, [enemy], lambda e:140, 1) is not None
+    enemy['motion'] = 81
+    assert b._lethal_tick(player, [enemy], lambda e:140, R.LETHAL_BACKOFF_MAX_S+.1) is None
+    assert b.stats['lethal_backoffs'] == 1
+
+
+def test_different_enemies_and_one_quiet_tick_do_not_extend_escape(monkeypatch):
+    monkeypatch.setattr(R, 'THREAT_FILE', None)
+    b, clock = bot()
+    learned_threat(b, [60, 81])
+    first = dict(foe(0, at(140, 0), motion=60), **{'class':'uEm10'})
+    second = dict(foe(1, at(140, 90), motion=81), **{'class':'uEm10'})
+    player = snap([first])['player']
+    # Verified windup anticipates a strike before its attack flag appears.
+    assert b._lethal_tick(player, [first], lambda e:140, 0) is not None
+    assert b._lethal_tick(player, [second], lambda e:140, 1) is not None
+    assert b._lethal_tick(player, [], lambda e:140, 1.1) is None
+    assert b._lethal_tick(player, [first], lambda e:140, 2) is None
+    assert b.stats['lethal_backoffs'] == 1
+    b._lethal_tick(player, [], lambda e:140, 3)
+    b._lethal_tick(player, [], lambda e:140, 3.7)
+    assert b._lethal_tick(player, [second], lambda e:140, 4) is not None
+    assert b.stats['lethal_backoffs'] == 2
