@@ -32,7 +32,9 @@ class FlightRecorder:
         self.timeline_dropped = 0
         self.first = None
         self.findings = []
-        self._reported = {}
+        from .navigation_incidents import Monitor
+        self.navigation = Monitor()
+        self._nav_seen = set()
         self.inputs = deque(maxlen=4096)
         self.input_batches = self.input_events = self.input_tail_dropped = 0
 
@@ -76,6 +78,9 @@ class FlightRecorder:
                'player': safe(p.get('ptr')), 'heading': safe(p.get('rot', p.get('facing'))),
                'phase': safe(plan.get('phase', stats.get('phase'))), 'why': safe(plan.get('note')),
                'game_phase': safe((snap.get('game') or {}).get('phase', snap.get('mercenaries_phase'))),
+               'in_control': safe((snap.get('game') or {}).get('in_control')),
+               'prompt': safe(snap.get('prompt')), 'navigation': safe(plan.get('navigation')),
+               'route_requires_prompt': safe(plan.get('route_requires_prompt')),
                'controls': safe(plan.get('controls')), 'goal': safe(plan.get('operator_goal')),
                'target': safe(target), 'route': [self.point(v) for v in (plan.get('route') or [])[:12]],
                'route_source': safe(plan.get('route_source')),
@@ -123,53 +128,15 @@ class FlightRecorder:
             else:
                 self.timeline_dropped += 1
                 self.timeline[-1] = row
-        self._diagnose(now)
-
-    def _diagnose(self, now):
-        rows = [r for r in self.tail if now - r['t'] <= 3.2]
-        if len(rows) < 15 or rows[-1]['t'] - rows[0]['t'] < 2.8:
-            return
-        if any(b['t'] - a['t'] > .6 for a, b in zip(rows, rows[1:])):
-            return
-        nav = {'walk', 'locate', 'relocate', 'explore', 'route', 'approach', 'escape',
-               'bonus_run', 'gather_time', 'break_for_time', 'roam', 'retreat'}
-        if any(r['pos'] is None or r['game_phase'] in ('grabbed', 'held', 'case', 'dead', 'intro')
-               or r['phase'] not in nav for r in rows):
-            return
-        goal = rows[-1].get('goal') or {}
-        destination = goal.get('pos') if isinstance(goal, dict) else None
-        if not destination:
-            destination = next((p for p in reversed(rows[-1]['route']) if p), None)
-        if not destination:
-            return
-        if not isinstance(goal, dict):
-            goal = {}
-        if goal.get('id') and any(not isinstance(r.get('goal'), dict) or r['goal'].get('id') != goal['id'] for r in rows):
-            return
-        distance = math.dist(rows[-1]['pos'], destination)
-        travel = sum(math.dist(a['pos'], b['pos']) for a, b in zip(rows, rows[1:]))
-        progress = math.dist(rows[0]['pos'], destination) - distance
-        if distance < 75 or travel >= 30 or progress >= 20:
-            return
-        controls = [r['controls'] if isinstance(r.get('controls'), dict) else {} for r in rows]
-        moving = sum(bool({'lup', 'ldown'} & set(c.get('keys') or [])) for c in controls)
-        turning = [(-1 if 'lleft' in c.get('keys', []) else 1 if 'lright' in c.get('keys', []) else 0)
-                   for c in controls]
-        nonzero = [v for v in turning if v]
-        reversals = sum(a != b for a, b in zip(nonzero, nonzero[1:]))
-        kinds = []
-        if moving >= .8 * len(rows):
-            kinds.append('navigation_no_progress')
-        if reversals >= 4:
-            kinds.append('alternating_turn_commands_without_progress')
-        for kind in kinds:
-            if now - self._reported.get(kind, -math.inf) < 10 or len(self.findings) >= 4000:
+        self.navigation.observe(row)
+        for incident in self.navigation.changes:
+            if incident['id'] in self._nav_seen:
                 continue
-            self._reported[kind] = now
-            self.findings.append({'kind': kind, 'from_t': rows[0]['t'], 'to_t': rows[-1]['t'],
-                                  'travel_cm': round(travel, 2), 'goal_progress_cm': round(progress, 2),
-                                  'goal_distance_cm': round(distance, 2), 'turn_command_reversals': reversals,
-                                  'goal': safe(goal), 'cause': 'unknown; inspect route, geometry and game state'})
+            self._nav_seen.add(incident['id'])
+            for kind in incident['kinds']:
+                self.findings.append({'kind': kind, 'incident_id': incident['id'],
+                                      **{k: incident[k] for k in ('from_t', 'to_t', 'travel_cm', 'goal_progress_cm',
+                                          'turn_command_reversals', 'goal', 'cause')}})
 
     def snapshot(self):
         tail = list(self.tail)
@@ -190,6 +157,8 @@ class FlightRecorder:
                 'coordinate_order': 'x,y,z', 'tail_window_s': 60, 'sample_s': .2,
                 'first': self.first, 'tail': tail, 'timeline': list(self.timeline), 'signal_quality': quality,
                 'findings': list(self.findings), 'raw_aim_units': 'source reader; position fields alone normalized',
+                'navigation_incidents': self.navigation.sequence,
+                'navigation_active_incident': self.navigation.active['id'] if self.navigation.active else None,
                 'timeline_dropped': self.timeline_dropped,
                 'inputs': list(self.inputs), 'input_batches': self.input_batches, 'input_events': self.input_events,
                 'input_tail_dropped': self.input_tail_dropped,

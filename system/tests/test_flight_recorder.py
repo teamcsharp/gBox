@@ -55,12 +55,16 @@ def test_evidence_is_detached_and_never_guesses_wall_hits():
     json.dumps(out, allow_nan=False)
 
 
-def test_missing_intent_or_goal_never_confirms_a_navigation_failure():
+def test_missing_intent_cannot_confirm_failure_and_missing_goal_stays_unknown():
     for plan in ({'phase': 'walk'}, {'phase': 'walk', 'controls': {'keys': ['lup']}}):
         f = FlightRecorder()
         for k in range(30):
             f.observe(k*.2, {'player': {'pos': [0, 0, 0]}}, plan, {})
-        assert f.findings == []
+        if 'controls' not in plan:
+            assert f.findings == []
+        else:
+            assert f.findings[0]['goal_progress_cm'] is None
+            assert 'unknown' in f.findings[0]['cause']
 
 
 def test_input_edges_survive_snapshot_throttling_and_never_assert_game_effects():

@@ -230,6 +230,11 @@ class RunCapture:
         self.thread = None
         self.status: dict = {}
         self.flight = FlightRecorder(float(position_scale_to_cm))
+        from .navigation_incidents import ReportWriter
+        self.navigation_writer = ReportWriter(self.root, {
+            'title': self.title, 'round_id': self.round_id, 'session_id': self.session_id,
+            'autoplay_job_id': self.job_id}, self.status, self.threaded) if self.root else None
+        self._navigation_geometry = {}
         self._finished = None
 
     # --- the bot loop's side: appends only -------------------------------------------------------------------------
@@ -260,6 +265,7 @@ class RunCapture:
                 plan['controls'] = controls
             self.flight.observe(now, snap, plan, stats,
                                 force=where == "dead")
+            self._navigation_reports(snap, stats)
         if self.flight.scale != 1:
             # The RE4 reader uses millimetres; run maps and their extent use cm.
             snap = dict(snap)
@@ -433,6 +439,26 @@ class RunCapture:
                             **{k: v for k, v in info.items() if v is not None}})
 
     # --- the round's end -------------------------------------------------------------------------------------------
+    def _navigation_reports(self, snap, stats):
+        from .navigation_incidents import geometry_context
+        for key in ('navigation_report_file', 'navigation_reports_written', 'navigation_report_error'):
+            if key in self.status:
+                stats[key] = self.status[key]
+        changes = self.flight.navigation.changes
+        while changes:
+            incident = changes.pop(0)
+            if self.navigation_writer is None:
+                continue
+            key = incident['id']
+            if key not in self._navigation_geometry:
+                self._navigation_geometry[key] = geometry_context(snap, self.flight.scale)
+            inputs = [r for r in self.flight.inputs if r['t'] >= incident['from_t']-5]
+            self.navigation_writer.submit(incident, self.stage or stage_of(stats, snap) or 'unknown',
+                                          inputs, self._navigation_geometry[key])
+            stats['navigation_incidents'] = self.flight.navigation.sequence
+            stats['navigation_incident_state'] = incident['outcome']
+            stats['navigation_incident_id'] = f'{self.round_id}-{key:04d}'
+
     def finish(self, now: float, outcome: str | None, stage: str | None = None) -> dict:
         """The round is over: its exploration numbers now (flat, for the curriculum row) and the files on a writer
         thread. Short and empty attempts retain an explicit evidence record."""
@@ -446,6 +472,8 @@ class RunCapture:
             if not self.stage and isinstance(stage, str) and stage.strip() and stage.strip().lower() != "unknown":
                 self.stage = stage.strip()[:60]
             room = slug(self.stage)
+            self.flight.navigation.close(now, 'round_ended')
+            self._navigation_reports({}, {})
             stem = time.strftime("%Y%m%d-%H%M%S", time.localtime(self.started)) + "-" + self.round_id[:8]
             rel = f"round_maps/{self.title}/{room}/{stem}.json"
             ex = exploration(self.route, self.cell)
@@ -459,6 +487,8 @@ class RunCapture:
                 self._write(snapshot, room, stem)
             self._finished = {"round_map_file": rel, "round_map_stage": self.stage or "unknown",
                     "round_navigation_findings": list(self.flight.findings),
+                    "round_navigation_incidents": self.flight.navigation.sequence,
+                    "round_navigation_incident_dir": f'round_maps/{self.title}/{room}/navigation_incidents',
                     "explore_seconds": ex.get("seconds", 0), "explore_distance_m": ex.get("distance_m", 0),
                     "explore_cells": ex.get("cells", 0), "explore_start_area_s": ex.get("start_area_s", 0),
                     "explore_start_area_share": ex.get("start_area_share"),
