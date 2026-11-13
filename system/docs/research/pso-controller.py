@@ -21,6 +21,7 @@ from __future__ import annotations
 import argparse
 import json
 import math
+import os
 import pathlib
 import sys
 import threading
@@ -36,6 +37,10 @@ TOKEN_PATH = pathlib.Path(r"C:\_tools\gBox\system\gbox-data\api_token")
 TRACE_DIR = pathlib.Path(r"D:\gBox\pso-ds\bounded")
 # The bot stands down while this is fresh (`pso_bounded.OperatorGuard`): the operator always wins.
 OPERATOR_FLAG = pathlib.Path(r"D:\gBox\pso-ds\operator-playing.flag")
+# One relay only. Two ran at once (one from each Python environment), and the pair produced single key presses exactly
+# every --idle-seconds for minutes - input the operator never made, which kept the bot standing down for the whole
+# session. With the relays stopped the pad was silent for 35 s, so the duplicates were the source.
+RELAY_LOCK = pathlib.Path(r"D:\gBox\pso-ds\pso-controller.lock")
 
 # XInput button bits (xinput.h).
 BUTTONS = ((0x1000, "a"), (0x2000, "b"), (0x4000, "x"), (0x8000, "y"),
@@ -129,6 +134,23 @@ def main(argv=None) -> int:
     if not sid:
         log("no live session")
         return 2
+    if RELAY_LOCK.exists():
+        try:
+            holder = json.loads(RELAY_LOCK.read_text(encoding="utf-8")).get("pid")
+        except (OSError, ValueError):
+            holder = None
+        alive = False
+        if holder:
+            try:
+                os.kill(int(holder), 0)
+                alive = True
+            except OSError:
+                alive = False
+        if alive:
+            log(f"another relay is already running (pid {holder}) - refusing to be the second one")
+            return 4
+        log(f"taking over a dead relay's lock (pid {holder})")
+    RELAY_LOCK.write_text(json.dumps({"pid": os.getpid(), "at": time.time()}), encoding="utf-8")
     slot = args.slot
     if slot < 0:
         log("watching for an active pad (press any button on your controller) ...")
@@ -237,6 +259,10 @@ def main(argv=None) -> int:
     route_path.write_text(json.dumps(route, indent=1), encoding="utf-8")
     log(f"recorded {len(samples)} samples, path {path_length:.0f} units, rooms {route['rooms']}")
     log(f"route -> {route_path}")
+    try:
+        RELAY_LOCK.unlink()
+    except OSError:
+        pass
     log("relay stopped")
     return 0
 

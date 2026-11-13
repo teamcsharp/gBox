@@ -330,10 +330,16 @@ def run(mode: str, args) -> int:
             try:
                 table = json.loads(offsets_path.read_text(encoding="utf-8"))
                 per_file = table.get(name) or {}
-                if room in per_file:
-                    offset = (float(per_file[room][0]), float(per_file[room][1]))
+                candidates = [tuple(float(v) for v in pair) for pair in (per_file.get("offsets") or [(0.0, 0.0)])]
             except (OSError, ValueError, KeyError, TypeError):
-                offset = (0.0, 0.0)
+                candidates = [(0.0, 0.0)]
+            # The area boundary is not the room boundary - room 4 alone needs two offsets - so pick the one that lands
+            # the character nearest walkable ground instead of trusting the room number.
+            def mapped_distance(pair):
+                px = float(here["x"]) + pair[0]
+                pz = float(here["z"]) + pair[1]
+                return min(math.hypot(px - cell[0], pz - cell[1]) for cell in cells)
+            offset = min(candidates, key=mapped_distance)
             if offset != (0.0, 0.0):
                 router = OffsetRouter(router, offset)
                 log(f"room {room} sits at file offset {tuple(int(v) for v in offset)}: routing in the mesh's frame")
