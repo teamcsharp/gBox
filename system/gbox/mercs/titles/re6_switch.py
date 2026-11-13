@@ -1236,7 +1236,7 @@ def _screen_impl(m, merc=None, now: float | None = None) -> dict:
             where, cursor, target = "main_menu", _i32(m, ui["uIdStartUp00"] + MENU_CURSOR), MAIN_PLAY_GAME
         elif "uIdTitle00" in ui and getattr(m, "mercs_split_screen", False) is True                 and snap.get("mercenaries_mode") == "no_mercy":
             # split screen's lobby (a live run 2026-10-27, real frames): after the stage select, "THE MERCENARIES NO
-            # MERCY ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â· <stage>", Player 1 joined, Player 2's slot "Press -/+ to join", A starts the game. Its own unit is
+            # MERCY ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â· <stage>", Player 1 joined, Player 2's slot "Press -/+ to join", A starts the game. Its own unit is
             # not named yet; the title unit stays listed under it, and a real title never has the No Mercy mode set
             where = "split_lobby"
         elif "uIdTitle00" in ui:
@@ -3232,6 +3232,36 @@ class Bot:
             self.heal_chain = False
             self.tablet_wait, self.tablet_missed, self.tablet_dying = None, True, False
 
+    def _note_dying_transition(self, p, live, flat, held) -> None:
+        """What took him from above 1 health to the dying crawl (the S-rank killer): the flat telemetry the death
+        watcher then carries into the next round. Instrumentation only - no decision changes.
+
+        Every death in the 2026-10-27 runs came through the 1-health state, and re-raising the dying tablet was
+        measured to do nothing (4 presses, the case count never fell). So the actionable evidence is the transition:
+        how much health was lost (a one-shot from high health is a grab/bite or a heavy attack), what the bot was
+        doing, whether a melee-range enemy or a ranged wind-up was there, and whether it was held.
+        """
+        hp = p.get('hp')
+        if not isinstance(hp, int):
+            return
+        last = getattr(self, '_hp_last', None)
+        self._hp_last = hp
+        stats = self.stats
+        if hp == DYING_HP and last is not None and last > DYING_HP:
+            near_melee = [e for e in live if flat(e) <= MELEE_R]
+            stats['dying_count'] = int(stats.get('dying_count', 0)) + 1
+            stats['dying_from_hp'] = last
+            stats['dying_near_melee'] = len(near_melee)
+            stats['dying_ranged_windup'] = sum(1 for e in live if windup(e, p['pos']) == 'ranged')
+            stats['dying_near2'] = sum(1 for e in live if flat(e) <= 200.)
+            stats['dying_doing'] = str(getattr(self, 'doing', '') or '')[:24]
+            stats['dying_held'] = int(bool(held))
+            stats['dying_state'] = p.get('state')
+            bomb = p.get('bomb') or {}
+            stats['dying_bomb_out'] = int(bool(bomb.get('out')))
+        elif last == DYING_HP and hp > DYING_HP:
+            stats['dying_recoveries'] = int(stats.get('dying_recoveries', 0)) + 1
+
     def _dying(self, p, now) -> dict | None:
         """At 1 health (RE6's dying crawl): R for a tablet every DYING_GAP_S while the case holds one. None: no press
         this tick (the rest of the decision goes on)."""
@@ -3889,6 +3919,7 @@ class Bot:
         self.stats["re6_sniper_targets"] = sum(1 for e in all_enemies if windup(e, p["pos"]) == "ranged")
         state = p.get("state")                               # None: no state byte (the health / stick heuristics)
         held = state in HELD_STATES
+        self._note_dying_transition(p, live, flat, held)
         if self.in_hold and not held:                        # a hold read in RAM just ended: how it was freed
             self._hold_ended(now, snap)
         if p.get("hp") != DYING_HP:
@@ -4613,7 +4644,7 @@ class Bot:
         if any(now - t <= 1.5 and isinstance(h, (int, float)) and isinstance(hp_now, (int, float))
                and h > hp_now for t, h, _ in self.hp_hist):
             self._burst().end('damage_response')  # emergency flash/heal may interrupt the commitment
-        # #5056: just took HP loss with no enemy within HAZARD_CONTACT_R ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚Â the damage came from a ranged enemy
+        # #5056: just took HP loss with no enemy within HAZARD_CONTACT_R ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â the damage came from a ranged enemy
         # (or a hazard), not a melee attacker. Break out of the current decision mode (cc_kick, quick_turn,
         # bonus_run, etc.) and turn to fight the ranged enemy or move to safety, rather than continuing the
         # current action that left the bot exposed.
@@ -5721,7 +5752,7 @@ class Bot:
     def _prompt(self, p, snap, now) -> dict | None:
         """A shown prompt's button, pressed at once and again every PROMPT_REPEAT_S while it stays. None: no prompt to
         take this tick. A flanking crowd (4+ within CC_CROWD_R) defers the press: lowering the gun to take a prompt
-        in a surround is the crowd_gun_down trigger (cluster b294c62b554c77fd) ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚Â the bot waits for the crowd to
+        in a surround is the crowd_gun_down trigger (cluster b294c62b554c77fd) ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â the bot waits for the crowd to
         thin before pressing, matching the crowd_hold convention used by the other decision paths."""
         shown = getattr(self, "_prompt_shown", None) or []
         if not PROMPTS or not shown:
@@ -5738,7 +5769,7 @@ class Bot:
             if (key is None or (prompt_skipped(q) and not heal)
                     or (key != 'stick' and now - live["at"] < PROMPT_REPEAT_S)):
                 continue
-            # crowd guard: 4+ live enemies on his level within CC_CROWD_R ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚Â ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â‚¬Å¾Ã‚Â¢ defer the press (gun stays up)
+            # crowd guard: 4+ live enemies on his level within CC_CROWD_R ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¾Ãƒâ€šÃ‚Â¢ defer the press (gun stays up)
             n = sum(1 for e in (snap.get("enemies") or ()) if (e.get("hp") or 0) > 0
                     and abs(e["pos"][1] - p["pos"][1]) <= MAX_DY
                     and math.hypot(e["pos"][0] - px, e["pos"][2] - pz) <= CC_CROWD_R)
@@ -6532,7 +6563,7 @@ class Bot:
     # --- line of sight ---------------------------------------------------------------------------------------------
     @staticmethod
     def _fire_envelope(dist, yaw_err, pitch_err) -> bool:
-        """The current aim error would still land inside the body at this distance (FIRE_BODY_HALF_CM/Ã¢â‚¬Â¦_V_CM).
+        """The current aim error would still land inside the body at this distance (FIRE_BODY_HALF_CM/ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¦_V_CM).
 
         A cone limit alone is not accuracy: the same 12 deg is 21 cm at 1 m but 89 cm at 4.2 m. This converts the
         angular error at the target's distance into centimetres before authorising the pull, so a "correcting"
