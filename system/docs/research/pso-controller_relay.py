@@ -13,6 +13,7 @@ This daemon does exactly that, and it is the whole chain:
 
 The pause file is the contract between this daemon and `endless.py`: its presence means "the operator is playing".
 """
+import os
 import pathlib
 import sys
 import time
@@ -26,6 +27,7 @@ from pso_pad import Pad, call                                       # noqa: E402
 PAUSE_FILE = pathlib.Path(r"D:\gBox\pso-ds\operator-playing.flag")
 IDLE_RELEASE = 4.0
 DEADZONE = 0.24
+DEBOUNCE_FRAMES = 3          # frames a button must persist before it is believed (a failing pad chatters faster)
 
 # SDL index -> the key names the session input understands. The A/B swap matches padstate._XI, where physical A is "b".
 BUTTONS = {0: "b", 1: "a", 2: "y", 3: "x", 4: "l", 5: "r", 6: "select", 7: "start", 8: "l3", 9: "r3"}
@@ -59,31 +61,6 @@ def _bot_pids():
     return pids
 
 
-def suspend_bots() -> list:
-    """Freeze the bot processes so only the operator is writing to the pad."""
-    import ctypes
-
-    ntdll = ctypes.windll.ntdll
-    frozen = []
-    for pid in _bot_pids():
-        handle = ctypes.windll.kernel32.OpenProcess(PROCESS_SUSPEND_RESUME | 0x0400, False, pid)
-        if handle:
-            if ntdll.NtSuspendProcess(handle) == 0:
-                frozen.append((pid, handle))
-            else:
-                ctypes.windll.kernel32.CloseHandle(handle)
-    return frozen
-
-
-def resume_bots(frozen) -> None:
-    import ctypes
-
-    ntdll = ctypes.windll.ntdll
-    for pid, handle in frozen:
-        ntdll.NtResumeProcess(handle)
-        ctypes.windll.kernel32.CloseHandle(handle)
-
-
 def send(pad, events):
     if not events:
         return
@@ -114,17 +91,52 @@ def main():
     pygame.joystick.init()
     if pygame.joystick.get_count() == 0:
         raise SystemExit("no joystick visible to SDL")
-    joy = pygame.joystick.Joystick(0)
-    joy.init()
-    print(f"relay watching '{joy.get_name()}'", flush=True)
+    wanted = os.environ.get("RELAY_PAD")
+    pads = []
+    for index in range(pygame.joystick.get_count()):
+        if wanted is not None and wanted.strip().isdigit() and index != int(wanted):
+            continue                                          # RELAY_PAD pins one controller
+        try:
+            device = pygame.joystick.Joystick(index)
+            device.init()
+            pads.append(device)
+        except Exception:                                      # noqa: BLE001 - a dead pad must not stop the relay
+            continue
+    if not pads:
+        raise SystemExit("no joystick visible to SDL")
+    # Read EVERY pad. The operator has two connected, and watching only the first means watching a silent one.
+    print("relay watching: " + ", ".join(f"[{i}] {p.get_name()}" for i, p in enumerate(pads)), flush=True)
 
     held, last_stick, last_activity, last_rebind = set(), (0.0, 0.0), 0.0, 0.0
-    frozen = []
+    stable_buttons = {}
     while True:
         pygame.event.pump()
-        now = {name for index, name in BUTTONS.items() if index < joy.get_numbuttons() and joy.get_button(index)}
-        lx = joy.get_axis(0) if joy.get_numaxes() > 0 else 0.0
-        ly = joy.get_axis(1) if joy.get_numaxes() > 1 else 0.0
+        now = set()
+        lx = ly = 0.0
+        raw_buttons = set()
+        for device in pads:
+            try:
+                for index, name in BUTTONS.items():
+                    if index < device.get_numbuttons() and device.get_button(index):
+                        raw_buttons.add(name)
+                if device.get_numaxes() > 0:
+                    value = device.get_axis(0)
+                    if abs(value) > abs(lx):
+                        lx = value
+                if device.get_numaxes() > 1:
+                    value = device.get_axis(1)
+                    if abs(value) > abs(ly):
+                        ly = value
+            except Exception:                                  # noqa: BLE001 - a pad dropping out is not fatal
+                continue
+        # Debounce: a button has to persist for a few frames before it is believed, which suppresses the chatter a
+        # failing button produces (measured: A/B toggling every 0.1s on a 360 pad) while leaving held presses intact.
+        for name in list(stable_buttons):
+            if name not in raw_buttons:
+                stable_buttons.pop(name, None)
+        for name in raw_buttons:
+            stable_buttons[name] = stable_buttons.get(name, 0) + 1
+        now = {name for name, count in stable_buttons.items() if count >= DEBOUNCE_FRAMES or name in held}
         lx = 0.0 if abs(lx) < DEADZONE else lx
         ly = 0.0 if abs(ly) < DEADZONE else ly
         stick = (lx, ly)
@@ -147,10 +159,8 @@ def main():
             pad = rebind(pad)
 
         if events:
-            if not frozen:
-                frozen.extend(suspend_bots())          # the operator is playing: freeze the bot so only one writes
-                if frozen:
-                    print(f"  suspended the bot ({len(frozen)} process(es)) - operator has the pad", flush=True)
+            # No process freezing: Pad.send() yields per press while the flag is fresh, which is finer-grained and
+            # does not impair injection. Measured: suspended 2.8 units of movement vs 30-73 unsuspended.
             last_activity = time.time()
             try:
                 PAUSE_FILE.write_text("operator playing", encoding="utf-8")
@@ -159,10 +169,6 @@ def main():
             send(pad, events)
             print(f"  relayed {len(events)} event(s): {[e['key'] for e in events]}", flush=True)
         elif time.time() - last_activity > IDLE_RELEASE:
-            if frozen:
-                resume_bots(frozen)
-                frozen = []
-                print("  operator idle - bot resumed", flush=True)
             if PAUSE_FILE.exists():
                 try:
                     PAUSE_FILE.unlink()
