@@ -86,6 +86,9 @@ def _bomb_clear(bot, snap, start, end):
                 if not sites:
                     return True
     margin = policy(bot.stats)['detonate_safe_cm']
+    required = bot.stats.get('mine_required_clearance_cm')
+    if isinstance(required, (int, float)) and math.isfinite(required):
+        margin = max(margin, required)
     dx, dz = end[0] - start[0], end[2] - start[2]
     for p in sites:
         rx, rz = start[0] - p[0], start[2] - p[2]

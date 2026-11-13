@@ -5222,6 +5222,15 @@ class Bot:
         slope plus the learned correction; written and read back. A sustained actual-ray miss yields to the sticks.
         True: written this tick (no camera keys); a material redirect must await a new laser sample before firing.
         scatter: the fire pattern's offset (dx, dy, dz) added to his aim point (FIRE_PATTERN), the guards unchanged."""
+        last_heading = getattr(self, '_floor_heading_written_at', None)
+        if (self.stats.get('mine_escape_required') and isinstance(last_heading, (int, float))
+                and 0 <= now - last_heading < .25):
+            # Every native camera write invalidates this tick's movement yaw.
+            # Writing every frame made the final floor guard suppress retreat
+            # forever. Let fresh snapshots drive aimed movement between writes;
+            # ordinary laser/geometry fire and floor checks still apply.
+            self.stats['bomb_escape_aim_yields'] = self.stats.get('bomb_escape_aim_yields', 0) + 1
+            return False
         if tgt is None or not self._lock_ready(snap, now):
             self.lock_w = None
             return False

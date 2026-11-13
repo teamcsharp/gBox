@@ -21,6 +21,7 @@ TRAVEL_CM, REQUEST_GAP_S = 609.6, 3.0
 #: every actual bomb and refuses below detonate_safe_cm - and every deadline stays its own (recorded as missed when
 #: it is). Emergency rings still wait for the old set, and any bomb nearer than this still blocks production.
 TRAIL_CHAIN_CM = TRAVEL_CM - 100.
+TRAIL_CHAIN_LIMIT = 2  # one follow-up, then clear the set before creating a fresh nearby bomb
 TRAVEL_ACTIONS = frozenset('cPlAction_pl_act_' + name for name in (
     'walk', 'run', 'dash', 'weapon_ready_move', 'weapon_fire'))
 
@@ -307,7 +308,10 @@ def control(ad, prof, bot_getter=None):
             stats['mine_detonate_reason'] = 'native bomb clearance is unknown'
             return dict(out, reason=stats['mine_detonate_reason'])
         clearance = min(math.hypot(pos[0] - at[0], pos[2] - at[2]) for at in positions)
-        safe = rules.policy(stats)['detonate_safe_cm']
+        # Stage tuning can increase the native blast margin. The route and
+        # preflight must use the same minimum as the final native flag gate.
+        safe = max(rules.policy(stats)['detonate_safe_cm'], native.R.BOMB_SELF_R,
+                   native.R.BOMB_RADIUS_MAX + native.R.BOMB_MARGIN_CM)
         stats['mine_clearance_cm'] = round(clearance, 1)
         stats['mine_required_clearance_cm'] = safe
         stats['mine_escape_required'] = clearance < safe
@@ -330,8 +334,10 @@ def control(ad, prof, bot_getter=None):
         # This live reread checks every allocation, every bomb position, held
         # state and player life. No pad release or weapon change is needed.
         receipt = native.bomb_detonate_now(ad, snap=snap)
+        stats['mine_detonate_last'] = receipt
         stats['mine_detonate_reason'] = str(receipt.get('reason') or '')[:200]
         if not receipt.get('verified'):
+            stats['mine_detonate_last_failure'] = stats['mine_detonate_reason']
             stats['mine_detonate_failures'] = int(stats.get('mine_detonate_failures', 0)) + 1
             return dict(out, receipt=receipt, reason=stats['mine_detonate_reason'])
         stamp = receipt.get('triggered_at')
@@ -367,12 +373,14 @@ def control(ad, prof, bot_getter=None):
         # escaped, so a moving bot may chain the next 20 ft travel drop while it lies there (TRAIL_CHAIN_CM); a
         # bomb nearer than that, or a census missing its position, still blocks every kind of drop. Detonation
         # still reads every actual bomb and refuses below the rule's clearance.
-        chaining = (bool(remotes) and len(behind) == len(remotes)
+        chaining = (0 < len(remotes) < TRAIL_CHAIN_LIMIT and len(behind) == len(remotes)
                     and all(math.dist(pos, b) >= TRAIL_CHAIN_CM for b in behind))
         if remotes and not chaining:
-            return dict(result, reason='native remote bomb still present; wait for placement or completed blast')
+            return dict(result, reason=result.get('reason') or 'native remote bomb still present; wait for placement or completed blast')
         bot = bot_getter() if callable(bot_getter) else None
-        if bot is not None and (getattr(bot, 'bomb_phase', None) is not None or getattr(bot, 'nade', None) is not None):
+        if bot is not None and (getattr(bot, 'bomb_phase', None) not in (None, 'wait') or getattr(bot, 'nade', None) is not None):
+            # 'wait' is passive observation of an old bomb, not an allocation
+            # or item animation. It may survive a native flag detonation.
             return dict(result, reason="the driver's own bomb or grenade action is in progress")
         near = sum(1 for e in snap.get('enemies') or [] if (e.get('hp') or 0) > 0 and e.get('pos')
                    and math.dist(pos, e['pos']) <= rules.SURROUND_R_CM)
@@ -384,6 +392,10 @@ def control(ad, prof, bot_getter=None):
         emergency = flash or surrounded
         landed = not emergency and landing.due()
         travel_due = travel.due(now)
+        if remotes and chaining and travel_due:
+            # A crowd ring cannot run while old bombs are armed. Its request
+            # must not starve an earned single travel drop in that same crowd.
+            emergency = landed = False
         if not emergency and not landed and not travel_due:
             return dict(result, reason=f'measured travel {travel.distance:.0f}/{TRAVEL_CM:.0f} cm; no stationary timer drops')
         if stats.get('mine_deadline_pending') and not (travel_due and not emergency and not landed and chaining):
@@ -405,7 +417,7 @@ def control(ad, prof, bot_getter=None):
                 return single_drop_now(ad, owner, stopped, allow_existing=chaining)
             return emergency_ring_now(ad, owner, stopped, count, radius)
         metadata = {'count': count, 'radius_cm': radius,
-                 'reason': 'flash' if flash else 'surrounded' if surrounded else 'traversal_landing' if landed else 'travel',
+                 'reason': 'flash' if emergency and flash else 'surrounded' if emergency and surrounded else 'traversal_landing' if landed else 'travel',
                  'travel_cm': round(travel.distance, 1), 'player_pos': list(pos),
                  'session': stats.get('source_session_id')}
         if landed:
@@ -413,7 +425,7 @@ def control(ad, prof, bot_getter=None):
         if not flight.submit(owner, operation, metadata):
             return dict(result, reason='native bomb allocation already in progress')
         travel.claimed(now)
-        if landing.due():
+        if landing.due() and (landed or emergency):
             landing.claim()  # an emergency ring also consumes this exit opportunity
             stats['mine_landing_ready'] = False
         stats['mine_ring_pending'] = True
@@ -425,10 +437,10 @@ def control(ad, prof, bot_getter=None):
             if chaining:
                 stats['mine_trail_chained'] = int(stats.get('mine_trail_chained', 0)) + 1
         stats.pop('mine_next_drop_at', None)
-        if surrounded:
+        if emergency and surrounded:
             stats['mine_surround_at'] = now
             stats['mine_surround_rings'] = int(stats.get('mine_surround_rings', 0)) + 1
-        if flash:
+        if emergency and flash:
             stats['mine_flash_combo_at'] = flash_at
             stats['mine_flash_combos'] = int(stats.get('mine_flash_combos', 0)) + 1
             stats.pop('qte_escape_mines_due', None)

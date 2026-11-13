@@ -132,6 +132,21 @@ def test_overdue_bomb_never_bypasses_clearance_and_disabled_drops_still_service_
     assert M.policy(st)['detonate_after_s'] == 5
 
 
+def test_tuned_native_clearance_keeps_escape_active_until_flag_gate_can_pass(monkeypatch):
+    calls = []
+    monkeypatch.setattr(N.R, 'BOMB_MARGIN_CM', 300.)
+    monkeypatch.setattr(N, 'bomb_detonate_now', lambda *a, **k: calls.append(1) or
+                        {'verified': False, 'reason': 'player is held'})
+    step, st = M.control(None, {'map_id': TITLE}), stats()
+    step.observe(snap(1150, [bomb()]), st, 100.)
+    assert st['mine_required_clearance_cm'] == 1200.
+    assert st['mine_escape_required'] and not calls
+    step.observe(snap(1200, [bomb()]), st, 100.2)
+    assert calls == [1] and st['mine_deadline_pending'] == 1
+    assert st['mine_detonate_last_failure'] == 'player is held'
+    assert not st['mine_detonate_last']['verified']
+
+
 def test_ring_worker_never_releases_movement_or_waits_for_native_allocation(monkeypatch):
     entered, release = threading.Event(), threading.Event()
     def ring(*a, **kw):

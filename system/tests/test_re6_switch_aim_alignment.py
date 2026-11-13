@@ -6,6 +6,30 @@ from gbox.mercs.titles import re6_switch as R
 from test_re6_switch import _fresh_caches, brain, lock_brain, round_guest, run
 
 
+def test_escape_aim_updates_leave_fresh_heading_ticks_for_guarded_movement():
+    from gbox.mercs.titles import re6_movement_safety as safety
+    from tests.test_re6_movement_safety import square
+    bot, clock, snap, writes = lock_brain(((0., 0., 900., 700),))
+    p, target = snap['player'], snap['enemies'][0]
+    snap.update(mercenaries_phase=R.PHASE_PLAYING, navmesh=square(4000.))
+    p['pos'] = (2000., 0., 2000.)
+    bot.stats.update(mine_escape_required=True, mine_avoid_positions=[[2000., 0., 1800.]])
+    assert bot._lock(p, target, snap, 100.)
+    action = {'hold': ('lup', 'zl', 'zr')}
+    assert not set(safety.guard(bot, snap, action, 100.)['hold']) & safety.LEFT
+    count = len(writes)
+    assert not bot._lock(p, target, snap, 100.1)
+    assert len(writes) == count
+    # This snapshot's yaw is fresh: final floor and bomb checks permit retreat
+    # while keeping the combat buttons. No requested native yaw is guessed.
+    assert safety.guard(bot, snap, action, 100.1) == action
+    assert bot.stats['bomb_escape_aim_yields'] == 1
+    bot._gun_down()
+    assert not bot._lock(p, target, snap, 100.2)
+    assert bot._lock(p, target, snap, 100.3)
+
+
+
 @pytest.mark.parametrize("height", [0.0, 600.0])
 def test_a_laser_stopped_before_the_body_never_confirms_a_hit(height):
     bot = R.Bot(stats={})

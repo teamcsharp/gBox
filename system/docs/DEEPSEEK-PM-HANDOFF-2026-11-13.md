@@ -1,5 +1,9 @@
 # DeepSeek PM takeover: MercMode and Hermes, 2026-11-13
 
+**Latest recovery: read the November 13 Codex RE6 bomb-starvation section at the end first.**
+It identifies interactions missed by the round-1 fixes and the counters needed to distinguish
+working combat from a blocked remote-bomb lane.
+
 The operator is handing all remaining work to DeepSeek because Codex credit is
 nearly exhausted. Keep MercMode playing while you manage, implement, review,
 merge and deploy the remaining work. The goal is **S rank / five stars on every
@@ -378,3 +382,93 @@ round's opening route), and combo rising 2 -> 7 with 0 breaks while the bot cycl
 Frame: `.scratch-ds-pm/re6-newcode-round.jpg` (008 COMBO, point-blank shotgun on a zombie). Two deaths still
 happened before this reload (rounds ended `died`); survival is the next live priority, followed by the raise
 churn reraise=81/86 s and the RE6 manual remote-bomb ring.
+
+## Codex RE6 bomb-starvation recovery, November 13 (operator follow-up)
+
+The operator reported stationary play and missing mine rings again after round-1's apparent recovery.
+This is a deterministic controller interaction, not evidence that an LLM forgot how to play. The live
+playbook is `mercs_bot`; DeepSeek should inspect its native observations and decision gates before changing
+prompts or restarting the emulator. A rising kill counter alone does not establish that remote bombing works.
+
+### Measured failure and how the earlier fixes left it behind
+
+On Spark session `cc17261888594ab1-f417214aece5477b`, round `44403b6249784d07af6cdce1569d25b9`,
+the bot was alive and shooting, but one native bomb was still pending **258 seconds** after placement.
+Only two travel drops had been recorded, no automatic crowd ring, and native detonation had failed 266 times.
+Later samples reached 347 detonation failures, nine combo breaks, and only two travel drops. There was
+real progress (294 kills and one time bonus in the final sampled state), so this was not a stopped worker.
+The symptom was intermittent stationary combat and a starved bomb lane. Installed source was main `483ff9ba3`.
+
+Four interacting gates explain the regression:
+
+1. **Passive driver state blocked all native production.** `re6_remote_control.step` rejected every
+   non-None `bot.bomb_phase`, including `wait`. That phase observes an already placed bomb; it is not an
+   allocation or throw animation. The driver's `_bomb_track` only clears selected detonation phases when
+   the census becomes empty, so `wait` can survive a detonation performed by the separate native controller.
+   Native rings then stay blocked even with no remote bombs left. Permit `None`/`wait`; continue to block
+   active equip/throw/detonation phases and an active grenade action. A complete native census is still required.
+2. **Navigation and detonation disagreed about distance.** Remote policy used 1100 cm, while the live
+   stage tuner set `BOMB_MARGIN_CM=300`; the native gate required `BOMB_RADIUS_MAX(900)+300=1200 cm`.
+   In the intervening band the controller could stop requesting escape while the native flag writer refused.
+   Use the maximum of policy clearance, `BOMB_SELF_R`, and `BOMB_RADIUS_MAX+BOMB_MARGIN_CM` in the controller;
+   carry that total distance into the final movement guard. Do not subtract the radius or weaken the native gate.
+3. **Aim writes cancelled the movement they accompanied.** Round-1's timeout returned control to aimed
+   combat, but `_lock` could write native camera yaw every tick. `re6_movement_safety.guard` then correctly
+   discarded movement because the snapshot heading was stale. During an outstanding escape, leave at least
+   0.25 s between native aim writes. Intervening fresh snapshots can drive retreat through the existing floor
+   and bomb checks while ordinary aiming/firing continues. Never treat the requested yaw as observed camera yaw.
+4. **An impossible crowd ring starved the travel fallback.** `2b682d249` allowed chaining behind an old
+   bomb, but only when `not emergency`. Four close enemies kept `emergency=True`, although the ring itself
+   could not run with old bombs present. Prefer the earned single travel drop in that case. Do not consume a
+   flash, surround cooldown, or landing opportunity as though the suppressed action happened.
+
+Travel chaining is bounded to **two outstanding bombs** (one follow-up to a lone old bomb). Otherwise a new
+bomb every 609.6 cm would continually reset the nearest clearance and prevent ever reaching the 1200 cm
+detonation distance. Large crowd rings still request up to 15 bombs, then escape and detonate before rearming.
+This is a bound on trail chaining, not a two-bomb limit on rings.
+
+### Control map and flags DeepSeek must inspect
+
+`engine.play_round` observes remote deadlines before normal actions and services the native remote controller
+after them. `remote_mines` supplies policy; `re6_remote_control` owns travel/ring allocation and deadline
+service; `re6_switch.Bot` owns pad combat/navigation; `re6_movement_safety` checks the final movement;
+`re6_switch_mods.detonate` rereads actual native bomb/player positions before clearing the armed flag.
+
+| Signal | Meaning and next check |
+| --- | --- |
+| `remote_mines_status` | New scalar reason from every native controller step. Read this first for why no drop occurred. |
+| `mine_travel_cm`, `mine_travel_moving` | Observed movement credit, capped at 609.6 cm (20 ft). Pressing into a wall earns none; a stationary timer is not the active trigger. |
+| `mine_ring_requests` | All asynchronous native placement requests, including single travel drops. It is **not** a successful-ring count. |
+| `mine_ring_bombs`, `mine_rings_dropped`, `mine_trail_drops` | Confirmed native bombs, crowd-ring batches, and individual travel drops respectively. Require actual receipt units. |
+| `mine_ring_pending` | Allocation thread active. Do not start another or assume the requested count was placed. |
+| `mine_deadline_pending`, `mine_elapsed_s` | Outstanding native placements and age of the oldest. New drops must not reset old deadlines. |
+| `mine_clearance_cm`, `mine_required_clearance_cm` | Nearest actual bomb and effective total escape distance, including current native stage tuning. |
+| `mine_escape_required` | Current distance is insufficient. This must not monopolize combat indefinitely or cause every final movement frame to disappear. |
+| `bomb_escape_aim_yields`, `bomb_retreat_aim_ticks`, `floor_safety_blocks` | Aim updates yielded, retreat merged into aim, and movement rejected. Validate net position change as well; counters alone are not proof. |
+| `mine_detonate_last_failure` | New retained scalar native refusal, useful after a later escape message overwrites `mine_detonate_reason`. |
+| `mine_flag_detonations`, `mine_blasts_observed` | Native flag readback and observed blast are separate evidence. A successful flag write is not a witnessed explosion. |
+| `mine_allocation_blocked_reason` | Unknown native allocation outcome blocks further allocation in that life. Investigate the receipt; never clear this merely to make counters rise. |
+| `ring_flash_at` versus `ring_last_at` | Confirmed flash time versus a general grenade-ring event. Only actual fresh flash evidence earns the flash/mine combination. |
+
+The native receipt files are in Spark-local `gbox-data/mercs/native-remote-receipts/`.
+`BOMB_DROP=True`, `ring_armed=True`, and policy `enabled=True` advertise intent/capability; they do not prove
+that the production gates admitted a request. Likewise the legacy `drop_every_s` policy field is not the
+current travel trigger. Native RE6 remote bombs are separate from the RE5-only proximity-mine UI controls.
+
+### Activation, validation, and remaining work
+
+The first focused batch passed 98 tests. Final combined verification and live activation results are recorded
+below when complete. The new cycle test requires an old pair to stop producing, reach clearance, detonate,
+show native blast observations, and then admit a 15-bomb crowd ring. Keep the no-census, uncertain-allocation,
+floor, aiming and bonus-priority tests alongside it.
+
+All changed runtime modules are bot-reloadable. Use the normal deployment mechanism and the finalized-round
+admission check; a `playing` round or an unclosed capture must defer the reload. `deploy-restart-pending`
+also exists for older unrelated service changes: it does not mean these bot fixes need a service restart.
+Do not kill the game or claim success merely because source was copied. Check loaded worker source hashes
+and the new live counters after activation, then observe several placement/escape/blast cycles.
+
+Time-bonus policy remains: prioritize eligible time bonuses below a 300-second bank, with immediate threats,
+QTEs and bomb clearance first. Once the clock exceeds that bank, combat has priority. Improve route commitment
+using observed paths and movement; do not turn off floor checks or continually drop bombs before clearing the
+old set. S-rank on every run, perpetual combos and every-stage traversal remain unproven goals.
