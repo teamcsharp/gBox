@@ -238,10 +238,16 @@ def run(mode: str, args) -> int:
             # The disc mesh has every door closed, so a doorway is wall in the static grid and A* goes around the
             # room instead of through the door. Carve a passage at every gate the session currently reports.
             state = world.observe() or {}
+            # Only gates this session has already crossed are carved. Carving every gate also opens false passages
+            # through *closed* doors, and a route then leads into a wall: measured, the character pinned 20 units short
+            # of a door it could not enter. A doorway that is really open is already walkable in the raw mesh, so the
+            # raw grid needs no help until a crossing proves otherwise.
+            known = doors.get(sid)
             gates = [(float(e["x"]), float(e["z"])) for e in (state.get("entities") or [])
-                     if str(e.get("class")) in B.DOOR_CLASSES and e.get("x") is not None]
+                     if str(e.get("class")) in B.DOOR_CLASSES and e.get("x") is not None
+                     and known.get(str(e.get("ptr"))) == "open"]
             cells = B.carve_doorways(cells, gates, radius=args.carve_radius, cell=2.5)
-            log(f"carved {len(gates)} doorway(s) into the grid")
+            log(f"carved {len(gates)} known-open doorway(s) into the grid")
         router = MapRouter(sorted(cells))
         log(f"routing over {name}: {len(row['cells'])} safe cells")
 
@@ -401,8 +407,8 @@ def main(argv=None) -> int:
         item.add_argument("--seconds", type=float, default=60.0)
         item.add_argument("--session", default="")
         item.add_argument("--map", default="", help="decoded collision grid to route over")
-        item.add_argument("--carve", action="store_true", default=True,
-                          help="open a grid passage at every current gate (default on)")
+        item.add_argument("--carve", action="store_true", default=False,
+                          help="open a grid passage at gates the session has actually crossed (default off)")
         item.add_argument("--no-carve", dest="carve", action="store_false")
         item.add_argument("--carve-radius", type=float, default=8.0)
         item.add_argument("--motion", default="hill", choices=("hill", "vector", "relative"),
