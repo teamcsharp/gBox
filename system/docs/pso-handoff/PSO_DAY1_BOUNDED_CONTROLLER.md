@@ -525,3 +525,28 @@ a query only on Windows), and a lock with no recorded pid - every lock written b
 a log line instead of blocking forever. Two crashed runs had each left a lock that a later run then refused to start
 behind.
 
+
+
+## 15. G3 closed: a door key press opened a door, and the character walked through it
+
+The gate chain is now proven end to end in **normal play** - the switch press is the only input, no RAM write reaches
+the flag array except through the game's own handler, and both halves are ledger events:
+
+| step | evidence | ledger |
+|---|---|---|
+| the key is at `(566.6, -311.2)`, class `TObjDoorKey`, `+0xC8` flag index **9** | `read_memory` of the actor, twice | - |
+| the bot pressed it at **12.7 units** and the flag array changed `c4de2424dc…` -> `9b2f92cb46…` (bit 9 added) | tick seq 123, `flag_access` on, `delta.stage_flags` differ | `play-20261113-115117.jsonl` |
+| the door `80DADA50` at `(517.8, -349.5)` **opened**: the character walked through it, room **8 -> 4** | crossing at 15 units, both signals (room change + proximity) | `walk-20261113-115223.jsonl` |
+
+Before the key press the same door had stopped the character: an earlier walk ended **20.8 units short** after 204 ticks
+of pushing at it. After the key press the crossing took 180 ticks and ended with `door 80DADA50 marked open`.
+
+That closes **G3** as the mandate defines it: observed `pre-state -> controller input -> post-state`, persistent evidence,
+bounded actions, and the gate opened by an in-game press rather than by a flag write. The flag bit that the press set is
+the switch's own declared index (`+0xC8` = 9), which is the same rule measured on three other switches (`+0xC8` 6, 7 and
+30, each matching the bit that changed).
+
+The laser fence at `(498, -261)` is **not** closed by this: the switch at `(592, -163)` set bit 30, and the character did
+cross the fence's latitude in `play-20261113-115117.jsonl` - but the path went from `(489, -279)` to `(472, -249)`, around
+the fence's west end, so a crossing of the fence itself is not proven. It stays open as a question.
+
