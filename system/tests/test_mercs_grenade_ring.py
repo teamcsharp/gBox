@@ -203,6 +203,19 @@ def test_the_hook_is_quiet_when_nothing_is_happening(monkeypatch):
     assert out["fire"] is False and "nothing worth a ring" in live["ring_decision"]
 
 
+def test_unavailable_rounds_do_not_claim_a_ring_fired_or_hold_the_bot_idle(monkeypatch):
+    monkeypatch.setattr(GR, 'SCATTER_TITLES', frozenset())
+    ring = FakeRing()
+    ring.launcher_kinds = lambda: [{'kind': 'shell1304', 'available': False}]
+    ring.grenade_kinds = lambda: []
+    step = GR.control(None, {'map_id': '010018100CD46000'}, ring=ring)
+    live = stats(); crowd = snap([enemy(100+i*50) for i in range(5)])
+    step(crowd, live, 100.)
+    out = step(crowd, live, 100.+GR.RING_START_GUARD_S+.1)
+    assert not out['fired'] and not ring.calls
+    assert out['receipt']['state'] == 'refused'
+
+
 def test_the_rule_is_switch_only():
     # the operator retired the PS3/GameCube/Wii editions (2026-11-10): their sessions get no auto ring
     assert GR.control(None, {"map_id": "BLUS30491"}) is None
@@ -278,9 +291,7 @@ def test_a_dead_player_gets_no_ring_and_no_error():
     assert d["fire"] is False and "not alive" in d["reason"]
 
 
-def test_the_launcher_kind_fires_the_shell_round_ring():
-    """Operator 2026-11-11 18:12: the 360 launcher-shot ring. The policy's kind "launcher" draws one of the launcher's
-    shell rounds at random and fires the ring with allow_unverified (a research kind until it has a live receipt)."""
+def test_unverified_launcher_shells_use_a_verified_title_grenade_in_automatic_combat():
     calls = []
 
     class ShellRing(FakeRing):
@@ -301,10 +312,13 @@ def test_the_launcher_kind_fires_the_shell_round_ring():
 
     live = stats()
     out = GR.fire(None, {"kind": "launcher", "count": 8}, live, 100.0, ring=ShellRing())
-    assert out.get("state") == "confirmed" and calls and calls[0][0] in GR.SHELL_KINDS
-    assert calls[0][1] is True, "the launcher ring takes the unverified path: the spawn is the receipt"
-    assert live["ring_kind_fired"] in GR.SHELL_KINDS
+    assert out.get("state") == "confirmed" and calls == [('flash', False)]
+    assert live["ring_kind_fired"] == 'flash'
+    assert 'unverified' in live['ring_launcher_fallback_note']
     assert live["rings_deployed"] == 1
+    calls.clear()
+    out = GR.fire(None, {'kind': 'launcher', 'flash_ok': False}, {}, 101., ring=ShellRing())
+    assert out['state'] == 'refused' and not calls
 
 
 def test_the_launcher_ring_uses_each_titles_own_rounds():
@@ -313,8 +327,8 @@ def test_the_launcher_ring_uses_each_titles_own_rounds():
 
     class Re6(FakeRing):
         def launcher_kinds(self):
-            return [{"kind": "shell1302", "available": False},
-                    {"kind": "shell1303", "available": False}]
+            return [{"kind": "shell1302", "available": True},
+                    {"kind": "shell1303", "available": True}]
 
     class Re5(FakeRing):
         def launcher_kinds(self):
@@ -327,6 +341,6 @@ def test_the_launcher_ring_uses_each_titles_own_rounds():
     GR.fire(None, {"kind": "launcher", "count": 8}, stats(), 100.0, ring=r6)
     GR.fire(None, {"kind": "launcher", "count": 8}, stats(), 100.0, ring=r5)
     assert r6.calls[0][0] in ("shell1302", "shell1303"), "RE6: its shell rounds"
-    assert r6.calls[0][1].get("allow_unverified") is True, "the shells are the unverified research path"
+    assert r6.calls[0][1].get("allow_unverified") is False
     assert r5.calls[0][0] == "flash", "RE5: its own grenade round, not a RE6 shell"
     assert r5.calls[0][1].get("allow_unverified") is False, "a verified round takes no unverified escape"

@@ -569,7 +569,7 @@ def play(ad, send, stopped, sleep=time.sleep, stats: dict | None = None, *, cloc
                         try:
                             ring_out = ring_step(snap, stats, clock(), lambda _keys: (keys.release() or True))
                             stats["ring_armed"] = True
-                            stats["ring_decision"] = str(ring_out.get("reason") or "")[:200]
+                            stats["ring_step_reason"] = str(ring_out.get("reason") or "")[:200]
                             if ring_out.get("fired"):
                                 _capture_round(rnd, snap, bot, stats, clock())
                                 sleep(FIGHT_TICK_S)
@@ -762,7 +762,7 @@ def play(ad, send, stopped, sleep=time.sleep, stats: dict | None = None, *, cloc
                         # the operator's panel and the round reads showed no ring at all (live 2026-11-11: RE4 rounds 9-17
                         # with empty ring_armed / ring_decision while the ring step was wired and running).
                         stats["ring_armed"] = True
-                        stats["ring_decision"] = str(ring_out.get("reason") or "")[:200]
+                        stats["ring_step_reason"] = str(ring_out.get("reason") or "")[:200]
                         if ring_out.get("fired"):
                             re4_walk.publish(pub, snap, bot, "playing")
                             sleep(BOW_FIGHT_TICK_S if is_bow(snap) else FIGHT_TICK_S)

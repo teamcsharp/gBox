@@ -465,16 +465,26 @@ def fire(ad, decision: dict, stats: dict, now: float, *, ring=None) -> dict:
     kind = decision.get("kind") or "launcher"
     allow_unverified = False
     if str(kind).lower() == "launcher":
-        # Operator 2026-11-11 18:12/18:30: the 360 launcher-shot ring, the same across titles. The rounds are the
-        # title's own (RE6's shells, RE5/RE4's grenades); an unavailable row is a research kind (the shells today),
-        # so the ring takes allow_unverified: the spawn is what is being measured, a refusal is a receipt, not a crash.
-        rounds = launcher_rounds(target)
+        # Automatic combat uses verified title capabilities. An unverified shell
+        # probe previously locked RE6's native mailbox and RE4 inherited the
+        # foreign shell list entirely. Explicit research requests remain separate.
+        rounds = [row for row in launcher_rounds(target) if row[1]]
         if not rounds:
-            stats["ring_error"] = "no launcher round kind is reported by this title"
+            try:
+                rounds = [(r['kind'], True) for r in target.grenade_kinds()
+                          if r.get('available') is True and r.get('kind') in KINDS]
+            except (AttributeError, RuntimeError):
+                rounds = []
+            if rounds:
+                stats['ring_launcher_fallback_note'] = 'launcher shell unverified; using a verified native grenade'
+        if decision.get('flash_ok') is False:
+            rounds = [row for row in rounds if row[0] != 'flash']
+        if not rounds:
+            stats["ring_error"] = "no verified native round kind is available for this title"
             return {"state": "refused", "reason": stats["ring_error"]}
         preferred = [r for r in rounds if r[0] in LAUNCHER_PREFER]
         kind, available = random.choice(preferred) if preferred else random.choice(rounds)
-        allow_unverified = not available
+        allow_unverified = False
     if str(kind).lower() == "random":
         kind = pick_kind(target, decision)
         if kind is None:
@@ -600,7 +610,7 @@ def control(ad, prof, *, ring=None):
         except Exception as exc:                         # noqa: BLE001 - a ring never ends the round
             stats["ring_error"] = f"{type(exc).__name__}: {exc}"[:200]
             return {**decision, "fire": False, "reason": stats["ring_error"]}
-        decision = {**decision, "fired": True, "receipt": receipt}
+        decision = {**decision, "attempted": True, "fired": receipt.get('state') == 'confirmed', "receipt": receipt}
         stats["ring_last_reason"] = decision["reason"][:200]
         return decision
 

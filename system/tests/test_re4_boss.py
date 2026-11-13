@@ -199,7 +199,8 @@ def test_the_mine_ring_asks_for_the_thrower_in_his_hand():
     assert b.stats.get("mine_ring_starts", 0) == 0
     b.tick(s, now=1.0 + D.MINE_RING_EVERY_S + 0.5)
     assert D.WEAPON_ASK.get("item") == D.MINE_RING_ITEM
-    assert b.stats["mine_ring_starts"] == 1 and b.doing == "mine_ring"
+    assert b.stats["mine_ring_starts"] == 1 and b.doing != "mine_ring"
+    assert "normal combat continues" in b.stats["mine_ring_decision"]
 
 
 def test_the_mine_ring_sweeps_ten_darts_round_him():
@@ -258,7 +259,7 @@ def test_equip_timeout_never_emits_a_ring_shot_and_retries_after_combat_interval
     b = bot()
     s = _ring_snap(equipped=0x27)
     b.stats["mine_ring_last_at"] = -100.0
-    assert b._mine_ring_step(s["player"], s, 1.0) == {"hold": set()}
+    assert b._mine_ring_step(s["player"], s, 1.0) is None
     failed_at = 1.0 + D.MINE_RING_ARM_S + 0.1
     assert b._mine_ring_step(s["player"], s, failed_at) is None
     assert b.stats.get("mine_ring_shots", 0) == 0 and "_mine_ring" not in b.__dict__

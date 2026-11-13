@@ -534,6 +534,11 @@ class Controller(N.Controller):
                        "no live mine-ring receipt yet"},
         ]
 
+    def launcher_kinds(self):
+        # This title has no RE6 uWp1302/1303/1304 shell classes. Its radial
+        # barrage uses the title's own native grenade blasts.
+        return [row for row in self.grenade_kinds() if row['kind'] in ('flash', 'hand', 'incendiary')]
+
     def grenade_ring(self, kind="flash", *, count=None, radius_cm=None, inner_cm=None, ripple_ms=None,
                      expand=None, allow_unverified=False):
         """N blasts in a ring round him (checkpoint G1/G2): flash 4000 mm or more, hand grenade 7000 mm or more.

@@ -63,6 +63,13 @@ def test_assets_and_all_ten_character_method_tables_are_pinned():
         N.table_bytes(0x100000000, 0x100000001)
 
 
+def test_re5_never_advertises_inherited_re6_launcher_shells():
+    ctl = controller()
+    assert ctl.launcher_kinds.__func__ is N.Controller.launcher_kinds
+    assert ctl.launcher_kinds() == ctl.grenade_kinds()
+    assert not any(r['kind'].startswith('shell') for r in ctl.launcher_kinds())
+
+
 def test_player_class_change_reuses_heap_without_rewriting_bootstrap():
     ctl = controller()
     ctl.stopped = lambda _: pytest.fail('Subsequent clicks must not stop the game')

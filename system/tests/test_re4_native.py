@@ -197,6 +197,8 @@ def test_foreign_re6_controls_are_not_offered_by_re4(monkeypatch):
     for name in ("drop_bomb",):
         assert getattr(ctl, name) is None
     assert ctl.equip_primary.__func__ is N.Controller.equip_primary
+    assert ctl.launcher_kinds.__func__ is N.Controller.launcher_kinds
+    assert all(not r['kind'].startswith('shell') for r in ctl.launcher_kinds())
 
 
 def test_ring_health_does_not_include_adjacent_max_health(monkeypatch):

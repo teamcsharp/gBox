@@ -381,6 +381,20 @@ def native_controller(ad):
     raise re6_switch_native.Unavailable("; ".join(dict.fromkeys(reasons)))
 
 
+def completion_receipt(result):
+    """A returned native call is not proof that its in-game effect happened.
+
+    Keep that evidence, but use the queue's uncertainty state. Otherwise one
+    unverified ring rejects the whole completion batch, stranding later clicks.
+    Receipt retries must never repeat the native action.
+    """
+    result = dict(result)
+    if result.get('state') == 'confirmed' and result.get('verified') is not True:
+        result.update(native_state='confirmed', state='uncertain', verified=False,
+                      verification_reason='native call returned; in-game effect has not been verified')
+    return result
+
+
 def worker_loop(sid, server, headers, ad, stats_of, alive, game=None):
     """Independent of video/input/UI requests; serialized native mailbox owner."""
     with wake_on_post(sid) as event:
@@ -638,7 +652,7 @@ def _worker_loop(sid, server, headers, ad, stats_of, alive, event, game=None):
                                 result = {"state": "uncertain" if isinstance(exc, N.Uncertain) else "failed", "reason": str(exc)[:300]}
                                 if row['op'] == Q.OP:
                                     result.update(op=Q.OP, requested=4, completed=0, presses=0, verified=False)
-                        receipts.append((row["id"], {"claim": row["claim"], "result": result}))
+                        receipts.append((row["id"], {"claim": row["claim"], "result": completion_receipt(result)}))
                 flush()
             except Exception as exc:                      # noqa: BLE001 - the status loop outlives any one claim
                 # A worker that dies here leaves the PiP saying "worker not connected" for the rest of the round,

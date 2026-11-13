@@ -124,7 +124,8 @@ def class_controller(unit_vtable=0x284B788, spawn_fail_at=None, position=(1000.0
     put(ctl.base + R.S_GAMEMAN, struct.pack("<Q", 0x90000000))
     put(0x90000000 + R.GM_PHASE, struct.pack("<i", R.PHASE_PLAYING))
 
-    def call(off, *args):
+    def call(off, *args, timeout=None):
+        assert timeout is None or timeout > 0
         ctl.calls.append((off, args))
         if off in (0x18F2880, C.SPAWN_CLASS[0]):
             n = sum(1 for o, _a in ctl.calls if o in (0x18F2880, C.SPAWN_CLASS[0]))
@@ -209,7 +210,9 @@ def test_only_the_verified_kinds_are_advertised():
     assert rows["flash"]["available"] is True
     for kind in ("hand", "incendiary"):
         assert rows[kind]["available"] is False and rows[kind]["reason"]
-    assert set(N.RING_IMPLEMENTED_KINDS) == {"flash", "hand", "incendiary"}
+    assert set(N.RING_IMPLEMENTED_KINDS) == {"flash", "hand", "incendiary", *C.SHELL_KINDS}
+    for kind in C.SHELL_KINDS:
+        assert rows[kind]["available"] is False and rows[kind]["reason"]
 
 
 def test_the_single_flash_op_keeps_its_own_guard_and_verified_pair():

@@ -144,6 +144,28 @@ def test_no_false_confirmation_or_stale_capability(queue):
     with pytest.raises(ValueError): post(q)
 
 
+@pytest.mark.parametrize('verified', [False, None, 'true', 1])
+def test_native_return_without_effect_proof_does_not_strand_later_receipts(queue, verified):
+    q, _ = queue
+    options = {'weapons': [{'item': 42, 'weapon': 'Killer7'}]}
+    caps = ['flash_now', 'equip_primary']
+    q.claim('sid', 'life-1', caps, options=options)
+    post(q)
+    q.post('sid', 'equip_primary', str(uuid.uuid4()), 'viewer', {'item': 42})
+    claims = q.claim('sid', 'life-1', caps, options=options)
+    raw = {'state': 'confirmed', 'verified': verified, 'detonated': 10, 'reason': 'native calls returned'}
+    results = [I.completion_receipt(raw), {'state': 'confirmed', 'verified': True, 'item': 42}]
+    batch = [dict(id=c['id'], claim=c['claim'], result=r) for c, r in zip(claims, results)]
+    stored = q.finish_many('sid', batch)
+    assert [r['state'] for r in stored] == ['uncertain', 'confirmed']
+    assert stored[0]['result']['native_state'] == 'confirmed'
+    assert stored[0]['result']['detonated'] == 10
+    assert stored[0]['result']['reason'] == raw['reason']
+    assert raw['state'] == 'confirmed'
+    assert q.finish_many('sid', batch) == stored
+    assert not q.claim('sid', 'life-1', caps, options=options)
+
+
 def test_http_routes_require_auth_and_running_session(tmp_path):
     from fastapi import HTTPException, Header
     store=Store(tmp_path); app=FastAPI()

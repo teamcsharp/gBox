@@ -486,6 +486,10 @@ class Controller(N.Controller):
             return [{"kind": kind, "available": False, "reason": str(exc)} for kind in RING_KINDS]
         return ring_kind_options(pre_class=(profile == "pre_class"))
 
+    def launcher_kinds(self):
+        # RE5 shares dispatcher mechanics with RE6, not its projectile classes.
+        return self.grenade_kinds()
+
     def _ring_one(self, x, y, z, index, kind="flash"):
         """One grenade of `kind` spawned, relocated to (x, y, z), and detonated.
 

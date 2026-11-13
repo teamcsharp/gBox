@@ -2519,8 +2519,12 @@ class Bot:
                                           f"(equipped {snap.get('equipped_id')})")
                 return None
             else:
-                self.doing, self.why = "mine_ring", "waiting for the mine thrower in his hand"
-                return {"hold": set()}
+                # Preparation is a request, not input ownership. The mods
+                # handover releases inputs briefly when it can actually equip.
+                # Missing inventory must not idle combat for four seconds on
+                # every retry while enemies are attacking.
+                self.stats["mine_ring_decision"] = "preparing thrower; normal combat continues"
+                return None
         count = int(MINE_RING_N)
         if int(st.get("i") or 0) >= count:
             self.stats["mine_ring_shots"] = int(self.stats.get("mine_ring_shots", 0)) + int(st.get("shots") or 0)
