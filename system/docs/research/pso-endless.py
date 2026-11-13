@@ -702,7 +702,7 @@ def play(pad: Pad, seconds: float = 120.0) -> str:
             bx, bz = float(box.get("x") or 0), float(box.get("z") or 0)
             bdist = math.hypot(bx - x, bz - z)
             if bdist <= 220.0:
-                if bdist <= 8.0:
+                if bdist <= 20.0:        # real PMT range is 13-30 units (was 8, from the fallback)
                     for _ in range(3):
                         tap(pad, "b")
                         time.sleep(0.08)
@@ -764,7 +764,7 @@ def play(pad: Pad, seconds: float = 120.0) -> str:
             # Nothing here trusts `heading_deg`: presses in one direction produced +130, +21, 0 and +145 degrees, so
             # it is not a signal to servo on. Instead hill-climb on DISTANCE - turn a side, step, and keep that side
             # only if it made us closer. That is how an enemy was closed from 210 units to 12 and killed.
-            if distance <= 10.0:      # inside the ~12-unit envelope - 15.5 was outside it
+            if distance <= 22.0:      # real PMT range is 13-30 units (was 10, from the fallback)
                 # SWEEP the aim cone here too. An attack only connects inside 8 degrees and heading_deg cannot be
                 # trusted to aim (presses in one direction gave +130, +21, 0 and +145 degrees), so swing three times
                 # and rotate a little each visit. This is the fix for "untouched after 8 swings".
@@ -854,7 +854,7 @@ def play(pad: Pad, seconds: float = 120.0) -> str:
                           + (float(e.get("z") or 0) - z) ** 2)
                 bx, bz = float(box.get("x") or 0), float(box.get("z") or 0)
                 bdist = math.hypot(bx - x, bz - z)
-                if bdist <= 8.0:          # inside the ~12-unit attack envelope; 14 was outside it and never connected
+                if bdist <= 20.0:         # real PMT range is 13-30 units; the 12-unit figure was the fallback
                     # SWEEP the aim cone. The attack only connects inside an 8-degree cone and heading_deg cannot be
                     # trusted to aim, so swing a few times and rotate a little each visit - verified to break a box
                     # at heading 58 after the same sweep. A fixed heading beside a box hits nothing.
