@@ -584,3 +584,18 @@ grenades appeared later in this round, but eight attempted throws still had
 seven equip aborts and zero recorded throws before the next equipment batch
 was loaded. Evidence is in `re5-382-6a33c3ad929e46b5b7b67140629e3268-early-mine-evidence.json`,
 `re5-382-6a33-early-escape.json` and `re5-382-6a33-admission-1794588196.json`.
+
+The same round exposed a second cadence defect: a hit-ring request reset
+279.4 cm of earned travel even though its floor refusal armed zero mines.
+The next observed travel credit was only 1.1 cm. The new private Flight-to-Cadence
+handoff restores the exact request's reserved credit once, only after the full
+inactive proof has actually released its owner lock. Travel earned while the
+request was pending is retained, capped at one 609.6 cm drop. Unknown, partial,
+active or stale requests cannot restore credit; hit/QTE event deduplication and
+the three-second request gap remain. Diagnostics now preserve the restoration
+in the flight recorder. Related checks passed 247 tests with six optional
+native-asset skips, plus 35 recorder/credit checks. Evidence is Spark-local in
+`re5-382-6a33-distance-credit-resets.json`. By the later midround census, four
+single distance drops and one five-mine ring had armed successfully. Many other
+ring rays landed several metres below the player; floor checks must not be
+removed merely to increase counts. This is not a completed-round rank result.

@@ -46,12 +46,16 @@ def test_native_defensive_requests_are_bounded_and_detached_from_later_receipts(
              'native_mine_refusal_retry': {'state': 'verified_inactive', 'owner': ['round', 10, 20],
                                            'verified_actors': 5},
              'native_mine_refusal_recoveries': 1, 'crowd_roulette_coalesced': 2,
+             'automine_credit_restorations': 1,
+             'automine_credit_restore': {'id': 'floor-refused', 'owner': ['round', 10, 20],
+                                        'restored_cm': 279.4, 'carried_cm': 340., 'total_cm': 609.6},
              'native_mine_escape_blocked': {'required_cm': 1500., 'center': [100, 0, 200]}}
     f.observe(10, {'player': {'hp': 900, 'pos': [100, 0, 200]}},
               {'controls': {'keys': ['b', 'lup']}}, stats)
     event['damage'] = 999
     event['owner'][0] = 'next round'
     stats['native_mine_refusal_retry']['owner'][0] = 'next round'
+    stats['automine_credit_restore']['owner'][0] = 'next round'
     stats.update(native_mine_pending=False, native_mines_placed=3)
     row = f.snapshot()['tail'][0]
     assert row['diagnostics']['reactive_ring_event']['damage'] == 100
@@ -63,6 +67,9 @@ def test_native_defensive_requests_are_bounded_and_detached_from_later_receipts(
     assert row['diagnostics']['native_mine_refusal_retry']['owner'] == ['round', 10, 20]
     assert row['diagnostics']['native_mine_refusal_recoveries'] == 1
     assert row['diagnostics']['crowd_roulette_coalesced'] == 2
+    assert row['diagnostics']['automine_credit_restorations'] == 1
+    assert row['diagnostics']['automine_credit_restore']['owner'] == ['round', 10, 20]
+    assert row['diagnostics']['automine_credit_restore']['total_cm'] == 609.6
     assert row['diagnostics']['rapid_fire_configured_x'] == 20 and row['controls']['keys'] == ['b', 'lup']
     json.dumps(row, allow_nan=False)
 

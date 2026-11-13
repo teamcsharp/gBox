@@ -761,6 +761,7 @@ class Mines:
             return
         self.native.clearance_cm = self.foe_clear_cm
         packet = self.native.poll(snap, self.stats)
+        self.cadence.reconcile(self.native.take_refusal_release(), self.stats)
         for row in self.native.take_deployments():
             self._merge_native_hazard(row, now, snap.get('ground_mines'))
         forced_hazards = self.stats.get('native_mine_force_hazards')
@@ -933,7 +934,7 @@ class Mines:
             self.stats['mine_blocked_reason'] = 'another native defensive action is pending'
             return
         if flight.submit(snap, self.stats, now, reason=demand[0], count=count, center=center):
-            self.cadence.claimed(demand, now)
+            self.cadence.claimed(demand, now, request_id=flight.job['id'])
             self.stats['mine_attempts'] += 1
             self.stats['automine_request_reason'] = demand[0]
             self.stats['automine_request_count'] = count
