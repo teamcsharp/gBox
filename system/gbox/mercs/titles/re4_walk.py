@@ -342,8 +342,9 @@ class Walker:
         return 0
 
     def no_exit(self) -> bool:
-        """The last plan failed only because of the crossings refused on this stage."""
-        return self._route.get("pts") is None and str(self.stats.get("nav_status") or "").startswith("no usable exit")
+        """No proved route or direct floor path exists for the latest goal."""
+        return bool(getattr(self, '_route_denied', False)) or (self._route.get("pts") is None
+            and str(self.stats.get("nav_status") or "").startswith("no usable exit"))
 
     def route_ahead(self) -> list:
         """The waypoints still ahead (a crossing as its approach then its landing), for the tactical map."""
@@ -365,6 +366,7 @@ class Walker:
             self.now = now
         pos = self._pos()
         self.wp, self.at_link = None, False
+        self.leg, self._route_denied = None, False
         if pos is None or goal is None or len(goal) < 2:
             return ()
         px, py, pz = pos
@@ -381,6 +383,18 @@ class Walker:
         if wp is not None:
             tx, tz, self.how = wp[0], wp[1], "the stage mesh" + (" (a crossing)" if self.at_link else "")
         else:
+            if self.mesh is not None and len(goal) > 2 and not self._open(pos, gx, gz, goal[1]):
+                # Captured Castle round aa770748: a stale Waterworld ITA[29]
+                # goal failed its route 191 times, then this fallback sent
+                # forward into the wall for 2081 ticks. No route is not proof
+                # of a direct path; let the caller choose another objective.
+                from . import re4_movement_safety
+                native = re4_movement_safety._native(self)
+                self._route_denied = not native
+                self.how = 'native traversal in progress' if native else 'no proved path to the goal'
+                self.stats['walk_how'] = self.how
+                self._count('nav_direct_refused')
+                return ()
             tx, tz, self.how = gx, gz, "the line"
             self._count("nav_direct_ticks")
         self.stats["walk_how"] = self.how
@@ -792,7 +806,9 @@ def attach(cls):
                     self._aim_since = None
                     self._gun_down_telemetry(False, now)
                     self._publish_doing()
-            self.__dict__["_re4_last_act"] = (now, act)    # what he pressed this tick (plan(): the map's controls)
+            from . import re4_movement_safety
+            act = re4_movement_safety.guard(walker_of(self), act)
+            self.__dict__["_re4_last_act"] = (now, act)    # the final command after every route/combat rewrite
             return act
         wrapped._re4_walk = True
         cls.tick = wrapped

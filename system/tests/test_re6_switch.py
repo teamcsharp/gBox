@@ -1595,7 +1595,7 @@ def test_the_flash_alone_with_five_close_and_no_fever_or_grenades(monkeypatch, o
     assert bot.nade is None and bot.stats["frags"] == 0                       # no grenade into a cluster
 
 
-def test_magnum_speed_runs_the_magnums_fire_and_recoil_faster_only(mods, monkeypatch):
+def test_magnum_speed_overrides_the_general_gun_animation_rate(mods, monkeypatch):
     monkeypatch.setattr(R, "QA_FAST", False)                                  # (the quick_attack op sets it: put back)
     g = round_guest()
     ad = Adapter(g)
@@ -1619,10 +1619,10 @@ def test_magnum_speed_runs_the_magnums_fire_and_recoil_faster_only(mods, monkeyp
     g.q(p + mods.UNIT_ACTION, g.obj("cPlAction_pl_act_walk", 0x100))
     mods.maintain(ad, R.snapshot(g), clock=lambda: clock[0])
     assert struct.unpack("<f", g.rd(p + mods.UNIT_DELTA, 4))[0] == 1.0
-    g.put(p + R.P_SLOTS + 8, bytes([1, 0]) + struct.pack("<H", 0x10F))       # the rifle: its fire left alone
+    g.put(p + R.P_SLOTS + 8, bytes([1, 0]) + struct.pack("<H", 0x10F))       # the rifle: general gun fire rate
     g.q(p + mods.UNIT_ACTION, g.obj("cPlAction_pl_act_weapon_fire", 0x100))
     mods.maintain(ad, R.snapshot(g), clock=lambda: clock[0])
-    assert struct.unpack("<f", g.rd(p + mods.UNIT_DELTA, 4))[0] == 1.0
+    assert struct.unpack("<f", g.rd(p + mods.UNIT_DELTA, 4))[0] == 4.0
     assert mods.ORIG[id(ad)]["magnum_fast"] == 1
     assert mods.run(ad, "magnum_speed", multiplier=20)["magnum_speed_x"] == 20.0    # (2026-11-10: the 20x cap)
     with pytest.raises(ValueError):
@@ -2806,7 +2806,7 @@ class Adapter:
 def mods(monkeypatch):
     from gbox.mercs.titles import re6_switch_mods as RM
     RM.ORIG.clear()
-    monkeypatch.setattr(RM, "FIRE_MAX", 80.0)       # the mechanics at any multiplier (play caps it at 5x, 2026-10-28)
+    monkeypatch.setattr(RM, "FIRE_MAX", 80.0)       # mechanics at any multiplier; a separate regression tests the real cap
     yield RM
     RM.ORIG.clear()
 
@@ -3178,7 +3178,7 @@ def test_fire_rate_speeds_up_every_guns_interval_only_and_writes_the_builds_back
     cell = lambda i: table + mods.FIRE_STRIDE * i + mods.FIRE_INTERVAL
     iv = lambda i: struct.unpack("<f", g.rd(cell(i), 4))[0]
     guns = [i for i, v in enumerate(mods.FIRE_ORIGINAL)
-            if i in mods.SNIPER_RECORDS or (i not in mods.FIRE_SKIP and 0 < v < mods.FIRE_GUN_MAX)]
+            if i in mods.SNIPER_RECORDS or (i not in mods.FIRE_SKIP and (i in mods.GUN_IDS or 0 < v < mods.FIRE_GUN_MAX))]
     out = mods.run(ad, "rapid_fire", multiplier=4)
     assert out["verified"] and out["fire_rate_x"] == 4.0 and out["writes"] == len(guns)
     assert sorted(a for a, _ in ad.writes) == sorted(cell(i) for i in guns)            # the interval cells, nothing else

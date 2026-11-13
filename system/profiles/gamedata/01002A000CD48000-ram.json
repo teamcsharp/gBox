@@ -87,8 +87,8 @@
       [
         "fire_rate",
         {
-          "multiplier": 5,
-          "magnum": 5,
+          "multiplier": 20,
+          "magnum": 20,
           "throw": 10
         }
       ],

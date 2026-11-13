@@ -178,3 +178,57 @@ First new RE5 Village round `5cbf663da89a46e29ca99b2aefe1005c` exposed a further
 RE4 now has a separate traversal observer backed by its exact native movement dispatcher and handler table. Completed ladder, ledge, window/fence and fall/jump movement requests five existing hand-grenade blasts with native per-blast clearance, after hit/QTE priority. This is immediate grenade defense, not persistent mine creation or nitrogen. Unknown reads and new traversals invalidate the previous uncommitted landing event. Native returned-call confirmation remains distinct from verified live effect. See `re4-traversal.md`; live RE4 landing-to-ring evidence is pending.
 
 Before the first RE6 nitrogen research probe, admission now requires a fresh complete native bomb census under the shared controller lock, both before image preparation and immediately before shell allocation. Pending/uncertain automatic bomb work blocks the probe throughout; player clearance is checked again after the final census. The one-probe-per-player-generation rule and unverified UI status remain. No nitrogen probe was submitted in this work interval. Validation:157 broader tests and70 final focused tests passed for the atomic probe gate.
+
+## Retained mines and blocked defensive combat
+
+The exact Village floor replay identified a third retained hazard in the fatal
+`5cbf663d` escape: old unit400574316704 at(-7078.5156,0,6470.1147), absent
+from the current two-mine census. Its last captured state was active with no
+trigger; disappearance does not prove explosion. Its exclusion closed the
+otherwise valid eastward escape. The owned Switch s402 NAV geometry matches
+the live mesh; removing that old exclusion in the replay opens three headings.
+
+Native observations now retain a bounded, double-read class/generation/owner
+retirement witness. An owned inactive or trigger witness can also retire an
+escape site. Missing/partial memory, a stale census, another generation at the
+same pointer, and plain absence cannot. Short flag reads are unknown rather
+than false. Trigger attribution uses the same generation-qualified witness;
+retirement never invents damage or kills. Validation:100 tests passed across
+retirement races, native observations and blocked defense.
+
+When all eight checked escape directions are blocked, the bot now keeps a gun
+up and lets fresh native aiming feedback authorize fire. It no longer stands
+neutral solely because a physical mine has no safe departure route. As soon as
+a checked route opens, releasing the shot and leaving every retained hazard
+take priority. This is not permission to cross a mine exclusion. The snapshot
+records per-reason candidate vetoes and the defensive target for triage.
+
+RE5 traversal detection also covers the verified native object-event wrappers
+for windows and both ladder families, with exact RTTI/scene identity and
+terminal phase evidence. Missing a one-frame completion flag refuses placement;
+an unobserved completion is not synthesized. See `re5-traversal.md`.
+
+## All-gun rate and current accuracy requests
+
+The latest operator request supersedes RE6's previous ordinary-gun5x cap:
+all guns should fire at20x with no recoil animation. RE6's profile and live
+slider now request/permit20x. Known gun fire actions use the rate for native
+animation time as well as the interval table; previously only magnums had the
+animation multiplier. The known rocket launcher is no longer mistaken for a
+melee weapon solely because its original interval is10seconds. Faster explicit
+sniper overrides remain. Generation, weapon and action are reread before a
+write, foreign time scales are preserved, and the previously owned multiplier
+can be restored after changing/disabling the rate. Validation:322 existing
+RE6 tests and32 new gun/race tests passed. These host-polled writes compress
+recoil/pump animation; they do not prove zero animation, frame-atomic transitions
+or a measured20x projectile cadence. Live verification is still required.
+
+Additional requests remain active: roughly120-second crowd-triggered randomized
+grenade scatter bursts at20x animation speed, followed by verified flash and
+explosive escape tactics; accurate Garrador rear-Plaga targeting; split-second
+magnum marksmanship; and persistent mastery evidence for each individual weapon
+across RE4/5/6. Random choice must use actually supported effects and preserve
+all-player blast clearance. Nitrogen remains unverified. The RE4 aim book's
+verified-only learning lacks a discharge-confirmation feed; counting trigger
+requests as hits would hide rather than fix that defect. No S-rank consistency
+or complete implementation of these requests is claimed here.

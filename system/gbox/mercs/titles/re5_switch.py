@@ -6501,7 +6501,11 @@ class Bot:
         from .re5_native_mine_escape import guard as native_mine_escape_guard
         act = native_mine_escape_guard(self, act, snap, now, before_aim=True)
         act = re5_target_feedback.apply(self, snap, act, now)
-        act = re5_target_feedback.keep_active(self, snap, act, now)
+        # A rejected escape is not an available aim-repositioning step. Keep
+        # correcting the real target until a fresh floor assessment opens a lane.
+        mine_defense = dict(act) if self.stats.get('native_mine_defending') else None
+        if mine_defense is None:
+            act = re5_target_feedback.keep_active(self, snap, act, now)
         act = self._mesh_guard(act, snap)                # the way probed on the stage's own nav mesh before a wall
         act = self._room_guard(act, snap)                # ... and on its real collision (ROOM_MAP)
         if WALL_GOV_GOAL or getattr(self, "_goal_drive", None) != now:
@@ -6514,7 +6518,7 @@ class Bot:
         act = self._shot_tail(act, snap, now)
         act = self._native_equipment(act, snap)
         act = self._special("post", act, snap, now) or act  # the stagger shot's site, the specials line in the why
-        act = native_mine_escape_guard(self, act, snap, now)
+        act = native_mine_escape_guard(self, act, snap, now, combat_action=mine_defense)
         from .re5_movement_safety import guard as stage_hazard_guard
         act = stage_hazard_guard(self, act, snap, now)  # final veto, after every movement rewrite
         self.stats.update(combat_action=self.doing, combat_reason=self.why,
@@ -7010,9 +7014,12 @@ class Bot:
                 self.doing, self.why = "mine", str(self.stats.get("mine_status") or "")
                 act = self._mine_route(p, act, now, snap)
             else:
-                throwing = UNIVERSAL_CORE and THROWS and (act := self._throw_core(p, snap, live, flat, now)) is not None
-                if throwing:
-                    pass                                     # a grenade at the pack (its own doing / why), escape or not
+                from .re5_native_mine_escape import defend as mine_defense
+                throwing = False
+                if (act := mine_defense(self, snap, live, now)) is not None:
+                    pass                                     # aim feedback authorizes fire; no unsafe reposition
+                elif UNIVERSAL_CORE and THROWS and (act := self._throw_core(p, snap, live, flat, now)) is not None:
+                    throwing = True                          # a grenade at the pack (its own doing / why), escape or not
                 elif (act := self._escape(p, live, flat, now)) is not None:
                     self.doing, self.why = "escape", f"{self.round_escapes} this round"
                 elif (act := self._gun_back(snap, now)) is not None:
@@ -7039,7 +7046,9 @@ class Bot:
 
     def _mine_action(self, p, snap, live, now):
         """Only a physical mine hazard can interrupt the combat/navigation plan."""
-        return self.mines.automatic(p, snap, live, now)
+        from .re5_native_mine_escape import blocked
+        action = self.mines.automatic(p, snap, live, now)
+        return None if blocked(self, snap, now) else action
 
     def observe_reactions(self, snap, now):
         """Also called before prompt-only ticks, so QTE handling never hides a request."""

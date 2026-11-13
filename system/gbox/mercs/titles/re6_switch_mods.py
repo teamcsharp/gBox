@@ -110,7 +110,7 @@ AUTO_QTE = (0x46B0, 0x46B0 + 0x5510)                     # cSystemInfo mTempData
 ALL_CHARACTERS = 0x3FFFFFFF                              # 4 costume bits for each of 7 characters, then bits 28 and 29
 CAP_MAX = 200                                            # a capacity above this is not a gun's magazine
 CHECK_S = 0.25                                           # maintain tops up at most this often
-FIRE_MAX = 5.0                                               # operator 2026-10-28: "make the max fire rate multiplier for a weapon 5x"
+FIRE_MAX = 20.0                                              # operator 2026-11-13: every gun at 20x
 SNIPER_FIRE_X = 30.0                                         # operator 2026-11-01, sniper weapons only
 # magnum rapid-fire (operator 2026-11-03: "the gun fires slow and with massive recoil; I want the magnum firing 20x a
 # second"): the magnums (MAGNUM_RECORDS) get their own per-weapon rate like the snipers, bypassing FIRE_MAX, whenever
@@ -215,6 +215,7 @@ WEAPON_KIND = {1: "handgun", 2: "handgun", 3: "handgun", 12: "handgun", 13: "han
                5: "shotgun", 6: "shotgun", 7: "magnum", 8: "magnum", 9: "sniper", 10: "sniper", 11: "sniper",
                14: "machine gun", 15: "rifle", 16: "shotgun", 17: "rifle", 18: "launcher", 23: "crossbow",
                27: "launcher", 0: "melee", 24: "melee", 25: "melee", 26: "melee"}
+GUN_IDS = frozenset(i for i, kind in WEAPON_KIND.items() if kind != 'melee')
 WEAPON_MAG = {0x101: 15, 0x102: 16, 0x103: 18, 0x104: 8, 0x105: 7, 0x106: 3, 0x107: 7, 0x108: 5, 0x109: 6, 0x10A: 5,
               0x10B: 10, 0x10C: 50, 0x10D: 20, 0x10E: 30, 0x10F: 30, 0x110: 286, 0x111: 30, 0x112: 6, 0x117: 1,
               0x11B: 1, 0x128: 20, 0x100: 0xFFFF, 0x118: 0xFFFF, 0x119: 0xFFFF, 0x11A: 0xFFFF}
@@ -393,6 +394,9 @@ class RE6Switch:
               "quick_attack_x": self.state.get("quick_attack", 1.0),
               "throw_speed_x": self.state.get("throw_speed", THROW_SPEED_X),
               "magnum_speed_x": self.state.get("magnum_speed", MAGNUM_SPEED_X),
+              "gun_animation_x": min(self.state.get("fire_rate", 1.0), FIRE_MAX),
+              "gun_fast": self.state.get("gun_fast", 0),
+              "gun_animation_last": self.state.get("gun_animation_last"),
               "bomb_mind": B_MIND(), "mind_detonations": self.state.get("mind_detonations", 0),
               "remote_settles": self.state.get("remote_settles", 0),
               "bomb_speed_x": self.state.get("bomb_speed", BOMB_SPEED_X), "bomb_fast": self.state.get("bomb_fast", 0),
@@ -1265,16 +1269,25 @@ def magnum_speed(g: RE6Switch, mult) -> dict:
     return {"verified": True, "magnum_speed_x": k}
 
 
-def _keep_quick(ad, g: RE6Switch, player: int, st: dict, weapon=None) -> int:
-    """mDeltaTime at the multiplier while his action is a quick attack, at the magnum's while the gun's fire runs with a
-    magnum in hand, 1.0 otherwise (only over 1.0 or one of its own values)."""
+def _keep_quick(ad, g: RE6Switch, player: int, st: dict, weapon=None, generation=None) -> int:
+    """Accelerate the owned fire action, restoring normal time outside it.
+
+    The fire interval alone leaves a shotgun's pump/recoil at ordinary speed.
+    All known gun fire actions now use fire_rate; explicit magnum, throw, bomb
+    and quick-attack speeds retain their controls. This compresses animation;
+    it does not prove zero recoil or a particular number of emitted shots.
+    """
     k = st.get("quick_attack") or 1.0
     mk = st.get("magnum_speed", MAGNUM_SPEED_X) or 1.0       # (2026-11-10: with or without fire_rate, as bomb_speed)
     tk = st.get("throw_speed", THROW_SPEED_X) or 1.0
     bk = st.get("bomb_speed", BOMB_SPEED_X) or 1.0
+    fk = min(st.get('fire_rate', 1.0) or 1.0, FIRE_MAX)
     try:
+        born = struct.unpack('<I', g.m.rd(player + U_GENERATION, 4))[0]
+        if generation is not None and generation != born:
+            return 0
         act = R.u64(g.m, player + UNIT_ACTION)
-        name = None
+        name, vt = None, None
         if R.ptr_ok(act):
             vt = R.u64(g.m, act)
             names = st.setdefault("qa_names", {})
@@ -1282,7 +1295,11 @@ def _keep_quick(ad, g: RE6Switch, player: int, st: dict, weapon=None) -> int:
                 names[vt] = R.class_name(g.m, act)
             name = names[vt]
         cur = struct.unpack("<f", ad.read_memory(player + UNIT_DELTA, 4))[0]
-    except (ValueError, OSError):
+        equipped = R.inventory_state(g.m, player)[:2]
+        if weapon is not None and equipped[1] != weapon:
+            return 0
+        weapon = equipped[1]
+    except (ValueError, OSError, struct.error):
         return 0
     quick = name in QUICK_ACTIONS
     if quick and not st.get("qa_in"):
@@ -1290,6 +1307,7 @@ def _keep_quick(ad, g: RE6Switch, player: int, st: dict, weapon=None) -> int:
     magnum = mk > 1.0 and name in MAGNUM_FIRE_ACTIONS and weapon in MAGNUM_RECORDS
     throw = tk > 1.0 and name in MAGNUM_FIRE_ACTIONS and weapon in THROW_RECORDS
     bomb = bk > 1.0 and name in MAGNUM_FIRE_ACTIONS and weapon in BOMB_RECORDS
+    gun = fk > 1.0 and name in MAGNUM_FIRE_ACTIONS and weapon in GUN_IDS
     if magnum and not st.get("mag_in"):
         st["magnum_fast"] = st.get("magnum_fast", 0) + 1
     if throw and not st.get("throw_in"):
@@ -1297,13 +1315,30 @@ def _keep_quick(ad, g: RE6Switch, player: int, st: dict, weapon=None) -> int:
     if bomb and not st.get("bomb_in"):
         st["bomb_fast"] = st.get("bomb_fast", 0) + 1
     st["qa_in"], st["mag_in"], st["throw_in"], st["bomb_in"] = quick, magnum, throw, bomb
-    want = k if quick else mk if magnum else tk if throw else bk if bomb else 1.0
-    if abs(cur - want) < 1e-4 or not any(abs(cur - v) < 1e-4 for v in (1.0, k, mk, tk, bk)):
+    st['gun_in'] = gun
+    want = (k if quick else mk if name in MAGNUM_FIRE_ACTIONS and weapon in MAGNUM_RECORDS
+            else tk if throw else bk if bomb else fk if gun else 1.0)
+    owner = (player, born)
+    prior = st.get('motion_rate', 1.0) if st.get('motion_owner') == owner else 1.0
+    if abs(cur - want) < 1e-4 or not any(abs(cur - v) < 1e-4 for v in (1.0, prior)):
         return 0
     try:
+        # A weapon swap/action transition during the reads invalidates this
+        # decision. Never knowingly put a fire multiplier onto a walk/QTE.
+        if (R.u64(g.m, player + UNIT_ACTION) != act
+                or vt is not None and R.u64(g.m, act) != vt
+                or struct.unpack('<I', g.m.rd(player + U_GENERATION, 4))[0] != born
+                or R.inventory_state(g.m, player)[:2] != equipped
+                or struct.unpack('<f', ad.read_memory(player + UNIT_DELTA, 4))[0] != cur):
+            return 0
         ad.write_memory(player + UNIT_DELTA, struct.pack("<f", want))   # read back by the adapter
-    except RuntimeError:
+    except (RuntimeError, ValueError, OSError, struct.error):
         return 0
+    st.update(motion_owner=owner, motion_rate=want)
+    if gun:
+        st['gun_fast'] = st.get('gun_fast', 0) + 1
+        st['gun_animation_last'] = {'player': player, 'generation': born, 'weapon': weapon,
+                                    'action': name, 'multiplier': want, 'at': time.time()}
     return 1
 
 
@@ -1390,7 +1425,7 @@ def fire_interval(index: int, k: float, magnum: float | None = None, throw: floa
         return max(FIRE_FLOOR, orig / throw)
     if index in MAGNUM_RECORDS and (k > 1.0 or (magnum and magnum > 1.0)):
         return max(FIRE_FLOOR, orig / (magnum if (magnum and magnum > 1.0) else MAGNUM_FIRE_X))
-    if k == 1.0 or index in FIRE_SKIP or not 0.0 < orig < FIRE_GUN_MAX:
+    if k == 1.0 or index in FIRE_SKIP or (index not in GUN_IDS and not 0.0 < orig < FIRE_GUN_MAX):
         return orig
     return max(FIRE_FLOOR, orig / k)
 
@@ -1431,7 +1466,7 @@ def fire_rate(g: RE6Switch, mult, magnum=None, throw=None) -> dict:
         raise ValueError("fire_rate multiplier / magnum / throw: numbers 1..80 (1 = the game's)") from None
     if not 1.0 <= k <= 80.0 or any(x is not None and not 1.0 <= x <= 80.0 for x in (magnum, throw)):
         raise ValueError("fire_rate multiplier / magnum / throw: 1..80 (1 = the game's)")
-    k = min(k, FIRE_MAX)                                     # the operator's cap per weapon (2026-10-28: 5x): clamped
+    k = min(k, FIRE_MAX)                                     # all-gun cap; explicit faster sniper override retained
     magnum = min(magnum, MAGNUM_FIRE_X) if magnum is not None else None   # the magnums get their own cap (rapid-fire)
     throw = min(throw, max(THROW_FIRE_MAX, FIRE_MAX)) if throw is not None else None   # the grenades' own cap (2x)
     recs = fire_records(g)
@@ -1448,7 +1483,7 @@ def fire_rate(g: RE6Switch, mult, magnum=None, throw=None) -> dict:
     g.state["fire_rate"] = k
     g.state["fire_magnum"], g.state["fire_throw"] = magnum, throw
     rifle = _f32(fire_interval(0x0F, k))
-    return {"fire_rate_x": k, "sniper_fire_rate_x": SNIPER_FIRE_X if k > 1.0 else 1.0,
+    return {"fire_rate_x": k, "gun_animation_x": k, "sniper_fire_rate_x": SNIPER_FIRE_X if k > 1.0 else 1.0,
             "magnum_x": magnum, "throw_x": throw, "verified": True, "writes": writes,
             "assault_rifle_interval_s": round(rifle, 4),
             "magnum_interval_s": round(_f32(fire_interval(0x07, k, magnum)), 4),
@@ -1482,19 +1517,20 @@ def maintain(ad, snap=None, *, enabled: bool = True, clock=time.monotonic) -> di
                                           or (st.get("throw_speed", THROW_SPEED_X) or 1.0) > 1.0
                                           or st.get("mag_in") or st.get("throw_in")))
         bomb_on = st is not None and ((st.get("bomb_speed", BOMB_SPEED_X) or 1.0) > 1.0 or bool(st.get("bomb_in")))
-        keeping = keeping or mag_on or bomb_on
+        gun_on = bool(st and ((st.get('fire_rate') or 1.0) > 1.0 or st.get('gun_in') or st.get('motion_rate', 1.0) > 1.0))
+        keeping = keeping or mag_on or bomb_on or gun_on
         if not keeping or not enabled:
             return out
         try:
             p = (snap or {}).get("player")
             now = clock()
             if p and ((st.get("kill_time") or {}).get("on") or st.get("auto_qte_ram")
-                      or (st.get("quick_attack") or 1.0) > 1.0 or st.get("qa_in") or down_fire_on or mag_on or bomb_on):
+                      or (st.get("quick_attack") or 1.0) > 1.0 or st.get("qa_in") or down_fire_on or mag_on or bomb_on or gun_on):
                 g0 = RE6Switch(ad)
                 if down_fire_on:
                     out["writes"] += _keep_down_fire(ad, g0, p, st)
-                if (st.get("quick_attack") or 1.0) > 1.0 or st.get("qa_in") or mag_on or bomb_on:
-                    out["writes"] += _keep_quick(ad, g0, p["ptr"], st, p.get("weapon_id"))
+                if (st.get("quick_attack") or 1.0) > 1.0 or st.get("qa_in") or mag_on or bomb_on or gun_on:
+                    out["writes"] += _keep_quick(ad, g0, p["ptr"], st, p.get("weapon_id"), p.get('generation'))
                 if (st.get("kill_time") or {}).get("on"):
                     kt = _maintain_kill_time(ad, g0, st)
                     if kt.get("applied_seconds"):

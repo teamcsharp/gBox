@@ -196,6 +196,7 @@ class Mines:
         self.automine, self.cadence = True, Cadence()
         self._native_receipts = collections.deque(maxlen=32)
         self._native_receipt_census = {}
+        self._native_generations = {}
         self._native_hazards_seen = collections.deque(maxlen=80)
         self._native_escape = None
         for k in COUNTERS:
@@ -232,6 +233,7 @@ class Mines:
         self.last_at, self.last_pos, self.site, self.clear_from = None, None, None, None
         self.bombs, self.blast = {}, None
         self._native_receipt_census = {}
+        self._native_generations = {}
         self._native_hazards_seen.clear()
         self._native_escape = None
         self.baseline = None
@@ -271,8 +273,11 @@ class Mines:
         self._track(p, snap, now)
 
     def _track(self, p: dict, snap: dict, now: float) -> None:
-        """His bombs still down: one that left sUnit's line went off. Its blast window: the kills gained and his health
-        lost from BLAST_BEFORE_S before it to BLAST_AFTER_S after the last bomb seen gone. Once a tick."""
+        """Reconcile physical hazards; native disappearance does not prove a blast.
+
+        Legacy input-placement replay keeps its historical blast windows. Native
+        escape sites retire only on an owned allocation/inactive/trigger witness.
+        """
         if self._tracked_at == now:
             return
         self._tracked_at = now
@@ -292,18 +297,34 @@ class Mines:
             if isinstance(hp, int) and isinstance(b["hp"], int):
                 self.stats["mine_blast_hp_loss"] += max(0, b["hp"] - max(hp, 0))
             self.blast = None
+        retired, witnessed_triggers = set(), set()
+        if snap.get('ground_mines') is not None:
+            for row in snap.get('ground_mine_observations') or ():
+                ptr, born = row.get('ptr'), row.get('generation')
+                if (type(born) is not int or self._native_generations.get(ptr) != born
+                        or self._native_receipt_census.get(ptr) is snap['ground_mines']
+                        or row.get('native_owner') != p.get('ptr')
+                        or not (row.get('retired_observed') is True or row.get('active') is False
+                                or row.get('trigger_observed') is True)):
+                    continue
+                if self._native_escape is not None:
+                    self._native_escape['sites'].pop(ptr, None)
+                if row.get('trigger_observed') is True:
+                    witnessed_triggers.add(ptr)
+                self._native_generations.pop(ptr, None)
+                retired.add(ptr)
+                self.stats['native_mine_retirements_verified'] = self.stats.get('native_mine_retirements_verified', 0) + 1
+                self.stats['native_mine_retirement_last'] = dict(row, at=now)
         if not self.bombs or snap.get('ground_mines') is None:
             return
         now_ptrs = {g["ptr"] for g in snap.get("ground_mines") or ()}
         # Engine reaction polling and Bot.tick can consume the same snapshot at
         # different clock times. Shallow decision copies retain the census list:
         # only a distinct read can contradict a receipt newer than that census.
-        gone = [k for k in self.bombs if k not in now_ptrs
+        gone = [k for k in self.bombs if (k not in now_ptrs or k in retired)
                 and self._native_receipt_census.get(k) is not snap['ground_mines']]
         native_gone = {k for k in gone if k in self._native_receipt_census}
-        observed_triggers = {r['ptr'] for r in snap.get('ground_mine_observations') or ()
-                             if r.get('ptr') in native_gone and r.get('trigger_observed') is True
-                             and r.get('native_owner') == p.get('ptr')}
+        observed_triggers = native_gone & witnessed_triggers
         if self._native_escape is not None:
             for ptr in observed_triggers:
                 self._native_escape['sites'].pop(ptr, None)
@@ -788,6 +809,7 @@ class Mines:
             self.native.guard['actors'][row['unit']] = row['generation']
         pos = tuple(row['pos'])
         self.bombs[row['unit']] = pos
+        self._native_generations[row['unit']] = row['generation']
         self._native_receipt_census[row['unit']] = census
         if self.baseline is not None:
             self.baseline.discard(row['unit'])
@@ -813,6 +835,7 @@ class Mines:
                 self.native.guard['actors'][row['unit']] = row['generation']
         confirmed = [r for r in rows if r.get('armed_observed') is True or r.get('trigger_observed') is True]
         for row in rows:
+            self._native_generations[row['unit']] = row['generation']
             if not row.get('trigger_observed'):
                 self.bombs[row['unit']] = tuple(row['pos'])  # uncertain active actors remain hazards
                 self._native_receipt_census[row['unit']] = census

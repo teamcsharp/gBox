@@ -104,6 +104,29 @@ def bonus_goal(bot, snap, now) -> bool:
     try:
         goals = re4_walk.goals_of(bot)
         terminal = getattr(re4_walk.map_goals, "TERMINAL", ())
+        if (snap or {}).get('module_base') is not None and 'nav' not in snap:
+            re4_walk.re4_nav.attach(snap)
+        nav = (snap or {}).get('nav')
+        pos = ((snap or {}).get('player') or {}).get('pos')
+        if nav is None or not pos:
+            return False
+        # A sticky picker can temporarily retain the previous stage during a
+        # load. Do not issue its objectives until the player's actual floor
+        # supports that geometry. Never infer the room from queued selection.
+        scope = (goals.round, getattr(nav, 'room', None), getattr(nav, 'sig', None))
+        if bot.__dict__.get('_bonus_scope') != scope:
+            bot.__dict__.update(_bonus_scope=scope, _bonus_issued=set(), _bonus_prev=None)
+            if goals.goal and goals.goal.get('source') == 'time_bonus':
+                goals.goal.update(state='unavailable', reason='Stage geometry changed; selecting this room\'s time bonuses')
+                stats = getattr(bot, 'stats', None)
+                if isinstance(stats, dict):
+                    stats['bonus_stage_invalidations'] = stats.get('bonus_stage_invalidations', 0)+1
+        on_floor = getattr(nav, 'on_floor', None)
+        if callable(on_floor) and not on_floor(pos):
+            # A verified native ladder/fall also leaves the ordinary floor.
+            # Defer selection without cancelling a same-geometry objective;
+            # the final movement gate owns non-traversal off-floor commands.
+            return False
         # Reaching a route endpoint proves approach only. It does not prove
         # the game's time bonus was activated or the clock increased.
         prev = bot.__dict__.get("_bonus_prev")
@@ -120,18 +143,10 @@ def bonus_goal(bot, snap, now) -> bool:
             bot.__dict__["_bonus_prev"] = None
         if goals.goal is not None and goals.goal.get("state") not in terminal:
             return False                                  # his own mark, or a bonus still on its way
-        if (snap or {}).get('module_base') is not None and 'nav' not in snap:
-            # This selector runs BEFORE Bot.tick, whose decorator attaches the
-            # mesh. Waiting for that decorator meant no goal on every fresh read.
-            re4_walk.re4_nav.attach(snap)
-        nav = (snap or {}).get("nav")
-        pos = ((snap or {}).get("player") or {}).get("pos")
-        if nav is None or not pos:
-            return False
         issued = bot.__dict__.setdefault("_bonus_issued", set())
         best = None
         for row in getattr(nav, "bonuses", ()) or ():
-            if row.get("reachable") is False:
+            if row.get('kind') != 'time_bonus' or row.get("reachable") is False:
                 continue
             bid = f"bonus-{row.get('source') or '?'}"
             if bid in issued:
@@ -154,6 +169,7 @@ def bonus_goal(bot, snap, now) -> bool:
             goals.goal["floor_y"] = float(at[1])
             goals.goal['source'] = 'time_bonus'
             goals.goal['seconds'] = row.get('seconds')
+            goals.goal['geometry'] = list(scope)
         issued.add(bid)
         bot.__dict__["_bonus_prev"] = {"id": bid, "seconds": row.get("seconds")}
         stats = getattr(bot, "stats", None)

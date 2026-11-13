@@ -35,8 +35,10 @@ def test_reader_decodes_exact_native_names_and_owns_both_action_bases(monkeypatc
     name=T.PREFIX+'coop_jump_broad_6m_jump'
     g, snap, _ = native_scene(monkeypatch, name, indirect)
     out=T.read(g, snap)
-    assert out == {'name': name, 'action': ACT, 'step': 2, 'complete': True,
-                   'player': PLAYER, 'generation': 12, 'pos': (20., 10., 30.)}
+    assert {key: out[key] for key in ('name','action','step','complete','player','generation','pos')} == {
+        'name': name, 'action': ACT, 'step': 2, 'complete': True,
+        'player': PLAYER, 'generation': 12, 'pos': (20., 10., 30.)}
+    assert out['action_vtable'] == VT and out['layout'] == 'cpl_action' and out['scene'] is None
     assert not g.writes
 
 
@@ -193,3 +195,160 @@ def test_uncommitted_landing_event_is_invalidated_by_lost_grounding(monkeypatch,
     assert see(1.5, 'run')
     assert see(1.6, next_action) is None
     assert 'traversal_mine_event' not in stats
+
+
+# Frozen addresses from the 674c8828 ELF registrations/allocators/vtables,
+# independently specified rather than generated from the reader's allowlist.
+OBJECT_LAYOUTS = [
+    ('cOmWindowEvent_dive', 0x1C222E0, 0x1D700A0, 0x1D6FF18, 'uOmWindow', 0x38, 1),
+    ('cOmLadderEvent_climb', 0x1BDF3C0, 0x1D64C00, 0x1D64928, 'uOmLadder', 0x28, 3),
+    ('cOmLadderEventV_climb', 0x1BDF350, 0x1D64C38, 0x1D64960, 'uOmLadderV', 0x28, 2),
+]
+SCENE, SCENE_VT, SCENE_NAME = ACT+0x80000, BASE+0x1900000, NAME+0x10000
+
+
+def put_rtti(g, obj, vt, getter, dti, name_address, name):
+    delta = ((dti & ~0xFFF)-(getter & ~0xFFF)) >> 12
+    imm = delta & ((1 << 21)-1)
+    adrp = 0x90000000 | ((imm & 3) << 29) | ((imm >> 2) << 5)
+    add = 0x91000000 | ((dti & 0xFFF) << 10)
+    g.q(obj, vt); g.q(vt+8*R.GET_DTI_SLOT, getter)
+    g.put(getter, struct.pack('<III', adrp, add, 0xD65F03C0))
+    g.q(dti+R.DTI_NAME, name_address); g.put(name_address, name.encode()+b'\0')
+
+
+def object_scene(monkeypatch, layout=OBJECT_LAYOUTS[0], derived=False):
+    g,snap,loc=native_scene(monkeypatch)
+    name,vt,dti,scene_dti,scene_name,step_off,terminal=layout
+    put_rtti(g,ACT,BASE+vt,GETTER,BASE+dti,NAME,name)
+    child_dti=BASE+0x1D70148 if derived else BASE+scene_dti
+    put_rtti(g,SCENE,SCENE_VT,GETTER+0x100,child_dti,SCENE_NAME,'uOm1103' if derived else scene_name)
+    if derived:g.q(child_dti+0x20,BASE+scene_dti)
+    g.q(SCENE+0x1A00,77);g.put(SCENE+0x10,struct.pack('<I',1))
+    g.q(ACT+0x18,SCENE);g.q(ACT+0x30,5)  # Native event layout, deliberately not PLAYER.
+    g.put(ACT+0x2C,struct.pack('<I',1));g.put(ACT+step_off,struct.pack('<I',terminal))
+    g.put(PLAYER+0x8FA,b'\x04')
+    return g,snap,loc
+
+
+@pytest.mark.parametrize('layout',OBJECT_LAYOUTS)
+def test_frozen_native_object_layout_owns_player_and_live_scene(monkeypatch,layout):
+    g,snap,_=object_scene(monkeypatch,layout)
+    out=T.read(g,snap)
+    assert out['name']==layout[0] and out['step']==layout[-1] and out['complete']
+    assert out['action_vtable']==BASE+layout[1] and out['layout']=='om_event'
+    assert out['scene']['ptr']==SCENE and out['scene']['generation']==77
+    assert not g.writes
+
+
+@pytest.mark.parametrize('index,getter_rva,code',[
+    (0,0x786A60,'40af00d000800291c0035fd6'),
+    (1,0x6DFB80,'20b400b000003091c0035fd6'),
+    (2,0x6DEB00,'20b400d000e03091c0035fd6'),
+])
+def test_exact_getter_bytes_from_pinned_elf_resolve_native_event_metadata(monkeypatch,index,getter_rva,code):
+    layout=OBJECT_LAYOUTS[index]
+    g,snap,_=object_scene(monkeypatch,layout)
+    g.q(BASE+layout[1]+8*R.GET_DTI_SLOT,BASE+getter_rva)
+    g.put(BASE+getter_rva,bytes.fromhex(code))
+    assert T.read(g,snap)['name']==layout[0]
+
+
+def test_scene_subclass_requires_bounded_native_parent_chain(monkeypatch):
+    g,snap,_=object_scene(monkeypatch,derived=True)
+    assert T.read(g,snap)['scene']['name']=='uOm1103'
+    g.q(BASE+0x1D70148+0x20,BASE+0x1D70148)
+    assert T.read(g,snap) is None
+
+
+@pytest.mark.parametrize('bad',['scene_owner','scene_is_player','scene_phase','scene_generation',
+    'wrong_scene_type','wrong_event_vtable','wrong_event_dti','unknown_event_name','actor_type','status','step'])
+def test_object_layout_refuses_unproved_or_foreign_ownership(monkeypatch,bad):
+    g,snap,_=object_scene(monkeypatch)
+    if bad=='scene_owner':g.q(ACT+0x18,SCENE+8)
+    if bad=='scene_is_player':g.q(ACT+0x18,PLAYER)
+    if bad=='scene_phase':g.put(SCENE+0x10,struct.pack('<I',3))
+    if bad=='scene_generation':g.q(SCENE+0x1A00,0)
+    if bad=='wrong_scene_type':put_rtti(g,SCENE,SCENE_VT,GETTER+0x100,BASE+0x1D64928,SCENE_NAME,'uOmLadder')
+    if bad=='wrong_event_vtable':g.q(ACT,VT);g.q(VT+8*R.GET_DTI_SLOT,GETTER)
+    if bad=='wrong_event_dti':put_rtti(g,ACT,BASE+0x1C222E0,GETTER,BASE+0x1D700D8,NAME,'cOmWindowEvent_dive')
+    if bad=='unknown_event_name':g.put(NAME,b'cOmWindowEvent_emBang\0')
+    if bad=='actor_type':g.put(ACT+0x34,struct.pack('<I',3))
+    if bad=='status':g.put(ACT+0x2C,struct.pack('<I',4))
+    if bad=='step':g.put(ACT+0x38,struct.pack('<I',9))
+    assert T.read(g,snap) is None and not g.writes
+
+
+@pytest.mark.parametrize('field',['scene_owner','scene_vtable','scene_generation','scene_phase',
+                                'scene_parent','event_rtti','event_phase','event_status','actor_type'])
+def test_object_layout_rechecks_scene_lifetime_and_action_state(monkeypatch,field):
+    g,snap,_=object_scene(monkeypatch,derived=True);rd=g.rd
+    def race(address,size):
+        data=rd(address,size)
+        if address==PLAYER+R.P_HP:
+            address,size,value={
+                'scene_owner':(ACT+0x18,8,SCENE+8),
+                'scene_vtable':(SCENE,8,SCENE_VT+8),
+                'scene_generation':(SCENE+0x1A00,8,78),
+                'scene_phase':(SCENE+0x10,4,3),
+                'scene_parent':(BASE+0x1D70148+0x20,8,0),
+                'event_rtti':(BASE+0x1D700A0+R.DTI_NAME,8,SCENE_NAME),
+                'event_phase':(ACT+0x38,4,0),
+                'event_status':(ACT+0x2C,4,4),
+                'actor_type':(ACT+0x34,4,1),
+            }[field]
+            g.put(address,struct.pack('<Q' if size==8 else '<I',value))
+        return data
+    g.rd=race
+    assert T.read(g,snap) is None
+
+
+@pytest.mark.parametrize('layout',OBJECT_LAYOUTS)
+def test_object_completion_uses_native_terminal_phase_and_animation_not_player_flag(monkeypatch,layout):
+    g,snap,_=object_scene(monkeypatch,layout)
+    g.put(PLAYER+T.COMPLETE,struct.pack('<I',0))
+    assert T.read(g,snap)['complete']
+    g.put(PLAYER+0x8FA,b'\0')
+    assert not T.read(g,snap)['complete']
+    g.put(PLAYER+T.COMPLETE,struct.pack('<I',T.COMPLETE_MASK))
+    assert not T.read(g,snap)['complete']
+
+
+def test_native_active_fact_has_fresh_owner_action_and_scene_and_clears_on_menu(monkeypatch):
+    g,snap,_=object_scene(monkeypatch)
+    stats={'round_evidence_id':'round-a','screen':'playing'}
+    T.observe(g,snap,stats,10.)
+    fact=stats['traversal_observation']
+    assert fact['active'] and fact['owner']==['round-a',PLAYER,12] and fact['at']==10.
+    assert fact['action']==ACT and fact['action_vtable']==BASE+0x1C222E0
+    assert fact['sampled_at'] and fact['scene']['ptr']==SCENE
+    snap['mercenaries_phase']=-1
+    T.observe(g,snap,stats,10.1)
+    assert not stats['traversal_observation']['active']
+
+
+@pytest.mark.parametrize('completion',[False,True])
+def test_object_event_requires_native_completion_before_grounded_exit(monkeypatch,completion):
+    see,snap,stats=observer(monkeypatch)
+    latest={'name':'cOmWindowEvent_dive','action':ACT,'step':1,'complete':completion,
+            'player':PLAYER,'generation':12,'pos':(0.,200.,0.),'scene':{'ptr':SCENE,'generation':77}}
+    monkeypatch.setattr(T,'read',lambda *args:latest)
+    assert T.observe(None,snap,stats,1.) is None
+    latest.update(name=T.PREFIX+'run',action=ACT+0x100,pos=(0.,0.,100.),scene=None)
+    assert T.observe(None,snap,stats,1.2) is None
+    event=T.observe(None,snap,stats,1.5)
+    assert bool(event)==completion
+    if event:assert event['scene']=={'ptr':SCENE,'generation':77} and event['completion_flag_seen']
+
+
+def test_object_scene_reuse_resets_completion_witness(monkeypatch):
+    see,snap,stats=observer(monkeypatch)
+    latest={'name':'cOmWindowEvent_dive','action':ACT,'step':1,'complete':True,
+            'player':PLAYER,'generation':12,'pos':(0.,200.,0.),'scene':{'ptr':SCENE,'generation':77}}
+    monkeypatch.setattr(T,'read',lambda *args:latest)
+    T.observe(None,snap,stats,1.)
+    latest.update(complete=False,scene={'ptr':SCENE,'generation':78})
+    T.observe(None,snap,stats,1.1)
+    latest.update(name=T.PREFIX+'run',action=ACT+0x100,pos=(0.,0.,100.),scene=None)
+    T.observe(None,snap,stats,1.2)
+    assert T.observe(None,snap,stats,1.5) is None

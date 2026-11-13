@@ -157,7 +157,8 @@ def test_floor_refusals_that_shut_every_way_are_forgiven(r402, monkeypatch):
     for q in ((16200.0, Y, -26650.0), (16235.0, Y, -26348.0), (15730.0, Y, -26325.0)):
         r.refuse(q, "a crossing the game does not let him walk", floor=True)
     r.approach(TGT)
-    assert r.how == "the line" and r.stats["mesh_no_route"] == 1, "the rollback: no route, the line into the jamb"
+    assert r.how == "no proved path to the goal" and r.stats["mesh_no_route"] == 1
+    assert r.no_exit(), "even without floor-refusal forgiveness, no route must not become a line into the jamb"
 
 
 def test_a_stall_with_ganados_in_the_doorway_refuses_no_waypoint(r402):

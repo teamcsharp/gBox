@@ -52,7 +52,7 @@ MODS = {
         ("auto_qte", "QTE assist", "auto_qte", None),
         ("auto_qte_ram", "Native grab escape", "auto_qte_ram", None),
         ("kill_time", "Time added per kill", "kill_time_on", None),
-        ("fire_rate", "Fire rate", "fire_rate_x", (1, 80, 0.5)),
+        ("fire_rate", "Fire rate", "fire_rate_x", (1, 20, 0.5)),
         ("magnum_speed", "Magnum fire and recoil speed", "magnum_speed_x", (1, 20, 0.5)),
         ("bomb_mind", "Remote bombs set off by mind (no detonator)", "bomb_mind", None),
         ("throw_speed", "Grenade throw speed", "throw_speed_x", (1, 20, 0.5)),

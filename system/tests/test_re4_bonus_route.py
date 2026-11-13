@@ -65,7 +65,7 @@ def test_native_bonus_preserves_the_upper_floor_height():
     from types import SimpleNamespace
     b = D.Bot(stats={}, director=False)
     s = snap_at((0, 0, 0))
-    s["nav"] = SimpleNamespace(bonuses=[{"source": "upper", "stand": [2000, 4500, 3000], "seconds": 30}])
+    s["nav"] = SimpleNamespace(bonuses=[{"kind": "time_bonus", "source": "upper", "stand": [2000, 4500, 3000], "seconds": 30}])
     assert B.bonus_goal(b, s, 10)
     assert re4_walk.goals_of(b).goal["floor_y"] == 4500
     g = re4_walk.goals_of(b)
@@ -79,7 +79,7 @@ def test_fresh_runtime_snapshot_gets_its_mesh_before_bonus_selection(monkeypatch
     b = D.Bot(stats={}, director=False)
     snap = {'module_base': 100, 'player': {'pos': (0, 0, 0), 'ptr': 1}}
     def attach(s):
-        s['nav'] = SimpleNamespace(bonuses=[{'source': 'native', 'stand': [1000, 0, 0], 'seconds': 30}])
+        s['nav'] = SimpleNamespace(bonuses=[{'kind': 'time_bonus', 'source': 'native', 'stand': [1000, 0, 0], 'seconds': 30}])
         return s
     monkeypatch.setattr(re4_nav, 'attach', attach)
     assert B.bonus_goal(b, snap, 10)

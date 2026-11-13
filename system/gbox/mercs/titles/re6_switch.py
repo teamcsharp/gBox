@@ -7881,6 +7881,8 @@ class RE6Switch(Driver):
             self.stats["throw_x"] = st.get("throw_speed", re6_switch_mods.THROW_SPEED_X) if st.get("fire_rate") else 1.0
             self.stats["throw_fast"] = st.get("throw_fast", 0)
             self.stats["magnum_fast"] = st.get("magnum_fast", 0)
+            self.stats['gun_animation_last'] = st.get('gun_animation_last')
+            self.stats['gun_animation_writes'] = st.get('gun_fast', 0)
             # The grenade cluster-bomb burst forces the throw animation to at least BURST_THROW_SPEED_X while the Bot's
             # burst runs (self.stats['burst_throw_speed']); the prior throw_speed is restored when it ends (operator
             # 2026-11-03). The live st dict (not the "or {}" copy above) carries the override across ticks.

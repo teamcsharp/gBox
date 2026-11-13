@@ -3867,8 +3867,7 @@ class Bot:
         if walker is not None:
             try:
                 keys = set(walker.approach(tuple(goal), run=run) or ())
-                if keys:
-                    return keys, "the mesh walker"
+                return keys, "the mesh walker"  # an empty safety refusal must not become a direct walk
             except Exception:                                # noqa: BLE001 - a walker error falls back to the line
                 self.stats["walker_errors"] = self.stats.get("walker_errors", 0) + 1
         nav = snap.get("nav")

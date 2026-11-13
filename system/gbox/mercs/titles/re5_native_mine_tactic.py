@@ -337,6 +337,7 @@ def ground(memory, base, player):
     actors = dict(guard.get('actors') or {})
     try:
         q = lambda at: struct.unpack('<Q', memory.rd(at, 8))[0]
+        flag = lambda at: struct.unpack('<B', memory.rd(at, 1))[0] == 1
         if q(p + 0x1A00) != generation:
             return None
         if guard.get('pending') or guard.get('needs_scan'):
@@ -347,7 +348,7 @@ def ground(memory, base, player):
                 if u in seen:
                     return None
                 seen.add(u)
-                if q(u) == base + native.VTABLE and q(u + 0x1A10) == p and memory.rd(u + 0x27B9, 1) == b'\1':
+                if q(u) == base + native.VTABLE and q(u + 0x1A10) == p and flag(u + 0x27B9):
                     actors[u] = q(u + 0x1A00)
                 u = q(u + R.UNIT_NEXT)
             if R.ptr_ok(u):
@@ -355,14 +356,21 @@ def ground(memory, base, player):
         if len(actors) > 40:
             return None
         out, observations, retained = [], [], {}
+        retirements = dict(guard.get('retirements') or {})
         for unit, born in actors.items():
-            if q(unit) != base + native.VTABLE or q(unit + 0x1A00) != born or q(unit + 0x1A10) != p:
+            current = (q(unit), q(unit + 0x1A00), q(unit + 0x1A10))
+            if current != (base + native.VTABLE, born, p):
+                if current != (q(unit), q(unit + 0x1A00), q(unit + 0x1A10)):
+                    return None  # changing allocation is not a stable retirement witness
+                retirements[(unit, born)] = {'ptr': unit, 'generation': born, 'native_owner': p,
+                    'retired_observed': True, 'retirement_reason': 'native allocation identity changed',
+                    'observed_vtable': current[0], 'observed_generation': current[1], 'observed_owner': current[2]}
                 continue
-            trigger = memory.rd(unit + 0x28C1, 1) == b'\1'
-            active = memory.rd(unit + 0x27B9, 1) == b'\1'
+            trigger = flag(unit + 0x28C1)
+            active = flag(unit + 0x27B9)
             primary, proximity = q(unit + 0x2710), q(unit + 0x28C8)
-            primary_enabled = memory.rd(primary + 0x14, 1) == b'\1' if R.ptr_ok(primary) else None
-            proximity_enabled = memory.rd(proximity + 0x14, 1) == b'\1' if R.ptr_ok(proximity) else None
+            primary_enabled = flag(primary + 0x14) if R.ptr_ok(primary) else None
+            proximity_enabled = flag(proximity + 0x14) if R.ptr_ok(proximity) else None
             pos = struct.unpack('<3f', memory.rd(unit + R.E_POS, 12))
             if not all(math.isfinite(v) for v in pos):
                 return None
@@ -380,7 +388,10 @@ def ground(memory, base, player):
         if q(p + 0x1A00) != generation:
             return None
         guard['actors'] = retained
-        guard['observations'] = observations
+        # Keep a bounded witness across prompt-only ticks. The combat thread
+        # may not consume the very first snapshot in which an actor retired.
+        guard['retirements'] = dict(list(retirements.items())[-80:])
+        guard['observations'] = observations + list(guard['retirements'].values())
         guard['needs_scan'] = False
         return out
     except (ValueError, OSError, OverflowError, struct.error, TypeError):

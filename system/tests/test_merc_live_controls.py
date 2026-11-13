@@ -89,7 +89,7 @@ def test_inventory_bounds_readback_and_operator_jobs():
     async def check():
         p=Plane();c=LC.Controls(p.get,p.post,sleep=no_delay);out=await c.call({'session_id':SID})
         fire=next(x for x in out['controls'] if x['id']=='mod.fire_rate')
-        assert fire['value']==2 and fire['available'] and fire['max']==80
+        assert fire['value']==2 and fire['available'] and fire['max']==20
         assert not next(x for x in out['controls'] if x['id']=='mod.infinite_tablets')['available']
         out=await c.call({'session_id':SID,'op':'set','control':'behavior.FLASH_R','value':700})
         assert out['action']['state']=='confirmed'
