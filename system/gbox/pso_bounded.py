@@ -381,12 +381,12 @@ class RouteFollower:
     a 60-waypoint route between the same two points, so the controller follows the route instead of the straight line.
     """
 
-    def __init__(self, router, *, arrive: float = 6.0, replan_after: int = 4, lookahead: int = 4,
+    def __init__(self, router, *, arrive: float = 5.0, replan_after: int = 4, spacing: float = 12.0,
                  cell: float = 2.5) -> None:
         self.router = router
         self.arrive = float(arrive)
         self.replan_after = int(replan_after)
-        self.lookahead = int(lookahead)
+        self.spacing = float(spacing)
         self.cell = float(cell)
         self.route = None
         self.index = 0
@@ -395,28 +395,34 @@ class RouteFollower:
         self.stalls = 0
 
     def waypoint(self, player: dict, goal: tuple):
-        """The point to walk toward now: the next unreached waypoint, or None when the goal itself is reached."""
+        """The point to walk toward now: the current anchor, advanced only when it is reached.
+
+        A "nearest waypoint in the next ten" rule was tried and oscillates: the index jumps forward when the character
+        happens to sit near a waypoint it already passed, the target jumps with it, and the character turns around -
+        measured as 167 ticks ending 381 units from a target it started 390 away from. The route is resampled to
+        anchors `spacing` apart so one anchor is worth about two taps, and the anchor only changes on arrival.
+        """
         position = (float(player.get("x") or 0), float(player.get("z") or 0))
         if self.route is None or tuple(goal) != self.goal:
             self._plan(position, goal)
         if not self.route:
             return tuple(goal)
-        # Advance to the closest waypoint ahead, not just the next one. A tap moves 8 units in a straight line while the
-        # route bends, so the character regularly cuts a corner and never comes within `arrive` of the waypoint it was
-        # aiming at - the index then never advances and the controller keeps aiming at a point it already passed, which
-        # is a measured orbit (197 ticks, 380 units still to go).
-        window = self.route[self.index:min(self.index + 10, len(self.route))]
-        if window:
-            nearest = min(range(len(window)), key=lambda offset: math.dist(position, window[offset]))
-            if math.dist(position, window[nearest]) <= max(self.arrive * 2.5, 25.0):
-                self.index = min(self.index + nearest, len(self.route) - 1)
+        # Advance the current anchor when it is reached or when the character has passed it along the leg to the next
+        # one. "Passed" is safe *because the anchor is sequential*: the earlier version asked "is any waypoint in the
+        # next ten already passed", which consumed the route while the character was far off to the side.
+        while self.index < len(self.route) - 1:
+            anchor = self.route[self.index]
+            following = self.route[self.index + 1]
+            leg = (following[0] - anchor[0], following[1] - anchor[1])
+            offset = (position[0] - anchor[0], position[1] - anchor[1])
+            passed = leg[0] * offset[0] + leg[1] * offset[1] > 0
+            if math.dist(position, anchor) <= self.arrive or passed:
+                self.index += 1
+            else:
+                break
         if math.dist(position, tuple(goal)) <= self.arrive:
             return None
-        # Look a few waypoints ahead. A waypoint 12.5 units away changes the target every one or two 8-unit taps, and
-        # a controller that measures gains per target (the hill climber) then re-explores on every step - measured as a
-        # zigzag over 186 ticks. Four waypoints ahead is ~50 units, stable for six taps.
-        target_index = min(self.index + self.lookahead, len(self.route) - 1)
-        return self.route[target_index]
+        return self.route[self.index]
 
     def note_progress(self, progressed: bool) -> None:
         if progressed:
@@ -466,7 +472,16 @@ class RouteFollower:
             route = []
         if skip_first and len(route) > 1:
             route = route[1:]                                # the leg that just failed: start past it
-        self.route = [tuple(point) for point in route]
+        # Resample to anchors about `spacing` apart: the raw route is one waypoint per 2.5-unit cell, which is a
+        # quarter of a tap, and chasing those makes every tick a direction change.
+        anchors = []
+        for point in route:
+            point = tuple(point)
+            if not anchors or math.dist(anchors[-1], point) >= self.spacing:
+                anchors.append(point)
+        if route and (not anchors or tuple(route[-1]) != anchors[-1]):
+            anchors.append(tuple(route[-1]))
+        self.route = anchors
         self.index = 0
         self.goal = tuple(goal)
         self.plans += 1
@@ -544,20 +559,27 @@ class HillClimbMotion:
         self.keys = tuple(keys)
         self.key = None
         self.last_key = None
-        self.last_distance = None
+        self.last_pos = None
+        self.last_dir = None
         self.gains = {key: 0.0 for key in self.keys}
         self.misses = 0
         self.switches = 0
 
     def step(self, player: dict, target: tuple, reason: str = "") -> Action | None:
         x, z = float(player.get("x") or 0), float(player.get("z") or 0)
-        distance = math.hypot(float(target[0]) - x, float(target[1]) - z)
+        dx, dz = float(target[0]) - x, float(target[1]) - z
+        distance = math.hypot(dx, dz)
         if distance <= self.arrive:
             return None
-        if self.last_key is not None and self.last_distance is not None:
-            gain = self.last_distance - distance
-            if gain >= self.min_gain:
-                self.gains[self.last_key] += gain
+        ux, uz = _unit(dx, dz)
+        if self.last_key is not None and self.last_pos is not None and self.last_dir is not None:
+            # Reward is the component of the last movement along the direction that was being aimed at *then*. The
+            # distance to a route anchor cannot be used: the anchor moves ~12 units every couple of taps, so a target
+            # jump reads as a loss and the controller abandons the key that was working (measured: 169 ticks of
+            # zigzag between two areas 150 units apart).
+            moved = (x - self.last_pos[0]) * self.last_dir[0] + (z - self.last_pos[1]) * self.last_dir[1]
+            if moved >= self.min_gain:
+                self.gains[self.last_key] += moved
                 self.misses = 0
             else:
                 self.gains[self.last_key] -= 2.0
@@ -567,7 +589,8 @@ class HillClimbMotion:
             self.misses = 0
             self.switches += 1
         self.last_key = self.key
-        self.last_distance = distance
+        self.last_pos = (x, z)
+        self.last_dir = (ux, uz)
         return press(self.key, f"tap {self.key} ({distance:.0f} units, gain {self.gains[self.key]:+.1f}) "
                               f"toward {reason or 'target'}")
 
@@ -1244,7 +1267,7 @@ class Automaton:
         phase["plan"] = time.monotonic() - phase["t0"] - phase["observe"]
         if action is None:
             action = WAIT if objective is not None else self._explore(player, started)
-        escape_due = (started - (self.no_close_since or started)) >= max(2.0, float(self.bounds.max_no_close_s) / 4)
+        escape_due = (started - (self.no_close_since or started)) >= max(1.5, float(self.bounds.max_no_close_s) / 6)
         if objective is not None and escape_due and self.escapes < self.bounds.max_escapes:
             # Moving but not closing: taps are the wrong size for this pocket. Try a hold before reporting failure.
             action = self._escape()
@@ -1459,7 +1482,7 @@ class Automaton:
             self.no_close_since = now
         distance = math.hypot(float(player.get("x") or 0) - objective.point[0],
                               float(player.get("z") or 0) - objective.point[1])
-        if self.best_distance is None or distance < self.best_distance - 1.0:
+        if self.best_distance is None or distance < self.best_distance - 2.0:
             self.best_distance = distance
             self.no_close = 0
             self.no_close_since = now

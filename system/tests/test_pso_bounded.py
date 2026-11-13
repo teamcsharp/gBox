@@ -707,6 +707,19 @@ def test_a_routed_policy_follows_waypoints_instead_of_a_straight_line(workdir):
         f"the follower should reach the goal (at {world.pos[0]:.0f},{world.pos[1]:.0f})"
 
 
+def test_route_following_advances_only_when_the_current_anchor_is_reached(workdir):
+    """The anchor must not move because a *nearer* waypoint exists; it moves on arrival. The nearest-waypoint rule
+    oscillated: 167 ticks ending 381 units from a target it started 390 away from."""
+    route = [(float(x), 0.0) for x in range(0, 61, 2)]
+    follower = B.RouteFollower(type("R", (), {"safe": set(), "route": lambda self, a, b: route})(),
+                              arrive=5.0, spacing=12.0)
+    goal = (60.0, 0.0)
+    assert follower.waypoint({"x": 0.0, "z": 0.0}, goal) == (12.0, 0.0), "resampled to 12-unit anchors"
+    assert follower.waypoint({"x": 13.0, "z": 0.0}, goal) == (24.0, 0.0), "advance exactly one anchor, no jumping"
+    assert follower.waypoint({"x": 30.0, "z": 0.0}, goal) == (36.0, 0.0), "the next anchor, not the nearest one"
+    assert follower.waypoint({"x": 59.0, "z": 0.0}, goal) is None, "the goal itself ends the route"
+
+
 def test_a_blocked_leg_is_replanned_rather_than_pushed(workdir):
     router = StraightRouter()
     follower = B.RouteFollower(router, arrive=6.0, replan_after=2)

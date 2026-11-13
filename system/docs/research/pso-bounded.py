@@ -194,14 +194,14 @@ def run(mode: str, args) -> int:
         # pursued along the decoded collision grid's waypoints (the city railing is why a straight line is not enough).
         walk_policy = _FixedTarget(policy, target, "door" if args.through else "walk")
         if router is not None:
-            walk_policy = B.RoutedPolicy(walk_policy, router, arrive=max(arrive, 10.0))
+            walk_policy = B.RoutedPolicy(walk_policy, router, arrive=5.0)
         automaton = B.Automaton(
             world, ledger=ledger, clock=clock, operator=operator, mode=bound_mode,
             motion=motion, policy=walk_policy,
             bounds=B.Bounds(max_objective_ticks=10_000), watchdog=B.Watchdog(stall_s=20.0, max_recoveries=4),
             flag_address=None)
     else:
-        play_policy = policy if router is None else B.RoutedPolicy(policy, router, arrive=max(arrive, 10.0))
+        play_policy = policy if router is None else B.RoutedPolicy(policy, router, arrive=5.0)
         automaton = B.Automaton(
             world, ledger=ledger, clock=clock, operator=operator, mode=bound_mode,
             motion=motion, policy=play_policy,
