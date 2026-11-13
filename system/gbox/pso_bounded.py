@@ -789,7 +789,7 @@ class CommitMotion:
     """
 
     def __init__(self, *, arrive: float = 6.0, keys: Iterable[str] = DIRECTIONS, commit: int = 3,
-                 slide: int = 2, blocked_units: float = 2.0, decay: float = 0.6) -> None:
+                 slide: int = 2, blocked_units: float = 3.0, decay: float = 0.6) -> None:
         self.arrive = float(arrive)
         self.keys = tuple(keys)
         self.commit = max(1, int(commit))
@@ -811,6 +811,7 @@ class CommitMotion:
         self.probe_from = (0.0, 0.0)
         self.probe_target = (0.0, 0.0)
         self.probes = 0
+
 
     def step(self, player: dict, target: tuple, reason: str = "") -> Action | None:
         x, z = float(player.get("x") or 0), float(player.get("z") or 0)
