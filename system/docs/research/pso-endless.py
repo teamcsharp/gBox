@@ -203,6 +203,7 @@ def arm(pad: Pad) -> None:
     for payload in ({"op": "walk_through", "on": True},
                     {"op": "give", "code": "009d00", "equip": True},      # DARK FLOW
                     {"op": "give", "code": "003200", "equip": True},      # TSUMIKIRI J-SWORD
+                    {"op": "give", "code": "004400", "equip": True},      # RED HANDGUN: reaches from ~17 units
                     {"op": "survival", "on": True}):                      # virtual Scape Doll
         answer = mods(pad, payload)
         log(f"  {payload['op']} {payload.get('code', '')}: {answer.get('state')} "
@@ -280,19 +281,22 @@ def play(pad: Pad, seconds: float = 45.0) -> str:
             name = str(target.get("class"))
             hp = float(target.get("hp"))
             if name in last_enemy_hp and hp < last_enemy_hp[name]:
-                killed += 0
                 log(f"  {name} hit: {last_enemy_hp[name]:.0f} -> {hp:.0f}")
             last_enemy_hp[name] = hp
 
-            if abs(error) > 20:
-                hold(pad, "left" if error > 0 else "right", min(0.4, max(0.1, abs(error) / 240.0)))
-            elif distance > 40:
-                hold(pad, "up", min(0.8, max(0.25, distance / 200.0)))
+            # The game's own envelope (pso_coop_combat): ~12 units, 8 degree half angle. Outside the cone the swing
+            # cannot connect, so turn first in small measured steps; inside it, cancel any menu with B and swing.
+            if abs(error) > 8:
+                hold(pad, "left" if error > 0 else "right", min(0.22, max(0.06, abs(error) / 400.0)))
+            elif distance > 12:
+                hold(pad, "up", min(0.55, max(0.2, (distance - 8) / 160.0)))
                 moved += 1
             else:
+                tap(pad, "b")           # a pause menu eats the swing; START toggles it, B cancels it
+                time.sleep(0.15)
                 tap(pad, "a")
-                time.sleep(0.3)
-                tap(pad, "a")
+                time.sleep(0.4)
+                killed += 0
         else:
             # travel: the game needs the character to cross the floor to find the key and the door
             sweep = time.time() - started
