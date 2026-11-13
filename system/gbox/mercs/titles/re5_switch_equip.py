@@ -29,11 +29,16 @@ MAX_READS, MAX_BYTES, MAX_SECONDS = 512, 64 * 1024, 0.05
 class Refused(RuntimeError):
     """A missing, changed or unsupported native witness; no guessed fallback."""
 
+    def __init__(self, reason, *, address=None, field=None, actual=None):
+        super().__init__(reason)
+        self.address, self.field, self.actual = address, field, actual
+
 
 class _Reads:
-    def __init__(self, memory, clock):
+    def __init__(self, memory, clock, anchors=()):
         self.memory, self.clock = memory, clock
         self.started, self.reads, self.bytes = clock(), 0, 0
+        self.anchors = anchors
 
     def rd(self, address, size):
         if not R.ptr_ok(address) or not 0 < size <= 24 * R.INV_SLOT:
@@ -43,6 +48,12 @@ class _Reads:
         self.reads += 1
         self.bytes += size
         data = self.memory.rd(address, size)
+        # Check every observed overlap, including a short read. A known owner
+        # change cannot be hidden by a later read-budget failure or an ABA read.
+        for at, expected, name in self.anchors:
+            lo, hi = max(at, address), min(at + len(expected), address + len(data))
+            if lo < hi and data[lo-address:hi-address] != expected[lo-at:hi-at]:
+                raise Refused('ownership_changed', address=at, field=name)
         if len(data) != size:
             raise Refused("short_read")
         if self.clock() - self.started > MAX_SECONDS:
@@ -67,6 +78,7 @@ class Witness:
     held: bool
     pending: int
     checks: tuple = field(repr=False)
+    anchors: tuple = field(repr=False)
 
 
 def _inspect(rd, base, grid, item, *, idle):
@@ -149,23 +161,75 @@ def _inspect(rd, base, grid, item, *, idle):
         raise Refused("object_class")
     if value(obj, "<Q") != vtable:
         raise Refused("object_changed")
-    witness = Witness(base, player, generation, grid, item, player + R.P_INV + index * R.INV_SLOT,
-                      obj, obj_generation, name, action, current, requested, held == [index], pending, tuple(checks))
+    slot = player + R.P_INV + index * R.INV_SLOT
+    anchor_fields = ((base + R.SIG_OFF, 'build'), (base + R.S_PLAYER, 'player_root'),
+                     (base + R.S_MAIN, 'main_root'), (sp + R.P_FIRST, 'player'),
+                     (sm + R.MAIN_GAMESYS, 'game_system'), (gs + R.GS_PHASE, 'phase'),
+                     (gs + 0x82C, 'request_context'), (player + GENERATION, 'player_generation'),
+                     (player + 0x3F2C, 'player_identity'), (player + 0x3BD8, 'player_override'),
+                     (player + 0x3BE8, 'player_override'), (player + 0x3EF4, 'player_override'),
+                     (player + COUNT, 'action_count'), (player + TABLE, 'action_table'),
+                     (table + 8 * ACTION_ID, 'equip_action'), (action, 'equip_vtable'),
+                     (base + ACTION_VTABLE + 0x28, 'equip_dti'),
+                     (action + 0x10, 'equip_owner'), (action + 0x18, 'equip_context'),
+                     (obj + GENERATION, 'object_generation'), (obj, 'object_vtable'))
+    captured = dict(checks)
+    anchors = [(at, captured[at], label) for at, label in anchor_fields]
+    anchors.extend((slot + off, slots[index*R.INV_SLOT+off:index*R.INV_SLOT+off+size], label)
+                   for off, size, label in ((R.INV_ID, 4, 'target_item'), (R.INV_GRID, 4, 'target_grid'),
+                                            (R.INV_OBJ, 8, 'target_object')))
+    witness = Witness(base, player, generation, grid, item, slot, obj, obj_generation, name,
+                      action, current, requested, held == [index], pending, tuple(checks), tuple(anchors))
     _unchanged(rd, witness.checks)
     return witness
 
 
 def _unchanged(rd, checks):
     for address, expected in checks:
-        if rd.rd(address, len(expected)) != expected:
-            raise Refused("changed_witness")
+        actual = rd.rd(address, len(expected))
+        if actual != expected:
+            raise Refused("changed_witness", address=address, actual=actual)
+
+
+def _transient(exc, witness):
+    """Only native mutable state and bounded sampling failures may be reread."""
+    reason = str(exc)
+    if reason in ('read_budget', 'short_read'):
+        return True
+    if reason != 'changed_witness':
+        return False
+    at, p = exc.address, witness.player
+    fields = {p+offset: name for offset, name in ((R.P_MOTION, 'motion'), (R.P_HP, 'hp'),
+              (REQUESTED, 'requested_action'), (PREVIOUS, 'previous_action'), (PRIORITY, 'priority'),
+              (PENDING, 'pending'), (RESET, 'reset'), (CURRENT, 'current_action'),
+              (REQUEST_GRID, 'request_grid'), (R.P_INV, 'inventory_state'))}
+    exc.field = fields.get(at)
+    if at == p + R.P_HP and struct.unpack('<h', exc.actual)[0] <= R.DYING_HP:
+        return False
+    return at in fields
+
+
+def _recheck_owner(rd, witness):
+    """A retry needs fresh original ownership, not a second guess at attachment."""
+    for at, expected, _name in witness.anchors:
+        rd.rd(at, len(expected))  # _Reads checks each byte against the original binding.
+    if struct.unpack('<h', rd.rd(witness.player + R.P_HP, 2))[0] <= R.DYING_HP:
+        raise Refused('not_alive', field='hp')
+    current = struct.unpack('<Q', rd.rd(witness.player + CURRENT, 8))[0]
+    if struct.unpack('<Q', rd.rd(current + 0x10, 8))[0] != witness.player:
+        raise Refused('current_action_identity', field='current_action_owner')
+    if R.class_name(rd, witness.object) != witness.object_class:
+        raise Refused('object_class', field='object_class')
+    # The owner may change while the context/class checks are being read.
+    for at, expected, _name in witness.anchors:
+        rd.rd(at, len(expected))
 
 
 class Request:
     """One-use request bound to an exact memory object, session and player life.
 
-    Constructing is read-only. `publish` defaults disabled and is intentionally
-    absent from the live bot. Caller supplies the adapter's verified write API.
+    Constructing is read-only. `publish` defaults disabled; Controller supplies
+    the adapter's verified write API after the complete request witness.
     `observe` proves native hand/object ownership, not firing or damage.
     """
 
@@ -175,13 +239,21 @@ class Request:
         self.memory, self.session_id, self.clock = memory, session_id, clock
         self.witness = _inspect(_Reads(memory, clock), base, grid, item, idle=True)
         self.used, self.receipt = False, None
+        self.observation_failure = None
+        self.last_retry_details = {}
+
+    def _unknown(self, reason, **details):
+        self.observation_failure = {'state': 'unknown', 'reason': reason, **details}
+        return dict(self.observation_failure)
 
     def observe(self, session_id):
+        if self.observation_failure is not None:
+            return dict(self.observation_failure)
         if session_id != self.session_id:
-            return {"state": "unknown", "reason": "session_changed"}
+            return self._unknown('session_changed')
         old = self.witness
         try:
-            new = _inspect(_Reads(self.memory, self.clock), old.base, old.grid, old.item, idle=False)
+            new = _inspect(_Reads(self.memory, self.clock, old.anchors), old.base, old.grid, old.item, idle=False)
             if (new.player, new.generation, new.slot, new.object, new.object_generation, new.object_class) != \
                     (old.player, old.generation, old.slot, old.object, old.object_generation, old.object_class):
                 raise Refused("target_changed")
@@ -189,8 +261,23 @@ class Request:
                 return {"state": "equipped", "item": new.item, "grid": new.grid,
                         "object_class": new.object_class, "player_generation": new.generation}
             return {"state": "waiting", "reason": "native_hand_not_confirmed"}
-        except (Refused, OSError, ValueError, OverflowError, struct.error):
-            return {"state": "unknown", "reason": "readback_unavailable"}
+        except (Refused, OSError, ValueError, OverflowError, struct.error) as exc:
+            details = {'readback_reason': str(exc) if isinstance(exc, Refused) else type(exc).__name__}
+            if isinstance(exc, Refused) and _transient(exc, old):
+                if exc.field:
+                    details['readback_field'] = exc.field
+                try:
+                    _recheck_owner(_Reads(self.memory, self.clock, old.anchors), old)
+                except (Refused, OSError, ValueError, OverflowError, struct.error) as guard:
+                    details['owner_check_reason'] = str(guard) if isinstance(guard, Refused) else type(guard).__name__
+                    if isinstance(guard, Refused) and guard.field:
+                        details['owner_check_field'] = guard.field
+                else:
+                    self.last_retry_details = dict(details)
+                    return {'state': 'waiting', 'reason': 'native_readback_retry', **details}
+            elif isinstance(exc, Refused) and exc.field:
+                details['readback_field'] = exc.field
+            return self._unknown('readback_unavailable', **details)
 
     def publish(self, session_id, write, *, enabled=False):
         if not enabled:
@@ -279,9 +366,14 @@ class Controller:
         if self.pending is None:
             return None
         request = self.pending
-        result = request.observe(self.stats.get('source_session_id'))
-        if result['state'] == 'waiting' and self.clock() >= self.deadline:
-            result = {'state': 'unknown', 'reason': 'request_timeout'}
+        if self.clock() >= self.deadline:
+            result = {'state': 'unknown', 'reason': 'request_timeout', **request.last_retry_details}
+        else:
+            result = request.observe(self.stats.get('source_session_id'))
+            if self.stats.get('source_session_id') != request.session_id:
+                result = {'state': 'unknown', 'reason': 'session_changed'}
+            elif result['state'] in ('waiting', 'equipped') and self.clock() >= self.deadline:
+                result = {**result, 'state': 'unknown', 'reason': 'request_timeout'}
         if result['state'] != 'waiting':
             self.pending = None
             if result['state'] == 'unknown':
