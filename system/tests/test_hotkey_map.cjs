@@ -16,7 +16,7 @@ const mini = fs.readFileSync(path.join(DESKTOP, 'mini.html'), 'utf8');
 const plain = value => JSON.parse(JSON.stringify(value));
 
 function mainKeys() {
-  return plain(vm.runInNewContext(main.slice(main.indexOf('const GAME_KEYS = {'), main.indexOf('ipcMain.handle("win:fullscreen"')) + '\nGAME_KEYS'));
+  return plain(vm.runInNewContext(main.slice(main.indexOf('const GAME_KEYS = {'), main.indexOf('function fullscreenOwner')) + '\nGAME_KEYS'));
 }
 
 test('main.js maps F1 replay, F2 save, F3 autobot, F4 load, F5 client refresh, and nothing else to a game key', () => {
@@ -29,7 +29,7 @@ test('keys pressed inside gBox reach the shell as actions; the mini window gets 
   const sent = [], miniSent = [], handlers = {};
   const page = { on(_event, fn) { handlers.page = fn; } };
   const miniWc = { on(_event, fn) { handlers.mini = fn; }, send: (channel, action) => miniSent.push([channel, action]) };
-  const ctx = { app: { on(_event, fn) { fn({}, page); fn({}, miniWc); } }, mercsWindows: { owns: () => false }, GAME_KEYS: mainKeys(),
+  const ctx = { app: { on(_event, fn) { fn({}, page); fn({}, miniWc); } }, mercsWindows: { owns: () => false }, taskWindows: { owns: () => false }, GAME_KEYS: mainKeys(),
     win: { webContents: { send: (channel, action) => sent.push([channel, action]) }, isFullScreen: () => false },
     mini: { webContents: miniWc }, compactWindow: { state: () => ({ on: false }) } };
   vm.runInNewContext(hook, ctx);
@@ -52,7 +52,7 @@ test('the desktop shell routes replay to F1\'s handler, autobot to F3\'s, save /
   const seen = [];
   const ctx = { gbox: { onHotkey: fn => { ctx.handler = fn; } }, f3Autobot: () => seen.push('autobot'), f1Replay: () => seen.push('replay'),
     recoverAndRefresh: () => seen.push('refresh'), gameAction: a => seen.push('game:' + a), eyeStart: () => seen.push('eye'),
-    viewAction: () => seen.push('view'), isFull: () => false };
+    viewAction: () => seen.push('view'), isFull: () => false, COMPACT: {on:false} };
   vm.runInNewContext(code, ctx);
   for (const action of ['replay', 'save', 'autoplay', 'load', 'client-refresh', 'slot+', 'fullscreen']) ctx.handler(action);
   assert.deepEqual(seen, ['replay', 'game:save', 'autobot', 'game:load', 'refresh', 'game:slot+', 'view']);

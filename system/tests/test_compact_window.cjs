@@ -163,6 +163,17 @@ test('a helper started while the PiP is open is told about it again; the hidden 
   await ctl.restore(); await ctl.rechrome(); assert.deepEqual(chrome,[true,true,false],'a closed PiP is not hidden again');
 });
 
+test('a replacement helper that is initially unavailable retries even when the old helper hid the caption',async()=>{
+  let ready=true;
+  const x=fixture({chrome:on=>!on||ready?{ok:true}:{ok:false,unavailable:true}});
+  await x.ctl.update({on:true});ready=false;
+  await x.ctl.rechrome();assert.equal(x.ctl.state().on,true);
+  assert.equal(x.timers.filter(t=>t.live).length,1);
+  ready=true;await x.due();assert.deepEqual(x.chrome,[true,true,true]);
+  assert.equal(x.ctl.state().on,true);assert.equal(x.win.overlay.height,0);
+  await x.ctl.restore();assert.equal(x.timers.filter(t=>t.live).length,0);
+});
+
 test('compact geometry fits landscape and portrait sources within the current monitor work area', () => {
   const area = {x:-1600,y:20,width:1600,height:900};
   for (const aspect of [4/3,16/9,.5]) {
@@ -171,4 +182,50 @@ test('compact geometry fits landscape and portrait sources within the current mo
     assert.ok(bounds.x+bounds.width<=area.x+area.width && bounds.y+bounds.height<=area.y+area.height);
     assert.ok(Math.abs(bounds.width/bounds.height-aspect)<.003);
   }
+});
+
+test('two fullscreen toggles retain PiP, its floating rectangle and its separate app restore point', async () => {
+  const {win,ctl,chrome,events} = fixture(), original = win.getBounds();
+  await ctl.update({on:true}); win.bounds.x = 220; win.bounds.y = 125;
+  const floating = win.getBounds();
+  assert.equal(await ctl.toggleFullScreen(),true);
+  win.bounds = {x:0,y:0,width:1920,height:1080}; // real fullscreen monitor geometry
+  assert.equal(ctl.state().on,true); assert.equal(win.aspect,0);
+  assert.deepEqual(ctl.handoff().compactBounds,floating);
+  assert.deepEqual(ctl.handoff().window.bounds,original);
+  assert.equal(await ctl.toggleFullScreen(),false);
+  assert.deepEqual(win.getBounds(),floating); assert.equal(win.aspect,16/9);
+  assert.equal(ctl.state().on,true); assert.deepEqual(chrome,[true]);
+  assert.ok(events.every(e=>e.on),'fullscreen never publishes a PiP exit or changes the session');
+  await ctl.restore(); assert.deepEqual(win.getBounds(),original);
+});
+
+test('explicit exit while fullscreen restores original app state and remembers only floating PiP bounds', async () => {
+  const {win,ctl} = fixture(), original = win.getBounds(); win.maximized=true;
+  await ctl.update({on:true}); const floating=win.getBounds();
+  await ctl.toggleFullScreen(); win.bounds={x:0,y:0,width:1920,height:1080};
+  await ctl.restore();
+  assert.equal(win.fullscreen,false); assert.equal(win.maximized,true);
+  assert.deepEqual(win.getBounds(),original); assert.equal(ctl.state().on,false);
+  await ctl.update({on:true}); assert.deepEqual(win.getBounds(),floating);
+});
+
+test('frame aspect and size selections during fullscreen do not resize the fullscreen window', async () => {
+  const {win,ctl}=fixture(); await ctl.update({on:true});
+  await ctl.setFullScreen(true); const monitor={x:0,y:0,width:1920,height:1080};win.bounds={...monitor};
+  await ctl.update({on:true,aspect:4/3}); await ctl.update({on:true,aspect:16/9,width:720});
+  assert.deepEqual(win.getBounds(),monitor); assert.equal(win.aspect,0);
+  const saved=ctl.handoff(); assert.equal(saved.compactBounds.width,720);
+  assert.equal(saved.compactBounds.height,405);
+  const next=fixture();next.ctl.seedBounds(saved.compactBounds,saved.window);
+  await next.ctl.update({on:true}); assert.deepEqual(next.win.getBounds(),saved.compactBounds);
+  await ctl.setFullScreen(false);assert.deepEqual(win.getBounds(),saved.compactBounds);
+});
+
+test('queued fullscreen requests serialize with PiP enter and exit and never reopen an exited mode', async () => {
+  const {win,ctl,chrome}=fixture();
+  await Promise.all([ctl.update({on:true}),ctl.toggleFullScreen(),ctl.toggleFullScreen()]);
+  assert.equal(ctl.state().on,true);assert.equal(win.fullscreen,false);assert.deepEqual(chrome,[true]);
+  await Promise.all([ctl.toggleFullScreen(),ctl.restore(),ctl.toggleFullScreen()]);
+  assert.equal(ctl.state().on,false);assert.equal(win.fullscreen,false);assert.deepEqual(chrome,[true,false]);
 });

@@ -9,40 +9,55 @@
   }
   function create(io) {
     const state = { on: false, sid: null, local: false, aspect: 4 / 3, returnMode: 'auto' };
-    let queue = Promise.resolve();
+    let queue = Promise.resolve(), revision = 0, ownedExit = 0;
     const serial = fn => { const next = queue.then(fn); queue = next.catch(() => {}); return next; };
+    async function leaveWindow(explicit = false) {
+      // The native event emitted by our own exit/rollback acknowledges this
+      // operation; it must not cancel a newer manual entry queued behind it.
+      ownedExit++;
+      try { return await io.windowMode({ on: false, ...(explicit ? { explicit: true } : {}) }); }
+      finally { ownedExit--; }
+    }
     function clear() {
       if (!state.on) return;
       state.on = false; state.sid = null; state.local = false;
       io.render(state); io.pad(null); io.present();
     }
     function changed(value) {
-      if (!value.on) { clear(); return; }
+      if (!value.on) { if (!ownedExit) revision++; clear(); return; }
       if (validAspect(value.aspect)) state.aspect = value.aspect;
       if (state.on) { io.render(state); io.present(); }
     }
     function enter(requested) {
+      const opening = revision;
       return serial(async () => {
+        if (opening !== revision) return false;
         if (state.on) return state;
-        const session = await io.resolve(requested);
-        if (requested?.current && !requested.current()) return false;
+        let session;
+        try { session = await io.resolve(requested); }
+        catch (error) { if (opening !== revision) return false; throw error; }
+        if (opening !== revision || requested?.current && !requested.current()) return false;
         if (!session || !session.sid) throw Error('Start or select an emulation session first.');
         Object.assign(state, { on: true, sid: session.sid, local: !!session.local,
           aspect: validAspect(session.aspect) ? session.aspect : validAspect(requested?.aspect) ? requested.aspect : 4 / 3,
           returnMode: ['auto', 'full', 'pip'].includes(requested?.returnMode) ? requested.returnMode : io.mode() });
         try {
           io.render(state); io.pad(state.local ? null : state.sid);
-          const result = await io.windowMode({ on: true, ...(validAspect(session.aspect) || validAspect(requested?.aspect) ? { aspect: state.aspect } : {}) });
+          const result = await io.windowMode({ on: true,
+            ...(requested?.restoreNavigation !== undefined ? { restoring: true } : {}),
+            ...(validAspect(session.aspect) || validAspect(requested?.aspect) ? { aspect: state.aspect } : {}) });
+          if (opening !== revision) { await leaveWindow(); clear(); return false; }
           if (!result?.on) throw Error('Picture-in-picture could not open.');
           changed(result); return state;
         } catch (error) {
-          await io.windowMode({ on: false }).catch(() => {});
+          await leaveWindow().catch(() => {});
           clear(); throw error;
         }
       });
     }
     function restore() {
-      return serial(async () => { const result = await io.windowMode({ on: false }); clear(); return result; });
+      revision++;
+      return serial(async () => { const result = await leaveWindow(true); clear(); return result; });
     }
     function follow(from, session, { current = () => true, prepare = () => {} } = {}) {
       return serial(async () => {

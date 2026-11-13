@@ -823,8 +823,8 @@ ipcMain.handle("export:pdf", async (_e, html, name) => {
     fs.writeFileSync(r.filePath, pdf); return r.filePath;
   } finally { w.destroy(); }
 });
-// Esc / F11 / Alt+Enter always leave full screen, wherever the keyboard focus is (the library/stream view is a <webview>,
-// whose keys never reach the page that owns the window); F11 / Alt+Enter also enter it.
+// PiP keeps its mode while fullscreen changes. Only Alt+Enter or the explicit
+// context-menu action exits PiP; Escape belongs to menus and fields.
 app.on("web-contents-created", (_e, wc) => wc.on("before-input-event", (ev, input) => {
   if (mercsWindows?.owns(wc)) return; // Map/reviewer keys never become gameplay shortcuts.
   if (taskWindows?.owns(wc)) return;  // The task dashboard's keys are its own, never gameplay shortcuts.
@@ -834,16 +834,18 @@ app.on("web-contents-created", (_e, wc) => wc.on("before-input-event", (ev, inpu
     ev.preventDefault(); return;
   }
   if (input.type !== "keyDown") return;
-  const toggle = input.key === "F11" || (input.alt && input.key === "Enter");
+  const altEnter = input.alt && input.key === 'Enter' && !input.control && !input.shift && !input.meta;
+  const toggle = altEnter || (input.key === 'F11' && !input.alt && !input.control && !input.shift && !input.meta);
   if ((input.key === 'F3' || input.key === 'F1') && !input.control && !input.alt && !input.shift && mini && wc === mini.webContents) {
     mini.webContents.send('hotkey', GAME_KEYS[input.key]); ev.preventDefault(); return;   // the mini window: F3 autobot, F1 replay
   }
-  if (input.key === "Escape" && compactWindow.state().on) {
-    // Shell fields (notably the coach) own Escape. Their guarded DOM handler restores only outside text entry.
-    if (wc !== win.webContents) { compactWindow.restore().catch(error => logPush('compact', error.message)); ev.preventDefault(); }
+  if (toggle) {
+    ev.preventDefault();
+    if (!input.isAutoRepeat) pipWindowKey(altEnter ? 'alt-enter' : 'fullscreen', mini && wc === mini.webContents);
+    return;
   }
-  else if (input.key === "Escape" && win.isFullScreen()) { win.setFullScreen(false); win.webContents.send("fullscreen", false); ev.preventDefault(); }
-  else if (toggle) { win.webContents.send("hotkey", "fullscreen"); ev.preventDefault(); }   // the page's view mode follows
+  if (input.key === "Escape" && (compactWindow.state().on || (mini && wc === mini.webContents))) return;
+  else if (input.key === "Escape" && win.isFullScreen()) { win.setFullScreen(false); win.webContents.send("fullscreen", false); ev.preventDefault(); }   // the page's view mode follows
   // Ctrl+R: the same path as F5 - update this checkout, then reload ignoring the cache - so a new game-mods.js or page is really picked up
   // (operator 2026-11-11: "make it where ctrl + R fixes and reloads the latest version of the app").
   else if (input.control && !input.alt && String(input.key).toLowerCase() === "r") {
@@ -859,7 +861,41 @@ app.on("web-contents-created", (_e, wc) => wc.on("before-input-event", (ev, inpu
 // Inside gBox (any page, the streamed view included) they arrive here; while a native game window has the keyboard they come
 // through global shortcuts, held only while a game is docked AND gBox is the foreground window (see f3(), hotkey-scope.js).
 const GAME_KEYS = { F1: "replay", F2: "save", F3: "autoplay", F4: "load", F5: "client-refresh" };
-ipcMain.handle("win:fullscreen", (_e, on) => { win.setFullScreen(!!on); return win.isFullScreen(); });
+function fullscreenOwner(event) {
+  const owner = mini && event.sender === mini.webContents ? mini : win;
+  if (!owner || event.sender !== owner.webContents || (event.senderFrame && event.senderFrame !== owner.webContents.mainFrame))
+    throw Error('Only the gBox app can change its fullscreen window.');
+  return owner;
+}
+function setWindowFullscreen(owner, on) {
+  if (owner === mini) return miniFullscreen(on);
+  if (compactWindow.state().on) return on === undefined ? compactWindow.toggleFullScreen() : compactWindow.setFullScreen(on);
+  owner.setFullScreen(on === undefined ? !owner.isFullScreen() : !!on);
+  return owner.isFullScreen();
+}
+async function explicitCompactExit(run) {
+  const previous = compactExplicitExit, request = ++compactExitSerial;
+  compactExplicitExit = true;
+  try { return await run(); }
+  catch (error) {
+    if (request === compactExitSerial && compactWindow.state().on) compactExplicitExit = previous;
+    throw error;
+  }
+}
+function pipWindowKey(action, inMini = false) {
+  if (inMini && mini) {
+    if (action === 'alt-enter') mini.close();
+    else if (action === 'fullscreen') miniFullscreen();
+    return;
+  }
+  if (compactWindow.state().on && ['alt-enter', 'fullscreen'].includes(action)) {
+    const operation = action === 'alt-enter' ? explicitCompactExit(() => compactWindow.restore()) : compactWindow.toggleFullScreen();
+    operation.catch(error => logPush('compact', error.message)); return;
+  }
+  if (win) win.webContents.send('hotkey', action);
+}
+ipcMain.handle("win:fullscreen", (event, on) => setWindowFullscreen(fullscreenOwner(event), !!on));
+ipcMain.handle("win:toggle-fullscreen", event => setWindowFullscreen(fullscreenOwner(event)));
 ipcMain.handle("clip:image", (_e, dataUrl) => { clipboard.writeImage(nativeImage.createFromDataURL(dataUrl)); return true; });
 ipcMain.handle("rec:open", (_e, file) => file ? shell.showItemInFolder(file) : shell.openPath(REC_DIR));
 
@@ -874,24 +910,24 @@ const embedHelper = require('./embed-helper.cjs').create({
   onEvent: m => {
     if (m.event === "whip") { pickWhip(m); return; }
     if (m.event === "foreground") { hotkeys.setFront(!!m.front); return; }   // gBox gained / lost the foreground
-    if (m.event === 'piprestore') { compactWindow.restore().catch(error => logPush('compact', error.message)); return; }
+    // Older helpers called their scoped double-click event piprestore. It also toggles fullscreen now.
+    if (m.event === 'pipfullscreen' || m.event === 'piprestore') { if (compactWindow.state().on) compactWindow.toggleFullScreen().catch(error => logPush('compact', error.message)); return; }
     if (win) { const k = screen.getDisplayMatching(win.getBounds()).scaleFactor; win.webContents.send("embed:event", { ...m, x: m.x / k, y: m.y / k }); }
   },
-  // A helper that exited takes the PiP's window controls with it: the window is restored. One replaced because it stopped
-  // answering keeps the PiP; the new helper is told about the compact window (main keeps the caption bits to put back).
-  onExit: ({ restarted }) => {
+  // A replaced or stopped helper must not change the operator's view mode.
+  // Restart/reapply native chrome while retaining the same PiP and game route.
+  onExit: () => {
     embedded = null; fgWatched = 0; hotkeys.setFront(false);
-    if (restarted) { if (!quitting && compactWindow.state().on) compactWindow.rechrome().catch(error => logPush('compact', error.message)); return; }
     if (!quitting && compactWindow.state().on && !compactRecoveryPending) {
       compactRecoveryPending = true;
-      compactWindow.restore().catch(error => logPush('compact', error.message));
+      compactWindow.rechrome().catch(error => logPush('compact', error.message)).finally(() => { compactRecoveryPending = false; });
     }
   } });
 function embedCmd(cmd, deadlineMs = 3000, options) {
   if (process.platform !== "win32") return Promise.resolve({ ok: false });
   return embedHelper.send(cmd, deadlineMs, options);
 }
-let compactChromeBits = null, compactRecoveryPending = false;
+let compactChromeBits = null, compactRecoveryPending = false, compactExplicitExit = false, compactExitSerial = 0;
 let clientReloading = false;
 const compactWindow = require('./compact-window.cjs').create({ getWin: () => win, screen,
   nativeChrome: async on => {
@@ -912,6 +948,11 @@ const compactWindow = require('./compact-window.cjs').create({ getWin: () => win
 });
 ipcMain.handle('compact:view', (event, state) => {
   if (!win || event.sender !== win.webContents || (event.senderFrame && event.senderFrame !== win.webContents.mainFrame)) throw Error('Only the gBox app can change picture-in-picture mode.');
+  // An Alt+Enter during renderer loading supersedes its still-saved PiP intent.
+  // A new manual entry is allowed; a delayed reload restoration is not.
+  if (state?.on && state.restoring && compactExplicitExit) return { ...compactWindow.state(), on: false };
+  if (state?.on && !state.restoring) { compactExitSerial++; compactExplicitExit = false; }
+  if (!state?.on && state?.explicit) return explicitCompactExit(() => compactWindow.update(state));
   return compactWindow.update(state);
 });
 function canonicalWorkerExe(value) {
@@ -1035,7 +1076,7 @@ ipcMain.handle('client:reload', async (event, state) => {
           return true;
         },
         save: value => clientHandoff.save(CLIENT_HANDOFF_FILE, { state: value, ...compactWindow.handoff(),
-          mini: clientViews.mini(mini && !mini.isDestroyed() ? { ...miniSession, bounds: mini.getBounds() } : pendingMini, settings().apiUrl),
+          mini: clientViews.mini(mini && !mini.isDestroyed() ? { ...miniSession, bounds: miniFloatingBounds || mini.getBounds() } : pendingMini, settings().apiUrl),
           startWorker: hadWorker || settings().autoStartWorker }),
         launch: id => {
           app.relaunch({ args: [...process.argv.slice(1).filter(a => !a.startsWith(clientHandoff.ARG)), clientHandoff.ARG + id] });
@@ -1100,7 +1141,7 @@ function saveClientView(state = savedClientState, server = savedClientOrigin) {
   const origin = clientViews.origin(server);
   if (!origin || origin !== clientViews.origin(settings().apiUrl) || !clientViews.matches({ state }, origin)) return false;
   const value = clientViews.view({ state, ...compactWindow.handoff(),
-    mini: clientViews.mini(mini && !mini.isDestroyed() ? { ...miniSession, bounds: mini.getBounds() } : pendingMini, origin) }, 0);
+    mini: clientViews.mini(mini && !mini.isDestroyed() ? { ...miniSession, bounds: miniFloatingBounds || mini.getBounds() } : pendingMini, origin) }, 0);
   const key = JSON.stringify({ origin, ...value });
   if (key !== savedClientKey) clientViewStore.save(origin, value);
   savedClientState = value.state; savedClientOrigin = origin; savedClientKey = key;
@@ -1158,13 +1199,13 @@ async function pickWhip(m) {
 // Overlay swap (overlay.js): a collection model tracked over the player's character in the docked game, any game
 const OV = require("./overlay")({ app, ipcMain, BrowserWindow, getWin: () => win, venvPython, settings, token, send });
 // F3 = autoplay while a game is docked: the game window owns the keyboard, so it has to be a global shortcut.
-// F2 save · Shift/Ctrl+F2 slot ± · F4 load · Alt+Enter / F11 = full screen on/off (the docked game owns the keyboard, so
+// F2 save · Shift/Ctrl+F2 slot ± · F4 load · F11 = full screen on/off, Alt+Enter = exit PiP or toggle full screen (the docked game owns the keyboard, so
 // without these there is no way out of full screen from inside the game; Esc stays the game's own key).
 // Scoped to gBox: held only while a game is docked AND gBox (or the game docked in it) is the foreground window. Any other
 // application in front (Blender: F2 rename, F3 search, Ctrl+I invert, F11...) gets its keys; nothing is registered then.
-const hotkeys = require("./hotkey-scope")({ globalShortcut, onKey: a => win && win.webContents.send("hotkey", a),
+const hotkeys = require("./hotkey-scope")({ globalShortcut, onKey: a => pipWindowKey(a),
   keys: { ...GAME_KEYS, "Shift+F2": "slot+", "CommandOrControl+F2": "slot-", "CommandOrControl+I": "eyedropper",
-          "Alt+Enter": "fullscreen", "F11": "fullscreen" } });
+          "Alt+Enter": "alt-enter", "F11": "fullscreen" } });
 let fgWatched = 0;                                               // the gBox HWND winembed.py reports the foreground for
 const appHwnd = () => win && !win.isDestroyed() ? Number(win.getNativeWindowHandle().readBigUInt64LE(0)) : 0;
 // Ask winembed.py whether gBox is in front now (and have it report every change from then on). Only for a docked game,
@@ -1281,13 +1322,26 @@ ipcMain.handle("stt", async (_e, buf) => {
 });
 
 // Mini mode: the whole app collapses into a frameless, always-on-top game window that keeps the game's aspect ratio.
-let mini = null, miniSession = null, pendingMini = null;
+let mini = null, miniSession = null, pendingMini = null, miniFloatingBounds = null, miniAspect = 4 / 3;
+function miniFullscreen(on) {
+  if (!mini || mini.isDestroyed()) return false;
+  if (on === undefined) on = !mini.isFullScreen();
+  if (!!on === mini.isFullScreen()) return !!on;
+  if (on) { miniFloatingBounds = mini.getBounds(); mini.setAspectRatio(0); mini.setFullScreen(true); }
+  else {
+    mini.setFullScreen(false); mini.setAspectRatio(miniAspect);
+    if (miniFloatingBounds) mini.setBounds(miniFloatingBounds);
+    miniFloatingBounds = null;
+  }
+  return mini.isFullScreen();
+}
 async function openMini(sid, title, savedBounds, expectedOrigin = clientViews.origin(settings().apiUrl)) {
   const s = settings(), t = await token();
   if (clientHandoffBusy) throw Error('Desktop refresh is in progress.');
   if (!expectedOrigin || clientViews.origin(s.apiUrl) !== expectedOrigin || clientViews.origin(settings().apiUrl) !== expectedOrigin)
     throw Error('The saved PiP belongs to a different server.');
   if (mini) mini.close();
+  miniFloatingBounds = null; miniAspect = 4 / 3;
   mini = new BrowserWindow({ width: 480, height: 360, frame: false, alwaysOnTop: true, resizable: true, backgroundColor: "#000",
     title: "gBox · " + (title || "game"), icon: path.join(__dirname, "..", "..", "assets", "brand", "gbox.ico"),
     webPreferences: { preload: path.join(__dirname, "preload.js"), contextIsolation: true } });
@@ -1299,14 +1353,17 @@ async function openMini(sid, title, savedBounds, expectedOrigin = clientViews.or
     miniWindow.webContents.send('mini:context', {x:point.x-bounds.x,y:point.y-bounds.y});
   });
   if (savedBounds) mini.setBounds(savedBounds);
-  mini.on("closed", () => { mini = null; miniSession = null; queueClientView(); if (win && !win.isDestroyed()) { win.webContents.send("mini:closed"); win.show(); } });
+  mini.on("closed", () => { if (mini !== miniWindow) return; mini = null; miniSession = null; miniFloatingBounds = null; queueClientView(); if (win && !win.isDestroyed()) { win.webContents.send("mini:closed"); win.show(); } });
   mini.on('move', queueClientView); mini.on('resize', queueClientView); queueClientView();
   win.hide();
   return true;
 }
 ipcMain.handle("mini:open", (_e, sid, title) => openMini(sid, title));
-ipcMain.handle("mini:aspect", (_e, w, h) => { if (mini && w && h) { mini.setAspectRatio(w / h); const [cw] = mini.getSize(); mini.setSize(cw, Math.round(cw * h / w)); } });
-ipcMain.handle("mini:restore", () => { if (mini) mini.close(); });
+ipcMain.handle("mini:aspect", (event, w, h) => {
+  if (fullscreenOwner(event) !== mini || !Number.isFinite(w / h) || w / h < .1 || w / h > 10) return;
+  if (!mini.isFullScreen()) { miniAspect = w / h; mini.setAspectRatio(miniAspect); const [cw] = mini.getSize(); mini.setSize(cw, Math.round(cw / miniAspect)); }
+});
+ipcMain.handle("mini:restore", event => { if (fullscreenOwner(event) === mini) mini.close(); });
 
 // Screenshot of the whole app window (including the embedded gBox view) as a PNG data URL.
 ipcMain.handle("capture", async () => {
@@ -1557,7 +1614,7 @@ app.whenReady().then(() => {
   backgroundPower.start();
   win.webContents.on("did-start-navigation", (_e, _url, inPlace, mainFrame) => { if (mainFrame && !inPlace) {
     pickHoldReleaseAll("window reloaded");
-    if (!clientReloading && compactWindow.state().on) compactWindow.restore().catch(error => logPush('compact', error.message));
+    // Reload/recovery retains PiP. The renderer reconciles its saved session after load.
   } });
   win.webContents.on('did-finish-load', () => {
     clientReloading = false;

@@ -2747,7 +2747,7 @@ async function loadSettings() {
   $("#sform").innerHTML = FIELDS.map(([k, l, t]) => `<label>${l}<input type="${t || "text"}" name="${k}" value="${esc(k==='apiUrl'?S.configuredApiUrl||S[k]:S[k])}"></label>`).join("") +
     `<label><span><input type="checkbox" name="autoStartWorker" ${S.autoStartWorker ? "checked" : ""}> Start the Windows worker with the app</span></label>` +
     `<label><span><input type="checkbox" name="voiceOverlay" ${vovEnabledPref() ? "checked" : ""}> Voice overlay on the game: the randomized transition visual over the game while you talk with gBox or it talks back</span></label>` +
-    `<p class="mut" id="hotkey-scope-note"><b>Hotkeys only when gBox is in front.</b> F1 save the last 3 minutes (replay) · F2 save state · F3 autobot on/off for the game shown (whichever PC runs it) · F4 load state · F5 recover (update gBox, reconnect, MercMode back in the PiP with its autobot) · Shift/Ctrl+F2 save slot · Ctrl+I eyedropper · F11 / Alt+Enter full screen · hold ~ to talk · right-click / Ctrl+click / Alt+drag on the game: these work only while gBox (or the game playing in it) is the window in front. Blender and every other application keep all their keys and clicks.</p>`;
+    `<p class="mut" id="hotkey-scope-note"><b>Hotkeys only when gBox is in front.</b> F1 save the last 3 minutes (replay) · F2 save state · F3 autobot on/off for the game shown (whichever PC runs it) · F4 load state · F5 recover (update gBox, reconnect, MercMode back in the PiP with its autobot) · Shift/Ctrl+F2 save slot · Ctrl+I eyedropper · F11 full screen; Alt+Enter exits PiP (or toggles full screen outside PiP) · hold ~ to talk · right-click / Ctrl+click / Alt+drag on the game: these work only while gBox (or the game playing in it) is the window in front. Blender and every other application keep all their keys and clicks.</p>`;
 }
 $("#ssave").onclick = async () => {
   const f = new FormData($("#sform")), s = Object.fromEntries(FIELDS.map(([k]) => [k, f.get(k)]));
@@ -3770,8 +3770,7 @@ async function embedTick() {
     // ...the PiP of this PC's own MercMode run waits for its next title instead (mercPipHold: a cold title switch)
     // A selected instance stays in PiP during its worker/session replacement.
     // Restoring here also overwrites the saved compact intent before relaunch.
-    if (COMPACT.on && COMPACT.local && !mine && r.ok && !pipSelection.preference?.pinned
-        && !(typeof mercPipHold === 'function' && mercPipHold(COMPACT.sid))) await compactRestore();
+    // A closed or restarting local game leaves PiP open for its stream picker and recovery controls.
     // Saved PiP restoration owns the next selection during a worker gap. An
     // automatic full-app show here would look like operator navigation to the
     // checkpoint observer and cancel that intent as soon as the new game starts.
@@ -3791,7 +3790,7 @@ async function embedTick() {
     if (mine.session_id !== EMB.sid) {                     // a game just started: reopen it the way it was last played
       let pref = "windowed"; try { pref = localStorage.getItem("gbox_view_" + (mine.game_id || mine.title)) || "windowed"; } catch {}
       EMB.game = mine.game_id || mine.title;
-      if (pref === "full") setTimeout(() => viewAction("full", true), 600); else if (VIEW.mode === "full") viewAction("main", true);
+      if (pref === "full") setTimeout(() => { if (!COMPACT.on) viewAction("full", true); }, 600); else if (!COMPACT.on && VIEW.mode === "full") viewAction("main", true);
     }
     EMB.sid = mine.session_id; EMB.pid = mine.detail.pid;
     EMB.authority=lease?.authority||S.apiUrl;
@@ -4045,9 +4044,9 @@ const compactController = GBoxCompactGame.create({
     if (state.on && !controls) {
       controls = document.createElement('div'); controls.id = 'compact-controls';
       controls.setAttribute('role','toolbar');controls.setAttribute('aria-label','Icon panel');
-      controls.innerHTML = '<span class="compact-title"></span><span data-compact-coach></span><span data-game-mods hidden></span><button type="button" data-round-replay aria-label="Replay stage next round"></button><button type="button" data-stage-preferences aria-label="Stage choices"></button><button type="button" data-primary-weapon aria-label="Choose primary weapon"></button><button type="button" data-flash aria-label="Emergency flashbang" title="Emergency flashbang: detonate a flash at the player\'s position NOW - rapid-clickable, every click another flash"><svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true" style="vertical-align:-3px"><path d="M7.5 5.5h3l.5 1.5a4 4 0 1 1-4 0z" fill="currentColor"/><path d="M8 5.5V4h2v1.5M10 4l2.2-1.3" stroke="currentColor" stroke-width="1.2" fill="none"/><path d="M13 6.5l2-.7M13.3 8.6l2 .5M12.4 4.5l1.3-1.6" stroke="#ffd166" stroke-width="1.3"/></svg></button><button type="button" data-first-aid aria-label="Use a first aid spray">First aid</button><button type="button" data-mine-detonate>Detonate darts</button><button type="button" data-mine-drop>Drop mine</button><button type="button" data-mine-ring>Mine ring ? 5 ft</button><button type="button" data-grenade-ring aria-label="Grenade ring" title="Grenade ring: native blasts around the player. Right-click, or the type button beside it, to choose the grenade."><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true" style="vertical-align:-3px"><circle cx="12" cy="12" r="8"/><circle cx="12" cy="12" r="1.6" fill="currentColor" stroke="none"/><circle cx="12" cy="3.5" r="1.4" fill="currentColor" stroke="none"/><circle cx="20.5" cy="12" r="1.4" fill="currentColor" stroke="none"/><circle cx="12" cy="20.5" r="1.4" fill="currentColor" stroke="none"/><circle cx="3.5" cy="12" r="1.4" fill="currentColor" stroke="none"/></svg></button><button type="button" data-grenade-ring-kind class="ring-kind" title="Choose the grenade type for the ring">Flash</button><button type="button" data-flawed aria-label="Report flawed bot behavior" title="This is flawed: file a report with this moment (frame, save state, RAM) and make the bot change course now"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round" aria-hidden="true"><path d="m12 3 10 18H2zM12 8v6"/><circle cx="12" cy="17.5" r=".8" fill="currentColor"/></svg></button><button type="button" data-full title="Restore GBox (or double-click the game)">Full app</button>';
+      controls.innerHTML = '<span class="compact-title"></span><span data-compact-coach></span><span data-game-mods hidden></span><button type="button" data-round-replay aria-label="Replay stage next round"></button><button type="button" data-stage-preferences aria-label="Stage choices"></button><button type="button" data-primary-weapon aria-label="Choose primary weapon"></button><button type="button" data-flash aria-label="Emergency flashbang" title="Emergency flashbang: detonate a flash at the player\'s position NOW - rapid-clickable, every click another flash"><svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true" style="vertical-align:-3px"><path d="M7.5 5.5h3l.5 1.5a4 4 0 1 1-4 0z" fill="currentColor"/><path d="M8 5.5V4h2v1.5M10 4l2.2-1.3" stroke="currentColor" stroke-width="1.2" fill="none"/><path d="M13 6.5l2-.7M13.3 8.6l2 .5M12.4 4.5l1.3-1.6" stroke="#ffd166" stroke-width="1.3"/></svg></button><button type="button" data-first-aid aria-label="Use a first aid spray">First aid</button><button type="button" data-mine-detonate>Detonate darts</button><button type="button" data-mine-drop>Drop mine</button><button type="button" data-mine-ring>Mine ring ? 5 ft</button><button type="button" data-grenade-ring aria-label="Grenade ring" title="Grenade ring: native blasts around the player. Right-click, or the type button beside it, to choose the grenade."><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true" style="vertical-align:-3px"><circle cx="12" cy="12" r="8"/><circle cx="12" cy="12" r="1.6" fill="currentColor" stroke="none"/><circle cx="12" cy="3.5" r="1.4" fill="currentColor" stroke="none"/><circle cx="20.5" cy="12" r="1.4" fill="currentColor" stroke="none"/><circle cx="12" cy="20.5" r="1.4" fill="currentColor" stroke="none"/><circle cx="3.5" cy="12" r="1.4" fill="currentColor" stroke="none"/></svg></button><button type="button" data-grenade-ring-kind class="ring-kind" title="Choose the grenade type for the ring">Flash</button><button type="button" data-flawed aria-label="Report flawed bot behavior" title="This is flawed: file a report with this moment (frame, save state, RAM) and make the bot change course now"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round" aria-hidden="true"><path d="m12 3 10 18H2zM12 8v6"/><circle cx="12" cy="17.5" r=".8" fill="currentColor"/></svg></button><button type="button" data-full title="Toggle full screen (or double-click the game)" aria-label="Toggle full screen">&#x26F6;</button>';
       for (const button of controls.querySelectorAll('[data-first-aid], [data-mine-detonate], [data-mine-drop], [data-mine-ring], [data-grenade-ring-kind], [data-flawed]')) button.classList.add('compact-action-icon');
-      controls.querySelector('[data-full]').onclick = () => compactRestore().catch(error => toast(error.message)); document.body.append(controls);
+      controls.querySelector('[data-full]').onclick = () => compactFullscreen().catch(error => toast(error.message)); document.body.append(controls);
       // Per-game mod icons (operator 2026-11-11: "every mod that we have for PSO, I want an icon in the top bar that I'm able to click on and use to
       // modify the game in action even while the bot is playing"). Each button is an RPC against the live session, so it works mid-play and needs no
       // focus; the manifest in game-mods.js lists the mods per game.
@@ -4287,7 +4286,11 @@ const compactEnter = async () => {
   // pip mode once i connect to my stream"). With no ready row the controller resolves the session being watched.
   return compactController.enter({current, ...(row ? {sid: row.session_id} : {})});
 };
-const compactRestore = () => compactController.restore();
+function cancelCompactRestoration() {
+  clientViewNavigation++; restoreClientView.retryAt = 0; clientRefresh.done(); compactContinuity.cancel();
+}
+const compactRestore = () => { cancelCompactRestoration(); return compactController.restore(); };
+const compactFullscreen = () => gbox.toggleFullScreen();
 // This PiP shows a running game, wherever it plays: opened if it is closed, moved in place if it shows another game - this
 // PC's own game as its window (natively, no stream), another PC's as its stream.
 async function pipShow(sid, {current = () => true, force = true} = {}) {
@@ -4352,7 +4355,7 @@ async function mercPipLeave(back, current = () => true) {
   const sid = back ? await mercReturnTarget(back) : null;
   if (!current()) return;
   if (sid) { await pipShow(sid, {current}); toast('This PC\'s MercMode stopped: the PiP is back on ' + (sessionTitle(await sessionById(sid).catch(() => null)) || 'the stream')); }
-  else if (COMPACT.on && COMPACT.local) await compactRestore();
+  // With no return stream, keep PiP open so the operator can select another game.
 }
 async function mercPipPoll() {
   if (MERC_PIP.busy || !window.GBoxMercMode?.pipOwnRun || !S?.workerName || !gbox.api) return;
@@ -4562,16 +4565,15 @@ function compactHover(show) {
   const apply = () => { $('#compact-controls')?.classList.toggle('shown', COMPACT.on && show); EMB.last = ''; embedTick(); };
   if (show || !COMPACT.on) apply(); else compactHoverTimer = setTimeout(apply, 450);
 }
-gbox.onCompactView?.(value => compactController.changed(value));
-// only the picture itself (the stream, the embedded game, the page behind them) leaves the PiP on a double click - never a
-// panel, a menu or a pop-up inside it (operator 2026-10-28: "If I double click or triple click inside of a panel or a pop up
-// or a menu inside of the picture in picture mode, do not exit picture in picture mode")
-const COMPACT_PANELS = '#ssh-access-button, #ssh-access-popover, #pipmenu, #compact-media, #compact-controls, #bot-logic-panel, #bot-logic-tab, .coach-menu, '
+gbox.onCompactView?.(value => { if (!value.on) cancelCompactRestoration(); compactController.changed(value); });
+// Double-click only the game picture to toggle the app window fullscreen.
+// Panels, menus, text entry and the coach keep their own mouse interactions.
+const COMPACT_PANELS = 'button, input, textarea, select, [contenteditable], #ssh-access-button, #ssh-access-popover, #pipmenu, #compact-media, #compact-controls, #bot-logic-panel, #bot-logic-tab, .coach-menu, '
   + '#taskpanel, #reqform, #task-evidence, #taskviz, #tkv-media, #rebuild-panel, #pad-takeover, #reconnect, #compact-transition, [role=dialog], [role=menu], .re5-modifiers, .re6-modifiers';
-addEventListener('dblclick', event => { if (COMPACT.on && !event.target.closest?.(COMPACT_PANELS) && !GBoxCompactCoach.isCoachTarget(event.target)) { event.preventDefault(); event.stopPropagation(); compactRestore().catch(error => toast(error.message)); } }, true);
+addEventListener('dblclick', event => { if (COMPACT.on && !event.altKey && !event.ctrlKey && !event.shiftKey && !event.metaKey && !event.target.closest?.(COMPACT_PANELS) && !GBoxCompactCoach.isCoachTarget(event.target)) { event.preventDefault(); event.stopPropagation(); compactFullscreen().catch(error => toast(error.message)); } }, true);
 addEventListener('pointermove', event => { if (COMPACT.on) compactHover(event.clientY < 32); }, { passive:true });
 addEventListener('resize', () => { if (COMPACT.on) requestAnimationFrame(() => embedTick()); });
-addEventListener('keydown', event => { if (COMPACT.on && event.key === 'Escape' && $('#pipmenu')?.style.display !== 'block' && !event.target?.closest?.(COMPACT_PANELS) && !$('#taskpanel.on, #reqform') && !GBoxCompactCoach.isCoachTarget(event.target)) { event.preventDefault(); compactRestore().catch(error => toast(error.message)); } });
+
 setInterval(() => {
   if (!COMPACT.on || COMPACT.local) return;
   const image = $('#compact-stream');
@@ -4629,7 +4631,7 @@ function pipHandle(rect, title) {
       };
       h.onpointerup = () => { h.onpointermove = h.onpointerup = null; pipSave(); };
     });
-    h.addEventListener("dblclick", () => viewAction("main"));
+    h.addEventListener("dblclick", event => { if (!event.target.closest('button')) gbox.toggleFullScreen().catch(error => toast(error.message)); });
     h.addEventListener("contextmenu", e => { e.preventDefault(); pipMenu(e.clientX, e.clientY); });
     h.addEventListener("click", e => { const a = e.target.closest("button")?.dataset.a; if (!a) return;
       a === "menu" ? pipMenu(e.clientX, e.clientY) : a === "close" ? gameClose() : a === "pad" ? gameAction("pad") : viewAction(a); });
@@ -4786,7 +4788,7 @@ function pipMenu(x, y) {
   const opening = m.opening = {origin:S?.apiUrl};
   const noStates = capMissing("save_state");                   // #2518: Save / Load need an emulator with save states
   GM.at = [x, y];                                              // Report… files a problem at this spot
-  const items = [["prod", "Prod bot (recover this session)"], ["report", "⚑ Report…"], ["-"], ...(isFull() ? [["main", "⤡ Exit full screen   Alt+Enter"], ["-"]] : []), ["autoplay", GM.auto ? "🤖 Hand control back (stop autoplay)" : "🤖 Take control (autoplay)  F3 · pad: View+A"],
+  const items = [["prod", "Prod bot (recover this session)"], ["report", "⚑ Report…"], ["-"], ...(COMPACT.on ? [["exit-pip", "Exit PiP   Alt+Enter"], ["-"]] : isFull() ? [["main", "⤡ Exit full screen   Alt+Enter"], ["-"]] : []), ["autoplay", GM.auto ? "🤖 Hand control back (stop autoplay)" : "🤖 Take control (autoplay)  F3 · pad: View+A"],
                  ...(GM.auto ? [] : [["autoplay+", "🛡 Take control, invincible (holds HP)"], ["autoplay-replay", "▶ Replay my recorded run from boot (restarts the game)"]]),
                  ["talk", TALK.on ? "🎙 Stop talking" : "🎙 Talk to gBox"], ["orb", ORB.on ? "💬 End conversation" : "💬 Start conversation"],
                  ["vov", VOV.enabled ? "✨ Voice overlay on the game: on" : "✨ Voice overlay on the game: off"],
@@ -4808,7 +4810,7 @@ function pipMenu(x, y) {
                  ...(/zelda/i.test(EMB.title || "") ? [["equip", "🗡 Equip screen (items, gear, upgrades)…"]] : []), ["-"],
                  ["prefs", "⚙ Preferences"], ["perf", "⏱ Performance options"], ["display", "🖥 Display settings"], ["aa", "✨ Anti-aliasing"],
                  ["pad", "🎮 Controller settings (emulator menu)"], ["mapping", "🕹 Controller mapping"], ["trouble", "🛠 Troubleshoot gameplay…"], ["-"],
-                 ["main", "↩ Main view"], ["pip", "▣ Picture-in-picture"], isFull() ? ["main", "⤡ Exit full screen   Alt+Enter"] : ["full", "⛶ Full screen   Alt+Enter"],
+                 ...(COMPACT.on ? [["pip-fullscreen", "Toggle full screen   F11"]] : [["main", "↩ Main view"], ["pip", "▣ Picture-in-picture"], isFull() ? ["main", "⤡ Exit full screen   Alt+Enter"] : ["full", "⛶ Full screen   Alt+Enter"]]),
                  ["S", "Size: small"], ["M", "Size: medium"], ["L", "Size: large"]];
   m.innerHTML = '<div data-pip-stream-picker></div><div data-pip-profiler class="pip-profiler"></div><div data-pso-launch class="pso-launch"></div><div data-pip-storage class="pip-storage"></div><div data-pip-modifiers>Loading game controls…</div>' + items.map(([a, t, off]) => a === "-" ? "<hr>" : a === "mercmode"
     ? '<div data-pip-mercmode class="pip-mercmode"><small>MercMode…</small></div>' : off
@@ -5288,6 +5290,8 @@ function openGameAnalysis(target) {
   return GBoxGameAnalysis.open(GAME_ANALYSIS_IO,target);
 }
 async function gameAction(a) {
+  if (a === 'exit-pip') { if (COMPACT.on) await compactRestore(); return; }
+  if (a === 'pip-fullscreen') { if (COMPACT.on) await compactFullscreen(); return; }
   if(a==='prod'){try{await prodBot();}catch(error){toast(error.message);}return;}
   if(a==='analysis'){try{return openGameAnalysis({session_id:COMPACT.on?COMPACT.sid:EMB.sid});}catch(error){toast(error.message);}return;}
   if(a==='fixgame'){try{await fixGame();}catch(error){toast(error.message);}return;}
@@ -5782,7 +5786,6 @@ const reconnectFlow = GBoxReconnectFlow.create({ render: reconnectRender, io: {
   recall: k => { try { return sessionStorage.getItem(k); } catch { return null; } },
   ensureBot: sid => botEnsure(sid, 'F5', { raise: true }),      // the MercMode game it put on screen keeps its autobot
   pipEnter: sid => compactController.enter({ sid }),
-  pipRestore: () => compactRestore(),
   show: on => { const el = reconnectOverlay(); el.classList.toggle('on', !!on);
     const frame = el.querySelector('iframe'); if (on && S?.apiUrl && !frame.src) frame.src = new URL('/viz/overlay.html?mode=random', S.apiUrl).href; },
   // ---- F5 only (run({ f5: true })) ----
@@ -5799,12 +5802,10 @@ const reconnectFlow = GBoxReconnectFlow.create({ render: reconnectRender, io: {
   shownSession: () => shownSessionSoon(),                       // with no MercMode game, the game on screen is repaired
   repairTarget: sid => repairTarget(sid),
   // the PiP shows another game: it moves to this one in place (the same window, bounds and aspect)
-  pipSwitch: async (_from, sid) => {
-    if (!COMPACT.on || COMPACT.local) return false;
-    const session = await sessionById(sid);
-    if (session?.state !== 'running' || session.worker_online === false) return false;
-    await compactFollow(session, COMPACT.sid, { force: true });
-    return COMPACT.sid === sid;
+  pipSwitch: async (from, sid) => {
+    if (!COMPACT.on || COMPACT.sid !== from) return false;
+    await pipShow(sid, { current: () => COMPACT.on && COMPACT.sid === from, force: true });
+    return COMPACT.on && COMPACT.sid === sid;
   },
   reconnectPicture: () => reconnectPictures(),
   jobResult: (job, ms) => GBoxPipMedia.settle(compactApi, job, { limit: ms, what: 'The autobot check' }),
@@ -5880,7 +5881,9 @@ gbox.onHotkey?.(k => { if (k === "eyedropper") return eyeStart();
   if (k === 'autoplay') return f3Autobot();                                    // the game this window shows, on any PC
   if (k === 'replay') return f1Replay();                                       // the last 3 minutes of the shown game
   if (k === "client-refresh" || k === "reset") return recoverAndRefresh();      // old main processes still name F5 "reset"
-  if (k === "fullscreen") return viewAction(isFull() ? "main" : "full"); if (["save", "load", "slot+", "slot-"].includes(k)) gameAction(k); });
+  if (k === "alt-enter" && COMPACT.on) return compactRestore().catch(error => toast(error.message));
+  if (k === "fullscreen" && COMPACT.on) return compactFullscreen().catch(error => toast(error.message));
+  if (k === "fullscreen" || k === "alt-enter") return viewAction(isFull() ? "main" : "full"); if (["save", "load", "slot+", "slot-"].includes(k)) gameAction(k); });
 // F1 saves the last 3 minutes of the shown game with audio (the PiP's corner button does the same): in the PiP through its
 // media controls, else through a controller of its own for the shown session. The replay's progress and result are toasted.
 const F1 = { ctl: null, sid: null };
@@ -6955,10 +6958,14 @@ window.GBoxBackgroundGameplay = async (session, current) => {
   return true;
 };
 function viewAction(a, auto = false) {                       // auto = applied by gBox on launch (don't re-save)
+  if (COMPACT.on && ["main", "library", "home", "full"].includes(a)) {
+    if (!auto && a === 'full') gbox.setFullScreen(true).catch(error => toast(error.message));
+    else if (!auto) toast('Use Alt+Enter or right-click Exit PiP to return to the full app.');
+    return; // Preferences, recovery and launch defaults never exit the operator's PiP.
+  }
   const wv = document.querySelector("#wv");
   if (["main", "pip", "full", "library", "home"].includes(a) && !auto) viewRemember(a === "full" ? "full" : "windowed");
   if (a !== "full" && ["main", "library", "home"].includes(a)) gbox.setFullScreen?.(false);
-  if (COMPACT.on && ["main", "library", "home", "full"].includes(a)) { compactRestore().then(() => viewAction(a, auto)); return; }
   if (a === "main" || a === "library" || a === "home") {
     VIEW.mode = "auto";
     if (document.fullscreenElement) document.exitFullscreen().catch(() => {});

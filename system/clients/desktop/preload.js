@@ -63,6 +63,7 @@ contextBridge.exposeInMainWorld("gbox", {
   exportPdf: (html, name) => ipcRenderer.invoke("export:pdf", html, name),
   clipImage: dataUrl => ipcRenderer.invoke("clip:image", dataUrl),
   setFullScreen: on => ipcRenderer.invoke("win:fullscreen", on),
+  toggleFullScreen: () => ipcRenderer.invoke("win:toggle-fullscreen"),
   onFullscreen: fn => ipcRenderer.on("fullscreen", (_e, on) => fn(on)),
   compactView: state => ipcRenderer.invoke('compact:view', state),
   onCompactView: fn => ipcRenderer.on('compact:view', (_e, state) => fn(state)),

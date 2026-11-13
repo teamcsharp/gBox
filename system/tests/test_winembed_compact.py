@@ -2,7 +2,11 @@
 import ast
 import ctypes
 from ctypes import wintypes
+import inspect
 from pathlib import Path
+from types import SimpleNamespace
+
+import pytest
 
 SOURCE = Path(__file__).resolve().parents[1]/'clients/desktop/winembed.py'
 
@@ -82,9 +86,81 @@ def test_a_helper_started_while_compact_keeps_the_original_bits_from_main_not_th
     assert plain(9,42,True)['bits']==bits
 
 
-def test_native_restore_gesture_is_activated_only_for_compact_scoped_plain_game_clicks():
+def test_native_fullscreen_gesture_is_activated_only_for_compact_scoped_plain_game_clicks():
     source=SOURCE.read_text(encoding='utf-8')
     assert "enabled and hit == 'game' and plain" in source
-    assert "emit({'event': 'piprestore'})" in source
+    assert "emit({'event': 'pipfullscreen'})" in source
     assert "if code == 0 and wp == WM_LBUTTONUP and compact['release']:" in source
     assert "32 * u32.GetDpiForWindow" in source
+
+
+def native_mouse_fixture():
+    """Execute the real hook callback with simulated Windows hit/foreground APIs."""
+    model = SimpleNamespace(hit=7, foreground=9, keys=set())
+    state = {'hwnd': 7, 'parent': 9, 'app': 9, 'shown': True, 'compact': True}
+    events = []
+
+    def rect(window, pointer):
+        value = ctypes.cast(pointer, ctypes.POINTER(wintypes.RECT)).contents
+        value.left, value.top, value.right, value.bottom = 0, 0, 500, 500
+
+    user = SimpleNamespace(IsWindow=lambda h: h in (7,9), IsWindowVisible=lambda h: True,
+        GetWindowRect=rect, IsChild=lambda parent, child: False,
+        WindowFromPoint=lambda point: model.hit,
+        GetAncestor=lambda h, mode: 9 if h in (7,9) else h,
+        GetForegroundWindow=lambda: model.foreground,
+        ClientToScreen=lambda parent, point: None,
+        GetDpiForWindow=lambda h: 96, GetAsyncKeyState=lambda k: 0x8000 if k in model.keys else 0,
+        GetDoubleClickTime=lambda: 500, GetSystemMetrics=lambda index: 8,
+        CallNextHookEx=lambda *args: 12345, SetWindowsHookExW=lambda *args: 1,
+        GetMessageW=lambda *args: 0)
+    native_types = SimpleNamespace(**{name:getattr(ctypes,name) for name in
+        ('Structure','c_size_t','c_ssize_t','c_int','c_void_p','POINTER','cast','byref')},
+        WINFUNCTYPE=lambda *args: lambda fn: fn)
+    scope = functions('gbox_in_front','gesture_target','front_now','compact_click','rclick_hook',
+        state=state,u32=user,ctypes=native_types,wintypes=wintypes,GA_ROOTOWNER=3,emit=events.append)
+    hook = scope['rclick_hook']
+    hook()  # Register the callback, then the simulated message loop ends immediately.
+    event_type = inspect.getclosurevars(hook.proc).nonlocals['MS']
+
+    def mouse(message, when, point=(100,100)):
+        data=event_type();data.pt.x,data.pt.y=point;data.time=when
+        return hook.proc(0,message,ctypes.addressof(data))
+
+    return mouse,model,state,events
+
+
+def test_native_game_double_click_toggles_fullscreen_once_and_swallows_only_second_pair():
+    mouse,model,state,events=native_mouse_fixture()
+    assert mouse(0x201,1000)==12345  # First down/up remain available to the game.
+    assert mouse(0x202,1050)==12345
+    assert mouse(0x201,1200)==1
+    assert mouse(0x202,1250)==1
+    assert [e for e in events if e['event'].startswith('pip')]==[{'event':'pipfullscreen'}]
+    assert state['compact'] is True
+    assert mouse(0x201,1400)==12345  # A third click starts a new pair.
+    assert mouse(0x202,1450)==12345
+    assert [e for e in events if e['event'].startswith('pip')]==[{'event':'pipfullscreen'}]
+
+
+@pytest.mark.parametrize('case',['background','other_app','app_panel','not_compact','shift','control','alt'])
+def test_native_double_click_never_changes_pip_for_out_of_scope_or_modified_input(case):
+    mouse,model,state,events=native_mouse_fixture()
+    if case=='background':model.foreground=99
+    if case=='other_app':model.hit=99
+    if case=='app_panel':model.hit=9
+    if case=='not_compact':state['compact']=False
+    if case in ('shift','control','alt'):model.keys.add({'shift':0x10,'control':0x11,'alt':0x12}[case])
+    mouse(0x201,1000);mouse(0x202,1050);mouse(0x201,1200);mouse(0x202,1250)
+    assert not [e for e in events if e['event'].startswith('pip')]
+
+
+def test_losing_foreground_between_clicks_resets_the_native_toggle_pair():
+    mouse,model,state,events=native_mouse_fixture()
+    mouse(0x201,1000);mouse(0x202,1050)
+    model.foreground=99
+    assert mouse(0x201,1200)==12345
+    mouse(0x202,1250)
+    model.foreground=9
+    assert mouse(0x201,1400)==12345
+    assert not [e for e in events if e['event'].startswith('pip')]

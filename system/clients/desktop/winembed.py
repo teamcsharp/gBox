@@ -547,7 +547,9 @@ def rclick_hook():
         if code == 0 and wp in (0x200, WM_LBUTTONDOWN):
             cm = ctypes.cast(lp, ctypes.POINTER(MS)).contents
             enabled = bool(state.get('compact'))
-            hit = target(cm.pt) if enabled else None
+            # Hover may reveal the compact bar while unfocused; changing its
+            # presentation requires the foreground app's own game gesture.
+            hit = target(cm.pt, needs_front=wp == WM_LBUTTONDOWN) if enabled else None
             if wp == 0x200:
                 show = False
                 if hit:
@@ -567,7 +569,7 @@ def rclick_hook():
                     (u32.GetSystemMetrics(36), u32.GetSystemMetrics(37)))
                 if double:
                     compact['release'] = True
-                    emit({'event': 'piprestore'})
+                    emit({'event': 'pipfullscreen'})
                     return 1
         if code == 0 and (whip["on"] or wp == WM_LBUTTONDOWN):   # Alt + drag = pick whip: "swap this with that"
             m = ctypes.cast(lp, ctypes.POINTER(MS)).contents

@@ -147,7 +147,34 @@ test('desktop reload IPC is main-frame only and reloads without restarting jobs 
   assert.equal((await handler({ sender: wc, senderFrame: wc.mainFrame })).state, 'active'); assert.equal(reloads, 1);
   assert.equal(await handler({ sender: wc, senderFrame: wc.mainFrame }), false); assert.equal(reloads, 1);
   assert.equal(miniReloads, 1); // a second connected stream keeps its own window and URL while refreshing
-  assert.match(main, /F5: "client-refresh"/); assert.match(main, /if \(!clientReloading && compactWindow.state\(\).on\)/);
+  assert.match(main, /F5: "client-refresh"/);
+});
+
+test('planned and unplanned renderer navigation preserve the current PiP and fullscreen window', async () => {
+  const main = await fs.readFile(path.join(__dirname, '../clients/desktop/main.js'), 'utf8');
+  const begin = main.indexOf('  win.webContents.on("did-start-navigation",');
+  const end = main.indexOf("  win.webContents.on('did-finish-load',", begin);
+  assert.ok(begin >= 0 && end > begin);
+  for (const clientReloading of [false, true]) {
+    let navigation;
+    const releases = [];
+    const window = { on: true, fullscreen: true, bounds: {x: 60, y: 90, width: 800, height: 450} };
+    const before = structuredClone(window);
+    vm.runInNewContext(main.slice(begin, end), {
+      clientReloading,
+      win: {webContents: {on: (_name, callback) => { navigation = callback; }},
+        setFullScreen: on => { window.fullscreen = on; }},
+      compactWindow: {state: () => window, restore: async () => { window.on = false; }},
+      pickHoldReleaseAll: reason => releases.push(reason),
+    });
+    await navigation({}, 'index.html', false, true);
+    assert.deepEqual(releases, ['window reloaded']);
+    assert.deepEqual(window, before);
+    await navigation({}, 'frame.html', false, false);
+    await navigation({}, '#library', true, true);
+    assert.equal(releases.length, 1);
+    assert.deepEqual(window, before);
+  }
 });
 test('update border is exactly 2px around the fitted gameplay and never intercepts input', async () => {
   const html = await fs.readFile(path.join(__dirname, '../clients/desktop/index.html'), 'utf8');

@@ -60,7 +60,7 @@
   const F5_STREAM_BUDGET_MS = 40000;                 // no further stream attempt this far into an F5 (it ends in ~45 s)
   const BOT_WAIT_MS = 15000;                         // the autobot check's answer in the dialog (a later one is toasted)
   const LINGER_MS = 2500;                            // a finished F5 leaves its results up this long
-  const SWITCH_TRIES = 3;                            // F5: in-place PiP moves, 1 s apart, before it is closed and reopened
+  const SWITCH_TRIES = 3;                            // in-place PiP moves, 1 s apart; a failure keeps the existing window
   const BACKOFF_MS = [5000, 10000, 20000, 40000, 60000];
   // the automatic poll's delay after `failures` attempts in a row (0 = the first retry): 5 s doubling to a minute
   const backoff = failures => BACKOFF_MS[Math.max(0, Math.min(BACKOFF_MS.length - 1, Number.isFinite(failures) ? Math.trunc(failures) : 0))];
@@ -116,7 +116,7 @@
     async function library(ctx) {
       const st = await io.status();
       if (st?.mode === 'remote') return set(ctx, 'library', 'ok', 'Using the Spark library');
-      // a reload closes the PiP (main.js restores the window on navigation): a game on screen stays on screen
+      // Keep the shown game's library authority; recovery must not replace its view to switch libraries.
       if (shownPip()) return set(ctx, 'library', 'ok', 'Keeping the game on screen; this window stays on its library');
       const last = Number(io.recall?.(RELOAD_KEY)) || 0;
       if (last && now() - last < RELOAD_ONCE_MS) throw Object.assign(Error('This window is still on This PC\'s library after a reload. Choose the Spark library from the connection button.'), { step: 'library' });
@@ -242,40 +242,50 @@
     async function pip(ctx, sid, { f5 = false, own = false } = {}) {
       set(ctx, 'pip', 'run', 'Opening picture-in-picture…');
       const shown = shownPip();
+      const keepClosed = () => {
+        ctx.pipExited = true;
+        return set(ctx, 'pip', 'ok', 'Picture-in-picture is closed; keeping the current view');
+      };
+      const failedMove = () => Object.assign(Error('The picture-in-picture could not move to the recovered game. '
+        + 'Its existing window was kept. Press F5 again.'), { step: 'pip' });
       if (shown === sid) {
         if (f5 && ctx.restarted === sid) io.reconnectPicture?.(sid);      // the new encoder's picture on a new connection
         return set(ctx, 'pip', 'ok', own ? 'Keeping your game on screen' : 'Showing');
       }
       if (f5 && own) return set(ctx, 'pip', 'ok', 'Your game stays where it is');
-      if (f5 && shown && io.pipSwitch) {            // the PiP moves to it in place: the same window, bounds and aspect
-        // a PiP that its own follower moved meanwhile (its MercMode or continuity poll) is moved again from where it is:
-        // closing and reopening it needs the native window helper, which may be slow or stuck (operator 2026-10-27)
+      if (!shown && ctx.pipAtStart) return keepClosed(); // an explicit exit during recovery wins
+      async function moveShown() {
+        // Both automatic reconnect and F5 follow the new SID in the same PiP.
+        // Never restore/reopen it, even when the native helper or follower is slow.
         for (let attempt = 0; attempt < SWITCH_TRIES; attempt++) {
           alive(ctx);
           const from = shownPip();
           if (from === sid) return set(ctx, 'pip', 'ok', 'Switched the PiP to it');
-          if (!from) break;                          // the PiP closed meanwhile: it opens again below
-          if (await ask(io.pipSwitch, from, sid)) return set(ctx, 'pip', 'ok', 'Switched the PiP to it');
+          if (!from) return keepClosed();
+          if (!f5 && await pipKept(from)) return set(ctx, 'pip', 'ok', 'Keeping the game already on screen');
+          alive(ctx);
+          if (!io.pipSwitch) throw failedMove();
+          await ask(io.pipSwitch, from, sid);
+          alive(ctx);
+          // A callback's success is not proof that the shown session changed;
+          // likewise the continuity follower may have succeeded independently.
+          if (shownPip() === sid) return set(ctx, 'pip', 'ok', 'Switched the PiP to it');
+          if (!shownPip()) return keepClosed();
           if (attempt + 1 < SWITCH_TRIES) await sleep(1000);
         }
+        throw failedMove();
       }
-      if (shown) {                                   // never closes a picture that still plays; only an ended one gives way
-        if (!f5 && await pipKept(shown)) return set(ctx, 'pip', 'ok', 'Keeping the game already on screen');
-        alive(ctx);
-        try { await io.pipRestore(); }
-        catch (error) {
-          if (!f5) throw error;
-          throw Object.assign(Error(`The picture-in-picture could not move to it (${error.message || error}). Press F5 again.`), { step: 'pip' });
-        }
-      }
+      if (shown) return moveShown();
       alive(ctx);
       try { await io.pipEnter(sid); }
       catch (error) {
         if (!f5) throw error;
         throw Object.assign(Error(`Picture-in-picture did not open (${error.message || error}). Press F5 again.`), { step: 'pip' });
       }
+      alive(ctx);
       const after = shownPip();                      // a saved view came back meanwhile: the PiP still moves to this game
-      if (f5 && after && after !== sid && io.pipSwitch) await ask(io.pipSwitch, after, sid);
+      if (after && after !== sid) return moveShown();
+      if (!after) return keepClosed();
       set(ctx, 'pip', 'ok', 'Showing');
     }
     // F5: the control plane brings the autobot back (gbox/bot_control.py decides: never the operator's own game without
@@ -345,13 +355,13 @@
       if (!pick.shown) await pip(ctx, pick.sid, { f5: true, own: pick.own });
       else if (shownPip() === pick.sid) set(ctx, 'pip', 'ok', 'Showing');
       await bot(ctx, pick.sid, { expected: !pick.own && !pick.shown });
-      if (!pick.own && !pick.shown) await view(ctx, pick.sid);
+      if (!pick.own && !pick.shown && !ctx.pipExited && shownPip() === pick.sid) await view(ctx, pick.sid);
     }
     function run({ quiet = false, automatic = false, f5 = false, resumed = null } = {}) {
       if (busy && (!f5 || busyF5)) return busy;       // one run at a time; an F5 takes over an automatic reconnect
       if (f5) { quiet = false; automatic = false; }
       const carried = Number(resumed?.started);
-      const ctx = { id: ++generation, f5, started: resumed && Number.isFinite(carried) ? carried : now() };
+      const ctx = { id: ++generation, f5, pipAtStart: shownPip(), started: resumed && Number.isFinite(carried) ? carried : now() };
       busyF5 = f5;
       const job = (async () => {
         state.steps = fresh(f5 ? F5_STEPS : STEPS); state.done = false; state.error = ''; state.f5 = f5;

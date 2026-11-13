@@ -5,6 +5,7 @@ function rig(over = {}) {
   let clock = 0;
   const calls = [], renders = [], memory = new Map();
   const r = { calls, renders, memory, mode: 'remote', remoteReady: true, pip: null, restarts: 0, reloads: 0, healthBy: {},
+    entered: [], switched: [], restored: 0,
     mercmode: { hosts: [{ name: 'lilspark', online: true, settings: { enabled: true },
       current_run: { phase: 'playing', session_id: 'w1-s1', title: 'Resident Evil 5' } }] },
     health: { state: 'running', age_s: 0.1 }, ...over };
@@ -24,7 +25,13 @@ function rig(over = {}) {
       throw Error('unexpected ' + path);
     },
     pickHost: data => F.pickHost(data, 'JAYBUILTFINALE'),
-    pipSession: () => r.pip, pipEnter: async sid => { r.pip = sid; }, pipRestore: async () => { r.pip = null; },
+    pipSession: () => r.pip, pipEnter: async sid => { r.entered.push(sid); r.pip = sid; },
+    pipRestore: async () => { r.restored++; r.pip = null; },
+    pipSwitch: async (from, sid) => {
+      r.switched.push([from, sid]);
+      if (r.pip !== from) return false;
+      r.pip = sid; return true;
+    },
     health: sid => r.io.api(`/api/sessions/${encodeURIComponent(sid)}/stream/health`),
     session: async sid => (r.sessions || {})[sid] || null,
     show: () => {},
@@ -355,14 +362,78 @@ test('F5 moves the PiP again from where its own follower put it, and never close
   first.io.pipSwitch = async (from, sid) => { first.switched.push([from, sid]); first.pip = sid; return false; };
   assert.equal((await first.ctl.run({ f5: true })).done, true); assert.equal(first.pip, 'w1-s1');
   assert.deepEqual(first.switched, [['w1-dead', 'w1-s1']]);
-  // a PiP that could not be moved or closed says so on its step, with what to do
+  // A PiP that could not move stays open and reports the failed step.
   const stuck = f5rig({ pip: 'w1-dead' }); stuck.sessions = r.sessions;
   stuck.io.pipSwitch = async (from, sid) => { stuck.switched.push([from, sid]); return false; };
   stuck.io.pipRestore = async () => { throw Error("Error invoking remote method 'compact:view': Error: Game-window helper timed out; the current dock was preserved"); };
   const failed = await stuck.ctl.run({ f5: true });
   assert.equal(stuck.switched.length, 3); assert.equal(failed.done, false);
   assert.equal(failed.steps.find(s => s.id === 'pip').status, 'err');
-  assert.match(failed.error, /^The picture-in-picture could not move to it \(.*helper timed out.*\)\. Press F5 again\.$/);
+  assert.match(failed.error, /could not move.*existing window was kept.*Press F5 again/);
+  assert.equal(stuck.pip, 'w1-dead'); assert.deepEqual(stuck.entered, []);
+});
+
+test('automatic and F5 recovery follow changed session IDs without leaving fullscreen PiP', async () => {
+  for (const f5 of [false, true]) {
+    const r = f5rig({ pip: 'w1-dead' });
+    r.sessions = { 'w1-dead': { state: 'ended' } };
+    const window = { fullscreen: true, bounds: { x: 80, y: 70, width: 480, height: 270 } };
+    const before = structuredClone(window);
+    r.io.pipRestore = async () => { r.restored++; window.fullscreen = false; r.pip = null; };
+    r.io.pipEnter = async sid => { r.entered.push(sid); window.bounds.width = 800; r.pip = sid; };
+    const out = await r.ctl.run({ f5, automatic: !f5 });
+    assert.equal(out.done, true); assert.equal(r.pip, 'w1-s1');
+    assert.deepEqual(r.switched, [['w1-dead', 'w1-s1']]);
+    assert.equal(r.restored, 0); assert.deepEqual(r.entered, []);
+    assert.deepEqual(window, before);
+  }
+});
+
+test('unavailable, failed, throwing or unconfirmed PiP moves never fall back to restore/reopen', async () => {
+  for (const f5 of [false, true]) for (const failure of ['missing', 'refused', 'throw', 'unconfirmed']) {
+    const r = f5rig({ pip: 'w1-dead' });
+    r.sessions = { 'w1-dead': { state: 'ended' } };
+    if (failure === 'missing') delete r.io.pipSwitch;
+    else r.io.pipSwitch = async (from, sid) => {
+      r.switched.push([from, sid]);
+      if (failure === 'throw') throw Error('native helper unavailable');
+      return failure === 'unconfirmed'; // success without changing the view is not confirmation
+    };
+    const out = await r.ctl.run({ f5, automatic: !f5 });
+    assert.equal(out.done, false); assert.equal(r.pip, 'w1-dead');
+    assert.equal(out.steps.find(s => s.id === 'pip').status, 'err');
+    assert.match(out.error, /existing window was kept/);
+    assert.equal(r.restored, 0); assert.deepEqual(r.entered, []);
+    assert.equal(r.switched.length, failure === 'missing' ? 0 : 3);
+    assert.deepEqual(r.views, []);
+  }
+});
+
+test('an explicit PiP exit during recovery wins over opening or switching the repaired game', async () => {
+  for (const f5 of [false, true]) for (const when of ['before-switch', 'during-switch']) {
+    const r = f5rig({ pip: 'w1-dead' });
+    r.sessions = { 'w1-dead': { state: 'ended' } };
+    if (when === 'before-switch') {
+      const health = r.io.health;
+      r.io.health = async sid => { if (sid === 'w1-s1') r.pip = null; return health(sid); };
+    } else {
+      r.io.pipSwitch = async (from, sid) => { r.switched.push([from, sid]); r.pip = null; return false; };
+    }
+    const out = await r.ctl.run({ f5, automatic: !f5 });
+    assert.equal(out.done, true); assert.equal(r.pip, null);
+    assert.match(detail(out, 'pip'), /keeping the current view/);
+    assert.equal(r.restored, 0); assert.deepEqual(r.entered, []);
+    assert.deepEqual(r.views, [], 'F5 must not navigate the main view after the operator exits PiP');
+  }
+});
+
+test('leaving PiP while the F5 autobot check waits does not navigate the revealed main view', async () => {
+  const r = f5rig({ pip: 'w1-dead' });
+  r.sessions = { 'w1-dead': { state: 'ended' } };
+  r.io.ensureBot = async () => { r.pip = null; return null; };
+  const out = await r.ctl.run({ f5: true });
+  assert.equal(out.done, true); assert.equal(r.pip, null);
+  assert.deepEqual(r.views, []); assert.deepEqual(r.entered, []); assert.equal(r.restored, 0);
 });
 
 test('F5 keeps the operator\'s own game on this PC: no other game, the main window untouched, its stream still repaired', async () => {
@@ -561,6 +632,29 @@ test('F5 moves the PiP at once (no wait for a first frame); the continuity follo
   assert.match(vm.runInContext('compactStreamUrl', ctx), /\/api\/sessions\/w1-s1\/mjpeg\?token=t&fps=30$/);
 });
 
+test('the shell switches native and streamed PiP in place and rejects a stale or closed owner', async () => {
+  const begin = html.indexOf('  pipSwitch: async (from, sid) => {');
+  const end = html.indexOf('  reconnectPicture:', begin);
+  assert.ok(begin >= 0 && end > begin);
+  for (const local of [false, true]) {
+    const compact = {on:true, sid:'old', local, fullscreen:true};
+    const calls = [];
+    let closeDuringLookup = false;
+    const context = vm.createContext({COMPACT:compact, pipShow:async (sid, options) => {
+      calls.push([sid, options.force]);
+      if (closeDuringLookup) compact.on = false;
+      if (options.current()) compact.sid = sid;
+    }});
+    const move = vm.runInContext('({' + html.slice(begin, end) + '}).pipSwitch', context);
+    assert.equal(await move('stale', 'next'), false); assert.deepEqual(calls, []);
+    assert.equal(await move('old', 'next'), true);
+    assert.deepEqual(calls, [['next', true]]); assert.equal(compact.fullscreen, true);
+    closeDuringLookup = true;
+    assert.equal(await move('next', 'later'), false); assert.equal(compact.sid, 'next');
+    assert.equal(compact.on, false);
+  }
+});
+
 test('the shell wires the F5 steps: update through main.js, the F5 key carried over a reload, the main window following', () => {
   const main = require('node:fs').readFileSync(require('node:path').join(__dirname, '../clients/desktop/main.js'), 'utf8');
   const preload = require('node:fs').readFileSync(require('node:path').join(__dirname, '../clients/desktop/preload.js'), 'utf8');
@@ -571,10 +665,9 @@ test('the shell wires the F5 steps: update through main.js, the F5 key carried o
   assert.match(html, /if \(F5_RESUME\) setTimeout\(\(\) => f5Recover\(F5_RESUME\), 1500\);/);
   assert.match(html, /if \(F5_RESUME\) return;\s+\/\/ the F5 going on does the reconnecting/);
   assert.match(html, /show\("Sessions", \$\{JSON\.stringify\(sid\)\}\); return "shown";/);
-  assert.match(html, /await compactFollow\(session, COMPACT\.sid, \{ force: true \}\);/);
   assert.match(html, /ensureBot: sid => botEnsure\(sid, 'F5', \{ raise: true \}\),/);
   assert.match(html, /clientViewNavigation\+\+; restoreClientView\.retryAt = 0; clientRefresh\.done\(\);/);
   // the PiP hides every other element: an F5's dialog (only an F5's) stays visible over it
-  assert.match(html, /body\.gbox-compact > :not\(#gpu-game\)[^{]*:not\(#reconnect\.f5\)[^{]*\{ display:none !important; \}/);
+  assert.match(html, /body\.gbox-compact > [^{]*:not\(#gpu-game\)[^{]*:not\(#reconnect\.f5\)[^{]*\{ display:none !important; \}/);
   assert.match(html, /el\.classList\.toggle\('f5', !!state\.f5\);/);
 });

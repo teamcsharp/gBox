@@ -25,14 +25,14 @@ test('two enter requests and restore during opening serialize without losing the
   let finish; const x = fixture({resolve:() => new Promise(r => {finish=r;})});
   const a=x.ctl.enter(), b=x.ctl.enter(); await Promise.resolve();
   const exit=x.ctl.restore(); finish({sid:'s',local:false}); await Promise.all([a,b,exit]);
-  assert.deepEqual(x.calls,[{on:true},{on:false}]); assert.equal(x.ctl.state.on,false);
+  assert.deepEqual(x.calls,[{on:false,explicit:true}]); assert.equal(x.ctl.state.on,false);
 });
 test('a failed window transition rolls back presentation and controller targeting', async () => {
   const x = fixture({windowMode:async value => {if(value.on) throw Error('native failure'); return {on:false};}});
   await assert.rejects(x.ctl.enter(),/native failure/);
   assert.equal(x.ctl.state.on,false); assert.deepEqual(x.pads,[null,null]);
 });
-test('native double-click exit events restore the same presentation without another IPC', async () => {
+test('explicit native exit events restore the same presentation without another IPC', async () => {
   const x=fixture({mode:()=> 'full'}); await x.ctl.enter(); x.ctl.changed({on:false});
   assert.equal(x.ctl.state.on,false); assert.equal(x.ctl.state.returnMode,'full');
   assert.deepEqual(x.calls,[{on:true}]); assert.equal(x.pads.at(-1),null);
@@ -54,14 +54,14 @@ test('intermediate window resize bounds letterbox rather than deforming the pict
   assert.deepEqual(fit(800,600,16/9),{x:0,y:75,w:800,h:450});
   const r=fit(600,300,4/3); assert.equal(r.w/r.h,4/3); assert.equal(r.x,100);
 });
-test('a late remote frame cannot reopen compact mode after double-click restore', async () => {
+test('a late remote frame cannot reopen compact mode after explicit restore', async () => {
   let finish; const calls=[];
   const x=fixture({resolve:async()=>({sid:'remote',local:false}),windowMode:async value=>{
     calls.push(value); if(!value.on) await new Promise(r=>{finish=r;}); return {on:value.on,aspect:4/3};
   }});
   await x.ctl.enter(); const exit=x.ctl.restore(); await Promise.resolve();
   const image=x.ctl.picture(1920,1080); finish(); await Promise.all([exit,image]);
-  assert.equal(x.ctl.state.on,false); assert.deepEqual(calls,[{on:true},{on:false}]);
+  assert.equal(x.ctl.state.on,false); assert.deepEqual(calls,[{on:true},{on:false,explicit:true}]);
 });
 test('both desktop PiP entry points use compact mode rather than the old streamed-only mini window', () => {
   assert.match(html,/else if \(a === "pip"\) \{ compactEnter\(\)/);
@@ -94,20 +94,20 @@ test('the PiP button follows the stream on screen instead of a remembered sessio
   const ready = await run({ target: { session_id: 'spark-stream' }, preference: null });
   assert.equal(ready[0].sid, 'spark-stream', 'a ready row is still pinned');
 });
-test('double click and Escape restore the app; native hover reaches the same controls', () => {
+test('double click toggles fullscreen and Escape never exits PiP; native hover reaches the same controls', () => {
   const start=html.indexOf("gbox.onCompactView?.");
   const end=html.indexOf("setInterval(() => {",start);
-  const events={},changed=[], restores=[];
+  const events={},changed=[], restores=[], fullscreen=[];
   vm.runInNewContext(html.slice(start,end),{
     gbox:{onCompactView:f=>changed.push(f)},compactController:{changed(){}},COMPACT:{on:true},
     GBoxCompactCoach:require('../clients/desktop/compact-coach'),
     $:()=>null,
-    compactRestore:()=>{restores.push('restore'); return Promise.resolve();},compactHover(){},addEventListener:(name,fn)=>{events[name]=fn;}
+    compactRestore:()=>{restores.push('restore'); return Promise.resolve();},compactFullscreen:()=>{fullscreen.push(true);return Promise.resolve();},compactHover(){},addEventListener:(name,fn)=>{events[name]=fn;}
   });
   let prevented=0;
   events.dblclick({target:{closest:()=>null},preventDefault(){prevented++;},stopPropagation(){}});
-  events.keydown({key:'Escape',preventDefault(){prevented++;}});
-  assert.equal(restores.length,2); assert.equal(prevented,2);
+  events.keydown?.({key:'Escape',preventDefault(){prevented++;}});
+  assert.equal(restores.length,0); assert.equal(fullscreen.length,1); assert.equal(prevented,1);
   assert.match(html,/ev\.event === 'compact-hover'/);
 });
 function embedding({remote=false,ok=true,ended=false,offline=false,pip=true,docked=true,single=false}={}) {
@@ -236,8 +236,8 @@ test('replacement changes only the game stream and pad target, preserving PiP wi
   assert.equal(x.pads.at(-1),'remote-new');
   await x.ctl.restore();assert.equal(await x.ctl.follow('remote-new',{sid:'late',local:false}),false);
 });
-test('session ending restores the app; a temporary service error leaves PiP intact',async()=>{
-  const x=embedding({ended:true}); await x.tick(); assert.equal(x.seen.restores,1);
+test('session ending and temporary service errors both retain PiP',async()=>{
+  const x=embedding({ended:true}); await x.tick(); assert.equal(x.seen.restores,0); assert.equal(x.compact.on,true);
   const y=embedding({ok:false}); await y.tick(); assert.equal(y.seen.restores,0); assert.equal(y.compact.on,true);
 });
 
@@ -362,4 +362,63 @@ test('a double click inside a PiP panel, menu or pop-up never leaves the PiP (op
   assert.ok(m, 'the panel list sits right before the double-click handler');
   for (const sel of ['#bot-logic-panel', '#bot-logic-tab', '#pipmenu', '#compact-controls', '.re6-modifiers', '[role=dialog]'])
     assert.ok(m[1].includes(sel), sel);
+});
+
+test('native explicit exit cancels a saved entry before its session lookup resolves', async () => {
+  let finish;
+  const x=fixture({resolve:()=>new Promise(resolve=>{finish=resolve;})});
+  const opening=x.ctl.enter({restoreNavigation:0});await Promise.resolve();
+  x.ctl.changed({on:false});
+  finish({sid:'stale-saved-session',local:false});
+  assert.equal(await opening,false);
+  assert.equal(x.ctl.state.on,false);assert.deepEqual(x.calls,[]);assert.deepEqual(x.pads,[]);
+});
+
+test('an error from a cancelled saved lookup does not revive PiP or report a new transition failure', async () => {
+  let fail;
+  const x=fixture({resolve:()=>new Promise((resolve,reject)=>{fail=reject;})});
+  const opening=x.ctl.enter({restoreNavigation:4});await Promise.resolve();
+  x.ctl.changed({on:false});fail(Error('old saved session ended'));
+  assert.equal(await opening,false);assert.deepEqual(x.calls,[]);assert.equal(x.ctl.state.on,false);
+});
+
+test('exit after native entry submission rejects the late on response and removes its pad target', async () => {
+  let finish;const calls=[];
+  const x=fixture({resolve:async()=>({sid:'remote',local:false}),windowMode:value=>{
+    calls.push(value);return value.on?new Promise(resolve=>{finish=resolve;}):Promise.resolve({on:false});
+  }});
+  const opening=x.ctl.enter();await new Promise(setImmediate);
+  x.ctl.changed({on:false});finish({on:true,aspect:16/9});
+  assert.equal(await opening,false);assert.equal(x.ctl.state.on,false);
+  assert.equal(x.pads.at(-1),null);assert.deepEqual(calls,[{on:true},{on:false}]);
+});
+
+test('a new manual entry queued after explicit restore survives its own native off acknowledgment', async () => {
+  let x;
+  x=fixture({windowMode:async value=>{
+    x.calls.push(value);if(!value.on)x.ctl.changed({on:false});return {on:value.on};
+  }});
+  await x.ctl.enter();
+  const exit=x.ctl.restore(),manual=x.ctl.enter();
+  await exit;await manual;
+  assert.equal(x.ctl.state.on,true);
+  assert.deepEqual(x.calls,[{on:true},{on:false,explicit:true},{on:true}]);
+});
+
+test('rollback of a failed opening does not cancel a separately queued manual entry', async () => {
+  let x,fail=true;
+  x=fixture({windowMode:async value=>{
+    x.calls.push(value);
+    if(value.on&&fail){fail=false;throw Error('first native transition failed');}
+    if(!value.on)x.ctl.changed({on:false});
+    return {on:value.on};
+  }});
+  const failed=x.ctl.enter(),manual=x.ctl.enter();
+  await assert.rejects(failed,/first native transition failed/);await manual;
+  assert.equal(x.ctl.state.on,true);assert.deepEqual(x.calls,[{on:true},{on:false},{on:true}]);
+});
+
+test('only saved-view entries carry restoring authority and explicit exits are marked', async () => {
+  const x=fixture();await x.ctl.enter({restoreNavigation:0});await x.ctl.restore();await x.ctl.enter();
+  assert.deepEqual(x.calls,[{on:true,restoring:true},{on:false,explicit:true},{on:true}]);
 });

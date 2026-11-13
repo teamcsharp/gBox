@@ -26,16 +26,16 @@ function fitBounds(bounds, aspect, work, width) {
 }
 
 function create({ getWin, screen, nativeChrome = async () => ({ ok: true }), emit = () => {}, schedule = setTimeout, cancel = clearTimeout }) {
-  let saved = null, aspect = DEFAULT_ASPECT, queue = Promise.resolve(), compactBounds = null, restoreSeed = null;
+  let saved = null, aspect = DEFAULT_ASPECT, queue = Promise.resolve(), compactBounds = null, restoreSeed = null, fullscreenBounds = null;
   // chrome: the native helper hid the caption controls. A PiP opened while the helper did not answer keeps them in view
   // (chrome false) and asks again, backing off, until it does.
-  let chrome = false, retryTimer = null, retryMs = CHROME_RETRY_MS;
+  let chrome = false, retryChrome = false, retryTimer = null, retryMs = CHROME_RETRY_MS;
   const state = () => ({ on: !!saved, aspect });
   const window = () => { const w = getWin(); if (!w || w.isDestroyed()) throw Error('The gBox window is unavailable.'); return w; };
   const publish = () => { const value = state(); emit(value); return value; };
   const workArea = w => screen.getDisplayMatching(w.getBounds()).workArea;
   const enqueue = run => { const next = queue.then(run); queue = next.catch(() => {}); return next; };
-  const later = () => { cancel(retryTimer); retryTimer = saved && !chrome ? schedule(() => { retryTimer = null; rechrome().catch(() => {}); }, retryMs) : null; };
+  const later = () => { cancel(retryTimer); retryTimer = saved && (!chrome || retryChrome) ? schedule(() => { retryTimer = null; rechrome().catch(() => {}); }, retryMs) : null; };
   // Hide (or hide again, for a helper started while the window was already compact) the native caption controls.
   function rechrome() {
     return enqueue(async () => {
@@ -43,21 +43,45 @@ function create({ getWin, screen, nativeChrome = async () => ({ ok: true }), emi
       const result = await nativeChrome(true).catch(error => ({ ok: false, error: error.message }));
       if (result?.ok) {
         if (!chrome) window().setTitleBarOverlay?.(OVERLAY_HIDDEN);
-        chrome = true; retryMs = CHROME_RETRY_MS;
-      } else if (!chrome) { retryMs = Math.min(CHROME_RETRY_MAX_MS, retryMs * 2); later(); }
+        chrome = true; retryChrome = false; retryMs = CHROME_RETRY_MS;
+      } else { retryChrome = true; retryMs = Math.min(CHROME_RETRY_MAX_MS, retryMs * 2); later(); }
       return state();
     });
+  }
+
+  // Fullscreen changes only the size of this PiP. Keep both the floating PiP
+  // rectangle and the original full-app restore point independent of it.
+  function fullscreenNow(on) {
+    const w = window();
+    if (!saved) return w.isFullScreen();
+    if (on === undefined) on = !w.isFullScreen();
+    if (!!on === w.isFullScreen()) return !!on;
+    if (on) {
+      fullscreenBounds = w.getBounds();
+      w.setAspectRatio(0); w.setFullScreen(true);
+    } else {
+      w.setFullScreen(false);
+      const bounds = fullscreenBounds || compactBounds;
+      if (bounds) {
+        w.setAspectRatio(bounds.width / bounds.height);
+        w.setBounds(fitBounds(bounds, bounds.width / bounds.height, screen.getDisplayMatching(bounds).workArea));
+      }
+      fullscreenBounds = null;
+    }
+    return w.isFullScreen();
   }
 
   async function restoreNow() {
     if (!saved) return state();
     const w = window(), before = saved;
-    compactBounds = w.getBounds();
+    compactBounds = fullscreenBounds || w.getBounds();
     // A failed native restore must leave the mode recoverable for a second try. Controls the helper never hid (it did
     // not answer when the PiP opened) need no answer to come back.
     const result = await nativeChrome(false);
     if (!result?.ok && chrome) throw Error(result?.error || 'Could not restore the gBox window controls.');
-    cancel(retryTimer); retryTimer = null; chrome = false; retryMs = CHROME_RETRY_MS;
+    cancel(retryTimer); retryTimer = null; chrome = false; retryChrome = false; retryMs = CHROME_RETRY_MS;
+    if (w.isFullScreen()) w.setFullScreen(false);
+    fullscreenBounds = null;
     w.setAspectRatio(0);
     w.setMinimumSize(...before.minimum);
     w.setMaximumSize(...before.maximum);
@@ -80,9 +104,10 @@ function create({ getWin, screen, nativeChrome = async () => ({ ok: true }), emi
       // MercMode title switch must only change letterboxing inside these bounds.
       aspect = nextAspect;
       if (Number.isFinite(+request.width)) {
-        const bounds = w.getBounds(), windowAspect = bounds.width / bounds.height;
-        w.setAspectRatio(windowAspect);
-        w.setBounds(fitBounds(bounds, windowAspect, workArea(w), request.width));
+        const bounds = fullscreenBounds || w.getBounds(), windowAspect = bounds.width / bounds.height;
+        const resized = fitBounds(bounds, windowAspect, screen.getDisplayMatching(bounds).workArea, request.width);
+        if (fullscreenBounds) fullscreenBounds = resized;
+        else { w.setAspectRatio(windowAspect); w.setBounds(resized); }
       }
       return publish();
     }
@@ -93,7 +118,7 @@ function create({ getWin, screen, nativeChrome = async () => ({ ok: true }), emi
       if (before.maximized) w.unmaximize();
       // Geometry and the existing game surface do not depend on Python starting
       // or Windows answering the caption helper. Show PiP before that wait.
-      chrome = false;
+      chrome = false; retryChrome = false;
       aspect = validAspect(request.aspect) ? +request.aspect : DEFAULT_ASPECT;
       w.setMinimumSize(160, 90); w.setMaximumSize(0, 0);
       const windowAspect = WINDOW_ASPECT;
@@ -129,10 +154,11 @@ function create({ getWin, screen, nativeChrome = async () => ({ ok: true }), emi
   }
 
   return { state, update: request => enqueue(() => updateNow(request)), restore: () => enqueue(restoreNow), rechrome,
+    setFullScreen: on => enqueue(() => fullscreenNow(!!on)), toggleFullScreen: () => enqueue(() => fullscreenNow()),
     handoff: () => {
       const w = window();
       return { window: saved || { bounds: w.getNormalBounds(), maximized: w.isMaximized(), fullscreen: w.isFullScreen(), top: w.isAlwaysOnTop() },
-        compactBounds: saved ? w.getBounds() : compactBounds };
+        compactBounds: saved ? fullscreenBounds || w.getBounds() : compactBounds };
     },
     seedBounds: (value, restore) => { compactBounds = wideBounds(value) || null; restoreSeed = restore || null; }
   };

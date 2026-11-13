@@ -7,6 +7,7 @@ const assert = require('node:assert/strict');
 const { EventEmitter } = require('node:events');
 const fs = require('node:fs');
 const path = require('node:path');
+const vm = require('node:vm');
 const H = require('../clients/desktop/embed-helper.cjs');
 
 function rig(options = {}) {
@@ -131,15 +132,50 @@ test('a helper that cannot start, or a full queue, answers unavailable at once',
   assert.match((await q.helper.send({ op: 'status' })).error, /busy/);
 });
 
-test('main.js uses the helper module: a replaced helper keeps the PiP and main keeps the caption bits, late answers too', () => {
+test('main.js uses the helper module and keeps the caption bits, late answers too', () => {
   const main = fs.readFileSync(path.join(__dirname, '../clients/desktop/main.js'), 'utf8');
   assert.match(main, /const embedHelper = require\('\.\/embed-helper\.cjs'\)\.create\(\{/);
   assert.match(main, /return embedHelper\.send\(cmd, deadlineMs, options\);/);
   assert.match(main, /execFile\('taskkill', \['\/T', '\/F', '\/PID', String\(proc\.pid\)\]/);
-  const exit = main.slice(main.indexOf('onExit: ({ restarted }) => {'), main.indexOf('function embedCmd('));
-  assert.match(exit, /if \(restarted\) \{ if \(!quitting && compactWindow\.state\(\)\.on\) compactWindow\.rechrome\(\)/);
-  assert.match(exit, /compactRecoveryPending = true;\s+compactWindow\.restore\(\)/, 'an exited helper still restores the window controls');
   assert.match(main, /const keep = result => \{ if \(result\?\.ok\) \{ compactChromeBits = on \? result\.bits : null;/);
   assert.match(main, /\.\.\.\(compactChromeBits !== null \? \{ bits: compactChromeBits \} : \{\}\) \}, 3000, \{ late: keep \}\);/);
   assert.doesNotMatch(main, /\bembedder\b/);
+});
+
+test('ordinary and restarted helper exits retain PiP and coalesce chrome recovery; quitting never restarts it', async () => {
+  const main = fs.readFileSync(path.join(__dirname, '../clients/desktop/main.js'), 'utf8');
+  const begin = main.indexOf('const embedHelper =');
+  const end = main.indexOf('function embedCmd(', begin);
+  assert.ok(begin >= 0 && end > begin);
+  const source = main.slice(begin, end) + '\nglobalThis.callbacks = embedHelper;';
+  for (const restarted of [false, true]) {
+    const front = [], logs = [], requests = [];
+    const picture = {on:true, fullscreen:true, sid:'pc-game', bounds:{x:30,y:40,width:480,height:270}};
+    const before = structuredClone(picture);
+    const context = vm.createContext({
+      require: name => { assert.equal(name, './embed-helper.cjs'); return {create:callbacks => callbacks}; },
+      embedded:{pid:42}, fgWatched:42, quitting:false, compactRecoveryPending:false,
+      hotkeys:{setFront:value => front.push(value)}, logPush:(...args) => logs.push(args),
+      compactWindow:{state:() => picture,
+        restore:() => assert.fail('helper exit must not restore the full app'),
+        rechrome:() => new Promise((resolve,reject) => requests.push({resolve,reject}))},
+    });
+    vm.runInContext(source, context);
+    const exit = context.callbacks.onExit;
+    exit({restarted}); exit({restarted});
+    assert.equal(context.embedded, null); assert.equal(context.fgWatched, 0);
+    assert.deepEqual(front, [false,false]);
+    assert.equal(requests.length, 1, 'one native chrome repair may be in flight');
+    assert.equal(context.compactRecoveryPending, true); assert.deepEqual(picture, before);
+    requests[0].resolve({ok:true}); await settle();
+    assert.equal(context.compactRecoveryPending, false);
+    exit({restarted}); assert.equal(requests.length, 2);
+    requests[1].reject(Error('helper unavailable')); await settle();
+    assert.equal(context.compactRecoveryPending, false); assert.deepEqual(picture, before);
+    assert.deepEqual(logs, [['compact','helper unavailable']]);
+    context.quitting = true; exit({restarted});
+    assert.equal(requests.length, 2, 'ordinary application quit stays a quit');
+    context.quitting = false; picture.on = false; exit({restarted});
+    assert.equal(requests.length, 2, 'a non-PiP window needs no compact repair');
+  }
 });

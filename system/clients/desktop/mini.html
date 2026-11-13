@@ -58,12 +58,12 @@
 <button id="ssh-access-button" type="button" aria-label="SSH controls on this PC"></button>
 <div id="ssh-access-popover" role="dialog" aria-label="SSH access to this PC" hidden></div>
 <script src="windows-ssh-ui.js"></script>
-<script>document.body.classList.add('ssh-mini'); GBoxWindowsSsh.mount(null,gbox,{button:document.getElementById('ssh-access-button'),popup:document.getElementById('ssh-access-popover'),restartLabel:'Open full app for recovery',restart:async()=>{await gbox.miniRestore();return {reason:'Full app opened. Use its SSH panel to check updates and view restart instructions.'};}});</script>
+<script>document.body.classList.add('ssh-mini'); GBoxWindowsSsh.mount(null,gbox,{button:document.getElementById('ssh-access-button'),popup:document.getElementById('ssh-access-popover'),restartLabel:'Recovery instructions',restart:async()=>({reason:'Use Alt+Enter or right-click Exit PiP to open the full app, then its SSH panel to check updates and restart instructions.'})});</script>
 <svg width="0" height="0" style="position:absolute" aria-hidden="true"><filter id="gbox-pip-sharpen" x="0" y="0" width="100%" height="100%">
   <feConvolveMatrix order="3" preserveAlpha="true" edgeMode="duplicate" kernelMatrix="0 -0.12 0 -0.12 1.48 -0.12 0 -0.12 0"/></filter></svg>
 <img id="v" alt="game">
 <div class="bar"><img src="../../assets/brand/gbox-logo.svg" style="height:16px;width:auto" alt=""><span id="t"></span>
-  <button id="full" title="Back to the full app (or double-click the game)">⤢ Full app</button></div>
+  <button id="full" title="Toggle full screen (or double-click the game)" aria-label="Toggle full screen">&#x26F6;</button></div>
 <script src="../web/viz/session-continuity.js"></script>
 <script src="../web/viz/blueprint-look.js"></script>
 <script src="../web/viz/mercs-clock.js"></script>
@@ -121,7 +121,7 @@
   });
   const followTimer = setInterval(() => continuity.poll(), 2000);
   addEventListener('pagehide', () => {clearInterval(followTimer); continuity.cancel();}, {once:true});
-  document.getElementById("full").onclick = () => gbox.miniRestore();
+  document.getElementById("full").onclick = () => gbox.toggleFullScreen();
   let modifierMenu = null, modifierControl = null, modifierOpening = null;
   function closeModifiers() {
     modifierOpening = null; modifierControl?.stop(); modifierControl = null;
@@ -131,6 +131,8 @@
     event.preventDefault(); closeModifiers();
     const opening = modifierOpening = {};
     modifierMenu = document.createElement('div'); modifierMenu.id = 'pip-modifiers';
+    const exit = document.createElement('button'); exit.type = 'button'; exit.textContent = 'Exit PiP   Alt+Enter'; exit.style.display = 'block';
+    exit.onclick = () => { closeModifiers(); gbox.miniRestore(); }; modifierMenu.append(exit);
     modifierMenu.style.cssText = 'position:fixed;z-index:10;background:#1d1d22;color:#eee;border:1px solid #555;border-radius:8px;padding:8px;max-width:calc(100vw - 32px);max-height:calc(100vh - 32px);overflow:auto';
     for(const [mode,label] of [['map','Mercenaries live map ↗'],['reviewer','Mercenaries run reviewer ↗']]){
       const button=document.createElement('button');button.textContent=label;button.type='button';button.style.display='block';
@@ -188,8 +190,8 @@
   gbox.onMiniContext?.(point => openModifiers({clientX:point.x,clientY:point.y,preventDefault(){}}));
   addEventListener('mousedown', event => { if (!event.target.closest?.('#pip-modifiers')) closeModifiers(); });
   addEventListener('pagehide', closeModifiers);
-  addEventListener("dblclick", event => { if (!event.target.closest?.('#pip-modifiers, .pip-media, #ssh-access-button, #ssh-access-popover')) gbox.miniRestore(); });
-  addEventListener("keydown", e => { if (e.key === "Escape") { if (modifierMenu) closeModifiers(); else gbox.miniRestore(); } });
+  addEventListener("dblclick", event => { if (!event.altKey && !event.ctrlKey && !event.shiftKey && !event.metaKey && !event.target.closest?.('#pip-modifiers, .pip-media, #ssh-access-button, #ssh-access-popover, button, input, textarea, select, [contenteditable]')) { event.preventDefault(); gbox.toggleFullScreen(); } });
+  addEventListener("keydown", e => { if (e.key === "Escape" && modifierMenu) closeModifiers(); });
   // file:// cannot fetch health directly; authenticated IPC avoids CORS and unnecessary timed stream resets.
   window.GBOX_STREAM_FETCH_HEALTH = async src => {
     const settings = await gbox.settings();
