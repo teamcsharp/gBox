@@ -232,9 +232,17 @@ class Request:
             publishing = True
             write(old.player + PENDING, b"\x01")
             self.receipt = {"state": "requested", "item": old.item, "grid": old.grid}
-        except (Refused, OSError, ValueError, RuntimeError, OverflowError, struct.error):
+        except (Refused, OSError, ValueError, RuntimeError, OverflowError, struct.error) as exc:
             # Never undo or retry an attempted publication. The native consumer
             # may already have cleared the flag before adapter verification.
+            if not publishing and not prepared:
+                # No writer was called, including one that could raise after
+                # changing memory. A stale initial witness is a safe refusal,
+                # not an ambiguous native attachment that poisons this life.
+                self.receipt = {'state': 'refused', 'reason': 'preparation_not_started',
+                                'detail': str(exc), 'native_not_submitted': True,
+                                'preparation_writes_attempted': 0, 'publication_attempted': False}
+                return dict(self.receipt)
             restored = False
             if not publishing:
                 try:
@@ -252,7 +260,8 @@ class Request:
                 except (Refused, OSError, ValueError, RuntimeError, OverflowError, struct.error):
                     pass
             self.receipt = {"state": "unknown" if publishing or not restored else "refused",
-                            "reason": "publication_ambiguous" if publishing else "preparation_changed"}
+                            "reason": "publication_ambiguous" if publishing else "preparation_changed",
+                            'preparation_writes_attempted': len(prepared), 'publication_attempted': publishing}
         return dict(self.receipt)
 
 
