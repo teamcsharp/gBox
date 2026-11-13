@@ -358,21 +358,36 @@ def open_all_gates(pad: Pad) -> str:
 DIFFICULTY_GLOBAL = 0x805D5550      # 0 normal, 1 hard, 2 very hard, 3 ultimate
 
 
-def set_ultimate(pad: Pad) -> str:
-    """Force Ultimate and verify it - the objective asks for the whole game on Ultimate, and this is live memory."""
+ULTIMATE_AT = 250          # hp_max at which Ultimate becomes survivable (level 5 has 68)
+
+
+def set_difficulty(pad: Pad) -> str:
+    """Choose Normal or Ultimate from the character's own max HP, and verify the write.
+
+    Ultimate content is not survivable at 68 HP - the Forest beasts there carry 1556 - so the bot levels on Normal and
+    switches to Ultimate once its HP shows it can take hits. The objective wants Ultimate; this is how it is earned
+    rather than pretended.
+    """
     import struct as _struct
+
+    profile = call("/api/sessions/%s/rpc" % pad.sid, {"op": "state", "args": {"player_only": True}}, "POST") or {}
+    player = profile.get("player") or {}
+    hp_max = float(player.get("hp_max") or 0)
+    wanted = 3 if hp_max >= ULTIMATE_AT else 0
+    label = "Ultimate" if wanted == 3 else "Normal"
 
     before = call("/api/sessions/%s/rpc" % pad.sid,
                   {"op": "read_memory", "args": {"address": DIFFICULTY_GLOBAL, "length": 4}}, "POST")
     try:
         current = int.from_bytes(bytes.fromhex(before), "big")
-    except Exception:                                      # noqa: BLE001
+    except Exception:                                          # noqa: BLE001
         current = None
-    if current == 3:
-        return "already Ultimate"
+    if current == wanted:
+        return f"{label} (already, hp_max {hp_max:.0f})"
+
     job = call("/api/jobs", {"tool": "write_memory", "require_worker": pad.worker,
                              "input": {"session_id": pad.sid, "address": DIFFICULTY_GLOBAL,
-                                       "hex_bytes": _struct.pack(">I", 3).hex()}}, "POST")
+                                       "hex_bytes": _struct.pack(">I", wanted).hex()}}, "POST")
     job_id = job.get("id") if isinstance(job, dict) else None
     for _ in range(8):
         time.sleep(0.3)
@@ -384,10 +399,10 @@ def set_ultimate(pad: Pad) -> str:
                  {"op": "read_memory", "args": {"address": DIFFICULTY_GLOBAL, "length": 4}}, "POST")
     try:
         now = int.from_bytes(bytes.fromhex(after), "big")
-    except Exception:                                      # noqa: BLE001
+    except Exception:                                          # noqa: BLE001
         now = None
-    return f"{current} -> {now}" + ("  (Ultimate)" if now == 3 else "  (DID NOT STICK)")
-
+    verdict = "ok" if now == wanted else "DID NOT STICK"
+    return f"{label} for hp_max {hp_max:.0f} ({current} -> {now}) {verdict}"
 
 def arm(pad: Pad) -> None:
     """Make this cycle's character able to play: unblockable, armed, and unable to stay dead.
@@ -408,7 +423,7 @@ def arm(pad: Pad) -> None:
         answer = mods(pad, payload)
         log(f"  {payload['op']} {payload.get('code', '')}: {answer.get('state')} "
             f"{str(answer.get('error'))[:70]}")
-    log(f"  difficulty: {set_ultimate(pad)}")
+    log(f"  difficulty: {set_difficulty(pad)}")
     for payload in ({"op": "floor_rares", "on": True, "character_class": "HUmar"},
                     {"op": "enemy_drops", "on": True,
                      "codes": ["009d00", "003200", "004400", "000100", "000200"]}):
