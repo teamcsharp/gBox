@@ -359,7 +359,14 @@ def run(mode: str, args) -> int:
         # measured, 200 s of play in Forest 1 room 16 bounced inside x 460-590, z 380-500 without a room change.
         clock2 = clock
         motion = B.CommitMotion(arrive=15.0)
-        player = (world.observe(player_only=True) or {}).get("player") or {}
+        # Wait for a settled room: starting during a loading screen (room 0) makes the first observation look like an
+        # exit, which is exactly what happened - "EXIT: room 0 -> 10" on the first tick.
+        player = {}
+        for _ in range(30):
+            player = (world.observe(player_only=True) or {}).get("player") or {}
+            if player.get("room") not in (None, 0):
+                break
+            clock2.sleep(0.4)
         px, pz = float(player.get("x") or 0), float(player.get("z") or 0)
         if args.center:
             px, pz = float(args.center[0]), float(args.center[1])
