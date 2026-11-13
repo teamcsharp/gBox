@@ -314,36 +314,41 @@ def play(pad: Pad, seconds: float = 45.0) -> str:
                          + (float(e.get("z") or 0) - z) ** 2)
             tx, tz = float(target.get("x") or 0), float(target.get("z") or 0)
             distance = math.hypot(tx - x, tz - z)
-            error = ((bearing(x, z, tx, tz) - heading + 540.0) % 360.0) - 180.0
             name = str(target.get("class"))
             hp = float(target.get("hp"))
             if name in last_enemy_hp and hp < last_enemy_hp[name]:
-                log(f"  {name} hit: {last_enemy_hp[name]:.0f} -> {hp:.0f}")
+                log(f"  {name} HIT: {last_enemy_hp[name]:.0f} -> {hp:.0f}")
             last_enemy_hp[name] = hp
 
-            # The game's own envelope (pso_coop_combat): ~12 units, 8 degree half angle. Outside the cone the swing
-            # cannot connect, so turn first in small measured steps; inside it, cancel any menu with B and swing.
-            if abs(error) > 8:
-                hold(pad, "left" if error > 0 else "right", min(0.22, max(0.06, abs(error) / 400.0)))
-            elif distance > 12:
-                before_move = state(pad).get("player") or {}
-                start = (float(before_move.get("x") or 0), float(before_move.get("z") or 0))
-                hold(pad, "up", min(0.55, max(0.2, (distance - 8) / 160.0)))
-                after_move = state(pad).get("player") or {}
-                end = (float(after_move.get("x") or 0), float(after_move.get("z") or 0))
-                if math.dist(start, end) < 1.0:
-                    # an enemy body blocks the approach, and it is not a wall: step back, then go round it
-                    log("  approach blocked - backing off and strafing around the body")
-                    hold(pad, "down", 0.4)
-                    hold(pad, "left" if int(time.time()) % 2 else "right", 0.45)
-                    hold(pad, "up", 0.5)
-                moved += 1
-            else:
+            # Nothing here trusts `heading_deg`: presses in one direction produced +130, +21, 0 and +145 degrees, so
+            # it is not a signal to servo on. Instead hill-climb on DISTANCE - turn a side, step, and keep that side
+            # only if it made us closer. That is how an enemy was closed from 210 units to 12 and killed.
+            if distance <= 15.5:
                 tap(pad, "b")           # a pause menu eats the swing; START toggles it, B cancels it
-                time.sleep(0.15)
+                time.sleep(0.12)
                 tap(pad, "a")
-                time.sleep(0.4)
+                time.sleep(0.45)
                 killed += 0
+            else:
+                approach_side = globals().get("APPROACH_SIDE", 1)
+                before = distance
+                hold(pad, "left" if approach_side > 0 else "right", 0.18)
+                hold(pad, "up", 0.75)
+                after_state = state(pad).get("player") or {}
+                now_target = [e for e in (after_state.get("entities") or [])] if False else None
+                found_after = state(pad)
+                after_enemies = [e for e in (found_after.get("entities") or [])
+                                 if str(e.get("kind")) == "enemy" and e.get("hp") is not None
+                                 and float(e.get("hp")) > 0]
+                if after_enemies:
+                    near = min(after_enemies, key=lambda e: (float(e.get("x") or 0) - float((found_after.get("player") or {}).get("x") or 0)) ** 2
+                               + (float(e.get("z") or 0) - float((found_after.get("player") or {}).get("z") or 0)) ** 2)
+                    px = float((found_after.get("player") or {}).get("x") or 0)
+                    pz = float((found_after.get("player") or {}).get("z") or 0)
+                    after_distance = math.hypot(float(near.get("x") or 0) - px, float(near.get("z") or 0) - pz)
+                    if after_distance > before - 0.5:
+                        globals()["APPROACH_SIDE"] = -approach_side
+                moved += 1
         else:
             # travel: the game needs the character to cross the floor to find the key and the door
             sweep = time.time() - started
