@@ -763,3 +763,32 @@ choosing the best gain (which points into the door). That is the next change.
 Restart-to-Forest is now a reliable 4-minute sequence: six hops through the plaza (all converged, 8-10 units) and `A` on
 the pad.
 
+
+
+## 24. Second gate chain completed: the key in room 10 opened the door that had blocked progress
+
+Five rounds were spent circling a pocket around `(-130, 0)` in Forest 1's room 10, and two doors were tested and found
+closed. The mistake was in the entity survey, not the game: there were **two door keys in room 10**, and one of them -
+`TObjDoorKey 80DB54D0` at `(-127, 71)` - was **42 units from the character** the whole time.
+
+| step | measured |
+|---|---|
+| key | `TObjDoorKey 80DB54D0` at `(-127,71)`, `+0xC8` low16 = **7** |
+| press | flags `[]` -> `[(1,7)]` after the second A press at 13 units |
+| door | `TObjDoor` at `(-193,100)`: the character went `(-177,101) -> (-256,113)`, straight through it |
+| after | `(-298,291)` room 10 - a part of the room it could not reach before (it had never passed x = -130) |
+
+That is the **second** complete switch -> flag -> gate chain in normal play, and the first one that unblocked the level
+rather than opening a side room. The rule holds again: the key's own `+0xC8` is the bit its press sets (7 here; 6, 8,
+9, 30-33, 60 and 61 belong to the other keys and switches on the floor).
+
+The whole floor's switches are now known:
+
+```
+TObjDoorKey (-127,71) index 7     TObjDoorKey (-95,214) index 6
+TObjDoorKey (277,7)   index 61    TObjDoorKey (-483,228) index 8
+TObjDoorKey (7,362)   index 60    TLazerFenceSw (-400,541) index 30
+TLazerFenceSw (-435,-482) index 31  TLazerFenceSw (-244,-337) index 32
+TLazerFenceSw (470,-152) index 33
+```
+
