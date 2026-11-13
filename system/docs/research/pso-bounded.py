@@ -285,7 +285,8 @@ def run(mode: str, args) -> int:
     elif args.motion == "wall":
         # Close the distance, step sideways when a wall stops it: for rooms the decoded map does not cover.
         motion = B.WallFollowMotion(arrive=arrive,
-                                    effects=(calibration.effects if calibration is not None else None))
+                                    effects=(calibration.effects if calibration is not None else None),
+                                    cal_heading=(calibration.heading if calibration is not None else 0.0))
     elif args.motion == "vector":
         motion = B.VectorMotion(arrive=arrive, primitive="tap")
         if calibration is not None:

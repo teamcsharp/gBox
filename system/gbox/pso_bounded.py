@@ -296,6 +296,15 @@ def _unit(dx: float, dz: float) -> tuple:
     return (0.0, 0.0) if length < 1e-9 else (dx / length, dz / length)
 
 
+def _rotate_world(dx: float, dz: float, degrees: float) -> tuple:
+    """Rotate a world (x,z) vector by a heading delta, in the game's convention (0 = +z, 90 = +x)."""
+    length = math.hypot(dx, dz)
+    if length < 1e-9:
+        return (0.0, 0.0)
+    rad = math.atan2(dx, dz) + math.radians(degrees)
+    return (math.sin(rad) * length, math.cos(rad) * length)
+
+
 def _bearing(fx: float, fz: float, tx: float, tz: float) -> float:
     return (math.degrees(math.atan2(tx - fx, tz - fz)) + 360.0) % 360.0
 
@@ -657,7 +666,8 @@ class WallFollowMotion:
 
     def __init__(self, *, arrive: float = 6.0, min_gain: float = 1.0, patience: int = 2,
                  blocked_units: float = 1.0, detour_units: float = 12.0, detour_taps: int = 3,
-                 keys: Iterable[str] = DIRECTIONS, effects: dict | None = None) -> None:
+                 keys: Iterable[str] = DIRECTIONS, effects: dict | None = None,
+                 cal_heading: float = 0.0) -> None:
         self.arrive = float(arrive)
         self.min_gain = float(min_gain)
         self.patience = int(patience)
@@ -670,6 +680,7 @@ class WallFollowMotion:
         # orbit the operator has watched), because a gain is history, not a direction.
         self.effects = {str(key): (float(value[0]), float(value[1])) for key, value in (effects or {}).items()
                         if len(value) >= 2}
+        self.cal_heading = float(cal_heading)
         self.key = None
         self.last_key = None
         self.last_pos = None
@@ -709,7 +720,9 @@ class WallFollowMotion:
             return None
         ux, uz = _unit(dx, dz)
         if self.effects:
-            self.key = self._steer(ux, uz)
+            heading = player.get("heading_deg")
+            delta = 0.0 if heading is None else float(heading) - self.cal_heading
+            self.key = self._steer(ux, uz, delta)
         elif self.key is None or self.misses >= self.patience:
             self.key = self._next_key()
             self.misses = 0
@@ -732,14 +745,15 @@ class WallFollowMotion:
         # One consistent side: flipping after a fixed count undid progress (measured: 161 taps for a 121-unit path
         # because every third detour turned back). A finite obstacle always ends on one side.
 
-    def _steer(self, ux: float, uz: float) -> str:
-        """The calibrated key pointing most nearly along the aim."""
+    def _steer(self, ux: float, uz: float, heading_delta: float = 0.0) -> str:
+        """The calibrated key pointing most nearly along the aim, in the character's *current* frame."""
         best, best_dot = None, -2.0
         for key in self.keys:
             effect = self.effects.get(key)
             if effect is None:
                 continue
-            ex, ez = _unit(effect[0], effect[1])
+            rotated = _rotate_world(effect[0], effect[1], heading_delta) if heading_delta else effect
+            ex, ez = _unit(rotated[0], rotated[1])
             dot = ex * ux + ez * uz
             if dot > best_dot:
                 best, best_dot = key, dot
@@ -767,6 +781,10 @@ class Calibration:
     turn: dict
     model: str
     samples: list
+    # The heading the effects were measured at. The stick is camera-relative, so a key's world displacement rotates with
+    # the character; without this the table is only valid until the first turn (measured: every hold in every direction
+    # moved 0.0 at heading 186, and one turn made the same hold move 7 units).
+    heading: float = 0.0
 
     def as_dict(self) -> dict:
         return {"model": self.model, "speed": round(self.speed, 2),
@@ -786,6 +804,8 @@ def calibrate(world, *, keys=DIRECTIONS, ledger: Ledger | None = None, clock: Cl
     """
     clock = clock or MonotonicClock()
     samples, effects, turn = [], {}, {}
+    first = ((world.observe() or {}).get("player") or {})
+    heading_at = float(first.get("heading_deg") or 0.0)
     def read():
         return world.observe() or {}
     for key in keys:
@@ -824,7 +844,8 @@ def calibrate(world, *, keys=DIRECTIONS, ledger: Ledger | None = None, clock: Cl
             effects[key] = (0.0, 0.0)                 # measured dead this session: do not blame the geometry later
     travel = [math.hypot(*effects[key]) for key in moving]
     speed = round(sum(travel) / len(travel) / 0.12, 1) if travel else 0.0
-    result = Calibration(effects=effects, speed=speed, turn=turn, model=model, samples=samples)
+    result = Calibration(effects=effects, speed=speed, turn=turn, model=model, samples=samples,
+                        heading=heading_at)
     if ledger is not None:
         ledger.record("calibration", note=f"model={model}; {len(moving)} moving key(s)",
                       extra=result.as_dict())
