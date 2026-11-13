@@ -163,6 +163,37 @@ def mods(pad: Pad, payload: dict, wait: float = 45.0) -> dict:
 WARP_CELL = (361.2, 0.0, 28.8)      # the cell that actually triggers the city warp (found by searching Corridor.safe)
 
 
+TELEPORT_ATTEMPTS = {"count": 0}
+ARMED_SESSIONS: set = set()      # armed once per session: re-giving fills the inventory
+GOOD_POSITION = {}
+
+
+def teleport(pad: Pad, x: float, y: float, z: float) -> bool:
+    """Move the character by writing its position - the same primitive go_to_field() uses.
+
+    Position is three big-endian floats at `player_ptr + 0x38`. Returns whether the write landed, by re-reading.
+    """
+    import struct
+
+    now = state(pad)
+    pointer = (now.get("player") or {}).get("ptr")
+    if not pointer:
+        return False
+    job = call("/api/jobs", {"tool": "write_memory", "require_worker": pad.worker,
+                             "input": {"session_id": pad.sid, "address": int(pointer, 16) + 0x38,
+                                       "hex_bytes": struct.pack(">fff", x, y, z).hex()}}, "POST")
+    job_id = job.get("id") if isinstance(job, dict) else None
+    for _ in range(10):
+        time.sleep(0.6)
+        row = call("/api/jobs/" + job_id) if job_id else {}
+        if row.get("state") in ("succeeded", "failed", "cancelled"):
+            break
+    time.sleep(0.8)
+    after = state(pad).get("player") or {}
+    moved = math.dist((x, z), (float(after.get("x") or 0), float(after.get("z") or 0)))
+    return moved < 40.0
+
+
 def where_am_i(state_now: dict) -> str:
     """'boss' | 'field' | 'city' - from the entity list alone.
 
@@ -227,7 +258,12 @@ def arm(pad: Pad) -> None:
     """Make this cycle's character able to play: unblockable, armed, and unable to stay dead.
 
     A relaunched session starts with none of this, because equipment lives in live memory rather than on the worker.
+    But this runs every cycle and the cycle reuses a live session, so re-arming re-gives the same three weapons into the
+    same inventory until every give fails with "Not enough inventory slots" and the character is left unarmed.
     """
+    if pad.sid in ARMED_SESSIONS:
+        log("already armed this session - skipping (re-giving fills the inventory)")
+        return
     log("arming: walk_through, best weapons, survival")
     for payload in ({"op": "walk_through", "on": True},
                     {"op": "give", "code": "009d00", "equip": True},      # DARK FLOW
@@ -237,6 +273,7 @@ def arm(pad: Pad) -> None:
         answer = mods(pad, payload)
         log(f"  {payload['op']} {payload.get('code', '')}: {answer.get('state')} "
             f"{str(answer.get('error'))[:70]}")
+    ARMED_SESSIONS.add(pad.sid)
 
 
 # ---- play ------------------------------------------------------------------------------------------------------------
@@ -268,11 +305,37 @@ def unstick(pad: Pad, attempts: int = 3) -> str:
         # Nothing physical moved it. Cancel any menu - with B only: START *opens* the pause menu, and pressing it
         # here is what turned a temporary jam into a permanent one. Then back off and go round, alternating sides so
         # the same corner cannot trap it twice.
-        log(f"unstick: no direction moved it (attempt {attempt + 1}) - cancelling, backing off, going round")
+        log(f"unstick: no direction moved it (attempt {attempt + 1}) - cancelling, retreating, going round")
         tap(pad, "b")
         time.sleep(0.5)
-        hold(pad, "down", 0.8)
-        time.sleep(0.15)
+        # A corner needs a real retreat, not one nudge: the way we came in is the likeliest free direction,
+        # so walk back along it several steps before trying to turn.
+        retreated = 0.0
+        for _ in range(4):
+            before_step = state(pad).get("player") or {}
+            start = (float(before_step.get("x") or 0), float(before_step.get("z") or 0))
+            hold(pad, "down", 0.7)
+            after_step = state(pad).get("player") or {}
+            end = (float(after_step.get("x") or 0), float(after_step.get("z") or 0))
+            gained = math.dist(start, end)
+            retreated += gained
+            if gained < 0.5:
+                break                                  # backing up is blocked too - stop wasting time
+        log(f"  retreated {retreated:.1f} units")
+        if retreated < 0.5 and TELEPORT_ATTEMPTS["count"] < 2:
+            # Every direction blocked and the retreat blocked: a ledge, not a menu. Drop to ground level at the same
+            # x/z - the fields all read y ~0.1, and a character standing at y 27 cannot walk anywhere.
+            TELEPORT_ATTEMPTS["count"] += 1
+            here = state(pad).get("player") or {}
+            hx, hz = float(here.get("x") or 0), float(here.get("z") or 0)
+            hy = float(here.get("y") or 0)
+            log(f"  every direction is blocked at y {hy:.1f} - dropping to ground level at {hx:.1f},{hz:.1f}")
+            landed = teleport(pad, hx, 0.1, hz)
+            log(f"  drop {'landed' if landed else 'did not take'}")
+            if landed:
+                TELEPORT_ATTEMPTS["count"] = 0
+                hold(pad, "up", 0.6)
+                return "up"
         hold(pad, "left" if attempt % 2 == 0 else "right", 0.5)
         time.sleep(0.15)
         hold(pad, "up", 0.6)
@@ -284,6 +347,7 @@ def play(pad: Pad, seconds: float = 120.0) -> str:
     """Fight what is near, otherwise travel. Returns what it did most."""
     started = time.time()
     last_position, stuck, killed, moved, closest = None, 0, 0, 0.0, 999.0
+    gates_seen, crossed = set(), []
     last_enemy_hp = {}
 
     while time.time() - started < seconds:
@@ -293,8 +357,8 @@ def play(pad: Pad, seconds: float = 120.0) -> str:
             return "no player"
 
         x, z = float(player.get("x") or 0), float(player.get("z") or 0)
-        heading = float(player.get("heading_deg") or 0)
-
+        if last_position and math.dist((x, z), (last_position[0], last_position[1])) > 1.0:
+            GOOD_POSITION.update(x=x, y=float(player.get("y") or 0), z=z)
         if last_position and abs(x - last_position[0]) < 0.8 and abs(z - last_position[1]) < 0.8:
             stuck += 1
         else:
@@ -335,8 +399,6 @@ def play(pad: Pad, seconds: float = 120.0) -> str:
                 before = distance
                 hold(pad, "left" if approach_side > 0 else "right", 0.18)
                 hold(pad, "up", 0.75)
-                after_state = state(pad).get("player") or {}
-                now_target = [e for e in (after_state.get("entities") or [])] if False else None
                 found_after = state(pad)
                 after_enemies = [e for e in (found_after.get("entities") or [])
                                  if str(e.get("kind")) == "enemy" and e.get("hp") is not None
@@ -351,14 +413,39 @@ def play(pad: Pad, seconds: float = 120.0) -> str:
                         globals()["APPROACH_SIDE"] = -approach_side
                 moved += 1
         else:
-            # travel: the game needs the character to cross the floor to find the key and the door
-            sweep = time.time() - started
-            hold(pad, "left" if int(sweep) % 2 else "right", 0.3)
-            hold(pad, "up", 0.7)
-            moved += 1
+            # No enemies here. Instead of sweeping blindly, walk to a DOOR: the state lists every gate with its
+            # position (fields carry 19-24 of them), so "proceed to the next room" becomes a target to steer at.
+            gates = [e for e in (now.get("entities") or []) if str(e.get("kind")) == "gate"
+                     and e.get("x") is not None and e.get("z") is not None]
+            if gates:
+                gate = min(gates, key=lambda e: (float(e.get("x") or 0) - x) ** 2
+                           + (float(e.get("z") or 0) - z) ** 2)
+                gx, gz = float(gate.get("x") or 0), float(gate.get("z") or 0)
+                gdist = math.hypot(gx - x, gz - z)
+                gates_seen.add((round(gx / 25.0), round(gz / 25.0)))     # distinct gates, coarsely binned
+                if gdist <= 20.0:
+                    # close enough to cross: walk straight through it, walk_through keeps geometry out of the way
+                    hold(pad, "up", 0.9)
+                    crossed.append((round(gx / 25.0), round(gz / 25.0)))
+                else:
+                    gate_side = globals().get("GATE_SIDE", 1)
+                    before_g = gdist
+                    hold(pad, "left" if gate_side > 0 else "right", 0.18)
+                    hold(pad, "up", 0.75)
+                    after_p = state(pad).get("player") or {}
+                    ax, az = float(after_p.get("x") or 0), float(after_p.get("z") or 0)
+                    if math.hypot(gx - ax, gz - az) > before_g - 0.5:
+                        globals()["GATE_SIDE"] = -gate_side
+                moved += 1
+            else:
+                # a room with no gates listed: sweep, but keep it short so the next sample can find one
+                hold(pad, "left" if int(time.time()) % 2 else "right", 0.25)
+                hold(pad, "up", 0.6)
+                moved += 1
         time.sleep(0.15)
 
-    return f"played {seconds:.0f}s, {moved} travel steps, closest approach {closest:.1f}"
+    return (f"played {seconds:.0f}s, {moved} travel steps, closest approach {closest:.1f}, "
+            f"gates approached {len(gates_seen)}, crossed {len(crossed)}")
 
 
 # ---- outer loop ------------------------------------------------------------------------------------------------------
