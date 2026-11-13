@@ -220,7 +220,7 @@ native mailbox/build/player life and both collision volumes. Only confirmed
 inactive, detached actors are reusable. In round6a33 nine mines had armed at the
 midround check: four distance singles plus a five-mine ring; native trigger and
 retirement evidence exists. At least76 hit-ring floor refusals included14 ray
-misses and62 results outside61cm floor tolerance, some3Ã¢â‚¬â€œ11m below the player.
+misses and62 results outside61cm floor tolerance, some3ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Å“11m below the player.
 Keep the floor checks. Provisional escape sites are not armed mines.
 
 `c2d71665e` repairs consumed distance on such a refusal: preserve travel already
@@ -551,3 +551,52 @@ same worker modules serve every title).
 4. Deaths: use `death_cause` from the next deaths; the died-round report path still has no death detail
    (`metrics.survival.death_hp` etc. null, `player_damage_events` counted but no hit rows), so live capture is
    the only evidence for now.
+
+## DeepSeek PM round 3 (2026-11-13 12:57 onward): the operator's mine-ring button, and what the reels show
+
+### The "Mine ring · 5 ft" button on RE6 is fixed in the client (no restart)
+
+The root cause was not a missing backend: RE6 already exposes the interventions op **`remote_mines`** ->
+`re6_switch_native.bomb_ring_now` / `Controller.drop_bomb_ring` (armed native remote bombs ejected from the body,
+no throw/animation, placements recorded for the deadline controller). What never existed was any UI control that
+sent it; the topbar icon the operator pressed was the RE5 proximity-mine lane, which RE6 does not advertise.
+
+- `95c958138` adds a **"Remote mine ring · 5 ft"** topbar control, shown only where the worker advertises
+  `remote_mines` (hidden on RE5/RE4 and on any title without the lane). Each click posts
+  `{op:'remote_mines', args:{action:'ring', count:5, radius_cm:152.4}}`; the bot's own deadline controller then
+  escapes the blast distance and sets the set off through the native flag. It sits beside the existing grenade-ring
+  and flash controls, so RE6 now has: flash ring, grenade/shell rings, manual remote-bomb ring, remote-bomb
+  detonation is bot-owned.
+- `43f7dfa7f` reports honestly when that native receipt is "uncertain": `drop_bomb_ring` names armed units but has
+  no separate `verified` flag, so `completion_receipt` marks it uncertain; the panel now says
+  "Armed remote bombs: N/M (uncertain); the bot escapes and detonates them" instead of "no confirmed effect".
+- Client tests: 29 pass (new: request body + receipt text; control hidden without the capability, shown and
+  sending the 5-bomb 150 cm ring with it). The share already serves the updated client, so a page refresh shows it;
+  no service restart is needed for this control.
+
+### Bot fixes from round 2 are deployed to the share but not yet loaded
+
+`deployed-main.txt` = `8c2edf5c0` (ring geometry kept across travel receipts, `floor_safety_why`,
+`mine_escape_*` timing, `death_cause`), but the bot-only reload has not found a finalized boundary: MercMode has
+been playing an unusually long Resident Evil 4 round (the Round-1/2 watcher is still running and will reload in
+place at the first terminal/menu with its evidence closed). Do not claim these fixes are live yet.
+
+### Round results around the Codex repair (from the round reports, not narrative)
+
+| ended (local) | outcome | score | kills | max combo | accuracy | deaths |
+| --- | --- | --- | --- | --- | --- | --- |
+| 12:36 | completed | 885 889 | 300 | 77 | 38.1 % | 0 |
+| 12:47 | died | 292 730 | 219 | 48 | 39.7 % | 1 |
+| 12:52 | died | 141 320 | 103 | 53 | 37.0 % | 1 |
+
+The 12:36 round is the best measured RE6 round so far (300 kills, 885k, no deaths) and it ran on the round-1
+fixes; the 12:47 round ended at the moment the Codex repair was activated, the 12:52 round (sampled in round 2:
+46 bombs, 5 native flag detonations, 0 failures, oldest bomb pending 111 s) ended in a death. One died round on
+the repair is not proof that the bomb changes hurt survival - different stage, weapons and enemy cast - but it is
+why `death_cause` was added. Next deaths must be attributed from that scalar before changing survival logic.
+
+### Health of the other lane
+
+Hermes review gate is responsive: enabled, no `last_error`, 1520 reviewed / 325 merged / 2316 pending / 7 retry,
+12 attention items (reviewer verdicts, mostly "blocked" requests, not connectivity). MercMode stays on 5/5/5,
+rotating; keep it playing.
