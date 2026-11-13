@@ -34,6 +34,7 @@ class Cadence:
         self.owner, self.previous = None, None
         self.distance, self.last_request = 0., -math.inf
         self.event_id = None
+        self.traversal_id = None
 
     def observe(self, snap, stats, now, enabled=True):
         from . import re5_switch as R
@@ -57,6 +58,7 @@ class Cadence:
             self.distance = 0.
             event = stats.get('automine_event') or {}
             self.event_id = event.get('id')
+            self.traversal_id = (stats.get('traversal_mine_event') or {}).get('id')
         stats.update(automine_enabled=bool(enabled), automine_distance_cm=round(self.distance, 1),
                      automine_interval_ft=20)
 
@@ -68,6 +70,12 @@ class Cadence:
                 and event.get('kind') in ('hit', 'qte') and type(event.get('at')) in (int, float)
                 and 0 <= now - event['at'] <= REACTION_S):
             return event['kind'], event['id']
+        from .re5_traversal import EVENT_FRESH_S
+        landing = stats.get('traversal_mine_event') or {}
+        if (tuple(landing.get('owner') or ()) == self.owner and landing.get('id') != self.traversal_id
+                and landing.get('kind') == 'traversal' and position(landing.get('pos'))
+                and type(landing.get('at')) in (int, float) and 0 <= now-landing['at'] <= EVENT_FRESH_S):
+            return 'traversal', landing['id']
         if self.distance >= DISTANCE_CM and (snap.get('player') or {}).get('motion') in TRAVEL_MOTIONS:
             return 'distance', None
         return None
@@ -76,7 +84,10 @@ class Cadence:
         self.last_request = now
         self.distance = 0.                           # no burst of catch-up drops after a long request
         if demand[1] is not None:
-            self.event_id = demand[1]
+            if demand[0] == 'traversal':
+                self.traversal_id = demand[1]
+            else:
+                self.event_id = demand[1]
 
 
 def enabled(memory):
@@ -172,6 +183,7 @@ class Flight:
             self.guard['pending'] = False
         return {'id': job['id'], 'owner': job['owner'], 'receipt': result,
                 'requested': job['requested'], 'center': job['center'],
+                'reason': job['reason'],
                 'cancelled': job['cancel'].is_set(), 'archive': str(job['path'])}
 
     def take_deployments(self):
@@ -200,18 +212,41 @@ class Flight:
         if not self.live or self.job is not None or self.owner == self.blocked_owner:
             return False
         owner = self.owner
+        landing = None
+        remaining = DEADLINE_S
+        if reason == 'traversal':
+            from .re5_traversal import EVENT_FRESH_S
+            event = stats.get('traversal_mine_event') or {}
+            if (event.get('kind') != 'traversal' or tuple(event.get('owner') or ()) != owner
+                    or event.get('id') is None or not position(event.get('pos'))
+                    or tuple(event['pos']) != center or type(event.get('at')) not in (int, float)
+                    or not 0 <= now-event['at'] < EVENT_FRESH_S):
+                return False
+            landing = {k: event.get(k) for k in ('id', 'at', 'kind')}
+            landing.update(owner=list(event['owner']), pos=list(event['pos']))
+            remaining = EVENT_FRESH_S-(now-event['at'])
         rid = uuid.uuid4().hex
         job = {'id': rid, 'owner': owner, 'cancel': threading.Event(), 'done': threading.Event(),
-               'path': ROOT / (rid + '.json'), 'requested': count, 'center': center}
+               'path': ROOT / (rid + '.json'), 'requested': count, 'center': center, 'reason': reason}
         record = {'schema': 'gbox.mercs.native-mine/1', 'id': rid, 'owner': list(owner),
                   'session': stats.get('source_session_id'), 'requested_at': now,
                   'requested': count, 'center': center, 'state': 'requested', 'reason': reason}
-        deadline = time.monotonic() + DEADLINE_S
+        if reason == 'traversal':
+            event = stats.get('traversal_mine_event') or {}
+            record['traversal'] = {k: event.get(k) for k in ('id','at','pos','traversal',
+                'entered_at','native_action','completed_action','completion_flag_seen','evidence')}
+        started = time.monotonic()
+        deadline, landing_deadline = started + DEADLINE_S, started + remaining
+        landing_deployed = threading.Event()
 
         def allowed():
             stamp = time.monotonic()
             return (not self.closed and not job['cancel'].is_set() and enabled(self.memory)
                     and self.live and self.owner == owner and stamp < deadline
+                    and (landing is None or landing_deployed.is_set()
+                         or stamp < landing_deadline
+                         and all((stats.get('traversal_mine_event') or {}).get(k) == v
+                                 for k, v in landing.items()))
                     and 0 <= stamp - self.seen <= OBSERVER_FRESH_S
                     and stats.get('round_evidence_id') == owner[0]
                     and not stats.get('round_evidence_closed') and not stats.get('operator_control')
@@ -225,6 +260,11 @@ class Flight:
                 return
             mine = {'unit': row['unit'], 'generation': row['generation'], 'pos': tuple(row['pos']),
                     'active': row.get('active') is True, 'armed_observed': False}
+            if row.get('active') is True:
+                # A committed physical mine remains a hazard even after its
+                # landing token expires. Finish observing native arming; this
+                # does not permit another allocation (traversal count is one).
+                landing_deployed.set()
             deployed_center = center if center is not None else tuple(row['center']) if position(row.get('center')) else None
             try:
                 self.deployments.put_nowait({'id': rid, 'owner': owner, 'center': deployed_center,

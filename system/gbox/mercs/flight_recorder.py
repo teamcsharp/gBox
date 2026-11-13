@@ -135,6 +135,8 @@ class FlightRecorder:
                    'mine_trail_requests', 'mine_trail_drops', 'mine_trail_last', 'mine_allocation_blocked_reason',
                    'mine_landing_requests', 'mine_landing_drops', 'mine_landing_ready',
                    'mine_landing_evidence', 'mine_landing_last',
+    'traversal_completions', 'traversal_observation', 'traversal_mine_event', 'traversal_rejected',
+    'floor_safety_blocks', 'floor_safety_last', 'ring_driver_actions_retained', 'ring_movement_policy',
                    'shots', 'hits', 'aimbook_hits', 'aimbook_misses', 'heals', 'first_aid_last',
                    'bonuses_taken', 'bonus_approaches', 'bonus_unconfirmed', 'nav_stuck',
                    'fire_burst_goal', 'fire_burst_remaining', 'fire_burst_state', 'fire_burst_requests',

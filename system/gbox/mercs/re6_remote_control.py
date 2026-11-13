@@ -3,12 +3,14 @@ from __future__ import annotations
 
 import math
 from pathlib import Path
+import struct
 import threading
 import time
 import uuid
 
 from .re6_bomb_deadlines import Deadlines, finite, record_placement
 from .follow_report_delivery import _write
+from .re6_traversal import Landing, at_landing
 
 ROOT = Path(__file__).resolve().parents[2] / 'gbox-data' / 'mercs' / 'native-remote-receipts'
 TRAVEL_CM, REQUEST_GAP_S = 609.6, 3.0
@@ -71,10 +73,10 @@ class Travel:
         self.distance, self.last_request = 0., now
 
 
-def single_drop_now(ad, owner, cancelled):
+def single_drop_now(ad, owner, cancelled, *, preflight=None, op='bomb_trail'):
     """One body-position drop with an atomic all-bomb and held-gun preflight."""
     from .titles import re6_switch_native as native
-    result = {'op': 'bomb_trail', 'state': 'unavailable', 'verified': False,
+    result = {'op': op, 'state': 'unavailable', 'verified': False,
               'requested': 1, 'placed': 0, 'units': [], 'radius_cm': 0.}
     allocation_started = False
     try:
@@ -98,6 +100,8 @@ def single_drop_now(ad, owner, cancelled):
             result['weapon_before'] = before
             if cancelled():
                 raise native.Unavailable('travel ended before native allocation')
+            if preflight is not None:
+                preflight(ctl)
             allocation_started = True
             receipt = ctl.drop_bomb(expected_player=owner[1], expected_generation=owner[2], cancelled=cancelled)
             if not (receipt.get('verified') is True and receipt.get('armed') is True
@@ -114,6 +118,23 @@ def single_drop_now(ad, owner, cancelled):
         result.update(state='uncertain' if allocation_started else 'unavailable', verified=False,
                       reason=f'{type(exc).__name__}: {exc}'[:250])
     return result
+
+
+def landing_drop_now(ad, owner, cancelled, mesh, evidence):
+    """Recheck native feet/action and the same floor under the allocation lock."""
+    from .titles import re6_switch_native as native
+    def preflight(ctl):
+        r = native.R
+        current_mesh = r.navmesh(ctl, ctl.base)
+        equipped, _, _ = r.inventory_state(ctl, owner[1])
+        player = dict(pos=list(struct.unpack('<3f', ctl.rd(owner[1] + r.P_POS, 12))),
+                      state=ctl.rd(owner[1] + r.P_STATE, 1)[0], equipped=equipped,
+                      action=r.unit_action(ctl, owner[1]))
+        if current_mesh is not mesh or not at_landing(player, mesh, evidence) or cancelled():
+            raise native.Unavailable('traversal landing no longer grounded, controllable, or at the observed exit')
+    out = single_drop_now(ad, owner, cancelled, preflight=preflight, op='bomb_landing')
+    out['traversal'] = evidence
+    return out
 
 
 def emergency_ring_now(ad, owner, cancelled, count, radius):
@@ -194,7 +215,7 @@ def control(ad, prof, bot_getter=None):
     from .titles import re6_switch_native as native
     if str((prof or {}).get('map_id') or '') not in rules.TITLES:
         return None
-    book, flight, travel = Deadlines(), RingFlight(), Travel()
+    book, flight, travel, landing = Deadlines(), RingFlight(), Travel(), Landing()
     last_attempt = -math.inf
     blocked_owner, receipt_owner, awaiting_census, last_census = None, None, {}, None
     live_view = {}
@@ -207,8 +228,9 @@ def control(ad, prof, bot_getter=None):
         nonlocal last_attempt, blocked_owner, receipt_owner, last_census
         owner = owner_of(snap, stats)
         travel.observe(owner, snap, stats, now, rules.policy(stats)['enabled'])
+        landing.observe(owner, snap, stats, now, rules.policy(stats)['enabled'])
         p = snap.get('player') or {}
-        live_view.update(owner=owner, seen=time.monotonic(), moving=travel.moving,
+        live_view.update(owner=owner, seen=time.monotonic(), moving=travel.moving, landing=landing.pending,
                          allowed=rules.policy(stats)['enabled'] and not stats.get('operator_control')
                          and not stats.get('round_evidence_closed')
                          and (p.get('hp') or 0) > 0 and stats.get('screen') in (None, 'playing'))
@@ -225,11 +247,13 @@ def control(ad, prof, bot_getter=None):
             placed = int(receipt.get('placed') or 0)
             stats['mine_ring_last'] = receipt
             stats['mine_ring_bombs'] = int(stats.get('mine_ring_bombs', 0)) + placed
-            trail = receipt.get('op') == 'bomb_trail'
-            field = 'mine_trail_drops' if trail else 'mine_rings_dropped'
+            trail, landed = receipt.get('op') == 'bomb_trail', receipt.get('op') == 'bomb_landing'
+            field = 'mine_landing_drops' if landed else 'mine_trail_drops' if trail else 'mine_rings_dropped'
             stats[field] = int(stats.get(field, 0)) + bool(placed)
             if trail:
                 stats['mine_trail_last'] = receipt
+            if landed:
+                stats['mine_landing_last'] = receipt
             for unit in receipt.get('units') or ():
                 key = unit.get('unit'), unit.get('generation')
                 if (unit.get('armed') is True and all(type(v) is int for v in key)
@@ -343,29 +367,42 @@ def control(ad, prof, bot_getter=None):
                  and stats.get('mine_flash_combo_at') != flash_at)
         surrounded = near >= rules.SURROUND_N and now - float(stats.get('mine_surround_at') or 0) >= rules.SURROUND_S
         emergency = flash or surrounded
-        if not emergency and not travel.due(now):
+        landed = not emergency and landing.due()
+        if not emergency and not landed and not travel.due(now):
             return dict(result, reason=f'measured travel {travel.distance:.0f}/{TRAVEL_CM:.0f} cm; no stationary timer drops')
         count, radius = (rules.FLASH_COMBO_MINES, policy['radius_cm']) if emergency else (1, 0.)
         owner = owner_of(snap, stats)
+        landing_evidence, landing_mesh = landing.pending, landing.mesh
         if not owner[0] or any(type(v) is not int for v in owner[1:]):
             return dict(result, reason='native ring needs a verified round and player identity')
         def operation(cancelled):
             def stopped():
                 return (cancelled() or live_view.get('owner') != owner or not live_view.get('allowed')
                         or time.monotonic() - live_view.get('seen', -math.inf) > 1.
-                        or not emergency and not live_view.get('moving'))
+                        or (landed and live_view.get('landing') is not landing_evidence)
+                        or not emergency and not landed and not live_view.get('moving'))
+            if landed:
+                return landing_drop_now(ad, owner, stopped, landing_mesh, landing_evidence)
             if not emergency:
                 return single_drop_now(ad, owner, stopped)
             return emergency_ring_now(ad, owner, stopped, count, radius)
-        if not flight.submit(owner, operation,
-                {'count': count, 'radius_cm': radius, 'reason': 'flash' if flash else 'surrounded' if surrounded else 'travel',
+        metadata = {'count': count, 'radius_cm': radius,
+                 'reason': 'flash' if flash else 'surrounded' if surrounded else 'traversal_landing' if landed else 'travel',
                  'travel_cm': round(travel.distance, 1), 'player_pos': list(pos),
-                 'session': stats.get('source_session_id')}):
+                 'session': stats.get('source_session_id')}
+        if landed:
+            metadata['traversal'] = landing_evidence
+        if not flight.submit(owner, operation, metadata):
             return dict(result, reason='native bomb allocation already in progress')
         travel.claimed(now)
+        if landing.due():
+            landing.claim()  # an emergency ring also consumes this exit opportunity
+            stats['mine_landing_ready'] = False
         stats['mine_ring_pending'] = True
         stats['mine_ring_requests'] = int(stats.get('mine_ring_requests', 0)) + 1
-        if not emergency:
+        if landed:
+            stats['mine_landing_requests'] = int(stats.get('mine_landing_requests', 0)) + 1
+        elif not emergency:
             stats['mine_trail_requests'] = int(stats.get('mine_trail_requests', 0)) + 1
         stats.pop('mine_next_drop_at', None)
         if surrounded:
@@ -375,8 +412,8 @@ def control(ad, prof, bot_getter=None):
             stats['mine_flash_combo_at'] = flash_at
             stats['mine_flash_combos'] = int(stats.get('mine_flash_combos', 0)) + 1
             stats.pop('qte_escape_mines_due', None)
-        return dict(result, op='bomb_ring' if emergency else 'bomb_trail', pending=True,
-                    reason=f'native {"emergency ring of up to " + str(count) if emergency else "single travel bomb"} requested; movement remains active')
+        return dict(result, op='bomb_ring' if emergency else 'bomb_landing' if landed else 'bomb_trail', pending=True,
+                    reason=f'native {"emergency ring of up to " + str(count) if emergency else "single landing bomb" if landed else "single travel bomb"} requested; movement remains active')
 
     step.observe, step.close = observe, flight.close
     return step

@@ -730,6 +730,9 @@ class Mines:
         if snap.get('mine_settings'):
             self.configure(snap['mine_settings'])
         observe_event(snap, self.stats, now)
+        if memory is not None and callable(getattr(memory, 'rd', None)) and snap.get('module_base'):
+            from .re5_traversal import observe as observe_traversal
+            observe_traversal(memory, snap, self.stats, now)
         self.cadence.observe(snap, self.stats, now, self.automine)
         if getattr(self, 'native', None) is None and self.state == 'idle' and native.enabled(memory):
             self.native = native.Flight(memory)
@@ -829,6 +832,10 @@ class Mines:
         if result.get('state') == 'confirmed' and not complete:
             self.native.blocked_owner = packet['owner']
             self.stats['native_mine_last']['reason'] = 'native receipt did not confirm requested mines with unchanged weapon'
+        if packet.get('reason') == 'traversal':
+            self.stats['mine_landing_last'] = dict(self.stats['native_mine_last'],
+                at=now, center=packet.get('center'), confirmed_armed=len(confirmed))
+            self.stats['mine_landing_drops'] = self.stats.get('mine_landing_drops', 0) + len(confirmed)
         if not complete:
             self.stats['mine_unconfirmed'] += 1
             self._retry_at = now + RETRY_S
@@ -866,15 +873,19 @@ class Mines:
         demand = self.cadence.demand(snap, self.stats, now)
         if demand is None:
             return
-        event = self.stats.get('automine_event') or {}
+        landing = demand[0] == 'traversal'
+        event = self.stats.get('traversal_mine_event' if landing else 'automine_event') or {}
         reaction = demand[0] in ('hit', 'qte')
         count = 5 if reaction and (demand[0] == 'hit' or (event.get('damage') or 0) > 0) else 1
-        center = tuple(event['pos']) if reaction and native.position(event.get('pos')) else None
+        center = tuple(event['pos']) if (reaction or landing) and native.position(event.get('pos')) else None
+        if landing and center is None:
+            self.stats['mine_blocked_reason'] = 'traversal landing position unavailable'
+            return
         if count == 5 and center is None:
             self.stats['mine_blocked_reason'] = 'hit position unavailable; damage ring not relocated'
             return
         if self._native_escape is not None and not reaction:
-            self.stats['mine_blocked_reason'] = 'finish native mine escape before another distance drop'
+            self.stats['mine_blocked_reason'] = 'finish native mine escape before another travel or landing drop'
             return
         if not native.enabled(flight.memory) or flight.owner == flight.blocked_owner:
             self.stats['mine_blocked_reason'] = 'native mine unavailable or previous placement uncertain'
@@ -896,6 +907,9 @@ class Mines:
             self.stats['mine_attempts'] += 1
             self.stats['automine_request_reason'] = demand[0]
             self.stats['automine_request_count'] = count
+            if landing:
+                self.stats['mine_landing_requests'] = self.stats.get('mine_landing_requests', 0) + 1
+                self.stats['mine_landing_evidence'] = dict(event)
             self.stats['mine_status'] = 'native mine requested; movement and combat continue'
             if count == 5:
                 from .re5_proximity_native import points

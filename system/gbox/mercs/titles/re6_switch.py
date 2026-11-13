@@ -763,19 +763,29 @@ class NavMesh:
 
     def clear(self, a, b, steps: int = 600) -> bool | None:
         """Whether the straight line a -> b stays on the walkable floor (on a's level): walked triangle to triangle
-        across the edges it crosses; an edge with no neighbour (a wall, a drop, a crate) - False. None: off the mesh or
-        another level (unknown)."""
-        k, g = self.locate(a), self.locate(b)
-        if k is None or g is None or abs(a[1] - b[1]) > 2 * NAV_DY:
+        across the edges it crosses; an edge with no neighbour (a wall, a drop, a crate), or an endpoint off the
+        floor - False. None: another level or an unresolved edge crossing (unknown)."""
+        from .re6_floor import floor_at
+        if any(not isinstance(p, (list, tuple)) or len(p) != 3 or
+               not all(isinstance(v, (int, float)) and math.isfinite(v) for v in p) for p in (a, b)):
+            return False
+        if abs(a[1] - b[1]) > 2 * NAV_DY:
             return None
+        first, last = floor_at(self, a, NAV_DY), floor_at(self, b, NAV_DY)
+        if first is None or last is None:
+            # locate() deliberately recovers to a nearby triangle. That helps
+            # route recovery, but must never certify a pit/ledge as walkable.
+            return False
+        k, g = first[0], last[0]
         ax, az, bx, bz = a[0], a[2], b[0], b[2]
         length = math.hypot(bx - ax, bz - az)
         if length < 1.0:
             return True
         ax, az = ax + (bx - ax) * 0.5 / length, az + (bz - az) * 0.5 / length   # off an edge it may start on
-        k = self.locate((ax, a[1], az))
-        if k is None:
-            return None
+        biased = floor_at(self, (ax, a[1], az), NAV_DY)
+        if biased is None:
+            return False
+        k = biased[0]
 
         def cross(o, p_, q):
             return (p_[0] - o[0]) * (q[1] - o[1]) - (p_[1] - o[1]) * (q[0] - o[0])
@@ -3382,6 +3392,8 @@ class Bot:
             self.stats["unsafe_trigger_blocks"] += 1
             self.qshot_release, self.fire_down = False, False
             out = self._go("nade", "gun_back", self._equip_keys(snap['player'], self._gun_index(snap['player'])), f"an item in hand (slot {eq}): the gun back first")
+        from . import re6_movement_safety
+        out = re6_movement_safety.guard(self, snap, out, now)       # final pad: no late rewrite may step off the floor
         re6_switch_wall.feedback(self, snap, out, now)
         try:
             self._look_tick(snap, now)
@@ -5208,6 +5220,7 @@ class Bot:
             return False
         self.stats["lock_write_ok"] += 1
         self.lock_write_at = now
+        self._floor_heading_written_at = now                   # survives _gun_down before the final floor guard
         if redirected:
             self.lock_redirect_at = now
         self.lock_w = (pitch, want_yaw, want_pitch)
