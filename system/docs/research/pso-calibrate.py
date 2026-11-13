@@ -24,7 +24,6 @@ import argparse
 import json
 import pathlib
 import statistics
-import sys
 import time
 import urllib.request
 

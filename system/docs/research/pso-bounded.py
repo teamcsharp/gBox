@@ -127,14 +127,16 @@ def run(mode: str, args) -> int:
         table = calibration.as_dict()
         log(f"calibration: model={calibration.model} speed={calibration.speed} "
             f"effects={table['effects']} turn={table['turn_deg']}")
-    # Movement is the calibrated TAP, not a hold. Measured live on 2026-11-13 (pso-calibrate.py, 4 samples per key,
-    # settling after each action): every direction tap moved 7.8-8.0 units, while a 0.30 s hold moved 38.9 units
-    # because the release job lands about a second after the down job. A tap is one job, self-releasing, and its
-    # distance does not depend on job latency, so it is the only primitive here whose displacement is predictable.
+    # Movement is the calibrated TAP, steered in the character's own frame. Measured live on 2026-11-13
+    # (pso-calibrate.py, 4 samples per key, settling after each action): every direction tap moved 7.8-8.0 units,
+    # while a 0.30 s hold moved 38.9 units because the release job lands about a second after the down job. The
+    # frame matters as much as the primitive: a world-frame key table goes stale as the character turns (measured:
+    # 138 taps around the plaza ending 244 units from a 230-unit target), so facing comes from the last movement.
     arrive = 6.0 if mode == "walk" else 8.0
-    motion = B.VectorMotion(arrive=arrive, primitive="tap")
+    turns = {}
     if calibration is not None:
-        motion.seed(calibration.effects, speed=calibration.speed or None)
+        turns = {key: value for key, value in calibration.turn.items() if abs(value) >= 12.0}
+    motion = B.RelativeTapMotion(arrive=arrive, turn_deg=turns)
 
     if mode == "walk":
         target = tuple(args.to)

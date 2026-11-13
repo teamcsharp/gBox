@@ -108,15 +108,18 @@ class FakeWorld:
             return
         step = self.speed * seconds
         if self.mode == "tank":
+            # Heading convention: 0 = +z, 90 = +x, so a LEFT tap lowers the heading (measured live: -45 degrees).
             if key == "left":
-                self.facing += math.pi / 4
-                return
-            if key == "right":
                 self.facing -= math.pi / 4
                 return
+            if key == "right":
+                self.facing += math.pi / 4
+                return
             if key == "down":
-                self.pos[0] -= math.sin(self.facing) * step
-                self.pos[1] -= math.cos(self.facing) * step
+                # A backward tap turns the character around (it faces the way it moves), then it advances.
+                self.facing += math.pi
+                self.pos[0] += math.sin(self.facing) * step
+                self.pos[1] += math.cos(self.facing) * step
                 return
             self.pos[0] += math.sin(self.facing) * step
             self.pos[1] += math.cos(self.facing) * step
@@ -276,6 +279,48 @@ def test_a_wedged_character_is_recovered_a_bounded_number_of_times_then_fixtured
     assert box.world.releases >= 1
 
 
+class DriftingWorld(FakeWorld):
+    """Every action moves the character, but the movement never approaches the target: the plaza oscillation."""
+
+    def __init__(self, clock, **kwargs):
+        super().__init__(clock, **kwargs)
+        self.side = 1.0
+
+    def act(self, action, deadline):
+        super().act(action, deadline)
+        self.side = -self.side
+        self.pos[0] += 4.0 * self.side
+        self.pos[1] += 2.0
+
+
+class _FixedWalk:
+    """A policy whose only objective is one coordinate."""
+
+    def __init__(self, point):
+        self.point = point
+
+    def choose(self, snap, now, *, pressed=None, avoid=None):
+        player = snap.get("player") or {}
+        distance = math.hypot(self.point[0] - float(player.get("x") or 0),
+                              self.point[1] - float(player.get("z") or 0))
+        return B.Objective(0, "walk", self.point, distance, "coordinate", "", None, "walk target")
+
+    def note(self, kind, progressed):
+        pass
+
+
+def test_a_walk_that_moves_without_closing_escalates(workdir):
+    clock = FakeClock()
+    world = DriftingWorld(clock)
+    box = automaton(world, workdir, policy=_FixedWalk((500.0, 500.0)),
+                    bounds=B.Bounds(max_no_close_ticks=10))
+    box.run_for(60.0)
+
+    assert box.stopped, "moving without approaching the target must not be accepted as progress"
+    assert "not closed" in box.stopped
+    assert (workdir / "failure.json").exists()
+
+
 def test_no_objective_progress_for_the_limit_ends_the_run_with_a_fixture(workdir):
     clock = FakeClock()
     world = FakeWorld(clock)
@@ -288,19 +333,19 @@ def test_no_objective_progress_for_the_limit_ends_the_run_with_a_fixture(workdir
     assert (workdir / "failure.json").exists()
 
 
-def test_the_watchdog_counts_turning_as_liveness_but_not_as_progress():
-    """A character turning on the spot is responding to input; one where neither position nor facing changes is not.
+def test_the_watchdog_does_not_treat_rotation_as_liveness():
+    """Every blocked tap in the plaza still rotated the character ~90 degrees, so rotation cannot mean "alive".
 
-    Three spurious recoveries in the first live `play` run (21-22 s each while the character turned) are why this
-    distinction exists. The objective clock still catches a bot that turns forever, which is the signal that matters.
+    Measured: 138 taps at a railing, every one reported `moved 0.0`, every one rotated the character, and the
+    watchdog counted zero stalls because rotating was treated as liveness. Translation is the only signal.
     """
     watchdog = B.Watchdog(stall_s=5.0)
     still = {"x": 0.0, "z": 0.0, "heading_deg": 0.0}
     assert watchdog.observe(still, 1000.0) is None
-    assert watchdog.observe({**still, "heading_deg": 40.0}, 1002.0) is None, "turning is liveness"
-    assert watchdog.observe({**still, "heading_deg": 40.0}, 1006.0) is None
-    stall = watchdog.observe({**still, "heading_deg": 40.0}, 1008.0)
-    assert stall is not None, "no position and no facing change for longer than stall_s is a stall"
+    assert watchdog.observe({**still, "heading_deg": 90.0}, 1001.0) is None, "first sample sets the baseline"
+    assert watchdog.observe({**still, "heading_deg": 180.0}, 1003.0) is None, "still short of stall_s"
+    stall = watchdog.observe({**still, "heading_deg": 270.0}, 1006.0)
+    assert stall is not None, "a character turning in place without translating is stuck"
     assert watchdog.stalls == 1
 
 
@@ -511,6 +556,46 @@ def test_motion_can_use_the_calibrated_tap_primitive_and_never_holds_a_key(workd
     assert moves, "the controller must move"
     assert all(action.kind == "press" for action in moves), "tap motion must never hold a direction key"
     assert box.switch_ok == {"80DADF10"}
+
+
+def test_relative_motion_converges_in_a_turn_and_step_world(workdir):
+    """The character faces the way it moves, so the controller steers from its last displacement.
+
+    This is the shape the live city walk failed in: 138 taps that ended 244 units from a 230-unit target, because a
+    world-frame key table goes stale as the character turns. The relative controller keeps facing = last movement.
+    """
+    clock = FakeClock()
+    world = FakeWorld(clock, mode="tank")
+    for x, z in ((60.0, 40.0), (-50.0, 70.0), (30.0, -60.0)):
+        world.pos = [0.0, 0.0]
+        world.facing = 0.0
+        motion = B.RelativeTapMotion(arrive=6.0, turn_deg={"left": -45.0, "right": 45.0})
+        for _ in range(60):
+            action = motion.step(world.observe()["player"], (x, z), "test")
+            if action is None:
+                break
+            before = world.observe()["player"]
+            world.act(action, clock.now() + 3.0)
+            motion.learn(action, before, world.observe()["player"])
+        remaining = math.hypot(x - world.pos[0], z - world.pos[1])
+        assert remaining <= 10.0, f"target ({x},{z}) left {remaining:.1f} units away"
+
+
+def test_relative_motion_uses_the_character_frame_not_a_world_table(workdir):
+    """In a camera-relative world the same key changes world direction as the character turns.
+
+    `RelativeTapMotion` is built for that world; `VectorMotion` is the fixed-vector model and is tested separately.
+    """
+    clock = FakeClock()
+    world = FakeWorld(clock, mode="tank")
+    world.entities = [entity("TLazerFenceSw", "80DADF10", 50.0, 0.0)]
+    box = automaton(world, workdir, motion=B.RelativeTapMotion(arrive=6.0),
+                    bounds=B.Bounds(max_objective_ticks=200))
+    box.run_for(40.0)
+
+    assert box.switch_ok == {"80DADF10"}
+    moves = [action for _, action in world.log if action.key in B.DIRECTIONS]
+    assert moves and all(action.kind == "press" for action in moves)
 
 
 def test_heading_motion_turns_with_bounded_taps_then_steps(workdir):

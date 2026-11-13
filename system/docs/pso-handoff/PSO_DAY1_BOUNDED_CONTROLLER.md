@@ -208,14 +208,58 @@ success.
    the fresh session reaches a switch without a position write.
 5. **Wire the same evidence into the combo path**: action-state at `ptr+0x326` before/after each hit.
 
-## 6. Reproduce
+## 6. Round 2 — a clean session, and the city is the next wall
+
+The session was replaced (`docs/research/pso-session.py`: stop, launch, drive the menus, report the flags). The new
+session starts with the **entire stage-flag array at zero** (`floor 0`, all 18 groups `0/256`), which is what §3.5
+said was needed for switch evidence:
+
+```
+session 29d05fb902974b97-8431536cedea416a   in the world at (229.0, 254.0) room 10   hp 68/68
+floor 0   set bits per group [0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0]
+sha256   1a0295f4bf5986c5f74eca9153a6a4cb10b073a01a76ba4a457fd862c78966a4
+```
+
+That is the opening state a G3 test needs: any bit that changes after a switch press is attributable to that press.
+
+**The city is the wall, not the switch.** The character is in the Pioneer 2 lobby (room 10) and the way to Forest 1 is
+the warp door at `(254, 25)` and the platform at `(360, 26)`. Ninety-five taps of tap-vector steering and fifty-four
+taps of relative steering both failed to cross the plaza: the character ends up bouncing between `(105,154)` and
+`(131,160)`, ~170 units from the door, because the plaza railing sits between the lobby and the warp and the
+controller has no map of the city. Only the Forest collision grids are decoded (`forest-maps.json` holds
+`map_forest01c` and `map_forest02c`); the city map the handoff mentions (5,626 walkable / 4,959 safe cells) was not
+kept in the analysis directory.
+
+Two things came out of that failure and are now in the code:
+
+* **moving is not closing.** A walk that oscillates still moves more than the movement epsilon every tap, so the
+  movement watchdog never fires: 95 taps, zero stalls, 198 units from a 260-unit target. There is now a per-objective
+  "no closing" budget (`max_no_close_ticks`), and it works live: `walk coordinate not closed for 41 ticks (still 170
+  units away); the character is moving without approaching it`, then a fixture and a stop.
+* **rotation is not liveness.** Every blocked tap in the plaza still rotated the character by ~90°, so the earlier
+  "turning counts as liveness" rule let a completely wedged character look alive for 138 taps. The watchdog is back
+  to translation only, and a test pins it.
+
+The input mapping itself is still not fully characterised: `heading_deg` changes by ~90° per tap when the keys
+alternate, and the same `left` tap rotated the character clockwise in one session and anticlockwise in another (camera
+mode). `RelativeTapMotion` therefore learns the lateral sign from the first turn that increases the error instead of
+assuming one.
+
+**Next:** decode `map_city00_00c.rel` into the same safe-cell grid the Forest route uses, route to the warp door, then
+activate the warp and reach Forest 1 with controller input only. The switch→flag probe is ready for the first switch
+after that.
+
+## 7. Reproduce
 
 ```
 cd system
 python -m pytest tests/test_pso_bounded.py -q
 cd docs/research
-python pso-bounded.py walk --to 498 -261 --seconds 45      # calibration + bounded walk
-python pso-bounded.py play --seconds 90                    # progression policy + switch verification
+python pso-calibrate.py --samples 4 --batch 5                 # the primitive measurement
+python pso-session.py status                                  # session, player, stage-flag audit
+python pso-session.py restart --force                         # stop, launch, boot to a character
+python pso-bounded.py walk --to 498 -261 --seconds 45         # calibration + bounded walk
+python pso-bounded.py play --seconds 90                       # progression policy + switch verification
 ```
 
 Ledgers, fixtures and the flag audit are written to `D:\gBox\pso-ds\bounded\` (game-session data, never committed).

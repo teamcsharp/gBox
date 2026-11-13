@@ -64,6 +64,7 @@ class Bounds:
     max_recoveries: int = 4      # watchdog recoveries before a failure fixture
     hard_progress_s: float = 300.0      # no room/HP/flag progress for this long is a failure, not a slow room
     max_objective_ticks: int = 150      # ticks one objective may consume without progress before escalating
+    max_no_close_ticks: int = 40        # ticks a point objective may spend without getting measurably closer
     max_switch_attempts: int = 3        # presses of one switch with no flag change before it is a reported failure
 
 
@@ -207,13 +208,13 @@ class Watchdog:
             self.progressed_at = now
         position = (float(player.get("x") or 0), float(player.get("z") or 0))
         heading = player.get("heading_deg")
-        turned = (self.position is not None and heading is not None and self.heading is not None
-                  and abs(((float(heading) - self.heading + 540.0) % 360.0) - 180.0) > self.heading_epsilon)
         self.heading = None if heading is None else float(heading) % 360.0
-        if self.position is None or math.dist(self.position, position) > self.movement_epsilon or turned:
-            # Turning counts as liveness: the measured stalls that mattered were a pad that moved the character in
-            # neither position nor facing. A bot that only turns is caught by the objective clock instead, which is
-            # the signal the mandate actually grades.
+        moved = self.position is None or math.dist(self.position, position) > self.movement_epsilon
+        if moved:
+            # Translation is the liveness signal. A rotation is not: every blocked tap in the Pioneer 2 plaza still
+            # rotated the character by ~90 degrees, so counting rotation as liveness let a completely wedged character
+            # look alive for 138 taps (measured). A controller that legitimately turns in place must show a step
+            # within stall_s or it is stuck by definition.
             self.position, self.moved_at = position, now
             self.recoveries = 0
             return None
@@ -264,6 +265,105 @@ def _unit(dx: float, dz: float) -> tuple:
 
 def _bearing(fx: float, fz: float, tx: float, tz: float) -> float:
     return (math.degrees(math.atan2(tx - fx, tz - fz)) + 360.0) % 360.0
+
+
+class RelativeTapMotion:
+    """Steer in the character's own frame: the facing comes from the last tap, not from `heading_deg`.
+
+    The oscillation that this replaces is measured, not hypothetical: 138 taps around the Pioneer 2 plaza, ending 244
+    units from a target 230 units away, with the room changing back and forth. The cause is that every direction key
+    is **camera-relative**, the camera follows the character, and the character turns to face the way it moves - so
+    the world direction of a key rotates between taps and a table learned one tap ago is already wrong.
+
+    What stays valid is the relationship *between* the last movement and the target: after a tap the character is
+    facing the direction it just moved, so the error to the target can be measured in that frame and the next key
+    chosen from it. A tap is ~8 units, so the path turns in coarse steps and closes.
+
+    `turn_deg` (from `calibrate()`) supplies how much a key rotates the character when it does not translate, which is
+    how a turn-and-step build is handled by the same controller.
+    """
+
+    def __init__(self, *, arrive: float = 6.0, aim_deg: float = 60.0, min_move: float = 3.0,
+                 turn_deg: dict | None = None, patience: int = 6) -> None:
+        self.arrive = float(arrive)
+        self.aim_deg = float(aim_deg)
+        self.min_move = float(min_move)
+        self.turn = {str(key): float(value) for key, value in (turn_deg or {}).items()}
+        self.patience = int(patience)
+        self.facing = None              # world unit vector: the direction the character last moved
+        self.last_key = None
+        self.need_probe = False         # a turn tap moved nothing, so the facing has to be re-measured
+        self.best = None
+        self.no_progress = 0
+        self.flip_lateral = False       # the camera mode can invert left/right; one bad turn teaches the sign
+        self.last_error = None
+        self.last_was_lateral = False
+
+    def step(self, player: dict, target: tuple, reason: str = "") -> Action | None:
+        x, z = float(player.get("x") or 0), float(player.get("z") or 0)
+        dx, dz = float(target[0]) - x, float(target[1]) - z
+        distance = math.hypot(dx, dz)
+        if distance <= self.arrive:
+            return None
+        if self.best is None or distance < self.best - 0.5:
+            self.best, self.no_progress = distance, 0
+        else:
+            self.no_progress += 1
+        if self.no_progress >= self.patience:
+            # Circling is not a stall: the character keeps moving, so the watchdog cannot see it, and the same key
+            # choice keeps producing the same orbit. Turning around is a bounded action that changes the geometry.
+            self.no_progress, self.best = 0, distance
+            return press("down", f"no closing for {self.patience} taps toward {reason or 'target'}: turn around")
+        if self.facing is None or self.need_probe:
+            # One forward tap both moves and tells the model which way the character now faces. On a turn-and-step
+            # build a turn key moves nothing, so without this the model would keep turning while the world turned
+            # underneath it - which is exactly how a controller can spin forever while reporting progress.
+            self.need_probe = False
+            self.last_was_lateral = False
+            return press("up", f"probe forward toward {reason or 'target'}")
+        want = _unit(dx, dz)
+        error = _bearing_degrees(self.facing, want)          # + right, - left, same sign as heading_deg
+        if self.last_was_lateral and self.last_error is not None:
+            # A lateral tap is only correct if it reduced the angular error. When the camera mode inverts the lateral
+            # keys (measured: the same "left" tap rotated the character clockwise in one session and anticlockwise in
+            # another), the first turn *increases* the error and this flips the sign for every turn after it.
+            if abs(error) > abs(self.last_error) + 10.0:
+                self.flip_lateral = not self.flip_lateral
+        self.last_error = error
+        self.last_was_lateral = False
+        if abs(error) <= self.aim_deg:
+            key = "up"
+        elif abs(error) >= 180.0 - self.aim_deg:
+            key = "down"
+        else:
+            key = "right" if error > 0 else "left"
+            if self.flip_lateral:
+                key = "left" if key == "right" else "right"
+            self.last_was_lateral = True
+        self.last_key = key
+        return press(key, f"tap {key} ({error:+.0f} deg off) toward {reason or 'target'} ({distance:.0f} units)")
+
+    def learn(self, action: Action, before: dict, after: dict) -> float:
+        b = (float(before.get("x") or 0), float(before.get("z") or 0))
+        a = (float(after.get("x") or 0), float(after.get("z") or 0))
+        moved = math.dist(b, a)
+        if action.kind == "press" and action.key in DIRECTIONS:
+            if moved >= self.min_move:
+                self.facing = _unit(a[0] - b[0], a[1] - b[1])
+                self.need_probe = False
+            elif action.key in self.turn and self.facing is not None:
+                radians = math.radians(self.turn[action.key])
+                fx, fz = self.facing
+                self.facing = (fx * math.cos(radians) + fz * math.sin(radians),
+                               -fx * math.sin(radians) + fz * math.cos(radians))
+            elif action.key in DIRECTIONS:
+                self.need_probe = True         # a turn we cannot model: re-measure the facing with one step
+        return moved
+
+
+def _bearing_degrees(a: tuple, b: tuple) -> float:
+    """Signed angle from `a` to `b` in the heading convention (0 = +z, 90 = +x): + is clockwise, i.e. right."""
+    return ((math.degrees(math.atan2(b[0], b[1])) - math.degrees(math.atan2(a[0], a[1])) + 540.0) % 360.0) - 180.0
 
 
 @dataclass
@@ -472,7 +572,9 @@ class HeadingMotion:
         want = _bearing(x, z, float(target[0]), float(target[1]))
         error = ((want - self.heading + 540.0) % 360.0) - 180.0
         if abs(error) > self.aim_deg:
-            key = "left" if error > 0 else "right"
+            # Measured on this build: a left tap LOWERS `heading_deg` (five samples, -39 to -88 degrees), so a target
+            # clockwise of the facing is reached with `right`. The inverse was an assumption, and it steered away.
+            key = "right" if error > 0 else "left"
             seconds = min(self.tap_s, max(0.06, abs(error) / max(self.turn_rate, 1e-3)))
             return hold(key, seconds, f"turn {error:+.0f} deg toward {reason or 'target'}")
         seconds = min(self.step_s, max(0.12, distance / max(self.step_units / self.step_s, 1e-6)))
@@ -613,7 +715,10 @@ class ComboSequencer:
         self.action_state = None
 
     def next_action(self, now: float, *, reason: str = "combo") -> Action | None:
-        if self.stage and (now - self.pressed_at) < self.gap_s:
+        # The gap applies between every press, including the first press of the next combo. Without it the 4th press
+        # follows the 3rd immediately, which is not a combo and also keeps refreshing `attempt_end` so the whiff check
+        # never gets its 0.9 s window (measured: one whiff counted across ten attempts).
+        if self.pressed_at and (now - self.pressed_at) < self.gap_s:
             return Action("wait", None, self.gap_s - (now - self.pressed_at), f"{reason}: wait for the cancel window")
         if self.stage == 0:
             self.attempt_hp = self.hp
@@ -806,6 +911,8 @@ class Automaton:
         self.last_objective: Objective | None = None
         self.objective_key = None
         self.objective_since = 0
+        self.best_distance = None
+        self.no_close = 0
 
     # -- public -----------------------------------------------------------------------------------------------------
     def run_for(self, seconds: float) -> list:
@@ -938,14 +1045,17 @@ class Automaton:
             progressed, kind = True, "entity-vanished"
         elif delta["stage_flags"] and delta["stage_flags"][0] != delta["stage_flags"][1]:
             progressed, kind = True, "stage-flag"
-        elif objective is not None and self._arrived(objective, self._player(after)):
+        elif objective is not None and objective.kind in ("walk", "door", "warp") \
+                and self._arrived(objective, self._player(after)):
+            # Arriving is progress only when arrival *is* the objective. Standing 8 units from a container or a switch
+            # is not progress, and counting it as progress would reset the very streak that suppresses optional work.
             progressed, kind = True, "arrived"
         if progressed:
             self.watchdog.note_progress(now, kind)
         failure = ""
         if objective is not None:
             self.policy.note(objective.kind, progressed)
-            failure = self._budget(objective, progressed)
+            failure = self._budget(objective, progressed) or self._closing(objective, after)
             if objective.kind == "switch":
                 failure = failure or self._verify_switch(objective, action, before, after, now)
             if objective.kind == "wave":
@@ -988,11 +1098,36 @@ class Automaton:
                     f"to a flag in this group")
         return ""
 
+    def _closing(self, objective: Objective, after: dict) -> str:
+        """Distance closed is the progress signal for a point objective; oscillation is not.
+
+        Measured: 95 taps in the plaza between (105,154) and (112,164), ending 198 units from a 260-unit target, with
+        zero stalls because every tap did move the character by more than the movement epsilon. A walk that is not
+        getting closer is failing whether or not it is moving, so it escalates after `max_no_close_ticks`.
+        """
+        if objective.kind == "wave":
+            return ""                                   # a moving enemy is closed by HP, handled by the combat path
+        player = self._player(after)
+        if not player:
+            return ""
+        distance = math.hypot(float(player.get("x") or 0) - objective.point[0],
+                              float(player.get("z") or 0) - objective.point[1])
+        if self.best_distance is None or distance < self.best_distance - 1.0:
+            self.best_distance = distance
+            self.no_close = 0
+            return ""
+        self.no_close += 1
+        if self.no_close > self.bounds.max_no_close_ticks:
+            return (f"{objective.kind} {objective.cls or objective.ptr} not closed for {self.no_close} ticks "
+                    f"(still {distance:.0f} units away); the character is moving without approaching it")
+        return ""
+
     def _budget(self, objective: Objective, progressed: bool) -> str:
         """One objective may not consume the session: bounded attempts, then a fixture instead of a loop."""
         key = (objective.kind, objective.ptr)
         if key != self.objective_key:
             self.objective_key, self.objective_since = key, self.ticks
+            self.best_distance, self.no_close = None, 0
             return ""
         if progressed:
             self.objective_since = self.ticks
