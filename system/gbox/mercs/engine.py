@@ -389,7 +389,11 @@ def play_round(prof, m, send, stopped, stats: dict, lessons=None, sleep=time.sle
     def recorded_send(events):
         receipt = transport_send(events)
         if capture is not None:
-            capture.input(clock(), events, receipt)
+            try:
+                capture.input(clock(), events, receipt)
+            except Exception as exc:
+                stats['input_record_error'] = f'{type(exc).__name__}: {exc}'[:160]
+                stats['input_record_failures'] = stats.get('input_record_failures', 0) + 1
         return receipt
     send = recorded_send
 

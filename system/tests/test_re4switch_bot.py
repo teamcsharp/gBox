@@ -286,6 +286,23 @@ def test_with_the_player_in_ram_the_bot_fights_through_holds_and_taps(monkeypatc
     assert stats["shots"] >= 1 and "w" not in _down(adapter), "the blunt cadence does not run beside the fight"
 
 
+@pytest.mark.parametrize('stale', [True, False])
+def test_input_recorder_failure_never_stops_the_fight(monkeypatch, stale):
+    from gbox.mercs.run_capture import RunCapture
+    if stale:
+        monkeypatch.delattr(RunCapture, 'input')
+    else:
+        def broken(*args):
+            raise OSError('evidence storage unavailable')
+        monkeypatch.setattr(RunCapture, 'input', broken)
+    adapter, stats, out = _round(monkeypatch, [100.0 - i for i in range(60)])
+    rows = [r for batch in adapter.sent for r in batch]
+    assert out['ok'] and stats['shots'] > 1
+    assert {'key': 'zr', 'down': True} in rows
+    assert stats['input_record_failures'] > 1
+    assert ('AttributeError' if stale else 'OSError') in stats['input_record_error']
+
+
 def test_the_round_end_posts_one_boundary_with_the_clock_witness(monkeypatch):
     posted = []
     _, stats, out = _round(monkeypatch, RAN_OUT, boundary=lambda body, st: posted.append(body) or True)

@@ -460,7 +460,13 @@ def play(ad, send, stopped, sleep=time.sleep, stats: dict | None = None, *, cloc
         receipt = transport_send(events)
         cap = getattr(rnd, 'capture', None)
         if cap is not None:
-            cap.input(clock(), events, receipt)
+            try:
+                cap.input(clock(), events, receipt)
+            except Exception as exc:
+                # Evidence is downstream of the accepted pad command. A stale
+                # recorder during activation must never terminate gameplay.
+                stats['input_record_error'] = f'{type(exc).__name__}: {exc}'[:160]
+                stats['input_record_failures'] = stats.get('input_record_failures', 0) + 1
         return receipt
     send = recorded_send
     keys = Keys(send, sleep=sleep)
