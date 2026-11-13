@@ -585,6 +585,7 @@ def play(pad: Pad, seconds: float = 120.0) -> str:
     warped, warp_misses, warp_reported = 0, 0, None   # level exits entered, approach misses, last report
     boxes_hit, box_misses = 0, 0                        # containers destroyed, approach misses
     reticle_hits = 0                                    # presses made because something actionable was close
+    attacks = 0                                         # swing bursts aimed by sweeping the cone
     last_enemy_hp = {}
 
     while time.time() - started < seconds:
@@ -671,11 +672,17 @@ def play(pad: Pad, seconds: float = 120.0) -> str:
             # it is not a signal to servo on. Instead hill-climb on DISTANCE - turn a side, step, and keep that side
             # only if it made us closer. That is how an enemy was closed from 210 units to 12 and killed.
             if distance <= 15.5:
-                tap(pad, "b")           # a pause menu eats the swing; START toggles it, B cancels it
-                time.sleep(0.12)
-                tap(pad, "a")
-                time.sleep(0.45)
+                # SWEEP the aim cone here too. An attack only connects inside 8 degrees and heading_deg cannot be
+                # trusted to aim (presses in one direction gave +130, +21, 0 and +145 degrees), so swing three times
+                # and rotate a little each visit. This is the fix for "untouched after 8 swings".
+                for _ in range(3):
+                    tap(pad, "b")       # a pause menu eats the swing; START toggles it, B cancels it
+                    time.sleep(0.08)
+                    tap(pad, "a")
+                    time.sleep(0.3)
+                hold(pad, "left" if int(time.time() * 3) % 2 else "right", 0.2)
                 killed += 0
+                attacks += 1
             else:
                 approach_side = globals().get("APPROACH_SIDE", 1)
                 before = distance
