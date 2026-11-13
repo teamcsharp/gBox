@@ -163,6 +163,23 @@ def mods(pad: Pad, payload: dict, wait: float = 45.0) -> dict:
 WARP_CELL = (361.2, 0.0, 28.8)      # the cell that actually triggers the city warp (found by searching Corridor.safe)
 
 
+def where_am_i(state_now: dict) -> str:
+    """'boss' | 'field' | 'city' - from the entity list alone.
+
+    A boss arena has very few entities (7 in the Dragon's room) while a field has 85-130, so counting is not enough:
+    the give-away for a boss is `Boss` in a class name, and for the city it is the absence of gates and enemies.
+    """
+    entities = state_now.get("entities") or []
+    classes = [str(e.get("class")) for e in entities]
+    if any("Boss" in name for name in classes):
+        return "boss"
+    if len(entities) > 60 and any(str(e.get("kind")) == "gate" for e in entities):
+        return "field"
+    if any(str(e.get("kind")) == "enemy" for e in entities):
+        return "field"
+    return "city"
+
+
 def go_to_field(pad: Pad) -> bool:
     """Leave the city for a field, where there are enemies and doors to progress through.
 
@@ -172,8 +189,8 @@ def go_to_field(pad: Pad) -> bool:
     now = state(pad)
     player = now.get("player") or {}
     entities = now.get("entities") or []
-    if len(entities) > 60 and any(str(e.get("kind")) == "gate" for e in entities):
-        return True                                     # already in a field
+    if where_am_i(now) in ("field", "boss"):
+        return True                                     # a field or a boss arena both count as arrived
 
     import struct
     pointer = player.get("ptr")
@@ -201,7 +218,7 @@ def go_to_field(pad: Pad) -> bool:
         count = len(entities)
         gates = [e for e in entities if str(e.get("kind")) == "gate"]
         log(f"  warp +{(attempt + 1) * 2}s: {count} entities, {len(gates)} gates")
-        if count > 60:
+        if where_am_i(after) in ("field", "boss"):
             return True
     return False
 
