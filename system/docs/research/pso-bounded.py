@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import pathlib
 import sys
 import time
@@ -100,6 +101,32 @@ class FloorReads:
         return int.from_bytes(raw, "big") if len(raw) == 4 else None
 
 
+class SwitchState:
+    """Verified switches, remembered across runs.
+
+    A fresh `Automaton` starts with an empty `pressed` map, so a new run walks back to the switch it already verified
+    and presses it again - measured: the Forest 1 door key was re-pressed three times, changed nothing (its bit was
+    already set) and the run ended on that false miss. The verified set belongs to the session, not to the process.
+    """
+
+    def __init__(self, path: pathlib.Path) -> None:
+        self.path = path
+        self.data = {}
+        if path.exists():
+            try:
+                self.data = json.loads(path.read_text(encoding="utf-8"))
+            except ValueError:
+                self.data = {}
+
+    def get(self, sid: str) -> dict:
+        return dict(self.data.get(sid) or {})
+
+    def put(self, sid: str, pressed: dict) -> None:
+        self.data[sid] = {str(ptr): float(when) for ptr, when in pressed.items()}
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        self.path.write_text(json.dumps(self.data, indent=1, sort_keys=True), encoding="utf-8")
+
+
 def run(mode: str, args) -> int:
     sid = args.session or live_session()
     if not sid:
@@ -138,40 +165,57 @@ def run(mode: str, args) -> int:
         turns = {key: value for key, value in calibration.turn.items() if abs(value) >= 12.0}
     motion = B.RelativeTapMotion(arrive=arrive, turn_deg=turns)
 
+    router = None
+    if args.map:
+        sys.path.insert(0, r"C:\_tools\gBox\.tmp")
+        from forest_route import MapRouter
+        grid = json.loads(pathlib.Path(args.map).read_text(encoding="utf-8"))
+        name = args.map_name or next(iter(grid))
+        if args.map_name:
+            name = next((key for key in grid if args.map_name in key), name)
+        row = grid[name]
+        router = MapRouter(row["cells"])
+        log(f"routing over {name}: {len(row['cells'])} safe cells")
+
     if mode == "walk":
         target = tuple(args.to)
         # No policy: the objective is the point. The same bounded tick still issues the action, so the walk cannot
         # hold the loop, and the watchdog still recovers a wedge one action at a time. With --map the point is
         # pursued along the decoded collision grid's waypoints (the city railing is why a straight line is not enough).
         walk_policy = _FixedTarget(policy, target)
-        if args.map:
-            sys.path.insert(0, r"C:\_tools\gBox\.tmp")
-            from forest_route import MapRouter
-            grid = json.loads(pathlib.Path(args.map).read_text(encoding="utf-8"))
-            row = next(iter(grid.values()))
-            walk_policy = B.RoutedPolicy(walk_policy, MapRouter(row["cells"]), arrive=max(arrive, 10.0))
-            log(f"routed walk over {len(row['cells'])} safe cells from {args.map}")
+        if router is not None:
+            walk_policy = B.RoutedPolicy(walk_policy, router, arrive=max(arrive, 10.0))
         automaton = B.Automaton(
             world, ledger=ledger, clock=clock, operator=operator, mode=bound_mode,
             motion=motion, policy=walk_policy,
             bounds=B.Bounds(max_objective_ticks=10_000), watchdog=B.Watchdog(stall_s=20.0, max_recoveries=4),
             flag_address=None)
     else:
+        play_policy = policy if router is None else B.RoutedPolicy(policy, router, arrive=max(arrive, 10.0))
         automaton = B.Automaton(
             world, ledger=ledger, clock=clock, operator=operator, mode=bound_mode,
-            motion=motion, policy=policy,
+            motion=motion, policy=play_policy,
             bounds=B.Bounds(), watchdog=B.Watchdog(stall_s=20.0, max_recoveries=4),
             flag_address=STAGE_FLAGS, flag_length=576,
             fixture_path=OUT / f"failure-{mode}-{stamp}.json")
 
     floors = FloorReads(world)
+    switches = SwitchState(OUT / "switch-state.json")
+    automaton.pressed.update(switches.get(sid))
     log(f"{mode}: session {sid}, ledger {ledger_path.name}, floor {floors.floor()}, "
-        f"mode={bound_mode.value}, {args.seconds:.0f}s")
+        f"mode={bound_mode.value}, {len(automaton.pressed)} verified switch(es) remembered, {args.seconds:.0f}s")
     started = time.monotonic()
     last_report = 0.0
     try:
         while time.monotonic() - started < args.seconds and not automaton.stopped:
+            loop_started = time.monotonic()
             tick = automaton.tick()
+            if os.environ.get("PSO_TIMING"):
+                phases = getattr(automaton, "phases", {})
+                log(f"  tick {tick.index}: {time.monotonic() - loop_started:.3f}s "
+                    f"(action {tick.duration:.3f}s) {tick.outcome} {tick.action} | {tick.note[:40]} | "
+                    f"observe {phases.get('observe', 0):.3f} plan {phases.get('plan', 0):.3f} "
+                    f"act {phases.get('act', 0):.3f} after {phases.get('after', 0):.3f}")
             if tick.outcome in ("stall", "failed", "preempted"):
                 log(f"  tick {tick.index}: {tick.outcome} - {tick.note}")
             if mode == "walk":
@@ -192,6 +236,7 @@ def run(mode: str, args) -> int:
         log("interrupted")
     finally:
         world.release()
+        switches.put(sid, automaton.pressed)
         release_ownership()
 
     stats = automaton.stats()
@@ -238,11 +283,12 @@ def main(argv=None) -> int:
     sub = parser.add_subparsers(dest="mode", required=True)
     walk = sub.add_parser("walk", help="drive to one coordinate with bounded controller input")
     walk.add_argument("--to", type=float, nargs=2, required=True, metavar=("X", "Z"))
-    walk.add_argument("--map", default="", help="decoded collision grid to route over (e.g. city-map.json)")
     play = sub.add_parser("play", help="run the progression policy")
     for name, item in (("walk", walk), ("play", play)):
         item.add_argument("--seconds", type=float, default=60.0)
         item.add_argument("--session", default="")
+        item.add_argument("--map", default="", help="decoded collision grid to route over")
+        item.add_argument("--map-name", default="", help="substring of the grid entry to use (e.g. forest01)")
         item.add_argument("--no-calibrate", action="store_true",
                           help="skip the one-tap-per-key calibration (it costs about five seconds)")
         item.add_argument("--assisted", action="store_true",

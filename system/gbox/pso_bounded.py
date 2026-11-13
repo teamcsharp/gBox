@@ -63,10 +63,14 @@ class Bounds:
     wait_s: float = 0.25         # a deliberate no-input tick (combo gap, operator grace)
     max_recoveries: int = 4      # watchdog recoveries before a failure fixture
     hard_progress_s: float = 300.0      # no room/HP/flag progress for this long is a failure, not a slow room
-    max_objective_ticks: int = 150      # ticks one objective may consume without progress before escalating
-    max_no_close_ticks: int = 40        # ticks a point objective may spend without getting measurably closer
+    max_objective_ticks: int = 150      # legacy tick bound, kept for callers that pass it
+    max_objective_s: float = 120.0      # seconds one objective may consume without progress before escalating
+    max_no_close_ticks: int = 40        # legacy tick bound, kept for callers that pass it
+    max_no_close_s: float = 20.0        # seconds a point objective may spend without getting measurably closer
     max_escapes: int = 3                # hold-based escapes tried before a no-close failure is reported
     max_switch_attempts: int = 3        # presses of one switch with no flag change before it is a reported failure
+    flag_wait_s: float = 0.6            # a press is applied asynchronously: poll the array this long for the change
+    full_read_every: int = 4            # ticks between full entity reads; the player is read every tick
 
 
 @dataclass(frozen=True)
@@ -438,11 +442,21 @@ class RoutedPolicy:
         self.base = base
         self.follower = RouteFollower(router, arrive=arrive)
 
+    @property
+    def press_range(self) -> float:
+        return float(getattr(self.base, "press_range", 14.0))
+
+    @property
+    def attack_range(self) -> float:
+        return float(getattr(self.base, "attack_range", 30.0))
+
     def choose(self, snap: dict, now: float, *, pressed=None, avoid=None):
         objective = self.base.choose(snap, now, pressed=pressed, avoid=avoid)
         if objective is None or objective.kind not in self.POINT_KINDS:
             return objective
         player = snap.get("player") or {}
+        real_distance = math.hypot(float(player.get("x") or 0) - objective.point[0],
+                                   float(player.get("z") or 0) - objective.point[1])
         if self.follower.stalls >= self.follower.replan_after:
             # Several ticks without closing on this waypoint: it is blocked, so route around it from the current cell
             # instead of pushing against it until the no-close budget ends the run.
@@ -452,7 +466,7 @@ class RoutedPolicy:
             return objective                                 # the goal itself is reached
         distance = math.hypot(float(player.get("x") or 0) - point[0], float(player.get("z") or 0) - point[1])
         return Objective(objective.rank, objective.kind, point, distance, objective.cls, objective.ptr,
-                         objective.hp, objective.why)
+                         objective.hp, objective.why, target_distance=real_distance)
 
     def note(self, kind: str, progressed: bool) -> None:
         self.base.note(kind, progressed)
@@ -697,17 +711,22 @@ CONTAINER_HINTS = ("Container", "Capsule", "Trap")
 @dataclass(frozen=True)
 class Objective:
     rank: int
-    kind: str                 # warp | wave | switch | door | container
+    kind: str                 # warp | wave | switch | door | container | walk
     point: tuple
-    distance: float
+    distance: float           # to `point` (a route waypoint once routed)
     cls: str = ""
     ptr: str = ""
     hp: float | None = None
     why: str = ""
+    #: distance to the actual target entity. When a router replaces `point` with a waypoint this is the only number
+    #: that may decide "close enough to press/attack" - using the waypoint distance pressed a door key from 70 units
+    #: away (measured), because the first waypoint happened to be 8 units ahead of the character.
+    target_distance: float | None = None
 
     def as_dict(self) -> dict:
         return {"rank": self.rank, "kind": self.kind, "class": self.cls, "ptr": self.ptr,
-                "distance": round(self.distance, 1), "hp": self.hp, "why": self.why}
+                "distance": round(self.distance, 1), "hp": self.hp, "why": self.why,
+                "target_distance": None if self.target_distance is None else round(self.target_distance, 1)}
 
 
 class ProgressionPolicy:
@@ -731,6 +750,7 @@ class ProgressionPolicy:
         self.optional_limit = int(optional_limit)
         self.switch_demote_s = float(switch_demote_s)
         self.optional_streak = 0
+        self.current_key = None
 
     def choose(self, snap: dict, now: float, *, pressed=None, avoid=None) -> Objective | None:
         pressed = pressed or {}
@@ -770,7 +790,16 @@ class ProgressionPolicy:
                                                     distance, cls, ptr, None, "optional loot"))
         if not candidates:
             return None
-        return min(candidates, key=lambda objective: (objective.rank, objective.distance))
+        best = min(candidates, key=lambda objective: (objective.rank, objective.distance))
+        # Keep the current objective while it is still a candidate of the same rank. Two doors 115 and 116 units away
+        # swap places on every tick as the character moves, and each swap re-planned the whole route (measured: a
+        # 1 tick/s run whose character covered 45 units in 67 s, every re-plan an A* over 90,986 cells).
+        current = next((objective for objective in candidates
+                        if (objective.kind, objective.ptr) == self.current_key), None)
+        if current is not None and current.rank <= best.rank:
+            best = current
+        self.current_key = (best.kind, best.ptr)
+        return best
 
     def note(self, kind: str, progressed: bool) -> None:
         if kind == "container":
@@ -877,24 +906,39 @@ class World(Protocol):
 
 
 class SessionWorld:
-    """`World` over gBox's session channel: `rpc state`, `rpc read_memory`, and `session_op send_input` jobs.
+    """`World` over gBox's session channel: `rpc state`, `rpc read_memory`, and controller input.
+
+    Input goes through the app's **session input queue** (`POST /api/sessions/{sid}/input`), which is measured at
+    **15 ms** round trip and moved the character 7.8 units on the first try, with the `session_op` job path (measured
+    at 0.53-1.22 s per job) as the fallback. That distinction is the whole difference between a bot that takes one
+    step a second and one that takes several: a hold no longer pays a second of queue latency for the down and
+    another for the release, and an operator takeover is released in 15 ms rather than after the in-flight job.
 
     `call(path, payload=None, method="GET", timeout=60)` is injected so this adapter is testable without a running
-    gBox. Every mutation is one job carrying its whole event batch, because splitting a press across jobs was
-    measured to make the hold depend on job latency and to leave keys held when a release was lost.
+    gBox. Each event batch carries its down and its up together, because splitting a press across jobs was measured
+    to make the hold depend on job latency and to leave keys held when a release was lost.
     """
 
     def __init__(self, sid: str, call: Callable, *, worker: str | None = None, poll_s: float = 0.05,
-                 sleep: Callable[[float], None] = time.sleep) -> None:
+                 sleep: Callable[[float], None] = time.sleep, fast_input: bool = True,
+                 settle_s: float = 0.12) -> None:
         self.sid = sid
         self.call = call
         self.worker = worker or sid.split("-")[0]
         self.poll_s = float(poll_s)
         self.sleep = sleep
+        self.fast_input = bool(fast_input)
+        # The queue acknowledges in ~15 ms, before the worker has applied the events. Without this settle the
+        # post-state read is the *previous* state: measured live, every tap then looked like it moved 0 units, the
+        # motion model kept re-probing, and the routed walk drifted 160 units off its waypoints.
+        self.settle_s = float(settle_s)
         self.sent = 0
+        self.fast_sent = 0
+        self.job_sent = 0
 
-    def observe(self) -> dict:
-        state = self.call(f"/api/sessions/{self.sid}/rpc", {"op": "state", "args": {}}, "POST", 25)
+    def observe(self, player_only: bool = False) -> dict:
+        args = {"player_only": True} if player_only else {}
+        state = self.call(f"/api/sessions/{self.sid}/rpc", {"op": "state", "args": args}, "POST", 25)
         return state if isinstance(state, dict) else {}
 
     def read(self, address: int, length: int) -> bytes:
@@ -906,12 +950,12 @@ class SessionWorld:
             return b""
 
     def act(self, action: Action, deadline: float) -> str:
-        """Apply one action. Returns the job state: succeeded / failed / timeout / no-job."""
+        """Apply one action. Returns the delivery state: queued / succeeded / failed / timeout / no-job."""
         events = action.events()
         if not events:
             self.sleep(max(0.0, action.seconds))
             return "succeeded"
-        state = self._job(events, deadline)
+        state = self._apply(events, deadline)
         if action.kind == "hold":
             remaining = deadline - time.monotonic()
             if remaining > 0:
@@ -921,7 +965,18 @@ class SessionWorld:
         return state
 
     def release(self) -> None:
-        self._job(RELEASE.events(), time.monotonic() + 2.0)
+        self._apply(RELEASE.events(), time.monotonic() + 2.0)
+
+    def _apply(self, events: list, deadline: float) -> str:
+        if self.fast_input:
+            queued = self.call(f"/api/sessions/{self.sid}/input", {"events": events}, "POST", 10)
+            if isinstance(queued, dict) and "queued" in queued:
+                self.fast_sent += 1
+                if self.settle_s > 0:
+                    self.sleep(self.settle_s)
+                return "queued"
+        self.job_sent += 1
+        return self._job(events, deadline)
 
     def _job(self, events: list, deadline: float) -> str:
         job = self.call("/api/jobs", {"tool": "session_op", "require_worker": self.worker,
@@ -943,6 +998,16 @@ class SessionWorld:
 # ---------------------------------------------------------------------------------------------------------------------
 # The tick loop
 # ---------------------------------------------------------------------------------------------------------------------
+@dataclass
+class Pending:
+    """A movement action issued by one tick and measured by the next one's state read."""
+    action: Action
+    objective: Objective | None
+    before: dict
+    started: float
+    index: int
+
+
 @dataclass
 class Tick:
     index: int
@@ -1011,6 +1076,13 @@ class Automaton:
         self.best_distance = None
         self.no_close = 0
         self.escapes = 0
+        self.no_close_since = 0.0
+        self.objective_since_at = 0.0
+        self.entities = []
+        self.room = None
+        self.room_candidate = None
+        self.room_count = 0
+        self.pending = None
 
     # -- public -----------------------------------------------------------------------------------------------------
     def run_for(self, seconds: float) -> list:
@@ -1018,11 +1090,15 @@ class Automaton:
         ticks, deadline = [], self.clock.now() + float(seconds)
         while self.clock.now() < deadline and not self.stopped:
             ticks.append(self.tick())
+        last = self.flush()
+        if last is not None:
+            ticks.append(last)
         return ticks
 
     def tick(self) -> Tick:
         self.ticks += 1
         started = self.clock.now()
+        phase = {"t0": time.monotonic(), "observe": 0.0, "plan": 0.0, "act": 0.0, "after": 0.0, "account": 0.0}
         if self.stopped:
             return self._finish(started, "stopped", note=self.stopped)
         if self.operator.active(started):
@@ -1031,11 +1107,21 @@ class Automaton:
             self._record("preempted", None, None, None, note="operator owns the pad; inputs released")
             return self._finish(started, "preempted", note="operator takeover")
 
-        before = self._observe()
+        before = self._observe(full=(self.ticks % max(1, self.bounds.full_read_every) == 1 or not self.entities))
+        phase["observe"] = time.monotonic() - phase["t0"]
         player = before.get("player") or {}
         if player.get("ptr") is None:
             self._record("no-player", None, before, None, note="no player in the profile")
             return self._finish(started, "no-player", note="transition, menu or loading screen")
+
+        # A movement action is measured by the *next* tick's read. Measured: a state read taken immediately after an
+        # input takes 0.65-1.0 s on this worker (the input pump is serviced first), while the same read one tick later
+        # takes 0.03 s. Deferring the read is what turns ~1 tick/s into 4-6, and it measures a settled position
+        # instead of a half-applied one.
+        concluded = None
+        if self.pending is not None:
+            concluded = self._conclude(self.pending, before, started)
+            self.pending = None
 
         stall = self.watchdog.observe(player, started)
         if stall is not None:
@@ -1053,42 +1139,82 @@ class Automaton:
 
         objective = self.policy.choose(before, started, pressed=self.pressed, avoid=self.avoid)
         action = self._plan(objective, before, started)
+        phase["plan"] = time.monotonic() - phase["t0"] - phase["observe"]
         if action is None:
             action = WAIT if objective is not None else self._explore(player, started)
-        if objective is not None and self.no_close >= max(8, self.bounds.max_no_close_ticks // 3) \
-                and self.escapes < self.bounds.max_escapes:
+        escape_due = (started - (self.no_close_since or started)) >= max(2.0, float(self.bounds.max_no_close_s) / 4)
+        if objective is not None and escape_due and self.escapes < self.bounds.max_escapes:
             # Moving but not closing: taps are the wrong size for this pocket. Try a hold before reporting failure.
             action = self._escape()
             self.no_close = 0
             self.escapes += 1
         action = action.clipped(self.bounds)
 
-        press_tick = objective is not None and objective.kind == "switch" and action.kind == "press"
+        # An interaction button is verified now; a direction tap is a movement and is measured next tick. Both are
+        # "press" actions, so the kind alone cannot tell them apart - the key can.
+        interaction = action.kind == "press" and action.key not in DIRECTIONS
+        press_tick = interaction and objective is not None and objective.kind == "switch" and action.key == "a"
         if press_tick and self.world_supports_flags():
             before = self._with_flags(before)
         self._execute(action, started)
-        after = self._observe()
-        if press_tick and self.world_supports_flags():
-            after = self._with_flags(after)
+        phase["act"] = time.monotonic() - phase["t0"] - phase["observe"] - phase["plan"]
 
         # The mandate asks for the takeover check *after* every input as well as before it: one action is at most
         # half a second, and this is what makes that half second the longest the operator can be ignored.
         if self.operator.active(self.clock.now()):
             self.world.release()
-            self._record("preempted", action, before, after, note="operator took the pad during the action; released")
+            self._record("preempted", action, before, None, note="operator took the pad during the action; released")
             return self._finish(started, "preempted", action=action, objective=objective,
                                 note="operator takeover after the input")
 
+        if interaction:
+            # An interaction is verified now: the press is the evidence, and a flag write or HP delta must be read
+            # before the next action can change them. Movement is measured at the start of the next tick instead,
+            # because a state read taken right after an input costs 0.65-1.0 s on this worker.
+            after = self._observe(full=False)
+            if press_tick and self.world_supports_flags():
+                after = self._await_flag_change(after, before)
+            phase["after"] = time.monotonic() - phase["t0"] - phase["observe"] - phase["plan"] - phase["act"]
+            self.phases = phase
+            if hasattr(self.motion, "learn"):
+                self.motion.learn(action, player, self._player(after))
+            moved, failure = self._account(objective, action, before, after, started)
+            self._record("tick", action, before, after, note=objective.why if objective else "no objective in reach",
+                         extra={"objective": objective.as_dict() if objective else None,
+                                "flag_access": press_tick and self.world_supports_flags()})
+            self.last_objective = objective
+            if failure:
+                return self._fail(started, failure, after, action)
+            return self._finish(started, "acted", action=action, objective=objective, moved=moved,
+                                note=objective.why if objective else "explored")
+
+        self.pending = Pending(action, objective, before, started, self.ticks)
+        if concluded is not None:
+            return concluded
+        return self._finish(started, "issued", action=action, objective=objective,
+                            note="action issued; measured next tick")
+
+    def flush(self):
+        """Conclude the action still pending when a run ends, so its evidence is not lost."""
+        if self.pending is None:
+            return None
+        pending, self.pending = self.pending, None
+        after = self._observe(full=False)
+        return self._conclude(pending, after, self.clock.now())
+
+    def _conclude(self, pending, after: dict, now: float) -> Tick:
+        action, objective, before = pending.action, pending.objective, pending.before
         if hasattr(self.motion, "learn"):
-            self.motion.learn(action, player, self._player(after))
-        moved, failure = self._account(objective, action, before, after, started)
-        self._record("tick", action, before, after, note=objective.why if objective else "no objective in reach",
+            self.motion.learn(action, self._player(before), self._player(after))
+        moved, failure = self._account(objective, action, before, after, now)
+        self._record("tick", action, before, after,
+                     note=objective.why if objective else "no objective in reach",
                      extra={"objective": objective.as_dict() if objective else None,
-                            "flag_access": press_tick and self.world_supports_flags()})
+                            "flag_access": False, "measured": "next tick"})
         self.last_objective = objective
         if failure:
-            return self._fail(started, failure, after, action)
-        return self._finish(started, "acted", action=action, objective=objective, moved=moved,
+            return self._fail(now, failure, after, action)
+        return self._finish(pending.started, "acted", action=action, objective=objective, moved=moved,
                             note=objective.why if objective else "explored")
 
     # -- planning ---------------------------------------------------------------------------------------------------
@@ -1098,17 +1224,16 @@ class Automaton:
             return None
         target = objective.point
         arrive = float(getattr(self.motion, "arrive", 12.0))
+        # Range checks use the distance to the actual entity, never to a route waypoint (see Objective.target_distance).
+        reach = objective.distance if objective.target_distance is None else objective.target_distance
         if objective.kind == "wave":
-            if objective.distance <= self.policy.attack_range:
+            if reach <= self.policy.attack_range:
                 return self.combat.next_action(now, reason=f"combo on {objective.cls}") or WAIT
-            return self.motion.step(player, target, f"{objective.cls} at {objective.distance:.0f} units")
+            return self.motion.step(player, target, f"{objective.cls} at {reach:.0f} units")
         if objective.kind == "switch":
-            if objective.distance <= self.policy.press_range:
-                # The profile does not expose the game's interaction prompt, so this range is calibrated rather than
-                # known. A press that changes no flag is retried (bounded by max_switch_attempts) and ended with a
-                # fixture that records the distance of every attempt, which is the measurement the next session needs.
+            if reach <= self.policy.press_range:
                 self.switch_presses[objective.ptr] = self.switch_presses.get(objective.ptr, 0) + 1
-                return press("a", f"press {objective.cls} at {objective.distance:.1f} units "
+                return press("a", f"press {objective.cls} at {reach:.1f} units "
                                   f"(attempt {self.switch_presses[objective.ptr]})")
             return self.motion.step(player, target, f"switch {objective.cls}")
         if objective.kind == "door":
@@ -1120,7 +1245,7 @@ class Automaton:
             point = self._through_point(player, target, 12.0) if objective.distance <= arrive else target
             return self.motion.step(player, point, f"warp {objective.cls}")
         if objective.kind == "container":
-            if objective.distance <= self.policy.attack_range:
+            if reach <= self.policy.attack_range:
                 return self.combat.next_action(now, reason="break a container") or WAIT
             return self.motion.step(player, target, "optional container")
         if objective.kind == "walk":
@@ -1141,7 +1266,11 @@ class Automaton:
         """
         delta = diff(before, after)
         progressed, kind = False, "none"
-        if delta["room"][0] != delta["room"][1]:
+        room = (after.get("player") or {}).get("room")
+        if self._room_settled(room) is not None:
+            # A room value that alternates every tick is a boundary flicker, not a transition: measured at
+            # (7..14, 180..192) the room flipped 10 -> 11 -> 10 nine times and each flip reset the progress clocks,
+            # which is how a character can bounce on a threshold while everything reports progress.
             progressed, kind = True, "room"
         elif delta["enemies"]:
             progressed, kind = True, "enemy-hp"
@@ -1159,7 +1288,7 @@ class Automaton:
         failure = ""
         if objective is not None:
             self.policy.note(objective.kind, progressed)
-            failure = self._budget(objective, progressed) or self._closing(objective, after)
+            failure = self._budget(objective, progressed, now) or self._closing(objective, after, now)
             if objective.kind == "switch":
                 failure = failure or self._verify_switch(objective, action, before, after, now)
             if objective.kind == "wave":
@@ -1202,12 +1331,12 @@ class Automaton:
                     f"to a flag in this group")
         return ""
 
-    def _closing(self, objective: Objective, after: dict) -> str:
+    def _closing(self, objective: Objective, after: dict, now: float) -> str:
         """Distance closed is the progress signal for a point objective; oscillation is not.
 
-        Measured: 95 taps in the plaza between (105,154) and (112,164), ending 198 units from a 260-unit target, with
-        zero stalls because every tap did move the character by more than the movement epsilon. A walk that is not
-        getting closer is failing whether or not it is moving, so it escalates after `max_no_close_ticks`.
+        The budget is in **seconds**, not ticks. The same loop runs at 1 tick/s while the worker stalls and at 5 tick/s
+        when it does not (both measured), so a 40-tick budget is 40 seconds in one run and 8 in the next. How long a
+        walk may fail to close is a property of the game, not of the loop's speed.
         """
         if objective.kind == "wave":
             return ""                                   # a moving enemy is closed by HP, handled by the combat path
@@ -1225,18 +1354,22 @@ class Automaton:
             self._progress_token = token
             self.best_distance = None
             self.no_close = 0
+            self.no_close_since = now
         distance = math.hypot(float(player.get("x") or 0) - objective.point[0],
                               float(player.get("z") or 0) - objective.point[1])
         if self.best_distance is None or distance < self.best_distance - 1.0:
             self.best_distance = distance
             self.no_close = 0
+            self.no_close_since = now
             return ""
         self.no_close += 1
-        if self.no_close > self.bounds.max_no_close_ticks:
+        stalled = now - (self.no_close_since or now)
+        if stalled > float(self.bounds.max_no_close_s):
             if self.escapes < self.bounds.max_escapes:
                 self.no_close = 0
+                self.no_close_since = now
                 return ""                                # the escape in tick() gets another budget
-            return (f"{objective.kind} {objective.cls or objective.ptr} not closed for {self.no_close} ticks after "
+            return (f"{objective.kind} {objective.cls or objective.ptr} not closed for {stalled:.0f}s after "
                     f"{self.escapes} hold escapes (still {distance:.0f} units away); the character is moving without "
                     f"approaching it")
         return ""
@@ -1253,19 +1386,39 @@ class Automaton:
         return hold(key, 0.45, f"escape {self.escapes + 1}/{self.bounds.max_escapes}: hold {key} out of a pocket "
                                f"that swallowed {self.bounds.max_no_close_ticks} taps")
 
-    def _budget(self, objective: Objective, progressed: bool) -> str:
-        """One objective may not consume the session: bounded attempts, then a fixture instead of a loop."""
+    def _room_settled(self, room):
+        """Return (previous, current) only when the room has actually settled, two consecutive ticks on one value."""
+        if room is None:
+            return None
+        if room == self.room_candidate:
+            self.room_count += 1
+        else:
+            self.room_candidate, self.room_count = room, 1
+        if self.room_count >= 2 and room != self.room:
+            previous, self.room = self.room, room
+            return previous, room
+        return None
+
+    def _budget(self, objective: Objective, progressed: bool, now: float) -> str:
+        """One objective may not consume the session: bounded attempts, then a fixture instead of a loop.
+
+        Time-bounded for the same reason as `_closing`: a tick budget means a different number of seconds on every run.
+        """
         key = (objective.kind, objective.ptr)
         if key != self.objective_key:
-            self.objective_key, self.objective_since = key, self.ticks
+            self.objective_key = key
+            self.objective_since = self.ticks
+            self.objective_since_at = now
             self.best_distance, self.no_close = None, 0
+            self.no_close_since = now
             return ""
         if progressed:
             self.objective_since = self.ticks
+            self.objective_since_at = now
             return ""
-        spent = self.ticks - self.objective_since
-        if spent > self.bounds.max_objective_ticks:
-            return (f"{objective.kind} {objective.cls} at {objective.ptr} consumed {spent} ticks without progress")
+        spent = now - (getattr(self, "objective_since_at", now) or now)
+        if spent > float(self.bounds.max_objective_s):
+            return (f"{objective.kind} {objective.cls} at {objective.ptr} consumed {spent:.0f}s without progress")
         return ""
 
     @staticmethod
@@ -1285,8 +1438,20 @@ class Automaton:
     def world_supports_flags(self) -> bool:
         return self.flag_address is not None and hasattr(self.world, "read")
 
-    def _observe(self) -> dict:
-        return snapshot(self.world.observe() or {})
+    def _observe(self, *, full: bool = True) -> dict:
+        """Read the state; the full entity table is expensive and barely changes between ticks.
+
+        Measured: a full state read takes 31 ms when idle but **0.5-1.0 s** while the worker is applying input, which
+        was 0.7 s of every tick. The player changes every tick and the entity table does not, so the player is read
+        every tick and the entities every `full_read_every` ticks (the cached table is merged back in).
+        """
+        if full:
+            state = self.world.observe() or {}
+            self.entities = state.get("entities") or []
+        else:
+            state = self.world.observe(player_only=True) or {}
+            state = {**state, "entities": self.entities}
+        return snapshot(state)
 
     def _with_flags(self, snap: dict) -> dict:
         try:
@@ -1294,6 +1459,26 @@ class Automaton:
         except Exception:                                  # noqa: BLE001 - evidence must never stop the loop
             return snap
         return with_flags(snap, raw) if raw else snap
+
+    def _await_flag_change(self, after: dict, before: dict) -> dict:
+        """Poll the stage-flag array for a beat after a press: the input is queued and the game writes the flag later.
+
+        Measured: the press that set floor 1 bit 7 was recorded as three attempts, because the array still matched
+        the pre-press digest 0.12 s after the second press and only showed the change on the third. Two failed
+        verifications would have ended the switch after three attempts even though the switch had worked.
+        """
+        wait = float(self.bounds.flag_wait_s)
+        deadline = self.clock.now() + wait
+        snap = after
+        original = (before.get("stage_flags") or {}).get("sha256")
+        while True:
+            snap = self._with_flags(snap)
+            current = (snap.get("stage_flags") or {}).get("sha256")
+            if current and original and current != original:
+                return snap
+            if self.clock.now() >= deadline:
+                return snap
+            self.clock.sleep(0.08)
 
     @staticmethod
     def _player(snap: dict) -> dict:

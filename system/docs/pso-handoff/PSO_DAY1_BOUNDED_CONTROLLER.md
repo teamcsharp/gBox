@@ -278,7 +278,40 @@ left by the escapes, and the next run walked from `(300,-43)` through `(278,-20)
 and into the warp area — ending 48 units from the pad with 0 overruns and 0 failures. It has not reached the pad yet;
 that is where the next round starts.
 
-## 7. Reproduce
+## 8. Round 3 — speed, and the first verified switch→flag chain
+
+The operator asked for maximum speed. Measured, then fixed:
+
+| bottleneck | measured | fix | result |
+|---|---|---|---|
+| input path | `session_op` job **0.53–1.22 s**; app input queue **15–31 ms** | `SessionWorld` posts to `/api/sessions/{sid}/input` with the job path as fallback | 60× less latency per input |
+| emulator speed | 56 fps (0.9×) → **160 fps (2.7×)** with fast-forward | `session_op fast_forward {"on": true}` | 2.7× game time |
+| state read after input | **0.65–1.0 s** (the worker services the input pump first) | movement actions are measured by the *next* tick's read; interaction presses keep an immediate read | 1.0 → 0.17 s per tick |
+| budgets in ticks | 150 ticks = 150 s at 1/s, 30 s at 5/s | budgets are now **seconds** (`max_objective_s`, `max_no_close_s`) | behaviour independent of loop speed |
+| objective flip-flop | two doors swapping nearest re-ran A* over 90,986 cells every tick | the policy keeps its current objective while it is still a candidate of the same rank | 1 → 4.8 ticks/s |
+| room flicker | room flipped 10→11→10 nine times at a boundary, resetting every progress clock | a room only counts when it is held for two ticks | false progress removed |
+
+Measured after the fixes: **57 ticks in 12 s**, then **191 ticks in 40 s (4.8/s)** with 0 overruns and every ledger
+chain verified.
+
+**The warp worked.** From the city pad at `(360,26)`, one A press moved the character from floor 0 (room 20, 31
+entities) to **Forest 1 — floor 1, 91 entities**, with the stage-flag array still at all zeros:
+`sha256 1a0295f4…`, 18 groups, 0 bits. That is a clean arrival, no global writes, controller input only.
+
+**G3, part one: two switches pressed, two flags set.** In that clean session:
+
+| press | switch | distance | flag array sha256 | bits on floor 1 |
+|---|---|---|---|---|
+| `play-20261113-100018` seq 123 | `TObjDoorKey` at `80DB54C0` | 12.3 units | `1a0295f4…` → `c4e4b92f…` | **7** |
+| `play-20261113-101432` seq 140 | `TObjDoorKey` at `80DB5650` | 12.7 units | `c4e4b92f…` → `73bf9c70…` | 7, **6** |
+
+Read back from the live array: `group 1: set bits [6, 7]`, all other groups zero. Every one of those presses was
+controller input, and the verifier refused to call press 1 a success for two attempts — the flag write landed after
+the read, which is why `flag_wait_s` exists.
+
+**What is not done:** G3's last step, walking through the door those flags open and recording the room change. The
+character reached the room 10/11 boundary (the flicker above) but the door crossing is not yet captured; that is the
+first task of the next round, followed by G4 (enemy-gated door) and G5 (combo verification).
 
 ```
 cd system
@@ -287,8 +320,9 @@ cd docs/research
 python pso-calibrate.py --samples 4 --batch 5                 # the primitive measurement
 python pso-session.py status                                  # session, player, stage-flag audit
 python pso-session.py restart --force                         # stop, launch, boot to a character
-python pso-bounded.py walk --to 498 -261 --seconds 45         # calibration + bounded walk
-python pso-bounded.py play --seconds 90                       # progression policy + switch verification
+python pso-bounded.py walk --to 360 26 --seconds 60 --map D:\gBox\pso-ds\city-map.json   # the city warp pad
+python pso-bounded.py play --seconds 45 --map D:\gBox\pso-ds\forest-maps.json --map-name forest01
+python pso-citymap.py --route 105,160 254,25                  # decode the city grid and route it
 ```
 
 Ledgers, fixtures and the flag audit are written to `D:\gBox\pso-ds\bounded\` (game-session data, never committed).
