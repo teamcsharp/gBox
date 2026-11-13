@@ -218,6 +218,10 @@ def unstick(pad: Pad, attempts: int = 3) -> str:
     NPC conversation. So instead of a fixed key dance, try each direction and keep the one that produces movement.
     """
     for attempt in range(attempts):
+        # A pause menu looks exactly like a blocked direction from the position alone, and it is the more common
+        # cause - it was what froze the character twice. Cancel it before testing directions.
+        tap(pad, "b")
+        time.sleep(0.25)
         for key in ("up", "left", "right", "down", "left", "right"):
             before = state(pad)
             player = before.get("player") or {}
@@ -289,7 +293,17 @@ def play(pad: Pad, seconds: float = 45.0) -> str:
             if abs(error) > 8:
                 hold(pad, "left" if error > 0 else "right", min(0.22, max(0.06, abs(error) / 400.0)))
             elif distance > 12:
+                before_move = state(pad).get("player") or {}
+                start = (float(before_move.get("x") or 0), float(before_move.get("z") or 0))
                 hold(pad, "up", min(0.55, max(0.2, (distance - 8) / 160.0)))
+                after_move = state(pad).get("player") or {}
+                end = (float(after_move.get("x") or 0), float(after_move.get("z") or 0))
+                if math.dist(start, end) < 1.0:
+                    # an enemy body blocks the approach, and it is not a wall: step back, then go round it
+                    log("  approach blocked - backing off and strafing around the body")
+                    hold(pad, "down", 0.4)
+                    hold(pad, "left" if int(time.time()) % 2 else "right", 0.45)
+                    hold(pad, "up", 0.5)
                 moved += 1
             else:
                 tap(pad, "b")           # a pause menu eats the swing; START toggles it, B cancels it
