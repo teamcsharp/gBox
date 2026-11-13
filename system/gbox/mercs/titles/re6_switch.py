@@ -1159,13 +1159,12 @@ def _screen_impl(m, merc=None, now: float | None = None) -> dict:
     snap = snapshot(m)
     p, phase = snap.get("player"), snap.get("mercenaries_phase")
     if "uIdGameover00" in ui:
-        # A game-over prompt IS a death: it is raised when the player's health ran out. Returning straight into the
-        # continue prompt left where='dead' unset, so _record_death never ran and the round reported round_deaths 0 with
-        # death_hp/death_nearest_m null on a round the harness witnessed as `died` - live 2026-11-12, RE6 at 90 kills,
-        # outcome died, every survival counter null. The bot read its health fine; it just never wrote the death down.
-        if isinstance(p, dict) and isinstance(p.get("hp"), (int, float)) and p["hp"] <= 0:
-            return out | continue_prompt(m, ui["uIdGameover00"]) | {"where": "dead"}
-        return out | continue_prompt(m, ui["uIdGameover00"])
+        # Native game-over can leave positive HP (live flying-grab failure).
+        # Preserve that value. The current UI-list membership is the terminal
+        # evidence, not an invented zero-HP sample or a cached dead screen.
+        witness = {'class':'uIdGameover00', 'source':'active_ui_list', 'unit':ui['uIdGameover00'],
+                   'player':(p or {}).get('ptr'), 'generation':(p or {}).get('generation')}
+        return out | continue_prompt(m, ui["uIdGameover00"]) | {'game_over_ui':witness}
     if "uIdResult30" in ui:
         return out | {"where": "results"}
     if p and "uIdMerceUI" in ui:
@@ -1247,6 +1246,15 @@ def _screen_impl(m, merc=None, now: float | None = None) -> dict:
         TITLE.since = None
     return out | {"where": where, "cursor": cursor, "target": target,
                   "confirmation_boundary": where in ("select_player", "mercs_mode", "extra_content")}
+
+
+def native_game_over(snap) -> bool:
+    """Fresh active-list UI evidence tied to this snapshot's player lifecycle."""
+    witness = (snap or {}).get('game_over_ui') or {}
+    p = (snap or {}).get('player') or {}
+    return (witness.get('class') == 'uIdGameover00' and witness.get('source') == 'active_ui_list'
+            and ptr_ok(witness.get('unit') or 0) and ptr_ok(p.get('ptr') or 0)
+            and witness.get('player') == p.get('ptr') and witness.get('generation') == p.get('generation'))
 
 
 def continue_prompt(m, over: int) -> dict:
@@ -3707,7 +3715,8 @@ class Bot:
         idempotent accounting so the same death cannot be counted twice.
         """
         p = snap.get("player")
-        if where == "dead" and isinstance(p, dict) and isinstance(p.get("hp"), (int, float)) and p["hp"] <= 0:
+        if where == "dead" and isinstance(p, dict) and (
+                isinstance(p.get("hp"), (int, float)) and p["hp"] <= 0 or native_game_over(snap)):
             self._record_death(p, snap, now)
 
     def _record_death(self, p, snap, now) -> None:
@@ -3716,6 +3725,8 @@ class Bot:
             return
         self.dead_since = now
         self.stats["deaths"] += 1
+        self.stats['death_observed_hp'] = p.get('hp')
+        self.stats['death_boundary_source'] = 'native_game_over_ui' if native_game_over(snap) else 'native_health'
         if self.down_dying or self.since_dying:
             self.stats["dying_deaths"] += 1
         self.down = self.down_dying = self.since_dying = False
@@ -3730,7 +3741,7 @@ class Bot:
         if not p:
             self._gun_down()
             return self._go("none", "no_player", {"hold": ()}, "no player (between rounds)")
-        if (p.get("hp") or 0) <= 0:
+        if (p.get("hp") or 0) <= 0 or native_game_over(snap):
             self._gun_down()
             self._record_death(p, snap, now)
             if now - self.dead_since < DEAD_WAIT_S:
@@ -7769,7 +7780,14 @@ class RE6Switch(Driver):
         return where
 
     def _where(self, m, snap) -> str:
-        where = screen(m).get("where")
+        scr = screen(m)
+        where = scr.get("where")
+        if isinstance(snap, dict):
+            # Never retain a witness through the replay-load dead latch below.
+            snap.pop('game_over_ui', None)
+            if where == 'dead' and scr.get('game_over_ui'):
+                snap['game_over_ui'] = scr['game_over_ui']
+                snap['continue_cursor'] = scr.get('cursor')
         self._results_up = where == "results"
         now = self.clock()
         if where == "dead":
@@ -7794,6 +7812,11 @@ class RE6Switch(Driver):
         if where in ("dead", "results", "loading"):
             return where
         return "results" if where in MENU_HANDOFF else "loading"
+
+    def death_witness(self, snap):
+        if not native_game_over(snap):
+            return {}
+        return {'game_over_ui':dict(snap['game_over_ui'])}
 
     def _mods(self, m, snap, playing: bool) -> None:
         """The session's live mods (re6_switch_mods: infinite_ammo's magazines topped up) on every snapshot, when the

@@ -1342,6 +1342,14 @@ def accept_boundary(store, run, body, *, parent_job, now=None):
     # turn ran into the 10-minute no-progress cut). Only that edition, only a death, only with the player unit seen.
     death_screen = expected_map == RE4_TITLE_ID and terminal == 'dead' and isinstance(witness, dict) \
         and witness.get('death_screen') is True
+    ui = witness.get('game_over_ui') if isinstance(witness, dict) else None
+    # RE6 can fail at positive HP. Only a fresh native active-list game-over
+    # witness from that title can substitute for the depleted-health witness.
+    re6_game_over = (expected_map == '01002A000CD48000' and terminal == 'dead' and isinstance(ui, dict)
+        and ui.get('class') == 'uIdGameover00' and ui.get('source') == 'active_ui_list'
+        and type(ui.get('unit')) is int and 0x1000000 <= ui['unit'] < (1 << 40)
+        and type(ui.get('player')) is int and 0x1000000 <= ui['player'] < (1 << 40)
+        and type(ui.get('generation')) is int and 0 <= ui['generation'] <= 0xffffffff)
     if body.get('map_id') != expected_map or body.get('role') not in roles \
             or body.get('source') != 'native_terminal_reader' or not isinstance(witness, dict) \
             or witness.get('playing_observed') is not True \
@@ -1361,8 +1369,8 @@ def accept_boundary(store, run, body, *, parent_job, now=None):
                 or isinstance(witness.get('kills'), (int, float)) and witness['kills'] >= 150 or native_done):
             raise ValueError('The native result tally is not complete')
     elif terminal == 'dead':
-        if death_screen and witness.get('player_verified') is True:
-            pass                                          # RE4 Switch: the game's own death screen (above)
+        if (death_screen or re6_game_over) and witness.get('player_verified') is True:
+            pass                                          # title-specific native game-over evidence (above)
         elif not isinstance(witness.get('hp'), (int, float)) or not math.isfinite(witness['hp']) or witness['hp'] > 0:
             raise ValueError('Death needs the actual player health, not a missing player')
     else:
@@ -1385,6 +1393,7 @@ def publish_boundary(sink, body, stats):
                                     json={**body, 'session_id': sink.sid})
         response.raise_for_status()
         if response.json().get('saved'):
+            stats.pop('mercmode_boundary_error', None)
             stats['mercmode_boundaries_delivered'] = stats.get('mercmode_boundaries_delivered', 0)+1
             if response.json().get('rotate_requested'):
                 stats['mercmode_rotate_requested'] = True

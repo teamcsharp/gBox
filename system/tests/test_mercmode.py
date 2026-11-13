@@ -2001,6 +2001,26 @@ def test_the_clock_witness_is_re4_switch_only():
                           parent_job=job, now=now[0])
 
 
+def test_re6_native_game_over_counts_at_positive_hp_and_stays_title_specific():
+    store, w, saver, calls, now, tick, run, job = playing()
+    run['mercmode'] = dict(run['mercmode'], title='re6', map_id='01002A000CD48000')
+    ui = {'source':'active_ui_list', 'class':'uIdGameover00', 'unit':0x5000000000,
+          'player':0x5000100000, 'generation':12}
+    body = boundary(run, now[0], screen='dead', hp=900, game_over_ui=ui)
+    got = M.accept_boundary(store, run, body, parent_job=job, now=now[0])
+    assert got['witness']['hp'] == 900
+    for bad in (dict(body, witness=dict(body['witness'], game_over_ui=None)),
+                dict(body, witness=dict(body['witness'], playing_observed=False)),
+                dict(body, witness=dict(body['witness'], player_verified=False)),
+                dict(body, witness=dict(body['witness'], game_over_ui=dict(ui, source='cached'))),
+                dict(body, witness=dict(body['witness'], game_over_ui=dict(ui, unit=0)))):
+        with pytest.raises(ValueError):
+            M.accept_boundary(store, run, bad, parent_job=job, now=now[0])
+    run['mercmode'] = dict(run['mercmode'], title='re5', map_id='010018100CD46000')
+    with pytest.raises(ValueError):
+        M.accept_boundary(store, run, dict(body, map_id='010018100CD46000'), parent_job=job, now=now[0])
+
+
 def test_the_re4_switch_playbook_boundary_shape_is_accepted():
     """The body gbox.re4switch_bot posts at the results (its own builder), checked by the control plane's fence."""
     from gbox import re4switch_bot as B

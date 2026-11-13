@@ -21,6 +21,7 @@ as well through here as through the title's own playbook).
 """
 from __future__ import annotations
 
+import json
 import time
 import traceback
 import uuid
@@ -72,11 +73,15 @@ class DecisionWork:
         total = max(0.0, time.perf_counter() - self.started)
         stages = {key:round(value * 1000, 2) for key,value in self.stages.items()}
         self.stats['decision_stages_ms'] = stages
+        # The live telemetry transport keeps scalar stats; the rich copy is
+        # still retained by the flight recorder and completed-round evidence.
+        self.stats['decision_stages_json'] = json.dumps(stages, separators=(',', ':'))
         if total >= .25 and self.stats.get('screen') == 'playing':
             row = {'at':time.time(), 'round_id':self.stats.get('round_evidence_id'),
                    'work_ms':round(total * 1000, 2), 'stages_ms':stages}
             rows = list(self.stats.get('decision_slow_recent') or ())[-19:]
             self.stats.update(decision_slow_recent=rows + [row],
+                              decision_slow_last_json=json.dumps(row, separators=(',', ':')),
                               decision_slow_cycles=int(self.stats.get('decision_slow_cycles', 0)) + 1)
         return total
 
@@ -665,6 +670,11 @@ def play_round(prof, m, send, stopped, stats: dict, lessons=None, sleep=time.sle
                 hp=snap.get('hp') if hp is None else hp
                 terminal_witness = {'screen':'dead','playing_observed':native_playing_seen,
                     'player_verified':bool(snap.get('player')),'hp':hp}
+                native_death = getattr(drv, 'death_witness', None)
+                if callable(native_death):
+                    extra = native_death(snap)
+                    if isinstance(extra, dict) and isinstance(extra.get('game_over_ui'), dict):
+                        terminal_witness['game_over_ui'] = extra['game_over_ui']
                 finish_evidence(now,outcome,last_stats)
                 if stats.get('mercmode_rotate_requested'):
                     return 'mercmode_boundary'

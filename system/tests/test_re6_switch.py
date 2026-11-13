@@ -629,6 +629,34 @@ def test_terminal_observation_counts_death_before_the_engine_closes_evidence():
     assert bot.stats["deaths"] == 1 and len(bot.stats["death_log"]) == 1
 
 
+def test_game_over_with_positive_health_is_recorded_without_inventing_health_loss():
+    g = round_guest(hp=900)
+    over = ui(g, 18, 'uIdGameover00')
+    bot, clock, snap = brain(g)
+    driver = R.RE6Switch(clock=lambda:clock[0])
+    assert driver.screen(g, snap) == 'dead'
+    witness = driver.death_witness(snap)
+    assert witness['game_over_ui']['unit'] == over
+    bot.observe_round(snap, 'dead', clock[0])
+    run(bot, snap, clock, 1)
+    assert bot.stats['deaths'] == 1 and snap['player']['hp'] == 900
+    assert bot.stats['death_observed_hp'] == 900
+    assert bot.stats['death_boundary_source'] == 'native_game_over_ui'
+    snap['player']['generation'] += 1
+    assert driver.death_witness(snap) == {}
+
+
+def test_replay_load_dead_latch_never_reuses_native_game_over_witness():
+    g = round_guest(hp=900)
+    ui(g, 18, 'uIdGameover00')
+    driver = R.RE6Switch(clock=lambda:0)
+    snap = R.snapshot(g)
+    assert driver.screen(g, snap) == 'dead' and driver.death_witness(snap)
+    loading = round_guest(player=False)
+    assert driver.screen(loading, snap) == 'dead'  # retained loop state, not new terminal evidence
+    assert driver.death_witness(snap) == {}
+
+
 def test_engine_persists_the_native_terminal_death_in_its_round(tmp_path, monkeypatch):
     import copy
     import json
