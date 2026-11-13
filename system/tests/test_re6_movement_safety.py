@@ -157,12 +157,29 @@ def test_ring_kept_in_mine_rings_stays_escapable_after_a_later_travel_receipt():
     assert not S._bomb_clear(b2, snap2, center, point)
 
 
-def test_departure_from_nearest_bomb_cannot_approach_another_unsafe_bomb():
+def test_inside_the_planning_margin_travel_is_allowed_but_never_onto_a_bomb():
     b = bot()
     b.stats['mine_avoid_positions'] = [[-100., 0., 0.], [600., 0., 0.]]
-    # Nearest clearance improves 100->250, but the other bomb closes 600->450.
-    assert not S._bomb_clear(b, {}, (0., 0., 0.), (150., 0., 0.))
-    assert S._bomb_clear(b, {}, (0., 0., 0.), (0., 0., 150.))
+    # Crossing the planning margin is fine: nearest 100 -> 250, the other 600 -> 450, both above the no-step floor.
+    # Only the flag gate detonates, and it rereads the live clearance for every bomb.
+    assert S._bomb_clear(b, {}, (0., 0., 0.), (150., 0., 0.))
+    # A step that ends within the no-step floor of a bomb is still refused.
+    assert not S._bomb_clear(b, {}, (0., 0., 0.), (-70., 0., 0.))     # ends 30 cm from the bomb at -100
+    # A bomb already at his feet: only a step that does not approach it further may go, so he climbs out.
+    b2 = bot()
+    b2.stats['mine_avoid_positions'] = [[80., 0., 0.]]
+    assert S._bomb_clear(b2, {}, (0., 0., 0.), (-100., 0., 0.))
+    assert not S._bomb_clear(b2, {}, (0., 0., 0.), (100., 0., 0.))
+
+
+def test_a_nearby_bomb_in_a_dead_end_no_longer_freezes_the_walk():
+    # Live 2026-11-13: one trail bomb 427 cm away held the bot for 183 s with floor_safety_why "no verified floor
+    # escape direction", because every step toward it was refused even when the walkable floor out of the corner
+    # ran past it. Crossing the margin is allowed now; standing on top of a bomb is not.
+    b = bot()
+    b.stats['mine_avoid_positions'] = [[0., 0., -427.]]
+    assert S._bomb_clear(b, {}, (0., 0., 0.), (0., 0., -150.))       # ends 277 cm away: above the floor
+    assert not S._bomb_clear(b, {}, (0., 0., 0.), (0., 0., -220.))   # ends 207 cm away: inside the floor
 
 
 def test_already_safe_external_bomb_keeps_margin_along_whole_detour_segment():

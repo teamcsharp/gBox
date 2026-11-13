@@ -14,6 +14,15 @@ from .re6_switch_wall import STICK_REL, stick_heading
 from ..re6_traversal import TRAVERSAL_ACTIONS
 
 LOOKAHEAD_CM = 150.
+#: A bomb inside the planning margin used to forbid ANY step with a component toward it ("never decrease
+#: clearance"), which froze the bot outright when the only walkable floor out of a spot ran past a bomb:
+#: live 2026-11-13, a single trail bomb at 427 cm held it in place for 183 s with floor_safety_why
+#: "no verified floor escape direction" 930+ times, the gun down, the combo gone and the 5 s deadline missed.
+#: Movement may now cross the planning margin but never come within this of a bomb; the blast itself is still
+#: decided only by re6_switch_mods.detonate, which rereads every live bomb and refuses the flag below the full
+#: detonate_safe_cm. Remote bombs have no proximity trigger - the flag is the only fuse - so walking past one
+#: cannot set it off, while standing trapped next to it cost every round that placed a bomb at a dead end.
+BOMB_TRAVEL_MIN_CM = 250.
 LEFT = frozenset(('lup', 'ldown', 'lleft', 'lright'))
 MOVEMENT = LEFT | {'b', 'rleft', 'rright'}
 MANDATORY = frozenset(('break_free', 'held_auto_qte', 'grab_detonate', 'prompt_stick',
@@ -103,10 +112,15 @@ def _bomb_clear(bot, snap, start, end):
         if before >= margin:
             if _segment_distance(p, start, end) < margin:
                 return False
+        elif before >= BOMB_TRAVEL_MIN_CM:
+            # Inside the planning margin walking is allowed (only the flag gate detonates, and it rereads the live
+            # clearance for every bomb); a step may cross the margin but must not end within BOMB_TRAVEL_MIN_CM
+            # of a bomb.
+            if math.hypot(end[0] - p[0], end[2] - p[2]) < BOMB_TRAVEL_MIN_CM:
+                return False
         elif rx * dx + rz * dz < 0:
-            # Squared distance along a straight segment has derivative
-            # 2*(radial dot step + t*|step|^2). A nonnegative initial dot
-            # proves it never decreases, even while still inside the margin.
+            # Already closer than the no-step floor (a bomb dropped at his feet): only a step that does not
+            # approach it further may go, so he climbs out instead of standing on it.
             return False
     return True
 
