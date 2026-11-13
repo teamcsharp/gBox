@@ -14,11 +14,14 @@ address or name, callers/callees, string search with references, containing-func
 Standalone on purpose: it imports only the standard library and pyghidra, so it runs in Ghidra's PyGhidra venv.
 """
 import json
+import hashlib
 import os
 import re
 import sys
 import threading
+import time
 import traceback
+import uuid
 import warnings
 
 
@@ -185,6 +188,7 @@ class Bridge:
             "signature": str(f.getSignature()), "calling_convention": str(f.getCallingConventionName()),
             "decompiled": res.getDecompiledFunction().getC() if ok else None,
             "error": None if ok else (res.getErrorMessage() if res is not None else "decompiler returned nothing"),
+            "timed_out": bool(res is not None and res.isTimedOut()),
             "callers": self._callers(f), "callees": self._callees(f)}
 
     def xrefs_to(self, target, limit=200, **_):
@@ -204,7 +208,7 @@ class Bridge:
                 break
         return {"target": "0x" + str(a), "xrefs": rows}
 
-    def xrefs_from(self, target, **_):
+    def xrefs_from(self, target, limit=500, **_):
         f = self._function(target)
         p, data = self._need(), []
         rm = p.getReferenceManager()
@@ -212,7 +216,8 @@ class Bridge:
             for ref in rm.getReferencesFrom(a):
                 if ref.getReferenceType().isData():
                     data.append({"from": "0x" + str(a), "to": "0x" + str(ref.getToAddress()), "type": str(ref.getReferenceType())})
-        return self._fn_entry(f) | {"callees": self._callees(f), "data_refs": data[:500]}
+        return self._fn_entry(f) | {"callees": self._callees(f), "data_refs": data[:limit] if limit else data,
+                                    "data_refs_total": len(data), "truncated": bool(limit and len(data) > limit)}
 
     def containing(self, address, **_):
         f = self._need().getFunctionManager().getFunctionContaining(self._addr(address))
@@ -263,42 +268,180 @@ class Bridge:
         out, err = run(path, None, self._need(), [str(a) for a in args], echo_stdout=False, echo_stderr=False)
         return {"script": os.path.basename(path), "stdout": str(out)[-20000:], "stderr": str(err)[-5000:]}
 
-    def export(self, export_dir, limit=0, **_):
-        """Write Dryxio/ghidra-bridge's export layout so its CLI and ReAgent can read this program offline."""
-        os.makedirs(export_dir, exist_ok=True)
-        fm, index, n = self._need().getFunctionManager(), {}, 0
-        for f in fm.getFunctions(True):
-            d = self.decompile("0x" + str(f.getEntryPoint()))
-            addr = str(f.getEntryPoint())
-            callers = [{"addr": c["function_address"][2:], "name": c["function"], "ref_type": c["type"]}
-                       for c in d["callers"] if c.get("function_address")]
-            callees = [{"addr": c["address"][2:], "name": c["name"]} for c in d["callees"]]
-            rec = {"address": addr, "name": f.getName(), "signature": d["signature"],
-                   "calling_convention": d["calling_convention"], "return_type": str(f.getReturnType()),
-                   "parameter_count": f.getParameterCount(), "is_thunk": f.isThunk(),
-                   "decompiled": d["decompiled"] or f"// Decompilation failed: {d['error']}",
-                   "callers": callers, "callees": callees, "data_refs": []}
-            with open(os.path.join(export_dir, addr.replace(":", "_") + ".json"), "w", encoding="utf-8") as fh:
-                json.dump(rec, fh, indent=1)
-            index[addr] = {"name": f.getName(), "address": addr, "num_callers": len(callers), "num_callees": len(callees)}
-            n += 1
-            if limit and n >= int(limit):
+    def export(self, export_dir, limit=0, budget_s=120, function_timeout_s=30, retry_failed=False, **_):
+        """Resume a bounded batch. The manifest inventories every function; errors never count as decompiled source.
+
+        `limit` is the attempts in this batch (0 uses 100), not a truncated program inventory. Each function and
+        outcome is saved atomically, so process loss costs at most the running function. Legacy exports without
+        an identity manifest are not silently adopted. The upstream function/index formats remain readable.
+        """
+        from pathlib import Path
+        if not 5 <= float(budget_s) <= 3000 or not 1 <= int(function_timeout_s) <= 300:
+            raise ValueError("export budget must be 5..3000 seconds and function timeout 1..300 seconds")
+        maximum = int(limit) or 100
+        if not 1 <= maximum <= 10000:
+            raise ValueError("export batch limit must be 0..10000")
+        started = time.monotonic()
+        deadline = started + float(budget_s)
+        directory = Path(export_dir)
+        info = self.info()
+        digest = str(info.get("executable_sha256") or "").lower()
+        if not re.fullmatch(r"[0-9a-f]{64}", digest):
+            raise ValueError("export requires the loaded program's executable SHA-256")
+        source = Path(str(info.get("executable_path") or ""))
+        if not source.is_file() or _file_sha256(source) != digest:
+            raise ValueError("loaded program and executable on disk do not match")
+        functions = {str(f.getEntryPoint()): f for f in self._need().getFunctionManager().getFunctions(True)}
+        if not functions:
+            raise ValueError("no functions discovered: analyze the program before exporting")
+        inventory = [{"address": a, "name": f.getName(True), "size": int(f.getBody().getNumAddresses())}
+                     for a, f in functions.items()]
+        inventory_hash = hashlib.sha256(json.dumps(inventory, sort_keys=True).encode()).hexdigest()
+        directory.mkdir(parents=True, exist_ok=True)
+        manifest_file = directory / "_manifest.json"
+        if manifest_file.exists():
+            manifest = json.loads(manifest_file.read_text(encoding="utf-8"))
+            if manifest.get("version") != 1 or manifest.get("program") != info \
+                    or manifest.get("inventory_sha256") != inventory_hash:
+                raise ValueError("export program/inventory changed: use a new export directory")
+        else:
+            if any(directory.glob("*.json")):
+                raise ValueError("existing export has no matching manifest: use a new export directory")
+            manifest = {"version": 1, "program": info, "inventory": inventory,
+                        "inventory_sha256": inventory_hash, "outcomes": {}, "strings_state": "pending"}
+        outcomes = manifest["outcomes"]
+        if any(a not in functions for a in outcomes):
+            raise ValueError("export manifest contains functions outside this inventory")
+        if any(row.get("state") not in {"pending", "running", "success", "error", "timeout"}
+               for row in outcomes.values()):
+            raise ValueError("export manifest contains an unknown outcome state")
+
+        def save():
+            manifest["updated_at"] = time.time()
+            _atomic_json(manifest_file, manifest)
+
+        # Recover interrupted calls and detect missing/corrupted cached source before reporting success.
+        for addr, row in list(outcomes.items()):
+            if row.get("state") == "running":
+                row.update(state="pending", error="previous export interrupted")
+            if row.get("state") == "success":
+                path = directory / (addr.replace(":", "_") + ".json")
+                if not path.is_file() or _file_sha256(path) != row.get("sha256"):
+                    row.update(state="pending", error="cached function missing or corrupt")
+        # A reader must not mistake a previous batch's summary for current completion during recovery/retry.
+        manifest["summary"] = {"complete": False, "all_success": False, "batch_running": True}
+        save()
+        pending = [a for a in functions if outcomes.get(a, {}).get("state", "pending") == "pending"]
+        retries = [a for a in functions if outcomes.get(a, {}).get("state") in ("error", "timeout")] if retry_failed else []
+        attempted = 0
+        for addr in pending + retries:
+            remaining = deadline - time.monotonic() - 3
+            if attempted >= maximum or remaining < 1:
                 break
-        with open(os.path.join(export_dir, "_index.json"), "w", encoding="utf-8") as fh:
-            json.dump(index, fh, indent=1)
-        strings = {s["address"][2:]: {"address": s["address"][2:], "value": s["value"], "length": len(s["value"]),
-                                      "type": s["type"], "references": [{"func_addr": (r["function_address"] or "")[2:],
-                                                                         "func_name": r["function"], "ref_addr": r["from"][2:]}
-                                                                        for r in s["references"]]}
-                   for s in self.strings(limit=10 ** 9)["strings"]}
-        with open(os.path.join(export_dir, "_strings.json"), "w", encoding="utf-8") as fh:
-            json.dump(strings, fh, indent=1)
-        return {"export_dir": export_dir, "functions": n, "strings": len(strings)}
+            f = functions[addr]
+            attempt = outcomes.get(addr, {}).get("attempts", 0) + 1
+            outcomes[addr] = {"state": "running", "attempts": attempt}
+            save()
+            attempted += 1
+            try:
+                d = self.decompile("0x" + addr, timeout=min(int(function_timeout_s), int(remaining)))
+                if d.get("timed_out"):
+                    raise TimeoutError(d.get("error") or "native decompiler timed out")
+                if d.get("error") or not d.get("decompiled"):
+                    raise RuntimeError(d.get("error") or "native decompiler returned no source")
+                callers = [{"addr": c["function_address"][2:], "name": c["function"], "ref_type": c["type"]}
+                           for c in d["callers"] if c.get("function_address")]
+                callees = [{"addr": c["address"][2:], "name": c["name"]} for c in d["callees"]]
+                refs = self.xrefs_from("0x" + addr, limit=0)
+                rec = {"address": addr, "name": f.getName(), "signature": d["signature"],
+                       "calling_convention": d["calling_convention"], "return_type": str(f.getReturnType()),
+                       "parameter_count": f.getParameterCount(), "is_thunk": f.isThunk(),
+                       "decompiled": d["decompiled"], "callers": callers, "callees": callees,
+                       "data_refs": refs["data_refs"], "data_refs_truncated": refs["truncated"]}
+                record_hash = _atomic_json(directory / (addr.replace(":", "_") + ".json"), rec)
+                entry = {"name": f.getName(), "address": addr, "num_callers": len(callers), "num_callees": len(callees)}
+                outcomes[addr] = {"state": "success", "attempts": attempt, "sha256": record_hash, "index": entry}
+            except Exception as exc:
+                outcomes[addr] = {"state": "timeout" if isinstance(exc, TimeoutError) else "error",
+                                  "attempts": attempt, "error": f"{type(exc).__name__}: {exc}"[:2000]}
+            save()
+        index = {a: row["index"] for a, row in outcomes.items() if row["state"] == "success"}
+        _atomic_json(directory / "_index.json", index)
+        counts = {state: sum(outcomes.get(a, {}).get("state", "pending") == state for a in functions)
+                  for state in ("pending", "running", "success", "error", "timeout")}
+        # Strings are a separate resumable pass; scanning them never delays checkpointing function work.
+        if not counts["pending"] and not counts["running"] and time.monotonic() < deadline - 3:
+            self._export_strings(directory, manifest, deadline - 2)
+        complete = not counts["pending"] and not counts["running"] and manifest["strings_state"] == "complete"
+        summary = {"discovered": len(functions), **counts, "complete": complete,
+                   "all_success": complete and not counts["error"] and not counts["timeout"],
+                   "attempted_this_batch": attempted, "strings_state": manifest["strings_state"],
+                   "elapsed_s": round(time.monotonic() - started, 3)}
+        manifest["summary"] = summary
+        save()
+        return {"export_dir": str(directory), "functions": counts["success"],
+                "strings": manifest.get("string_count", 0), **summary}
+
+    def _export_strings(self, directory, manifest, deadline):
+        path = directory / "_strings.json"
+        if manifest.get("strings_state") == "complete" and path.is_file() \
+                and _file_sha256(path) == manifest.get("strings_sha256"):
+            return
+        good = path.is_file() and _file_sha256(path) == manifest.get("strings_sha256")
+        rows = json.loads(path.read_text(encoding="utf-8")) if good else {}
+        after = manifest.get("strings_cursor") if good else None
+        p = self._need()
+        fm, rm = p.getFunctionManager(), p.getReferenceManager()
+        listing = p.getListing()
+        iterator = listing.getDefinedData(self._addr(after), True) if after else listing.getDefinedData(True)
+        done = True
+        cursor = after
+        for data in iterator:
+            addr = str(data.getAddress())
+            if addr == after:
+                continue
+            if time.monotonic() >= deadline:
+                done = False
+                break
+            cursor = addr
+            typename = data.getDataType().getName()
+            if not any(s in typename.lower() for s in ("string", "char[", "unicode")):
+                continue
+            value = str(data.getValue())
+            refs = []
+            for ref in rm.getReferencesTo(data.getAddress()):
+                f = fm.getFunctionContaining(ref.getFromAddress())
+                refs.append({"func_addr": str(f.getEntryPoint()) if f else "", "func_name": f.getName(True) if f else None,
+                             "ref_addr": str(ref.getFromAddress())})
+            rows[addr] = {"address": addr, "value": value, "length": len(value), "type": typename, "references": refs}
+        sha = _atomic_json(path, rows)
+        manifest.update(strings_state="complete" if done else "pending", strings_cursor=cursor,
+                        strings_sha256=sha, string_count=len(rows))
 
 
 OPS = {"open", "close", "info", "functions", "decompile", "xrefs_to", "xrefs_from", "containing", "strings", "run_script",
        "export", "guarded"}
 GUARDED_OPS = OPS - {"open", "close", "guarded"}
+
+
+def _file_sha256(path):
+    with open(path, "rb") as handle:
+        return hashlib.file_digest(handle, "sha256").hexdigest()
+
+
+def _atomic_json(path, data):
+    payload = (json.dumps(data, ensure_ascii=False, sort_keys=True, allow_nan=False) + "\n").encode("utf-8")
+    tmp = path.with_name(path.name + "." + uuid.uuid4().hex + ".tmp")
+    try:
+        with tmp.open("xb") as handle:
+            handle.write(payload)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(tmp, path)
+    finally:
+        if tmp.exists():
+            tmp.unlink()
+    return hashlib.sha256(payload).hexdigest()
 
 
 def canonical_binary_path(value):

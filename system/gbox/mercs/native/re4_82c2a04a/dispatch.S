@@ -2,8 +2,8 @@
 //
 // Installed into the never-executed zero padding at main+0x655880 (scripts/verify_re4_caves.py proves it: 1920
 // bytes on a fresh 64-byte line, no branch or literal into it). It is reached through DATA only: the controller
-// clones the player object's vtable, points slot +0x20 (the unit base-class transform virtual, main+0x2B6420,
-// shared by every unit class) at this code, and stores the clone's address into player+0. The clone also carries
+// clones the player object's vtable, points slot +0xA0 (the player per-frame virtual, main+0x312600,
+// called by the player update at main+0x311400) at this code, and stores the clone's address into player+0. The clone also carries
 // the mailbox pointer at entry 32 (offset 0x100), so this code never hardcodes private storage.
 //
 // Mailbox (the proven .bss page; E3):
@@ -14,7 +14,7 @@
 //   +0x50 u64 generation the controller's request generation (read back by the host; not used here)
 //   +0x58 u64 ticks      incremented on every entry (E6's live proof that the slot fires every frame)
 //
-// Every entry tail-calls the original transform with the unit in x0, so the game keeps working while the harness
+// Every entry tail-calls the original tick with the unit in x0, so the game keeps working while the harness
 // is attached. A NULL mailbox pointer (or a request with no target) is safe: the original still runs.
     stp     x29, x30, [sp, #-0x40]!
     mov     x29, sp
@@ -45,8 +45,8 @@
     str     w9, [x20, #0x00]
 .Loriginal:
     mov     x0, x19
-    adrp    x9, #0x2b6000                 // main+0x2B6420, the unit transform sync
-    add     x9, x9, #0x420
+    adrp    x9, #0x312000                 // main+0x312600, the player tick callback
+    add     x9, x9, #0x600
     ldp     x19, x20, [sp, #0x10]
     ldp     x21, x22, [sp, #0x20]
     ldp     x29, x30, [sp], #0x40

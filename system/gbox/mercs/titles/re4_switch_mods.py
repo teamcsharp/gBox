@@ -328,6 +328,10 @@ def _aim(ad, snap: dict) -> int:
         return 0
     delta = D.wrap(float(want) - current)
     if abs(delta) <= AIM_WRITE_DEADBAND:
+        # Facing can already be right while the gun is still pointing into the ground. Pitch and
+        # recoil are independent axes; the camera smoothing deadband must never disable their correction.
+        if req.get("steady") and getattr(D, "AIM_RAM", False):
+            return _steady(ad, snap, req)
         return 0
     target = current + max(-AIM_WRITE_MAX_STEP, min(AIM_WRITE_MAX_STEP, delta))
     try:
@@ -663,6 +667,11 @@ PRIMARY_SHARE = 0.7
 BOSS_WEAPON = True
 BOSS_GUNS = (0x37, 0x2A, 0x29, 0x2D, 0x94, 0x2C)   # Handcannon, Killer7, Broken Butterfly, Striker, Riot Gun, Shotgun
 BOSS_WEAPON_GAP_S = 45.0                           # one swap per boss encounter (the lock's own duration is longer)
+CROWD_WEAPON = True
+CROWD_N = 3
+CROWD_RANGE_CM = 650.0
+CROWD_CLEAR_S = 4.0
+CROWD_RETRY_S = 1.0
 # ...and 30% of the rounds draw ANY campaign high-power weapon (re4_weapons.HIGH_POWER: PRL 0x94, rocket launcher
 # 0x35, Chicago Typewriter 0x34, TMP, rifles) at max level - the "ranging from the PRL to the magnum" spread. The
 # 15:59 no-pistols rule holds: HIGH_POWER carries no handgun.
@@ -763,8 +772,12 @@ def _round_weapon(ad, snap: dict, st: dict) -> dict | None:
     # screen's Continue, or (no screen read) from nothing at all. Every such entry is a new round, so every round gets
     # its weapon - a results -> playing restart used to keep the last round's epoch (the operator: "mods_weapon_given was
     # 4 for a whole session"). A case / grab / hold screen in the same round is not an entry.
-    if phase == "playing" and last in (None, "intro", "results", "dead", "none", "paused"):
+    if phase == "playing" and last in (None, "intro", "results", "dead", "none"):
         st["rw_epoch"] = st.get("rw_epoch", 0) + 1
+        st.pop("rw_pending", None)
+        st.pop("rw_retry_at", None)
+        D.WEAPON_ASK.clear()                            # no request from the previous round may own this one
+        st.pop("crowd_choice", None)
     elif phase in D.ROUND_PHASES and phase != "playing" and "rw_epoch" not in st:
         st["rw_epoch"] = 0                              # watching before the first round: nothing given yet
     epoch = st.get("rw_epoch")
@@ -774,6 +787,10 @@ def _round_weapon(ad, snap: dict, st: dict) -> dict | None:
         return None
     if not isinstance((snap.get("player") or {}).get("ptr"), int) or st.get("hand_saved") is not None:
         return None                                     # no player yet, or a grenade in his hand (after it)
+    if time.monotonic() < float(st.get("rw_retry_at") or 0):
+        return None
+    if D.WEAPON_ASK.get("item") and time.monotonic() < float(D.WEAPON_ASK.get("until") or 0):
+        return None
     base = snap["module_base"]
     try:
         ch = bytes(ad.read_memory(base + W.GAME_OBJ + W.G_CHARACTER, 1))[0]
@@ -785,14 +802,16 @@ def _round_weapon(ad, snap: dict, st: dict) -> dict | None:
     tries = (st.get("rw_tries", 0) if st.get("rw_tries_epoch") == epoch else 0) + 1
     st["rw_tries"], st["rw_tries_epoch"] = tries, epoch
     import random as _random
-    last_id = (st.get("weapon_given") or {}).get("id")
-    given = _give_weapon(ad, base, st, _random.Random(), fixed=st.get("loadout_weapon") or None,
+    last_id = (st.get("round_weapon") or st.get("weapon_given") or {}).get("id")
+    given = _give_weapon(ad, base, st, _random.Random(), fixed=st.get("rw_pending") or st.get("loadout_weapon") or None,
                          exclude=() if last_id is None else (last_id,))
     if given is None:
         if tries >= ROUND_WEAPON_TRIES:
-            st["rw_given_epoch"] = epoch
             st["weapon_given"] = {"verified": False, "round": epoch, "reason": "his hand could not be read"}
+        st["rw_retry_at"] = time.monotonic() + (2.0 if tries >= ROUND_WEAPON_TRIES else 0.5)
         return None
+    if given.get("id") is not None:
+        st["rw_pending"] = given["id"]                 # retries keep this round's draw
     given.update(round=epoch, character=W.CHARACTERS.get(ch, ch))
     if given.get("verified") and float(st.get("fire_rate", 1.0) or 1.0) > 1.0:
         # The 20x tables in the round's own give, every round (not only pre_round's boot): a stage load re-reads the
@@ -807,8 +826,49 @@ def _round_weapon(ad, snap: dict, st: dict) -> dict | None:
                        "at": round(time.time(), 1)})
         del rounds[:-12]
     st["weapon_given"] = given
-    if given.get("verified") or tries >= ROUND_WEAPON_TRIES or ("reason" in given and "id" not in given):
-        st["rw_given_epoch"] = epoch                    # given, tried enough, or nothing in his hand to swap
+    if given.get("verified"):
+        st["rw_given_epoch"] = epoch
+        st["round_weapon"] = dict(given)                # temporary rings/boss/crowd guns never replace the baseline
+    else:
+        st["rw_retry_at"] = time.monotonic() + (2.0 if tries >= ROUND_WEAPON_TRIES else 0.5)
+    return given
+
+
+def _crowd_weapon(ad, snap: dict, st: dict, rng=None) -> dict | None:
+    """A random shotgun for a nearby pack, with a clear interval before the next encounter redraws it."""
+    game, p = snap.get("game") or {}, snap.get("player") or {}
+    if not CROWD_WEAPON or game.get("phase") != "playing" or not game.get("in_control") \
+            or not p.get("pos") or st.get("hand_saved") is not None:
+        return None
+    now = time.monotonic()
+    near = [e for e in snap.get("enemies") or () if e.get("pos") and (e.get("hp") or 0) > 0
+            and abs(e["pos"][1] - p["pos"][1]) <= 200.0 * D.MM_PER_CM
+            and math.hypot(e["pos"][0] - p["pos"][0], e["pos"][2] - p["pos"][2]) <= CROWD_RANGE_CM * D.MM_PER_CM]
+    if len(near) < CROWD_N:
+        clear = st.setdefault("crowd_clear_at", now)
+        if now - clear >= CROWD_CLEAR_S:
+            st.pop("crowd_choice", None)
+        return None
+    st.pop("crowd_clear_at", None)
+    if D.boss_on_screen(snap) is not None:               # the boss keeps the heavy gun
+        return None
+    try:
+        held = W.Reader(lambda a, n: bytes(ad.read_memory(a, n)), snap["module_base"]).equipped()
+    except (ValueError, OSError, RuntimeError, struct.error):
+        return None
+    if not held or held.get("id") not in SWAPPABLE or held.get("id") in SHOTGUNS:
+        return None
+    if now < float(st.get("crowd_retry_at") or 0):
+        return None
+    import random as _random
+    rng = rng or _random.Random()
+    choice = st.setdefault("crowd_choice", rng.choice(sorted(SHOTGUNS)))
+    st["crowd_retry_at"] = now + CROWD_RETRY_S
+    given = _give_weapon(ad, snap["module_base"], st, rng, fixed=choice)
+    if given is not None:
+        st["crowd_weapon"] = dict(given, enemies=len(near))
+        if given.get("verified"):
+            st["crowd_weapon_swaps"] = st.get("crowd_weapon_swaps", 0) + 1
     return given
 
 
@@ -1082,6 +1142,10 @@ def loadout_weapon(ad, weapon, snap: dict | None = None) -> dict:
 def random_weapon(ad, on: bool, snap: dict | None = None) -> dict:
     st = _state(ad)
     st["random_weapon"] = bool(on)
+    st.pop("rw_pending", None)
+    st.pop("rw_retry_at", None)
+    if on:
+        st["loadout_weapon"] = None                    # a fixed override must not silently defeat random rounds
     _save(st)
     st.pop("rw_given_epoch", None)                     # a fresh pick on the next live snapshot of a round
     st.pop("loadout_drawn", None)
@@ -1298,6 +1362,45 @@ def _unstick(ad, snap) -> int:
         return 0
 
 
+def _first_aid(ad, snap, st):
+    """Keep the native spray stocked and use it below the threshold, without opening the inventory."""
+    p = snap.get("player") or {}
+    if (snap.get("game") or {}).get("phase") not in ("playing", "grabbed") or not p.get("ptr"):
+        return 0
+    now = time.monotonic()
+    if now < st.get("spray_retry_at", 0):
+        return 0
+    try:
+        from ..interventions import native_controller
+        ctl = native_controller(ad)
+        # A manual ring owns the mailbox until its current blast completes. Combat never waits for that lock.
+        if not ctl.lock.acquire(blocking=False):
+            return 0
+        try:
+            stock = ctl.keep_spray()
+            st["first_aid_stock"] = stock
+            hp, top = p.get("hp"), p.get("hp_max")
+            below = st.get("heal_below", .75)
+            wanted = below and not st.get("unlimited_health") and isinstance(hp, int) and isinstance(top, int) \
+                and top > 0 and 0 < hp <= top * float(below)
+            if not wanted or not stock.get("available"):
+                st["spray_retry_at"] = now + .25
+                return 0
+            result = ctl.first_aid_now()
+            st["first_aid_last"] = result
+            st["spray_retry_at"] = time.monotonic() + (.25 if result.get("verified") else 5.0)
+            if result.get("consumed") and result.get("verified"):
+                st["heals"] = st.get("heals", 0) + 1
+                LAST_HEAL.update(at=time.time(), deficit=top - hp, top=top, **{"from": hp})
+                return 1
+        finally:
+            ctl.lock.release()
+    except (OSError, ValueError, RuntimeError, AttributeError, struct.error) as exc:
+        st["first_aid_last"] = {"state": "unavailable", "verified": False, "reason": str(exc)[:300]}
+        st["spray_retry_at"] = now + 5.0
+    return 0
+
+
 def maintain(ad, snap: dict | None = None) -> dict:
     """Every RAM snapshot of a round: the health caps, the time per kill, the clock write's confirmation."""
     if not snap or snap.get("module_base") is None:
@@ -1333,25 +1436,10 @@ def maintain(ad, snap: dict | None = None) -> dict:
             st["life_kept"] = st.get("life_kept", 0) + n
             if n:
                 out["life_kept"] = n
-        # The THRESHOLD heal (the operator, 2026-11-12: "they have unlimited healing items, so they should always have
-        # the ability to use a first aid spray and heal themselves if they need to in the game ... I don't want them
-        # bringing up the item screen"). This is NOT unlimited life: nothing is written while he is at or above
-        # heal_below, and one write happens per hurt snapshot, so it behaves as using a healing item the moment he is
-        # hurt. It is the only route that exists - the hand swap resolves WEAPON rows (re4_switch_mods._hand_hold raises
-        # "no weapon row for First Aid Spray") and RE4 has no "hold a spray" state, so the swap can never do it.
-        below = st.get("heal_below")
-        if below and not st.get("unlimited_health"):
-            p = (snap or {}).get("player") or {}
-            hp, top = p.get("hp"), p.get("hp_max")
-            if isinstance(hp, int) and isinstance(top, int) and top > 0 and 0 < hp <= top * float(below):
-                n = _keep_life(ad, snap)
-                if n:
-                    st["heals"] = st.get("heals", 0) + n
-                    out["heals"] = n
-                    # The blow as text: the publish loop sums numeric mod values, so it must not be a number (live:
-                    # max_deficit read 7680 against a 1860 bar after accumulating tick after tick).
-                    if LAST_HEAL.get("deficit") is not None:
-                        out["blow"] = f"{LAST_HEAL['deficit']} of {LAST_HEAL.get('top')}"
+        n = _first_aid(ad, snap, st)
+        if n:
+            out["heals"] = n
+            out["blow"] = f"{LAST_HEAL.get('deficit')} of {LAST_HEAL.get('top')}"
         if (st.get("weapon_power", 1.0) != 1.0 or st.get("max_level")) and st.get("fp_applied_boot") != boot:
             out["power_rows"] = _apply_power(ad, snap["module_base"], st)   # once a boot (the table is static data)
             st["fp_applied_boot"] = boot
@@ -1385,32 +1473,42 @@ def maintain(ad, snap: dict | None = None) -> dict:
                     out["fire_tables"] = given["fire_tables"]      # this round's 20x tables, with its weapon
         # A boss on screen: a magnum or a shotgun in his hand (the operator 2026-11-12). Runs after the round's weapon
         # so it has the last word whenever a boss is already there; a boss appears mid-round it simply swaps then.
-        swapped = _boss_weapon(ad, snap, st) if BOSS_WEAPON else None
+        ask = getattr(D, "WEAPON_ASK", None)
+        ring_owns_weapon = isinstance(ask, dict) and ask.get("item") \
+            and time.monotonic() < float(ask.get("until") or 0)
+        free_hand = not ring_owns_weapon and st.get("hand_saved") is None
+        swapped = _boss_weapon(ad, snap, st) if BOSS_WEAPON and free_hand else None
         if swapped is not None and swapped.get("verified") and not swapped.get("already"):
             out["boss_weapon_swapped"] = 1
+        crowd = _crowd_weapon(ad, snap, st) if free_hand else None
+        if crowd is not None and crowd.get("verified"):
+            out["crowd_weapon_swapped"] = 1
         # The bot's mine-thrower ring asks for the thrower in his hand (re4_switch.WEAPON_ASK): the same verified in-hand
         # swap as the round's weapon. A request the game refuses is recorded (mine_ring_arm_error) and cleared: a ring
         # never retries the same hand forever. A round's own weapon give cancels any stale ask first (a request left over
         # from the previous round must never replace the new round's random weapon).
-        ask = getattr(D, "WEAPON_ASK", None)
         live_round = isinstance(snap.get("game"), dict) and snap["game"].get("phase") == "playing" \
             and isinstance((snap.get("player") or {}).get("ptr"), int)
         if isinstance(ask, dict) and ask.get("item") and live_round:
             if given_round_weapon:
                 ask.clear()
-            elif time.monotonic() < float(ask.get("until") or 0):
+            elif time.monotonic() >= float(ask.get("until") or 0):
+                ask.clear()
+            elif snap.get("equipped_id") == int(ask["item"]):
+                ask["verified"] = True  # hold ownership without repeatedly giving the same weapon
+                if ask.get("why") == "restore after mine ring":
+                    ask.clear()
+            elif time.monotonic() >= float(ask.get("retry_at") or 0):
                 import random as _random
+                ask["retry_at"] = time.monotonic() + 0.5
                 given = _give_weapon(ad, snap["module_base"], st, _random.Random(), fixed=int(ask["item"]))
                 if isinstance(given, dict) and given.get("verified"):
                     given.update(asked=True, why=ask.get("why") or "the bot's ring")
                     st["weapon_given"] = given
                     out["weapon_given"] = 1
-                    ask.clear()
+                    ask["verified"] = True
                 elif isinstance(given, dict) and given.get("reason"):
                     st["mine_ring_arm_error"] = str(given.get("reason"))[:160]
-                    ask.clear()
-            else:
-                ask.clear()
         if st.get("aim_lock"):
             ram0, sway0 = st.get("aim_ram_writes", 0), st.get("aim_sway_zeroed", 0)
             n = _aim(ad, snap)
@@ -1447,9 +1545,13 @@ def status(ad, snap: dict | None = None) -> dict:
            # heal_below is shown so the threshold heal can be verified from the live telemetry alone: a setting that
            # never loaded cannot be distinguished from one that loaded and never triggered (live 2026-11-12: the heal
            # was configured, dropped by SAVED_KEYS, and the only symptom was a health bar that kept falling).
-           "heal_below": st.get("heal_below"), "heals": st.get("heals", 0),
+           "heal_below": st.get("heal_below", .75), "heals": st.get("heals", 0),
+           "first_aid_stock": st.get("first_aid_stock"), "first_aid_last": st.get("first_aid_last"),
+           "healing_method": "native first-aid item use",
            "infinite_ammo": bool(st.get("infinite_ammo")), "fire_rate_x": st.get("fire_rate", 1.0),
            "random_weapon": bool(st.get("random_weapon")), "weapon_given": st.get("weapon_given"),
+           "round_weapon": st.get("round_weapon"), "crowd_weapon": st.get("crowd_weapon"),
+           "crowd_weapon_swaps": st.get("crowd_weapon_swaps", 0),
             # the boss gun: the last swap (or the "already a magnum/shotgun" receipt) and its count
             "boss_weapon": st.get("boss_weapon"), "boss_weapon_boss": st.get("boss_weapon_boss"),
             "boss_weapon_swaps": st.get("boss_weapon_swaps", 0),

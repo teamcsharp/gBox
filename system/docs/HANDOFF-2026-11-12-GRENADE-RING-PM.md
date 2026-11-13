@@ -1,5 +1,11 @@
 # Handoff — the Mercenaries grenade ring (PM takeover), 2026-11-12
 
+**Later operator clarification and full DeepSeek takeover:** read
+[DEEPSEEK-SPARK-DECOMP-HANDOFF-2026-11-12.md](DEEPSEEK-SPARK-DECOMP-HANDOFF-2026-11-12.md)
+for the current requirements, per-instance enemy replacement, separate title counts, every-death counting,
+Spark analysis work and unfinished local changes. It supersedes conflicting task directions below; the historical
+receipts here remain useful evidence, not proof of the newly requested behavior.
+
 Written at the end of three working rounds in one session on `main` (HEAD `2dd6adc1`). Everything below is either a
 live receipt from the operator's Spark (`lilspark`) or a file/commit; where something is not done it says so and says
 what to do next.

@@ -43,7 +43,10 @@ class GhidraBridgeIn(BaseModel):
     script: str | None = None          # run_script: file name in adapters/ghidra or a path
     args: list[str] = []
     export_dir: str | None = None
-    export_limit: int = Field(0, ge=0)   # export: first N functions only (0 = all)
+    export_limit: int = Field(0, ge=0, le=10000)   # attempts per resumable batch (0 = 100)
+    export_budget_s: float = Field(120, ge=5, le=3000)
+    function_timeout_s: int = Field(30, ge=1, le=300)
+    retry_failed: bool = False
     expected_binary_path: str | None = Field(None, min_length=1, max_length=4096)
     expected_sha256: str | None = Field(None, pattern=r"^[0-9a-fA-F]{64}$")
 
@@ -132,7 +135,9 @@ def run(inp: GhidraBridgeIn, config, worker="local", progress=None, sess=None) -
     if op == "export":
         if not inp.export_dir:
             raise ValueError("export needs export_dir")
-        res = request("export", {"export_dir": inp.export_dir, "limit": inp.export_limit},
+        res = request("export", {"export_dir": inp.export_dir, "limit": inp.export_limit,
+                                 "budget_s": inp.export_budget_s, "function_timeout_s": inp.function_timeout_s,
+                                 "retry_failed": inp.retry_failed},
                         timeout=3500, progress=progress)
         return {"op": op, "source": "live", "worker_id": worker, "result": res}
     # queries

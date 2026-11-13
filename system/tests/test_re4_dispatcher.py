@@ -1,7 +1,7 @@
 """The RE4 dispatcher image (E0(c)): the pinned bytes, their tail call, and their behaviour under unicorn.
 
 The dispatcher is the only guest-side code the RE4 harness installs. It is reached through data (the player
-object's cloned vtable at slot +0x20), reads the mailbox pointer from the clone, performs one native call per
+object's cloned vtable at slot +0xA0), reads the mailbox pointer from the clone, performs one native call per
 request and tail-calls the game's own transform every entry. These tests decode the pinned image, reproduce it from
 `dispatch.S` (keystone), and execute it on a synthetic memory map (unicorn) - no game.
 """
@@ -29,13 +29,13 @@ SUM_STUB = struct.pack("<3I", 0x8B010009, 0x8B020120, 0xD65F03C0)        # x0 = 
 RET_STUB = struct.pack("<I", 0xD65F03C0)
 
 UNIT, CLONE, MAILBOX, STACK, RETURN = 0x800000, 0x800100, 0x900000, 0x700000, 0x500000
-MAPS = (0x2B0000, 0x500000, 0x655000, 0x700000, 0x800000, 0x900000, 0xA00000)
+MAPS = (0x310000, 0x500000, 0x655000, 0x700000, 0x800000, 0x900000, 0xA00000)
 
 
 def test_the_fake_stubs_are_what_they_claim():
     from capstone import Cs, CS_ARCH_ARM64, CS_MODE_ARM
     md = Cs(CS_ARCH_ARM64, CS_MODE_ARM)
-    assert [i.mnemonic for i in md.disasm(ORIGINAL_STUB, C.ORIGINAL_TRANSFORM)] == ["str", "mov", "ret"]
+    assert [i.mnemonic for i in md.disasm(ORIGINAL_STUB, C.ORIGINAL_TICK)] == ["str", "mov", "ret"]
     assert [i.mnemonic for i in md.disasm(SUM_STUB, 0xA00000)] == ["add", "add", "ret"]
 
 
@@ -49,7 +49,7 @@ def test_the_image_fits_the_cave_and_starts_on_a_fresh_line():
     assert C.CLONE_AT + C.CLONE_SIZE <= C.CAVE_END == 0x656000
 
 
-def test_the_tail_call_lands_on_the_original_transform():
+def test_the_tail_call_lands_on_the_original_tick():
     from capstone import Cs, CS_ARCH_ARM64, CS_MODE_ARM
     md = Cs(CS_ARCH_ARM64, CS_MODE_ARM)
     md.detail = True
@@ -65,8 +65,8 @@ def test_the_tail_call_lands_on_the_original_transform():
     assert tail is not None
     page = int(tail.split(" + ")[0], 0)
     off = int(tail.split(" + ")[1], 0)
-    assert page + off == C.ORIGINAL_TRANSFORM
-    assert C.ORIGINAL_TRANSFORM == 0x2B6420
+    assert page + off == C.ORIGINAL_TICK
+    assert C.ORIGINAL_TICK == 0x312600
 
 
 def test_the_pinned_image_reproduces_from_source():
@@ -74,7 +74,7 @@ def test_the_pinned_image_reproduces_from_source():
     report = B.check()
     assert report["ok"], report["problems"]
     assert report["size"] == C.DISPATCH[2] and report["sha256"] == C.DISPATCH[3]
-    assert report["tail_call"] == C.ORIGINAL_TRANSFORM
+    assert report["tail_call"] == C.ORIGINAL_TICK
 
 
 # ---- the dispatcher on a synthetic memory map -------------------------------------------------------------------------
@@ -87,7 +87,7 @@ def machine(mailbox=True):
     for base in MAPS:
         mu.mem_map(base, 0x10000)
     mu.mem_write(C.CAVE_AT, C.IMAGES["dispatch"])
-    mu.mem_write(C.ORIGINAL_TRANSFORM, ORIGINAL_STUB)
+    mu.mem_write(C.ORIGINAL_TICK, ORIGINAL_STUB)
     mu.mem_write(0xA00000, SUM_STUB)
     mu.mem_write(RETURN, RET_STUB)
     mu.mem_write(UNIT, struct.pack("<Q", CLONE))

@@ -71,6 +71,7 @@ BOT_MODULES = frozenset({
     "gbox.pso_survival", "gbox.pso_fence"})
 BOT_PACKAGES = ("gbox.mercs",)             # the package and everything under it, except NOT_BOT
 NOT_BOT = frozenset({                      # under gbox.mercs, but state or threads that outlive a bot run:
+    "gbox.mercs.re6_dti_emu",              # command-line research script; reads a private NSO at import
     "gbox.mercs.warm_boot",                # the MercMode warm pool's pause/resume observers (adapter-lifetime threads)
     "gbox.mercs.damage",                   # the worker-lifetime player-damage delivery thread and its file locks
     "gbox.mercs.directives",               # the chat's instant commands: an in-memory store the control plane writes
@@ -79,6 +80,7 @@ NOT_BOT = frozenset({                      # under gbox.mercs, but state or thre
     "gbox.mercs.titles.re6_switch_native",  # native mailbox owner/lock must not be replaced while a call executes
     "gbox.mercs.titles.re5_switch_native",  # same adapter-lifetime mailbox ownership as RE6
     "gbox.mercs.titles.re4_gc_native",      # Dolphin dispatcher ownership and observed life context
+    "gbox.mercs.titles.re4_switch_native",  # Switch vtable clone and mailbox ownership outlive a bot run
     "gbox.mercs.teamplay",                 # team / training intent and its evidence (mercs_team tool, tools.autoplay)
     "gbox.mercs.evidence_sync",            # federation / desktop-bridge evidence delivery threads
     "gbox.mercs.round_reports",            # control-plane routes and the Hermes queue

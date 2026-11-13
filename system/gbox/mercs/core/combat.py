@@ -210,7 +210,7 @@ def _motion_key(e):
 TIERS = ("boss", "dangerous", "normal")
 TIER_ORDER = {"boss": 0, "dangerous": 1, "normal": 2}
 IDENTITY = True
-LESSONS = True                           # death_lessons: a class that killed him twice is a dangerous one
+LESSONS = True                           # a class implicated in a death becomes a priority next round
 
 
 def hp_tier(boss_hp=None, dangerous_hp=None) -> Callable:

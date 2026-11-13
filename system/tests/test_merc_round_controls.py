@@ -289,7 +289,9 @@ def test_replaced_or_cancelled_prepare_cannot_clear_another_sessions_pick(tmp_pa
     control.cancel_selection(first)
     assert control.selection is second and second['state'] == 'queued'
     assert control.choose_stage([0]) is None
-    assert control.choose_character([0]) is None
+    # Native roster fallback is deliberate when a queued index is absent from this build.
+    assert control.choose_character([0]) == 0
+    assert 'outside this build' in control.reason
     control.cancel_selection(second)
     assert second['state'] == 'cancelled' and control.selection is None
     assert not control.managed and not control.path.exists()

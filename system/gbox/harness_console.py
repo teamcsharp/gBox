@@ -201,15 +201,29 @@ def _session_view(session: dict) -> dict:
 
 def _title_elf(config, session: dict) -> Path | None:
     """The analyzed Switch main for this session, from the known extracted/ELF locations."""
-    candidates = []
-    root = Path(getattr(config, "data_dir", Path(".")))
-    candidates += [root / "analysis" / "switch" / "re5" / "re5_switch_main_EBFFDB22.elf",
-                   root / "analysis" / "switch" / "re6" / "re6_switch_main.elf"]
-    candidates += [Path.home() / "gBox_alt" / "scratch" / "agent" / "switch" / "re5" / "ghidra" / "re5main.elf",
-                   Path.home() / "gBox_alt" / "scratch" / "agent" / "re6sw" / "nso" / "re6sw_main_061D2A06.elf"]
+    from . import re_switch as editions
+    ids = {editions.RE4_GAME_ID: "re4", editions.RE5_GAME_ID: "re5", editions.RE6_GAME_ID: "re6"}
+    title = ids.get(session.get("game_id"))
     detail = session.get("detail") or {}
-    if detail.get("elf"):
-        candidates.insert(0, Path(str(detail["elf"])))
+    serial = str(session.get("title_id") or detail.get("title_id") or "").upper()
+    by_serial = next((name for name, row in editions.EDITIONS.items() if row["title_id"] == serial), None)
+    if title and by_serial and title != by_serial:
+        return None
+    title = title or by_serial
+    if title is None:
+        return None
+    root = Path(getattr(config, "data_dir", Path(".")))
+    cache = Path(getattr(config, "cache", None) or getattr(config, "cache_dir", None) or root / "cache")
+    tid = editions.EDITIONS[title]["title_id"]
+    candidates = [cache / "exefs" / tid / "main.elf"]
+    home = Path.home() / "gBox_alt"
+    candidates += {
+        "re4": [root / "analysis/switch/re4/re4_switch_main.elf", home / "gbox-cache/exefs" / tid / "main.elf"],
+        "re5": [root / "analysis/switch/re5/re5_switch_main_EBFFDB22.elf",
+                home / "scratch/agent/switch/re5/ghidra/re5main.elf"],
+        "re6": [root / "analysis/switch/re6/re6_switch_main.elf",
+                home / "scratch/agent/re6sw/nso/re6sw_main_061D2A06.elf"],
+    }[title]
     for path in candidates:
         try:
             if path.is_file():
@@ -271,10 +285,17 @@ def install(app, store, config, auth, submit_job=None):
         op = str(body.get("op") or "status").strip().lower()
         if op == "status":
             return harness_ghidra()
+        if op not in {"open", "info", "decompile", "xrefs_to", "xrefs_from", "functions", "containing", "strings"}:
+            raise HTTPException(422, "unsupported harness analysis operation")
         elf = _title_elf(config, store.get("session", sid) or {})
         if elf is None:
             raise HTTPException(409, "no analyzed main ELF is present for this title; build/convert one first")
         inp = {"op": op, "binary_path": str(elf), "processor": body.get("processor") or "AARCH64:LE:64:v8A"}
+        if op != "open":
+            import hashlib
+            with elf.open("rb") as source:
+                digest = hashlib.file_digest(source, "sha256").hexdigest()
+            inp.update(expected_binary_path=str(elf), expected_sha256=digest)
         if body.get("target"):
             inp["target"] = body["target"]
         worker = str(store.get("session", sid).get("worker_id") or sid.split("-")[0])

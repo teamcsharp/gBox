@@ -197,6 +197,7 @@ def walk_track(stats: dict, snap, now: float) -> None:
 # 20x speed ... rain arrows"). It was 0.025 - only 2x the rifle's 0.05, which is why 20x never appeared however the
 # trigger was tuned. 0.05 / 20 = 0.0025: one decision every 2.5 ms, twenty times the gun's loop.
 BOW_FIGHT_TICK_S = 0.0025
+GUN_TAP_HOLD_S = 0.02                   # explicit pulse; bypass the keyboard adapter's implicit 60 ms batch hold
 BOW_TAP_HOLD_S = 0.02                   # the bow's trigger is held through its draw: a down+up in one batch is a
                                         # zero-length press the game never fires (the operator 2026-11-11: "the bot
                                         # never fires the arrows in RE4") - the guns fire on the press edge, the bow
@@ -423,7 +424,7 @@ def play(ad, send, stopped, sleep=time.sleep, stats: dict | None = None, *, cloc
     reader = screens.Reader()
     pick = selection_of(game)
     try:
-        driver.begin_run(selection=pick)
+        driver.begin_run(selection=pick, mercmode=((game or {}).get('launch') or {}).get('mercmode'))
         if pick:
             stats["queued_selection"] = (f"{driver.CHARACTERS[driver.SELECTION['player'] or 0]} / "
                                          f"{driver.STAGES[driver.SELECTION['stage'] or 0]}")
@@ -457,12 +458,16 @@ def play(ad, send, stopped, sleep=time.sleep, stats: dict | None = None, *, cloc
             stats.update(walk.stats())
 
     def round_started() -> None:
+        if bot is not None and hasattr(bot, "new_round"):
+            bot.new_round()
         walk.round_start()
         walk_stats(True)
 
     def round_ended() -> None:
         walk.round_end()
         walk_stats(True)
+        if any(driver.RANDOM_SELECTION.values()):
+            stats['selection_redraw_pending'] = True
     unknown_since = None
     seen_menu, prev_where = False, None             # title_returns: the title again after a menu (an idle return or
                                                     # a back press), the stat that tells a walk loop on the live panel
@@ -521,7 +526,7 @@ def play(ad, send, stopped, sleep=time.sleep, stats: dict | None = None, *, cloc
                 stats["fight"] = "ram"
                 bonus_goal(bot, snap, clock())            # the nearest time bonus as a point goal (BONUS_ROUTE)
                 keys.apply(bot.tick(snap, now=clock()),
-                           tap_hold=BOW_TAP_HOLD_S if is_bow(snap) else 0.0)
+                           tap_hold=BOW_TAP_HOLD_S if is_bow(snap) else GUN_TAP_HOLD_S)
                 re4_walk.publish(pub, snap, bot, stats["screen"])
             else:
                 keys.release()
@@ -587,6 +592,8 @@ def play(ad, send, stopped, sleep=time.sleep, stats: dict | None = None, *, cloc
                 keys.release()
                 round_ended()
             in_round = False
+            if where == 'select_player' and stats.pop('selection_redraw_pending', False):
+                stats['next_selection'] = driver.next_selection()
             target = (driver.EXTRAS_ROW if where == "main_menu"
                       else driver.MERCENARIES_ROW if where == "extras_menu" else None)
             scr = {**screen, "target": target, "reader": reader}
@@ -597,6 +604,8 @@ def play(ad, send, stopped, sleep=time.sleep, stats: dict | None = None, *, cloc
                 stats["title_returns"] = stats.get("title_returns", 0) + (prev_where != "title")
             if where == "dead_continue" and prev_where != "dead_continue":
                 stats["deaths"] = stats.get("deaths", 0) + 1     # the walk answers Continue: Yes (re4_switch.step)
+                if bot is not None and hasattr(bot, "record_death"):
+                    bot.record_death(clock())
                 # What killed him. This posted hp=None, so a death reached the round report with no health and no
                 # position (ten Krauser/Waterworld rounds read outcome=died with round_threat_hits=0 - no damage
                 # counted - and nothing to say why), which is exactly the "instant kill or slow bleed?" question. The
@@ -705,7 +714,7 @@ def play(ad, send, stopped, sleep=time.sleep, stats: dict | None = None, *, cloc
                         continue
             bonus_goal(bot, snap, clock())                # the nearest time bonus as a point goal (BONUS_ROUTE)
             keys.apply(bot.tick(snap, now=clock()),
-                       tap_hold=BOW_TAP_HOLD_S if is_bow(snap) else 0.0)
+                       tap_hold=BOW_TAP_HOLD_S if is_bow(snap) else GUN_TAP_HOLD_S)
             re4_walk.publish(pub, snap, bot, "playing")
             sleep(BOW_FIGHT_TICK_S if is_bow(snap) else FIGHT_TICK_S)
             continue

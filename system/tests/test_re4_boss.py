@@ -16,10 +16,12 @@ from gbox.mercs.titles import re4_switch as D
 def _no_weapon_ask_leak():
     """The mine ring's weapon request and its process clock are module state: isolate every test from them."""
     D.WEAPON_ASK.clear()
-    D.MINE_RING_CLOCK["at"] = None
+    D.MINE_RING_CLOCK.clear()
+    D.MINE_RING_CLOCK.update(at=None, retry_at=0.0)
     yield
     D.WEAPON_ASK.clear()
-    D.MINE_RING_CLOCK["at"] = None
+    D.MINE_RING_CLOCK.clear()
+    D.MINE_RING_CLOCK.update(at=None, retry_at=0.0)
 
 
 def mm(p):
@@ -166,7 +168,7 @@ def test_fire_resolves_nitrous_to_the_titles_freezing_round():
     assert receipt["state"] == "confirmed" and re6.calls[0][0] == "shell1304" and re6.calls[0][1]["count"] == 10
     re4 = Controller(grenades=[{"kind": "flash", "available": False}])
     receipt = G.fire(None, {"kind": "nitrous", "count": 10}, {}, 5.0, ring=re4)
-    assert re4.calls[0][0] == "flash" and re4.calls[0][1]["allow_unverified"] is True
+    assert re4.calls[0][0] == "flash" and re4.calls[0][1]["allow_unverified"] is False
 
 def test_the_re4_rule_reads_millimetres_as_centimetres():
     """The rule speaks cm; RE4's snapshot speaks mm. Without units_per_cm an 8 m boss read as 8000 "cm" and no
@@ -241,6 +243,8 @@ def test_the_ring_waits_the_ninety_seconds_between_sweeps():
     now = 1.0
     for _ in range(60):
         b.tick(s, now=now)
+        if D.AIM_REQUEST.get("owner") == "mine_ring":
+            s["player"]["rot"] = D.AIM_REQUEST["yaw"]   # model the game's response to the facing write
         now += 0.6
     first = b.stats["mine_ring_last_at"]
     assert first is not None
@@ -248,6 +252,41 @@ def test_the_ring_waits_the_ninety_seconds_between_sweeps():
     assert b.stats["mine_ring_starts"] == 1
     b.tick(s, now=first + D.MINE_RING_EVERY_S + 0.5)                    # the 1.5 minutes are up: a new sweep
     assert b.stats["mine_ring_starts"] == 2
+
+
+def test_equip_timeout_never_emits_a_ring_shot_and_retries_after_combat_interval():
+    b = bot()
+    s = _ring_snap(equipped=0x27)
+    b.stats["mine_ring_last_at"] = -100.0
+    assert b._mine_ring_step(s["player"], s, 1.0) == {"hold": set()}
+    failed_at = 1.0 + D.MINE_RING_ARM_S + 0.1
+    assert b._mine_ring_step(s["player"], s, failed_at) is None
+    assert b.stats.get("mine_ring_shots", 0) == 0 and "_mine_ring" not in b.__dict__
+    assert b._mine_ring_step(s["player"], s, failed_at + D.MINE_RING_RETRY_S - 0.1) is None
+    b._mine_ring_step(s["player"], s, failed_at + D.MINE_RING_RETRY_S + 0.1)
+    assert b.stats["mine_ring_starts"] == 2
+
+
+def test_death_observation_runs_when_a_grab_or_ring_owns_the_inputs(tmp_path, monkeypatch):
+    from gbox.mercs.core.death_lessons import DeathLessons
+    b = bot()
+    lessons = DeathLessons(D.TITLE_ID, paths=[tmp_path / "deaths.jsonl"], stats=b.stats)
+    b._uc("threats").lessons = lessons
+    b.new_round()
+    s = _ring_snap(hp=1860)
+    b.stats["mine_ring_last_at"] = -100.0
+    b.tick(s, now=1.0)
+    s["game"].update(phase="grabbed", in_control=False)
+    s["player"]["hp"] = 700
+    b.tick(s, now=2.0)
+    assert [r["hp"] for r in lessons.window] == [1860, 700]
+    s["game"].update(phase="dead")
+    s["player"]["hp"] = 0
+    b.tick(s, now=3.0)
+    b.record_death(3.1)                                 # visual and native terminal witnesses deduplicate
+    assert b.stats["death_lessons"] == 1
+    b.new_round()
+    assert not lessons.window and not lessons._dead
 
 
 def test_the_ring_clock_survives_a_fresh_run():

@@ -22,7 +22,7 @@ PREPARATION = 'mercmode_preparation'
 OBSERVED = 'mercmode_observed'
 COMMAND = 'mercmode_command'
 ADOPTION = 'mercmode_adoption'
-DEFAULT = {'enabled': False, 'titles': ['re4', 're5', 're6'], 'rounds_per_title': 1,
+DEFAULT = {'enabled': False, 'titles': ['re4', 're5', 're6'], 'rounds_per_title': 5, 'rounds_by_title': {},
            'presentation_priority': False, 'queue': [], 'repeat_queue': False, 'keep_warm': 1, 'preferred_editions': {},
            # a per-title build every round of that title plays with (mod folder name in the worker's mods cache):
            # e.g. {"re6": "re6_smash_roster"} makes each RE6 round boot with the cast roster, so the title's own
@@ -220,6 +220,11 @@ def cast_franchises() -> dict:
     return _SURVEY["franchises"]
 
 
+def rounds_for(cfg, title):
+    """The effective attempt count, including settings saved before per-title counts existed."""
+    return (cfg.get('rounds_by_title') or {}).get(title, cfg.get('rounds_per_title', 5))
+
+
 def normalize(patch, current=None):
     if not isinstance(patch, dict) or set(patch)-DEFAULT.keys():
         raise ValueError('Unknown MercMode setting')
@@ -239,6 +244,14 @@ def normalize(patch, current=None):
     if type(out['enabled']) is not bool or type(out['presentation_priority']) is not bool or type(out['rounds_per_title']) is not int \
             or not 1 <= out['rounds_per_title'] <= 20:
         raise ValueError('MercMode needs enabled true/false and 1..20 rounds per title')
+    counts = patch.get('rounds_by_title', {})
+    if not isinstance(counts, dict) or set(counts) - set(TITLES) or any(
+            type(n) is not int or not 1 <= n <= 20 for n in counts.values()):
+        raise ValueError('MercMode rounds_by_title maps known titles to 1..20 attempts')
+    # A legacy shared-count update deliberately applies to all titles. A title-specific update merges,
+    # so changing RE4 cannot silently change RE5/6, including when two clients edit different titles.
+    previous = {} if 'rounds_per_title' in patch else ((current or {}).get('rounds_by_title') or {})
+    out['rounds_by_title'] = {t: counts.get(t, previous.get(t, out['rounds_per_title'])) for t in TITLES}
     if type(out['repeat_queue']) is not bool:
         raise ValueError('MercMode repeat_queue must be true or false')
     if type(out['blueprint_look']) is not bool:
@@ -603,7 +616,7 @@ def adopt_current(store, worker, session, telemetry, *, now=None):
          'title':session.get('title') or TITLES[title]['name'],'phase':'playing','started':now,
          'playing_since':now,'autoplay_job':jid,'adopted_existing_solo':True,'mod':adopted_mod,
          'job':launch_id,'warm_adoption':proof['id'],
-         'mercmode':{'title':title,'map_id':TITLES[title]['map_id'],'rounds_per_title':cfg['rounds_per_title']}}
+         'mercmode':{'title':title,'map_id':TITLES[title]['map_id'],'rounds_per_title':rounds_for(cfg, title)}}
     store.put(STATE,worker['name'],run)
     return run
 
@@ -1283,8 +1296,8 @@ def successor_autoplay(run, job, original):
                 and isinstance(created, (int, float)) and isinstance(before, (int, float)) and created > before)
 
 
-ROUND_MIN_S = 75.0              # a death this soon after an attempt began is a retry, not a round played (round_boundary)
-QUICK_DEATHS_PER_ROUND = 3      # ...though this many of them count as one, so a title where the bot keeps dying still rotates
+ROUND_MIN_S = 75.0              # diagnostic only: short deaths count as completed attempts too
+QUICK_DEATHS_PER_ROUND = 3       # legacy receipt migration; no longer used to discount attempts
 
 
 def accept_boundary(store, run, body, *, parent_job, now=None):

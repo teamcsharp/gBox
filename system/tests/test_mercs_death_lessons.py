@@ -1,4 +1,4 @@
-"""Death lessons (request #9525): record, learn (>=2 deaths, bounded, decaying), use in the target scorer, replay."""
+"""Death lessons: learn from the first attributed death, bounded and decaying, without duplicate lessons."""
 import json
 
 from gbox.mercs.core import combat, death_lessons as dl
@@ -31,8 +31,10 @@ def test_death_is_recorded_everywhere(tmp_path):
 
 def test_no_adjustment_before_evidence_then_bounded(tmp_path):
     d = _dl(tmp_path)
+    assert d.weight("chainsaw") == 1.0
     _die(d, "chainsaw")
-    assert d.weight("chainsaw") == 1.0 and d.doctrine(["chainsaw"]) == {"mine_x": 1.0, "flash_x": 1.0, "retreat_x": 1.0}
+    assert d.weight("chainsaw") > 1.0
+    assert d.doctrine(["chainsaw"])["flash_x"] < 1.0
     _die(d, "chainsaw", 10)
     d._adj = None
     assert d.weight("chainsaw") > 1.0 and d.keep_cm("chainsaw") > 0 and d.answer("chainsaw")
@@ -75,7 +77,29 @@ def test_replay_is_causal_and_honest():
           {"killer": "g", "ts": NOW + 2, "title_id": "T"}, {"killer": None, "ts": NOW + 3, "title_id": "T"},
           {"killer": "h", "ts": NOW + 4, "title_id": "T"}]
     r = dl.replay(ls)
-    assert r["first_adjustment_at_death"] == 2 and r["deaths_before"] == 2 and r["deaths_after"] == 3
-    assert r["after_deaths_by_class_already_learned"] == 1 and r["killer_not_determined"] == 1
+    assert r["first_adjustment_at_death"] == 1 and r["deaths_before"] == 1 and r["deaths_after"] == 4
+    assert r["after_deaths_by_class_already_learned"] == 2 and r["killer_not_determined"] == 1
     assert r["after_deaths_by_unlearned_class"] == 1
     json.dumps(r)
+
+
+def test_hp_and_terminal_events_record_one_lesson_until_new_round(tmp_path):
+    d = _dl(tmp_path)
+    _die(d, "chainsaw")
+    assert d.died(3) is None
+    d.observe(4, {"hp": 100}, [])  # a stale/loading HP read must not rearm a death
+    assert d.observe(5, {"hp": 0}, []) is None
+    assert len(dl.load([tmp_path / "u.jsonl"])) == 1
+    # A fresh instance learns the persisted killer immediately.
+    assert _dl(tmp_path).weight("chainsaw") > 1.0
+    _die(d, "chainsaw", 10)
+    assert len(dl.load([tmp_path / "u.jsonl"])) == 2
+
+
+def test_unattributed_death_does_not_blame_nearest_enemy(tmp_path):
+    d = _dl(tmp_path)
+    enemies = [{"class": "near", "hp": 50, "pos": (0, 0, 10)}]
+    d.observe(1, {"hp": 100, "pos": (0, 0, 0)}, enemies)
+    lesson = d.observe(2, {"hp": 0, "pos": (0, 0, 0)}, enemies)
+    assert lesson["killer"] is None
+    assert d.weight("near") == 1.0

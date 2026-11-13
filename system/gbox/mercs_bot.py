@@ -690,6 +690,8 @@ def play(ad, send, stopped, stats: dict | None = None, game=None, sleep=time.sle
         m.adapter = ad
         from .mercs.round_controls import attach
         control = attach(ad, prof['map_id'], session_id)
+        if control is not None:
+            control.configure_launch(game)
     E = title_engine(prof)
     native_pick = selection_receipt = None
     pick = (((game or {}).get('launch') or {}).get('mercmode') or {})

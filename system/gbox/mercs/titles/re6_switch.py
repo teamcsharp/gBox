@@ -304,7 +304,8 @@ def player_target(m, unit: int) -> int:
         n = _i32(m, unit + PLAYER_COUNT)
         if 0 < n <= 16:
             ids = struct.unpack(f"<{n}i", m.rd(unit + PLAYER_IDS, 4 * n))
-            if control is not None and control.managed:
+            if control is not None and control.managed and (control.random_characters or control.selection
+                                                          or control.holds_title() or control.configured):
                 PICK.character = control.choose_character(ids)
                 return ids.index(PICK.character) if PICK.character in ids else None
             want = wanted_character(ids)

@@ -608,8 +608,11 @@
     const label=on?'🔁 MercMode: rotating titles · click to stay in this game':'▶ MercMode: play across titles · click to turn on';
     const titles=(host.titles||[]).map(t=>`<label${t.playable?'':' class="pip-mercmode-off"'}><input type="checkbox" data-mm-title="${escape(t.title)}" ${chosen.includes(t.title)?'checked':''} ${t.playable?'':'disabled'}> ${escape(t.name)}${t.playable?'':` <small>· unavailable: ${escape(t.reason||'')}</small>`}</label>`).join('');
     return `<div class="pip-mercmode" data-mm-host="${escape(host.name)}"><div class="pip-mercmode-row"><button type="button" data-mm-toggle aria-pressed="${on}">${label}</button><button type="button" data-mm-arrow aria-expanded="${open}" aria-label="Choose the titles MercMode rotates through">${open?'▾':'▸'}</button></div>`+
-      `<div class="pip-mercmode-titles"${open?'':' hidden'}>${titles}<label>Rounds before switching <input type="number" data-mm-rounds min="1" max="20" value="${Number(host.settings?.rounds_per_title)||1}"></label>`+
+      `<div class="pip-mm-title-rounds">${['re4','re5','re6'].map(t=>`<label>${t.toUpperCase()} rounds <input type="number" data-mm-title-rounds="${t}" min="1" max="20" value="${Number(host.settings?.rounds_by_title?.[t]??host.settings?.rounds_per_title)||5}"></label>`).join('')}</div>`+
+      `<label>Set all titles <input type="number" data-mm-rounds min="1" max="20" value="${Number(host.settings?.rounds_per_title)||5}"></label>`+
       `<span class="pip-mm-rounds-quick">${[5,10,20].map(n=>`<button type="button" data-mm-rounds-pick="${n}"${Number(host.settings?.rounds_per_title)===n?' aria-pressed="true"':''}>${n}</button>`).join('')}</span>`+
+      `<button type="button" data-mm-all-titles>Cycle RE4 / RE5 / RE6</button>`+
+      `<div class="pip-mercmode-titles"${open?'':' hidden'}>${titles}`+
       `<label class="pip-mm-stalemate"><input type="checkbox" data-mm-stalemate ${host.settings?.stalemate_cut===false?'':'checked'}> Stalemate: no enemy for 15 s, cut the clock to <input type="number" data-mm-stalemate-s min="${STALEMATE.min}" max="${STALEMATE.max}" value="${stalemateSeconds(host.settings)}"> s</label>`+
       `<label class="pip-mm-coop">Bot+bot split screen (Switch RE5 / RE6) ${coopSelect('data-mm-coop',host.settings?.coop_ratio)}</label>`+
       `<label class="pip-mm-skin"><input type="checkbox" data-mm-skin-swap ${host.settings?.skin_swap==='random'?'checked':''}> 🎭 Random skin swap: each round plays one character with another's model (Switch RE5)</label>`+
@@ -656,9 +659,21 @@
       return `Rotation: ${[...chosen].join(', ')}`;
     }
     if(action==='rounds'){
-      const rounds=Math.max(1,Math.min(20,Number(value)||1));
+      const rounds=Math.max(1,Math.min(20,Math.round(Number(value)||5)));
       await api('/api/mercmode',{host:host.name,rounds_per_title:rounds});
       return `${rounds} round${rounds===1?'':'s'} before switching`;
+    }
+    if(action==='rounds_title'){
+      if(!['re4','re5','re6'].includes(value?.title))throw Error('Choose RE4, RE5 or RE6.');
+      const rounds=Math.max(1,Math.min(20,Math.round(Number(value.rounds)||5)));
+      await api('/api/mercmode',{host:host.name,rounds_by_title:{[value.title]:rounds}});
+      return `${value.title.toUpperCase()}: ${rounds} attempts before switching, including deaths`;
+    }
+    if(action==='all_titles'){
+      const missing=['re4','re5','re6'].filter(t=>!host.titles?.some(r=>r.title===t&&r.playable));
+      if(missing.length)throw Error(`Cannot cycle all three titles on ${host.name}: ${missing.join(', ')} unavailable.`);
+      await api('/api/mercmode',{host:host.name,enabled:true,titles:['re4','re5','re6'],queue:[],repeat_queue:false});
+      return 'Cycling RE4 / RE5 / RE6; the title queue is cleared.';
     }
     if(action==='stalemate'){
       const enabled=value?.enabled===undefined?host.settings?.stalemate_cut!==false:!!value.enabled;

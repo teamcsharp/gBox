@@ -389,6 +389,33 @@ def test_the_aim_lock_ignores_a_micro_correction(ad):
 
 
 
+def test_aligned_yaw_still_corrects_ground_pitch_and_recoil(ad, monkeypatch):
+    import time
+    ptr, wep, obj = 0x5D50100000, 0x5D50200000, 0x5D50300000
+    ad.put(ptr, bytes(D.UNIT_SIZE))
+    ad.put(wep, bytes(0x100))
+    ad.put(obj, bytes(D.OBJ_SWAY + 16))
+    ad.write_memory(ptr + D.PL_WEP, struct.pack("<Q", wep))
+    ad.write_memory(wep + D.WEP_OBJ, struct.pack("<Q", obj))
+    ad.write_memory(wep + D.WEP_PITCH, struct.pack("<f", -0.8))
+    ad.write_memory(ptr + D.PL_WAIST_YAW, struct.pack("<f", 0.2))
+    ad.write_memory(wep + D.WEP_CENTER_Y, struct.pack("<f", 0.1))
+    ad.write_memory(obj + D.OBJ_SWAY, struct.pack("<4f", 0.1, 0.2, 0.1, 0.2))
+    monkeypatch.setattr(D, "AIM_RAM", True)
+    monkeypatch.setattr(D, "AIM_REQUEST", {"ptr": ptr, "wep": wep, "yaw": 0.0, "pitch": 0.15,
+                                         "steady": True, "at": time.monotonic()})
+    s = {"player": {"ptr": ptr}, "aim": {"wep": wep, "obj": obj}}
+    ad.writes.clear()
+    assert M._aim(ad, s) == 4
+    assert struct.unpack("<f", ad.read_memory(wep + D.WEP_PITCH, 4))[0] == pytest.approx(0.15)
+    assert struct.unpack("<4f", ad.read_memory(obj + D.OBJ_SWAY, 16)) == (0, 0, 0, 0)
+    assert all(addr != ptr + D.U_YAW for addr, _ in ad.writes)
+    # A stale weapon pointer must not turn this into writes to a freed object.
+    ad.write_memory(ptr + D.PL_WEP, struct.pack("<Q", wep + 0x1000))
+    ad.writes.clear()
+    assert M._aim(ad, s) == 0 and not ad.writes
+
+
 def test_settings_outlive_the_session(ad, tmp_path, monkeypatch):
     """MercMode plays one RE4 round per boot: a setting made in one session is there in the next one."""
     monkeypatch.setattr(M, "SETTINGS_FILE", tmp_path / "re4-mods.json")
@@ -559,7 +586,7 @@ class _DropsHeldId(Ad):
         super().write_memory(addr, data)
 
 
-def test_a_swap_that_does_not_read_back_puts_his_own_weapon_back():
+def test_a_swap_that_does_not_read_back_puts_his_own_weapon_back(monkeypatch):
     M.ORIG.clear()
     ad = _DropsHeldId()
     W = _armoury(ad)
@@ -571,7 +598,12 @@ def test_a_swap_that_does_not_read_back_puts_his_own_weapon_back():
     given = M._state(ad)["weapon_given"]
     assert given["verified"] is False and "put back" in given["reason"]
     item_writes = [a for a, _ in ad.writes if a == ITEM]
-    assert len(item_writes) == 2 * M.ROUND_WEAPON_TRIES, "a swap and its undo per try, then left alone"
+    assert len(item_writes) == 2, "one swap and undo; busy polling cannot repeatedly mutate the hand"
+    st = M._state(ad)
+    pending = st["rw_pending"]
+    monkeypatch.setattr(M.time, "monotonic", lambda: st["rw_retry_at"] + 0.1)
+    M.maintain(ad, _round())
+    assert st["rw_pending"] == pending and st.get("rw_given_epoch") != st["rw_epoch"]
 
 
 def test_no_swap_without_the_games_state_a_player_or_with_a_grenade_in_hand(ad):
@@ -743,3 +775,48 @@ def test_no_boss_no_boss_gun(ad):
     s["enemies"] = [{"pos": [0.0, 0.0, 9000.0], "hp": 1800, "hp_max": 1800, "ptr": 8}]
     st = {}
     assert M._boss_weapon(ad, s, st) is None
+
+
+def test_a_close_crowd_gets_one_random_shotgun_and_retains_the_round_draw(ad):
+    import random
+    W, s = _boss_scene(ad, held=0x27)
+    s["enemies"] = [{"pos": [i * 500.0, 0.0, 3500.0], "hp": 400, "ptr": 10 + i} for i in range(3)]
+    st = {"round_weapon": {"id": 0x27, "verified": True}}
+    receipt = M._crowd_weapon(ad, s, st, random.Random(8))
+    assert receipt["verified"] and receipt["id"] in M.SHOTGUNS
+    assert _hand(ad, W)[0]["id"] == receipt["id"]
+    assert M._crowd_weapon(ad, s, st) is None and st["crowd_weapon_swaps"] == 1
+    assert st["round_weapon"]["id"] == 0x27
+
+
+def test_distant_dead_or_other_floor_enemies_do_not_trigger_a_crowd_swap(ad):
+    _, s = _boss_scene(ad, held=0x27)
+    s["enemies"] = [{"pos": [0, 0, 2000], "hp": 400}, {"pos": [0, 0, 3000], "hp": 0},
+                     {"pos": [0, 0, 9000], "hp": 400}, {"pos": [0, 4000, 1000], "hp": 400}]
+    assert M._crowd_weapon(ad, s, {}) is None
+
+
+def test_ring_keeps_its_weapon_despite_a_boss_and_a_crowd(ad, monkeypatch):
+    import time
+    W, s = _boss_scene(ad, held=D.MINE_RING_ITEM)
+    s["equipped_id"] = D.MINE_RING_ITEM
+    s["enemies"] += [{"pos": [i * 500, 0, 2500], "hp": 400} for i in range(3)]
+    monkeypatch.setattr(D, "WEAPON_ASK", {"item": D.MINE_RING_ITEM, "why": "mine ring",
+                                         "until": time.monotonic() + 20})
+    ad.writes.clear()
+    M.maintain(ad, s)
+    assert _hand(ad, W)[0]["id"] == D.MINE_RING_ITEM and D.WEAPON_ASK["verified"]
+    assert not any(a == ITEM for a, _ in ad.writes)
+
+
+def test_random_toggle_clears_fixed_override_and_a_pause_does_not_redraw(ad):
+    _armoury(ad)
+    st = M._state(ad)
+    st["loadout_weapon"] = 0x37
+    M.random_weapon(ad, True)
+    assert st["loadout_weapon"] is None
+    assert M.maintain(ad, _round())["weapon_given"] == 1
+    epoch, draw = st["rw_epoch"], dict(st["round_weapon"])
+    M.maintain(ad, _round("paused", control=False))
+    assert "weapon_given" not in M.maintain(ad, _round())
+    assert st["rw_epoch"] == epoch and st["round_weapon"] == draw

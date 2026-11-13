@@ -134,7 +134,8 @@ def test_a_title_without_a_native_controller_still_names_every_grenade_kind(monk
                        error=RuntimeError('re4_gc_native: not GameCube'))
     assert body['capabilities'] == []
     rows = {r['kind']: r for r in body['options']['grenade_kinds']}
-    assert set(rows) == {'flash', 'hand', 'incendiary'}
+    from gbox.mercs.grenade_status import KINDS
+    assert set(rows) == set(KINDS)
     assert all(r['available'] is False for r in rows.values())
     assert 'built on the RE4 Switch native harness' in rows['flash']['reason']
     assert 'hand-grenade ring is built' in rows['hand']['reason']

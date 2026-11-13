@@ -3,7 +3,7 @@
     python -m gbox.mercs.native.re4_82c2a04a.build_dispatch [out-dir]
 
 Assembles `dispatch.S` with keystone at the cave address, checks the bytes against the pinned image and its sha256,
-and disassembles them with capstone for the report (the tail call to `main+0x2B6420` included). Keystone and capstone
+and disassembles them with capstone for the report (the tail call to `main+0x312600` included). Keystone and capstone
 are research/build dependencies: nothing in the gbox runtime imports them. A changed source must be rebuilt here and
 re-pinned in `code.py` - the checked-in bytes are what the controller installs.
 """
@@ -24,9 +24,20 @@ def assemble(source: str | None = None) -> bytes:
     return bytes(encoded)
 
 
+def assemble_first_aid() -> bytes:
+    from keystone import Ks, KS_ARCH_ARM64, KS_MODE_LITTLE_ENDIAN
+    source = Path(__file__).with_name("first_aid.S").read_text(encoding="utf-8")
+    return bytes(Ks(KS_ARCH_ARM64, KS_MODE_LITTLE_ENDIAN).asm(source, addr=C.FIRST_AID_AT)[0])
+
+
 def check() -> dict:
     image = assemble()
     problems = []
+    aid = assemble_first_aid()
+    if aid != C.FIRST_AID[4] or hashlib.sha256(aid).hexdigest() != C.FIRST_AID[3]:
+        problems.append("the first-aid wrapper differs from its pinned source/image")
+    if not C.CLONE_AT + C.CLONE_SIZE <= C.FIRST_AID_AT < C.FIRST_AID_AT + len(aid) <= C.CAVE_END:
+        problems.append("the first-aid wrapper overlaps the clone or exceeds the cave")
     if image != C.DISPATCH[4]:
         problems.append("the assembled bytes differ from the pinned image")
     if hashlib.sha256(image).hexdigest() != C.DISPATCH[3]:
@@ -50,8 +61,8 @@ def check() -> dict:
                     tail = int(nxt.op_str.rsplit("#", 1)[1], 0) + (ins.operands[1].imm if ins.operands else 0)
     except ImportError:                                   # capstone is in the runtime requirements, but stay usable
         pass
-    if tail != C.ORIGINAL_TRANSFORM:
-        problems.append(f"the tail call resolves to {tail if tail is None else hex(tail)}, not the original transform")
+    if tail != C.ORIGINAL_TICK:
+        problems.append(f"the tail call resolves to {tail if tail is None else hex(tail)}, not the original tick")
     return {"image": image, "size": len(image), "sha256": hashlib.sha256(image).hexdigest(),
             "tail_call": tail, "problems": problems, "ok": not problems}
 

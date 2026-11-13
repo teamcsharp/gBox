@@ -35,6 +35,15 @@ test('unavailable request rejects without claiming an effect',async()=>{
   await assert.rejects(c.flash('session'),/unsupported/);assert.deepEqual(notes,[]);c.dispose();
 });
 
+test('first aid uses a durable native-use request and reports consumption only from its receipt',async()=>{
+  const posts=[],notes=[];let consumed=false;
+  const c=create({uuid:()=> 'aid-id',schedule:()=>1,cancel:()=>{},notify:text=>notes.push(text),
+    api:async(path,body)=>{if(body){posts.push(body);return {request:{id:body.request_id,state:'queued'}};}
+      return {requests:[{id:'aid-id',op:'first_aid_now',state:'confirmed',result:{consumed,reason:'health is already full'}}]};}});
+  await c.firstAid('session');assert.deepEqual(posts,[{op:'first_aid_now',request_id:'aid-id'}]);
+  assert.deepEqual(notes,[]);await c.poll();assert.equal(notes[0],'health is already full');c.dispose();
+});
+
 test('weapon choice uses the same durable receipts and never substitutes a flash',async()=>{
   const posts=[],notes=[];const c=create({uuid:()=> 'weapon-id',schedule:()=>1,cancel:()=>{},notify:s=>notes.push(s),
     api:async(path,body)=>{if(body){posts.push(body);return {request:{id:body.request_id,state:'queued'}};}

@@ -30,12 +30,13 @@ def rig():
     saver=S.Screensaver(store,SimpleNamespace(runs=lambda **kw:[]),submit,lambda:[w],rng=random.Random(4))
     def tick(dt=0):
         now[0]+=dt;w['resources']['sampled_at']=now[0];return saver.tick(now[0])
+    M.configure(store,w['name'],{'rounds_per_title':1})  # one-boundary scheduling fixtures
     return store,w,saver,calls,now,tick
 
 
 def playing():
     store,w,saver,calls,now,tick=rig()
-    M.configure(store,w['name'],{'enabled':True,'keep_warm':False})
+    M.configure(store,w['name'],{'enabled':True,'keep_warm':False,'rounds_per_title':1})
     tick();gid=calls[0]['input']['game']['game_id']
     sid='w1-'+calls[0]['id']
     store.put('session',sid,{'session_id':sid,'game_id':gid,'state':'running'})
@@ -52,7 +53,7 @@ def test_a_mercmode_boot_gets_its_bot_in_the_tick_its_session_is_up():
     # sat 30 s on its title with no bot (launch done -> START_GRACE -> the next 30 s tick -> the autoplay job): the
     # title's bot drives its own boot from the game's state, so it starts the moment the session is up
     store,w,saver,calls,now,tick=rig()
-    M.configure(store,w['name'],{'enabled':True,'keep_warm':False})
+    M.configure(store,w['name'],{'enabled':True,'keep_warm':False,'rounds_per_title':1})
     tick();gid=calls[0]['input']['game']['game_id'];sid='w1-'+calls[0]['id']
     tick(1)
     assert not [c for c in calls if c['tool']=='autoplay'], "nothing to drive before the game is up"
@@ -75,7 +76,7 @@ def boundary(run,now,**witness):
 
 def adoptable():
     store,w,saver,calls,now,tick=rig()
-    M.configure(store,w['name'],{'enabled':True,'keep_warm':False})
+    M.configure(store,w['name'],{'enabled':True,'keep_warm':False,'rounds_per_title':1})
     sid='w1-current'
     session={'session_id':sid,'game_id':RE5,'state':'running','adapter':'rpcs3',
              'started':now[0]-20,'detail':{'pid':1234}}
@@ -349,7 +350,7 @@ def test_turning_mercmode_off_keeps_same_bot_and_game_even_if_screensaver_is_off
     assert saver.round_boundary(boundary(run,now[0]),job,now[0])['rotate_requested'] is False
     tick(1)
     assert len(calls)==2
-    M.configure(store,w['name'],{'enabled':True,'keep_warm':False})
+    M.configure(store,w['name'],{'enabled':True,'keep_warm':False,'rounds_per_title':1})
     store.put('setting',S.SETTING,S.settings(store)|{'enabled':True})
     tick(1)
     body=boundary(run,now[0])|{'round_id':'b'*32}
@@ -515,7 +516,7 @@ def test_new_host_needs_its_own_rom_access_not_another_hosts_tools(tmp_path):
 def test_unknown_host_access_queues_only_one_readonly_prepare_job_before_any_game():
     store,w,saver,calls,now,tick=rig()
     w.update(id='new-host',tools=['launch_game','autoplay','mercmode'])
-    M.configure(store,w['name'],{'enabled':True,'keep_warm':False})
+    M.configure(store,w['name'],{'enabled':True,'keep_warm':False,'rounds_per_title':1})
     assert 'checking ROM access' in tick()[w['name']]
     assert calls[0]['tool']=='mercmode' and calls[0]['input']=={'op':'prepare'}
     tick(1)
@@ -537,7 +538,7 @@ def delegated_launch(store, launch, *, local='local-launch'):
 
 
 def test_accepted_relay_keeps_native_sid_through_play_and_native_boundary_rotation():
-    store,w,saver,calls,now,tick=rig();M.configure(store,w['name'],{'enabled':True,'keep_warm':False})
+    store,w,saver,calls,now,tick=rig();M.configure(store,w['name'],{'enabled':True,'keep_warm':False,'rounds_per_title':1})
     tick();session=delegated_launch(store,calls[0])
     assert session['session_id']!='w1-'+calls[0]['id']
     tick(1);tick(S.START_GRACE)
@@ -560,7 +561,7 @@ def test_accepted_relay_keeps_native_sid_through_play_and_native_boundary_rotati
     ('federation_local_job','w1-local-launch',{'authority':'other'}),
 ])
 def test_unaccepted_or_mismatched_relay_never_adopts_same_game(kind,key,patch):
-    store,w,saver,calls,now,tick=rig();M.configure(store,w['name'],{'enabled':True,'keep_warm':False})
+    store,w,saver,calls,now,tick=rig();M.configure(store,w['name'],{'enabled':True,'keep_warm':False,'rounds_per_title':1})
     tick();session=delegated_launch(store,calls[0])
     store.put(kind,key,store.get(kind,key)|patch)
     tick(1);tick(S.START_GRACE)
@@ -584,7 +585,7 @@ def test_explicit_bot_demo_pending_and_badge_use_only_exact_accepted_relay():
 
 
 def test_federation_never_bypasses_mapping_when_local_and_central_ids_coincide():
-    store,w,saver,calls,now,tick=rig();M.configure(store,w['name'],{'enabled':True,'keep_warm':False})
+    store,w,saver,calls,now,tick=rig();M.configure(store,w['name'],{'enabled':True,'keep_warm':False,'rounds_per_title':1})
     tick();session=delegated_launch(store,calls[0],local=calls[0]['id'])
     store.delete('federation_local_job',session['session_id'])
     tick(1);tick(S.START_GRACE)
@@ -683,7 +684,7 @@ def test_nonfinite_stale_oversized_or_mutating_preparation_receipts_are_ignored(
 
 
 def test_paired_local_scheduler_alone_starts_new_games_and_explicit_demos():
-    store,w,saver,calls,now,tick=rig();M.configure(store,w['name'],{'enabled':True,'keep_warm':False})
+    store,w,saver,calls,now,tick=rig();M.configure(store,w['name'],{'enabled':True,'keep_warm':False,'rounds_per_title':1})
     w['federation']={'authority':'authority','scheduler_owner':'local'}
     assert 'local control plane' in tick()[w['name']] and not calls
     launch={'id':'central','tool':'launch_game','require_worker':w['id'],'input':{'game':{'game_id':RE5}}}
@@ -706,7 +707,7 @@ def test_pairing_does_not_take_over_or_abandon_an_existing_central_owned_run():
 def test_only_exact_paired_observations_set_actual_status_not_pending_desired():
     store,w,saver,calls,now,tick=rig()
     w['federation']={'authority':'authority','scheduler_owner':'local'}
-    desired=M.configure(store,w['name'],{'enabled':True,'keep_warm':False})
+    desired=M.configure(store,w['name'],{'enabled':True,'keep_warm':False,'rounds_per_title':1})
     actual=M.normalize({'enabled':False})
     store.put(M.OBSERVED,w['name'],{'authority':'authority','worker_id':w['id'],'at':now[0],
         'settings':actual,'history':{},'preparation':{}})
@@ -737,7 +738,8 @@ def test_central_settings_delegate_once_and_manual_prepare_tracks_exact_job(cfg)
     jobs=[job for job in store.all('job') if job['tool']=='mercmode']
     assert len(jobs)==1 and jobs[0]['require_worker']==w['id']
     assert jobs[0]['input']=={'op':'configure','host':w['name'],'enabled':True,
-        'titles':['re5'],'rounds_per_title':1,'presentation_priority':False,'queue':[]}
+        'titles':['re5'],'rounds_per_title':5,'rounds_by_title':{t:5 for t in M.TITLES},
+        'presentation_priority':False,'queue':[],'cast_weights':{}}
     # no keep_warm for a worker without the warm feature: an older mercmode tool forbids unknown fields
     assert store.get(M.COMMAND,w['name'])['settings']['keep_warm']==1                     # the default, still desired
     assert store.get(M.COMMAND,w['name'])['job']==jobs[0]['id']
@@ -854,7 +856,7 @@ def test_dj_queue_other_game_next_with_one_round_per_title_still_rotates_after_t
     assert round_ends(saver,run,job,now,1)==[True]
 
 
-def test_a_quick_death_never_consumes_a_queued_round_of_the_same_title():
+def test_a_quick_death_advances_the_queued_round_of_the_same_title():
     store,w,saver,calls,now,tick,run,job=playing()
     title=run['mercmode']['title']
     pick={'title':title,'character':'Ada','stage':1} if title=='re4' else {'title':title,'mode':'reunion','character':'Josh','stage':3}
@@ -864,7 +866,7 @@ def test_a_quick_death_never_consumes_a_queued_round_of_the_same_title():
     S.telemetry_put(run['session_id'],{'running':True,'stats':{}},now=now[0])
     body=boundary(run,now[0],screen='dead',hp=0,tally_ready=False,timer=60)|{'round_id':'d'*32}
     assert saver.round_boundary(body,job,now[0])['rotate_requested'] is False
-    assert len(M.settings(store,w['name'])['queue'])==1                # still queued: a retry is not one of its rounds
+    assert M.settings(store,w['name'])['queue']==[]  # a death completes the previous attempt
     assert round_ends(saver,run,job,now,1)==[False]
     assert M.settings(store,w['name'])['queue']==[]                   # the full round took it
 
@@ -1710,22 +1712,37 @@ def test_nudge_wakes_the_installed_schedule_loop_only():
     assert saver.wake.is_set() and saver.nudged=='a job landed'
 
 
-def test_a_quick_death_is_a_retry_not_a_round_and_three_of_them_count_as_one():
-    # operator 2026-10-26: "are sure it is playing 5 rounds of mercenaries in each game before moving onto the next one?"
-    # - RE4 left after one stage per turn: each death + retry was a boundary, five quick deaths were five "rounds"
+def test_every_quick_death_counts_once_toward_this_titles_limit():
     store,w,saver,calls,now,tick,run,job=playing()
+    title=run['mercmode']['title']
+    M.configure(store,w['name'],{'rounds_by_title':{title:3}})
     t0=run.get('playing_since') or run['started']
     def death(n,at):
         now[0]=at
-        S.telemetry_put(run['session_id'],{'running':True,'stats':{}},now=now[0])
+        S.telemetry_put(run['session_id'],{'running':True,'stats':{}},now=at)
         body=boundary(run,at,screen='dead',hp=0,tally_ready=False,timer=60)|{'round_id':f'{n:x}'*32}
-        return saver.round_boundary(body,job,now[0])
-    assert death(1,t0+30)=={'saved':True,'rotate_requested':False}       # 30 s in: a retry
-    cur=store.get(S.STATE,w['name'])
-    assert cur['mercmode_rounds']==0 and cur['mercmode_quick_deaths']==1
-    assert death(2,t0+50)['rotate_requested'] is False                    # 20 s into the second attempt
-    assert death(3,t0+60)['rotate_requested'] is True                     # the third quick death counts one round
-    assert store.get(S.STATE,w['name'])['mercmode_rounds_played']==1
+        return saver.round_boundary(body,job,at)
+    assert death(1,t0+30)['rotate_requested'] is False
+    assert death(1,t0+30)['duplicate'] is True
+    assert store.get(S.STATE,w['name'])['mercmode_rounds']==1
+    assert death(2,t0+50)['rotate_requested'] is False
+    assert death(3,t0+60)['rotate_requested'] is True
+    assert store.get(S.STATE,w['name'])['mercmode_rounds_played']==3
+
+
+def test_title_counts_migrate_and_partial_updates_preserve_other_titles():
+    cfg=M.normalize({})
+    assert all(M.rounds_for(cfg,t)==5 for t in ('re4','re5','re6'))
+    cfg=M.normalize({'rounds_per_title':7})
+    cfg=M.normalize({'rounds_by_title':{'re4':2,'re6':9}},cfg)
+    assert [M.rounds_for(cfg,t) for t in ('re4','re5','re6')]==[2,7,9]
+    assert M.normalize(cfg)==cfg  # persisted settings survive a read
+    cfg=M.normalize({'rounds_by_title':{'re5':4}},cfg)
+    assert [M.rounds_for(cfg,t) for t in ('re4','re5','re6')]==[2,4,9]
+    cfg=M.normalize({'rounds_per_title':6},cfg)
+    assert all(M.rounds_for(cfg,t)==6 for t in ('re4','re5','re6'))
+    for invalid in ({'re4':True},{'re4':0},{'re5':21},{'re6':2.5},{'bogus':5}):
+        with pytest.raises(ValueError):M.normalize({'rounds_by_title':invalid},cfg)
 
 
 def test_a_death_after_a_real_attempt_is_a_round_played():
@@ -1766,7 +1783,7 @@ def test_a_frozen_game_wakes_the_scheduler_at_once():
 
 def orphan_rig():
     store,w,saver,calls,now,tick=rig()
-    M.configure(store,w['name'],{'enabled':True,'keep_warm':False})
+    M.configure(store,w['name'],{'enabled':True,'keep_warm':False,'rounds_per_title':1})
     return store,w,saver,calls,now,tick
 
 

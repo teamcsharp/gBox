@@ -88,8 +88,20 @@ def test_the_ghidra_hook_resolves_the_analyzed_switch_main(tmp_path):
     elf = tmp_path / "analysis" / "switch" / "re5" / "re5_switch_main_EBFFDB22.elf"
     elf.parent.mkdir(parents=True)
     elf.write_bytes(b"ELF")
-    assert _title_elf(Config(tmp_path), {"detail": {}}) == elf
-    assert _title_elf(Config(tmp_path / "empty"), {"detail": {}}) is None
+    assert _title_elf(Config(tmp_path), {"game_id": "52d15709be0fda1a"}) == elf
+    assert _title_elf(Config(tmp_path), {"detail": {}}) is None
+    assert _title_elf(Config(tmp_path), {"game_id": "270a15eb98dab4d7"}) != elf
+    assert _title_elf(Config(tmp_path), {"game_id": "115f9cdbba115432"}) != elf
+
+
+def test_re4_hook_uses_its_extracted_elf_and_refuses_conflicting_identity(tmp_path):
+    from gbox.harness_console import _title_elf
+    elf = tmp_path / "cache/exefs/010099A00BC1E000/main.elf"
+    elf.parent.mkdir(parents=True)
+    elf.write_bytes(b"ELF")
+    assert _title_elf(Config(tmp_path), {"game_id": "270a15eb98dab4d7"}) == elf
+    assert _title_elf(Config(tmp_path), {"game_id": "52d15709be0fda1a",
+                                       "title_id": "010099A00BC1E000"}) is None
 
 
 def test_the_routes_are_installed_on_the_app(tmp_path):
@@ -130,6 +142,11 @@ def test_the_ghidra_hook_route_submits_open_on_the_session_worker(tmp_path):
     assert calls and calls[0][0] == "ghidra_bridge"
     assert calls[0][1]["op"] == "open"
     assert calls[0][1]["binary_path"] == str(elf)
+    answer = client.post(f"/api/sessions/{sid}/harness/ghidra", json={"op": "decompile", "target": "0x1000"})
+    assert answer.status_code == 200
+    import hashlib
+    assert calls[-1][1]["expected_binary_path"] == str(elf)
+    assert calls[-1][1]["expected_sha256"] == hashlib.sha256(b"ELF").hexdigest()
 
 
 def test_a_session_that_does_not_exist_is_a_404_not_an_empty_console(tmp_path):

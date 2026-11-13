@@ -214,19 +214,18 @@ def test_donor_rounds_relaunch_inside_the_block_and_the_block_still_counts_five(
     first = calls[-1]['input']['mod']
     run, job = up(store, saver, calls, now, tick)
     assert play_round(store, saver, now, 1, job)['rotate_requested'] is False
-    # a quick death (a retry, not a round) never relaunches
+    # a quick death is the second completed attempt and triggers the next donor
     now[0] += 10
     quick = saver.round_boundary(boundary(store.get(S.STATE, 'lilspark'), now[0], screen='dead', hp=0)
                                  | {'round_id': 'd' * 32}, job, now[0])
-    assert quick['rotate_requested'] is False
-    assert play_round(store, saver, now, 2, job)['rotate_requested'] is True
+    assert quick['rotate_requested'] is True
     promise = store.get(M.NEXT, 'lilspark')
     assert promise['title'] == 're5' and promise['block_played'] == 2 and promise['selection']['mod'] != first
     tick(1)
     assert calls[-1]['input']['op'] == 'stop_game'
     store.put('session', run['session_id'], store.get('session', run['session_id']) | {'state': 'ended'})
     tick(1)
-    assert calls[-1]['tool'] == 'launch_game' and calls[-1]['input']['mod'] == promise['selection']['mod']
+    assert calls[-1]['tool'] == 'launch_game' and calls[-1]['input']['mod'] == promise['selection']['mod'], (promise, calls[-1], store.get(M.NEXT, 'lilspark'))
     second = store.get(S.STATE, 'lilspark')
     assert second['mercmode_rounds'] == 2 and second['mercmode']['donor']['drawn'] is True
     run, job = up(store, saver, calls, now, tick)

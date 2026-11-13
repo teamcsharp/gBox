@@ -504,6 +504,20 @@ STEER_GAP_S = 1.0                       # between two cursor moves on a select s
 
 # MercMode's DJ pick for the next selects (request()): player / stage indexes, None = the default entry (Leon, Village).
 SELECTION: dict = {"player": None, "stage": None}
+RANDOM_SELECTION = {"characters": False, "stages": False}
+
+
+def next_selection(selection=None):
+    """One draw per round; menu retries reuse it. An explicit first-round pick wins."""
+    import random
+    pick = selection or {}
+    previous = dict(SELECTION)
+    character, stage = pick.get("character"), pick.get("stage", pick.get("stage_name"))
+    if character is None and RANDOM_SELECTION["characters"]:
+        character = random.choice([i for i in range(len(CHARACTERS)) if i != previous.get("player")])
+    if stage is None and RANDOM_SELECTION["stages"]:
+        stage = random.choice([i for i in range(len(STAGES)) if i != previous.get("stage")])
+    return request(character, stage)
 
 
 def request(character=None, stage=None) -> dict:
@@ -876,6 +890,14 @@ def player_unit(m, base: int) -> dict | None:
         classes = player_classes()
         cls = next((c for c in classes if u["vtable"] == base + c), None)
         if cls is None:
+            # The native command hook replaces only this live player's vtable. Preserve perception while attached;
+            # never accept an arbitrary cave pointer or a clone belonging to a previous player generation.
+            ad = getattr(m, "adapter", None) or getattr(m, "ad", None) or getattr(m, "_ad", None)
+            ctl = getattr(ad, "_re4_switch_harness", None)
+            if ctl is not None and ctl.base == base and ctl.player == p and ctl.player_id == u["id"] \
+                    and ctl.original is not None and ctl.attached():
+                cls = ctl.original - base
+        if cls is None:
             off = u["vtable"] - base
             lo, hi = PLAYER_VTABLE_RANGE
             if lo <= off < hi and off not in ENEMY_CLASSES and off not in SET_OBJECT_CLASSES and off % 8 == 0:
@@ -1125,8 +1147,14 @@ def begin_run(selection=None, **_turn) -> None:
     global _story_presses, _story_last
     _confirmed.clear()
     _story_presses, _story_last = 0, float("-inf")
-    SELECTION.update(player=None, stage=None)
-    if isinstance(selection, dict):
+    merc = _turn.get("mercmode") or {}
+    RANDOM_SELECTION.update(characters=merc.get("random_characters") is True,
+                            stages=merc.get("random_stages") is True)
+    if any(RANDOM_SELECTION.values()):
+        next_selection(selection)
+    else:
+        SELECTION.update(player=None, stage=None)
+    if isinstance(selection, dict) and not any(RANDOM_SELECTION.values()):
         stage = selection.get("stage")
         request(selection.get("character"), stage if stage is not None else selection.get("stage_name"))
 
@@ -1215,7 +1243,9 @@ def step(scr: dict, now: float | None = None) -> str | None:
     if where == "dead_continue":
         # "You Are Dead - Continue Yes / No", the cursor on Yes (measured frame): Yes plays the stage again. Measured
         # 2026-11-10: the frame-only playbook sat on this screen until MercMode's no-progress cut
-        return _confirm(where, now)
+        key = _confirm(where, now)
+        # Cancel Continue to return to the selects when the next round needs a new cast.
+        return "b" if key and any(RANDOM_SELECTION.values()) else key
     return None
 
 
@@ -1717,18 +1747,20 @@ BOSS_KEYS = frozenset({"salvador", "bella", "garrador", "garrador_armored", "jj"
 MINE_RING = True
 MINE_RING_EVERY_S = 90.0
 MINE_RING_DEFEND_S = 45.0
-MINE_RING_DEFEND_MM = 1000.0
+MINE_RING_DEFEND_MM = 1000.0 * MM_PER_CM  # ten metres in the snapshot's millimetres
 MINE_RING_N = 10                  # ten darts, 36 deg apart
 MINE_RING_ITEM = 0x36             # the Mine Thrower
 MINE_RING_SHOT_S = 0.5            # one dart this often (the throw's own animation)
-MINE_RING_WINDOW_S = 20.0         # the whole sweep's budget: an unarmed ring ends here and the next waits 90 s
+MINE_RING_WINDOW_S = 20.0         # the whole sweep's budget
 MINE_RING_ARM_S = 4.0             # wait this long for the in-hand swap, then give up this ring
+MINE_RING_RETRY_S = 5.0           # failed equip/sweeps return to combat, then retry promptly
 MINE_RING_TOL = 0.22              # rad: fire a dart within this bearing of its heading
 #: The last ring's wall time, kept in the PROCESS: MercMode relaunches the title every round for a fresh donor build, so
 #: a per-run clock would restart at every relaunch and the operator's "every 1.5 minutes" would slip to every match.
 #: The bot reads this when its own stats are fresh, so the cadence holds across rounds and relaunches (the panel still
 #: shows the per-run mine_ring_last_at).
-MINE_RING_CLOCK: dict = {"at": None}
+MINE_RING_CLOCK: dict = {"at": None, "retry_at": 0.0}
+RELOAD_KEEP = ("MINE_RING_CLOCK",)
 #: The bosses whose attack is a one-blow kill (a chainsaw: Dr. Salvador, the Bella Sisters, Super Salvador). A boss
 #: with one of these keys approaches -> the defensive ring (grenade_ring.defend: the Nitrous round where the title has
 #: it, the flash - the stun every RE title has - on RE4/RE5).
@@ -2411,14 +2443,25 @@ class Bot:
         return gate is None
 
     # --- the choice ---
-    def _mine_ring_done(self, now, reason: str) -> None:
-        """A ring ends: its clock starts again, the reason is kept, and a weapon request it made is withdrawn."""
-        self.__dict__.pop("_mine_ring", None)
-        self.stats["mine_ring_last_at"] = now
+    def _mine_ring_done(self, now, reason: str, *, completed=False) -> None:
+        """Successful sweeps are paced start-to-start; failed sweeps get a short combat/retry interval."""
+        st = self.__dict__.pop("_mine_ring", None) or {}
+        if completed:
+            started = st.get("at", now)
+            self.stats["mine_ring_last_at"] = started
+            MINE_RING_CLOCK.update(at=started, retry_at=0.0)
+        else:
+            MINE_RING_CLOCK["retry_at"] = now + MINE_RING_RETRY_S
+        self.stats["mine_ring_retry_at"] = MINE_RING_CLOCK.get("retry_at", 0.0)
         self.stats["mine_ring_decision"] = reason
-        MINE_RING_CLOCK["at"] = now                       # the cadence survives a relaunch (see MINE_RING_CLOCK)
         if WEAPON_ASK.get("why") == "mine ring":
             WEAPON_ASK.clear()
+            previous = st.get("return_weapon")
+            if isinstance(previous, int) and previous != MINE_RING_ITEM:
+                WEAPON_ASK.update(item=previous, why="restore after mine ring",
+                                  at=time.monotonic(), until=time.monotonic() + 5.0)
+        if AIM_REQUEST.get("owner") == "mine_ring":
+            AIM_REQUEST.clear()
 
     def _mine_ring_step(self, p, snap, now):
         """The mine-thrower ring (operator 2026-11-12): ten darts at 36 deg round him, every 1.5 min or to stop a boss.
@@ -2426,7 +2469,7 @@ class Bot:
         It takes its own ticks: the weapon request goes through WEAPON_ASK (the mods module's verified in-hand swap), the
         aim writer is aimed at each heading, and the dart is fired with the ordinary ZR tap once the body is within
         MINE_RING_TOL of it. A ring that cannot get the thrower in MINE_RING_ARM_S or finish in MINE_RING_WINDOW_S ends
-        (recorded), and the next waits its 90 s - it never spins the bot in place forever.
+        (recorded), resumes normal combat and retries shortly - it never spins the bot in place forever.
         """
         if not MINE_RING or p is None or p.get("pos") is None:
             return None
@@ -2451,7 +2494,10 @@ class Bot:
                     MINE_RING_CLOCK["at"] = self.stats["mine_ring_last_at"] = now
                     return None
                 last = self.stats["mine_ring_last_at"] = known
-            due = forced_now or (isinstance(last, (int, float)) and now - last >= MINE_RING_EVERY_S)
+            retry = float(MINE_RING_CLOCK.get("retry_at") or 0.0)
+            if retry > now and not forced_now:
+                return None
+            due = forced_now or bool(retry and now >= retry) or now - last >= MINE_RING_EVERY_S
             early = isinstance(last, (int, float)) and now - last >= MINE_RING_DEFEND_S
             defend = early and any(
                 isinstance(e, dict) and e.get("pos") and (e.get("chainsaw") is True or
@@ -2461,11 +2507,12 @@ class Bot:
             if not (due or defend):
                 return None
             st = d["_mine_ring"] = {"at": now, "i": 0, "shots": 0, "last_shot": -1e9,
-                                    "base": p.get("rot") or 0.0, "armed_at": now}
+                                    "base": p.get("rot") or 0.0, "armed_at": now,
+                                    "return_weapon": snap.get("equipped_id")}
             self.stats["mine_ring_starts"] = int(self.stats.get("mine_ring_starts", 0)) + 1
             self.stats["mine_ring_decision"] = "due" if due else "defend: a chainsaw boss is on him"
             WEAPON_ASK.update(item=MINE_RING_ITEM, at=time.monotonic(),
-                              until=time.monotonic() + MINE_RING_ARM_S + 2.0, why="mine ring")
+                              until=time.monotonic() + MINE_RING_WINDOW_S + 1.0, why="mine ring")
         if now - float(st.get("at") or 0) > MINE_RING_WINDOW_S:
             self._mine_ring_done(now, f"the sweep ran out of budget at dart {int(st.get('i') or 0) + 1}")
             return None
@@ -2473,17 +2520,20 @@ class Bot:
             if now - float(st.get("armed_at") or 0) > MINE_RING_ARM_S:
                 self._mine_ring_done(now, f"the mine thrower was not in his hand "
                                           f"(equipped {snap.get('equipped_id')})")
+                return None
             else:
                 self.doing, self.why = "mine_ring", "waiting for the mine thrower in his hand"
                 return {"hold": set()}
         count = int(MINE_RING_N)
         if int(st.get("i") or 0) >= count:
             self.stats["mine_ring_shots"] = int(self.stats.get("mine_ring_shots", 0)) + int(st.get("shots") or 0)
-            self._mine_ring_done(now, f"ring complete: {int(st.get('shots') or 0)} darts")
-            return None
+            self.stats["mine_ring_trigger_pulses"] = self.stats["mine_ring_shots"]
+            self._mine_ring_done(now, f"ring complete: {int(st.get('shots') or 0)} trigger pulses", completed=True)
+            return {"hold": set()}                    # release the trigger while the ordinary gun is restored
         heading = float(st.get("base") or 0.0) + 2.0 * math.pi * int(st["i"]) / count
         err = wrap(heading - (p.get("rot") or 0.0))
-        AIM_REQUEST.update(ptr=p.get("ptr"), yaw=wrap(heading), at=time.monotonic(), pitch=None, steady=False)
+        AIM_REQUEST.update(ptr=p.get("ptr"), yaw=wrap(heading), at=time.monotonic(), pitch=None, steady=False,
+                           owner="mine_ring")
         if abs(err) > MINE_RING_TOL:
             self.doing, self.why = "mine_ring", f"turning to dart {int(st['i']) + 1}/{count}"
             return {"hold": self._turn(err)}
@@ -3033,6 +3083,14 @@ class Bot:
         # "round_intro settle 0.42 confirm 0.34 (16 ok / 195 miss)". The round never started. Bounded by INTRO_MAX_S so
         # a phase byte that says intro during play can never trap him in confirm taps.
         phase = str((game or {}).get("phase") or "") if isinstance(game, dict) else ""
+        p = snap.get("player")
+        # Damage and terminal observations must precede input ownership. Grabs, death cameras and
+        # ring firing used to bypass this recorder, losing exactly the blows that ended a round.
+        if UNIVERSAL_CORE and p and p.get("pos") is not None and (
+                not isinstance(game, dict) or phase in ("playing", "grabbed", "dead")):
+            self._core_tick(p, snap, now)
+        if phase == "dead":
+            self.record_death(now)
         if isinstance(game, dict) and phase == "intro":
             self.__dict__.setdefault("_intro_since", now) if self.__dict__.get("_intro_since") is None else None
         else:
@@ -3043,7 +3101,6 @@ class Bot:
             act = self._not_in_control(game, now)       # never a shot, never "fire", at a screen that takes no aim
             self._publish_doing()
             return act
-        p = snap.get("player")
         if not p or p.get("pos") is None:
             self.doing, self.why = "idle", "no player in RAM"
             return {}
@@ -3056,7 +3113,6 @@ class Bot:
             self._publish_doing()
             return ring
         if UNIVERSAL_CORE:
-            self._core_tick(p, snap, now)             # the profile of this tick, who hurt him (combat.Threats)
             self._pose_tick(p, now)                   # moved or turned since the last tick: in control (AimStick)
         if snap.get("kill_candidates"):                # the probe's counters beside the census (KILL_CANDIDATES)
             self.stats["kill_candidates"] = " ".join(f"{k}={v}" for k, v in snap["kill_candidates"].items())
@@ -4337,6 +4393,22 @@ class Bot:
         return {"lup"}
 
     # --- the universal core (UNIVERSAL_CORE: gbox.mercs.core.combat) ---
+    def new_round(self) -> None:
+        """Reset observations at a confirmed round start; keep the persisted lessons and adjustments."""
+        if UNIVERSAL_CORE:
+            self._uc("threats").new_round()
+
+    def record_death(self, now: float | None = None):
+        """A native/visual terminal witness also records deaths whose final HP sample was missed."""
+        if not UNIVERSAL_CORE:
+            return None
+        try:
+            lessons = self._uc("threats").lessons
+            return lessons.died(self.clock() if now is None else now) if lessons is not None else None
+        except Exception as exc:
+            self._core_error(exc)
+            return None
+
     def _uc(self, name: str):
         """The core's pieces, made on first use (a bot the hot reload rebinds to this class never ran this version's
         __init__): threats (combat.Threats on THREAT_FILE), nic (combat.NotInControl), idle (combat.IdleGuard)."""

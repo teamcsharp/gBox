@@ -18,7 +18,7 @@ KIND = "merc_interventions"
 MAX_PENDING, KEEP, TTL, FRESH = 64, 128, 10.0, 3.0
 TERMINAL = {"confirmed", "failed", "unavailable", "expired", "uncertain"}
 OPERATIONS = {"flash_now", "equip_primary", "magnum_quick4", "grenade_ring", "grenade_scatter",
-              "re4_harness_selftest", "set_infinite_ammo", "remote_mines"}
+              "re4_harness_selftest", "set_infinite_ammo", "remote_mines", "first_aid_now"}
 # The grenade-ring button's selectable types. "flash" is the default and the only one verified; the others
 # are refused by the native controller with a reason (never silently substituted). A longer TTL covers the
 # ten spawn/explode pairs the ring runs (each is the verified flash).
@@ -121,7 +121,7 @@ class Queue:
             kind = args.setdefault('kind', 'random')
             if set(args) != {'kind'} or kind not in GRENADE_SCATTER_KINDS:
                 raise ValueError('invalid grenade scatter arguments')
-        elif not isinstance(args, dict) or (op in ('flash_now', 'magnum_quick4') and args) or (op == 'equip_primary' and
+        elif not isinstance(args, dict) or (op in ('flash_now', 'magnum_quick4', 'first_aid_now') and args) or (op == 'equip_primary' and
                 (set(args) != {'item'} or type(args['item']) is not int or not 1 <= args['item'] <= 255)):
             raise ValueError('invalid intervention arguments')
         try:
@@ -415,6 +415,8 @@ def _worker_loop(sid, server, headers, ad, stats_of, alive, event, game=None):
             caps = ["flash_now"] + (["equip_primary"] if choices else [])
             if getattr(ctl, "selftest", None) is not None:
                 caps.append("re4_harness_selftest")
+            if getattr(ctl, "first_aid_now", None) is not None:
+                caps.append("first_aid_now")
             if getattr(ctl, 'grenade_ring', None) is not None:
                 caps.append("grenade_ring")
             if getattr(ctl, 'grenade_scatter', None) is not None:
@@ -575,6 +577,10 @@ def _worker_loop(sid, server, headers, ad, stats_of, alive, event, game=None):
                                                                         "kills": kills if isinstance(kills, int) else None}
                                         else:
                                             stats["scatter_failures"] = stats.get("scatter_failures", 0) + 1
+                                elif row['op'] == 'first_aid_now':
+                                    result = ctl.first_aid_now()
+                                    if stats is not None and result.get('consumed'):
+                                        stats['first_aid_used'] = stats.get('first_aid_used', 0) + 1
                                 elif row['op'] == 're4_harness_selftest':
                                     result = ctl.selftest()
                                 elif row['op'] == 'remote_mines':

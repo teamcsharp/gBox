@@ -1,10 +1,10 @@
 """RE4 Switch (82C2A04A21D3E0B850F273D4149C9003) native call harness.
 
 The harness never rewrites an executed instruction and never changes a branch: it clones the player unit's vtable
-into the vetted zero padding at `main+0x655880`, points that clone's slot `+0x20` (the unit base-class transform
-virtual, `main+0x2B6420`, shared by every measured unit class) at the dispatcher, and stores the clone's address into
+into the vetted zero padding at `main+0x655880`, points that clone's slot `+0xA0` (the player per-frame
+virtual, `main+0x312600`, shared by every measured unit class) at the dispatcher, and stores the clone's address into
 the player object's vtable pointer (`+0`). That single aligned 8-byte store is the whole trigger; the restore puts
-the original pointer back. The dispatcher (`native/re4_82c2a04a/dispatch.S`) tail-calls the original transform every
+the original pointer back. The dispatcher (`native/re4_82c2a04a/dispatch.S`) tail-calls the original tick every
 entry, so the game runs normally while the harness is attached.
 
 Private storage (the mailbox) is a proven-unused `.bss` page (`E3`): the cave is executable code in the RX segment,
@@ -23,8 +23,9 @@ import os
 import struct
 import threading
 import time
+from functools import wraps
 
-from . import re4_switch as R, re6_switch_native as N
+from . import re4_switch as R, re6_switch_native as N, re4_weapons as W
 from ..native.re4_82c2a04a import code as CODE
 
 Unavailable, Uncertain, AllocationLost = N.Unavailable, N.Uncertain, N.AllocationLost
@@ -33,7 +34,7 @@ process_identity = N.process_identity
 CAVE_AT, CAVE_SIZE = CODE.CAVE_AT, CODE.CAVE_SIZE
 CAVE_END = CODE.CAVE_END
 CLONE_AT, CLONE_SIZE = CODE.CLONE_AT, CODE.CLONE_SIZE
-ORIGINAL_TRANSFORM, SLOT_TRANSFORM = CODE.ORIGINAL_TRANSFORM, CODE.SLOT_TRANSFORM
+ORIGINAL_TICK, SLOT_TICK = CODE.ORIGINAL_TICK, CODE.SLOT_TICK
 MAILBOX, MAILBOX_SIZE = CODE.MAILBOX, CODE.MAILBOX_SIZE
 STATE = CODE.STATE
 DISPATCH = CODE.DISPATCH
@@ -133,12 +134,20 @@ def choose_mailbox(loads) -> int | None:
     return None
 
 
-def verify_dispatch() -> bytes:
+def verify_dispatch(record=CODE.DISPATCH) -> bytes:
     """The pinned dispatcher image, checked against its digest (the bytes the controller installs)."""
-    data = CODE.IMAGES["dispatch"]
-    if len(data) != DISPATCH[2] or hashlib.sha256(data).hexdigest() != DISPATCH[3]:
+    data = record[4]
+    if len(data) != record[2] or hashlib.sha256(data).hexdigest() != record[3]:
         raise Unavailable("native dispatcher image checksum mismatch")
     return data
+
+
+def _serialized(method):
+    @wraps(method)
+    def run(self, *args, **kwargs):
+        with self.lock:
+            return method(self, *args, **kwargs)
+    return run
 
 
 def is_code_address(base: int, at: int) -> bool:
@@ -279,16 +288,17 @@ class Controller(N.Controller):
         if vt != self.base + self.player_class:
             raise Unavailable("the player's vtable changed while binding")
         entries = self.rd(vt, CODE.CLONE_ENTRIES * 8)
-        if len(entries) != CODE.CLONE_ENTRIES * 8 or self.q(vt + SLOT_TRANSFORM) != self.base + ORIGINAL_TRANSFORM:
-            raise Unavailable("the player's transform slot is not the pinned original")
+        if len(entries) != CODE.CLONE_ENTRIES * 8 or self.q(vt + SLOT_TICK) != self.base + ORIGINAL_TICK:
+            raise Unavailable("the player's tick slot is not the pinned original")
         if self.mailbox is None:
             raise Unavailable("no proven private storage for the harness mailbox (E3's three-load watch is pending)")
         if not R.ptr_ok(self.mailbox) or self.mailbox % 8:
             raise Unavailable("the harness mailbox address is not an aligned guest address")
         clone = bytearray(entries)
-        struct.pack_into("<Q", clone, SLOT_TRANSFORM, self.base + CAVE_AT)
+        struct.pack_into("<Q", clone, SLOT_TICK, self.base + CAVE_AT)
         clone.extend(struct.pack("<Q", self.mailbox))
-        assets = ((self.base + CAVE_AT, verify_dispatch()), (self.base + CLONE_AT, bytes(clone)))
+        assets = ((self.base + CAVE_AT, verify_dispatch()), (self.base + CLONE_AT, bytes(clone)),
+                  (self.base + CODE.FIRST_AID_AT, verify_dispatch(CODE.FIRST_AID)))
         if any(self.rd(at, len(data)) != data for at, data in assets):
             self.stopped(lambda: [self.install(at, data) for at, data in assets])
         self.original = vt
@@ -348,6 +358,54 @@ class Controller(N.Controller):
         """The dispatcher's entry counter (E6's live proof that the cloned slot fires every frame)."""
         return self.q(self.mailbox + MAILBOX["ticks"]) if self.mailbox is not None else 0
 
+    def spray_item(self):
+        """Find a real player-owned first-aid slot; never synthesize an inventory record."""
+        self.ready()
+        reader = W.Reader(self.rd, self.base)
+        if reader.game_obj() != self.base + W.GAME_OBJ:
+            raise Unavailable("the game-state allocation changed")
+        if self.w(self.base + W.ITEM_MGR + W.M_SLOTS) != W.ITEM_SLOTS:
+            raise Unavailable("the inventory layout changed")
+        return next((it for it in reader.items(owner=0) if it["id"] == 5 and it["count"] > 0), None)
+
+    @_serialized
+    def keep_spray(self):
+        item = self.spray_item()
+        if item is None:
+            return {"available": False, "reason": "no native first-aid slot in this round's inventory"}
+        # Preserve the native slot, owner and case coordinates. Native use consumes one from this stock.
+        if item["count"] < 2:
+            before = self.rd(item["addr"], W.ITEM_SZ)
+            if W.decode_item(before)["id"] != 5 or self.rd(item["addr"], W.ITEM_SZ) != before:
+                raise Unavailable("first-aid slot changed before replenishment")
+            self.write(item["addr"] + 2, struct.pack("<H", 2))
+            if self.rd(item["addr"] + 2, 2) != struct.pack("<H", 2):
+                raise Uncertain("first-aid stock did not read back")
+        return {"available": True, "count": max(2, item["count"]), "item": item["addr"]}
+
+    @_serialized
+    def first_aid_now(self):
+        """One acknowledged call to the game's item-use function; the wrapper validates again on the game thread."""
+        item = self.spray_item()
+        if item is None:
+            raise Unavailable("no native first-aid slot in this round's inventory")
+        hp, maximum = R.player_life(self, self.base)
+        if hp is None or maximum is None or hp <= 0:
+            raise Unavailable("first aid needs a living player")
+        if hp >= maximum:
+            return {"state": "confirmed", "verified": True, "op": "first_aid_now", "consumed": False,
+                    "hp_before": hp, "hp_after": hp, "reason": "health is already full"}
+        self.ensure_attached()
+        result = self.call(CODE.FIRST_AID_AT, self.base + W.ITEM_MGR, item["addr"], self.player,
+                           self.player_id, self.base + W.GAME_OBJ)
+        after, _ = R.player_life(self, self.base)
+        remaining = W.decode_item(self.rd(item["addr"], W.ITEM_SZ))
+        return {"state": "confirmed" if result == 1 else "unavailable", "verified": result == 1,
+                "op": "first_aid_now", "consumed": result == 1, "call_result": result,
+                "hp_before": hp, "hp_after": after, "count_after": remaining["count"],
+                "player_generation": self.player_id,
+                "reason": "native first-aid item consumed" if result == 1 else "game-thread guards declined use"}
+
     # ---- the flash (checkpoint F) --------------------------------------------------------------------------------------
 
     @property
@@ -377,6 +435,7 @@ class Controller(N.Controller):
             return None
         return value if R.LIFE_SANE[0] <= value < R.LIFE_SANE[1] else None
 
+    @_serialized
     def _blast_at(self, blast, kind, x, y, z, floor_mm):
         """One blast through the mailbox: a zeroed object at the point, the game's own function, one call."""
         self.ensure_attached()
@@ -571,6 +630,7 @@ class Controller(N.Controller):
         """The intervention's `flash_now` op: the crowd point through this controller's own adapter."""
         return flash_now(self.ad, mailbox=self.mailbox)
 
+    @_serialized
     def selftest(self):
         """E6's no-op: attach, then one mailbox call to the dispatcher's own `ret` - no game code runs.
 

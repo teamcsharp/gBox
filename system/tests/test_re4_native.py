@@ -1,12 +1,13 @@
 """The RE4 native harness controller (E4/E5): the writes, the trigger, the mailbox and its refusal cases.
 
-A fake guest builds the image's real layout - a player unit of class 0xB0C0A0 whose vtable slot +0x20 holds
-main+0x2B6420, a zero cave, and a mailbox - and a fake dispatcher consumes one published request. No game.
+A fake guest builds the image's real layout - a player unit of class 0xB0C0A0 whose vtable slot +0xA0 holds
+main+0x312600, a zero cave, and a mailbox - and a fake dispatcher consumes one published request. No game.
 """
 import json
 import math
 import struct
 import types
+import threading
 
 import pytest
 
@@ -33,6 +34,7 @@ def get(mem, at, n):
 
 def fake_controller(monkeypatch, *, mailbox=MAILBOX, complete=True, fail_at=None):
     ctl = N.Controller.__new__(N.Controller)
+    ctl.lock = threading.RLock()
     ctl.base, ctl.pid, ctl.identity = BASE, 4242, (4242, 7)
     ctl.mailbox, ctl.player, ctl.original, ctl.player_id = mailbox, None, None, None
     ctl.request_generation, ctl.failed = 0, False
@@ -70,7 +72,7 @@ def fake_controller(monkeypatch, *, mailbox=MAILBOX, complete=True, fail_at=None
     vt = bytearray(32 * 8)
     for slot in range(32):
         struct.pack_into("<Q", vt, slot * 8, BASE + 0x1234)
-    struct.pack_into("<Q", vt, CODE.SLOT_TRANSFORM, BASE + CODE.ORIGINAL_TRANSFORM)
+    struct.pack_into("<Q", vt, CODE.SLOT_TICK, BASE + CODE.ORIGINAL_TICK)
     put(mem, BASE + 0xB0C0A0, vt)                                # the class vtable the player carries (Leon B)
 
     def fake_install(self, at, data):
@@ -108,7 +110,7 @@ def fake_controller(monkeypatch, *, mailbox=MAILBOX, complete=True, fail_at=None
 
 def test_a_write_into_code_or_rodata_is_refused(monkeypatch):
     ctl = fake_controller(monkeypatch)
-    for at in (BASE + 0x100, BASE + 0x2B6420, BASE + 0x655880, BASE + 0x900000):
+    for at in (BASE + 0x100, BASE + 0x312600, BASE + 0x655880, BASE + 0x900000):
         with pytest.raises(N.Unavailable, match="code or read-only"):
             ctl.write(at, b"\x00\x00\x00\x00")
     ctl.write(MAILBOX + CODE.MAILBOX["state"], b"\x00\x00\x00\x00")     # .bss/heap is allowed
@@ -130,11 +132,11 @@ def test_install_outside_the_cave_is_refused(monkeypatch):
 def test_attach_installs_dispatch_and_clone_and_writes_only_the_vtable_pointer(monkeypatch):
     ctl = fake_controller(monkeypatch)
     ctl.attach()
-    assert [at for at, _data in ctl.installed] == [CAVE, CLONE]
+    assert [at for at, _data in ctl.installed] == [CAVE, CLONE, BASE + CODE.FIRST_AID_AT]
     assert ctl.installed[0][1] == CODE.IMAGES["dispatch"]
     clone = ctl.installed[1][1]
     assert len(clone) == CODE.CLONE_SIZE
-    assert struct.unpack_from("<Q", clone, CODE.SLOT_TRANSFORM)[0] == CAVE
+    assert struct.unpack_from("<Q", clone, CODE.SLOT_TICK)[0] == CAVE
     assert struct.unpack_from("<Q", clone, CODE.CLONE_MAILBOX_OFF)[0] == MAILBOX
     assert len(ctl.writes) == 1 and ctl.writes[0] == (PLAYER, struct.pack("<Q", CLONE))
     assert ctl.q(PLAYER) == CLONE and ctl.attached()
@@ -148,7 +150,18 @@ def test_attaching_again_is_a_no_op(monkeypatch):
     ctl = fake_controller(monkeypatch)
     ctl.attach()
     ctl.attach()
-    assert len(ctl.installed) == 2 and len(ctl.writes) == 1
+    assert len(ctl.installed) == 3 and len(ctl.writes) == 1
+
+
+def test_snapshot_retains_only_the_attached_player_generation(monkeypatch):
+    ctl = fake_controller(monkeypatch)
+    ctl.ad._re4_switch_harness = ctl
+    reader = types.SimpleNamespace(adapter=ctl.ad, rd=ctl.rd)
+    ctl.attach()
+    player = R.player_unit(reader, BASE)
+    assert player and player["ptr"] == PLAYER and player["class"] == 0xB0C0A0
+    put(ctl.mem, PLAYER + R.U_ID, struct.pack("<I", 8))
+    assert R.player_unit(reader, BASE) is None
 
 
 def test_attach_refuses_without_a_mailbox(monkeypatch):
@@ -158,10 +171,10 @@ def test_attach_refuses_without_a_mailbox(monkeypatch):
     assert ctl.installed == [] and ctl.writes == []
 
 
-def test_attach_refuses_a_player_whose_transform_slot_is_not_pinned(monkeypatch):
+def test_attach_refuses_a_player_whose_tick_slot_is_not_pinned(monkeypatch):
     ctl = fake_controller(monkeypatch)
-    put(ctl.mem, BASE + 0xB0C0A0 + CODE.SLOT_TRANSFORM, struct.pack("<Q", BASE + 0x999))
-    with pytest.raises(N.Unavailable, match="transform slot"):
+    put(ctl.mem, BASE + 0xB0C0A0 + CODE.SLOT_TICK, struct.pack("<Q", BASE + 0x999))
+    with pytest.raises(N.Unavailable, match="tick slot"):
         ctl.attach()
     assert ctl.writes == []
 

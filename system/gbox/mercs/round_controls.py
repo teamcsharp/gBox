@@ -67,6 +67,8 @@ def normalize(rows, names):
 class Controls:
     selection = None  # old live instances also accept this field after a bot hot reload
     selection_consumed = None
+    random_characters = False
+    random_stages = False
 
     def __init__(self, title, sid=None, *, path=PATH, rng=None):
         self.title, self.sid, self.path = title, sid, Path(path)
@@ -118,7 +120,16 @@ class Controls:
     def managed(self):
         with self.lock:
             self.sync_preferences()
-            return self.configured or self.once is not None or self.loop_stage is not None or self.selection is not None
+            return (self.configured or self.random_characters or self.random_stages
+                    or self.once is not None or self.loop_stage is not None or self.selection is not None)
+
+    def configure_launch(self, game):
+        """Consume MercMode's flags without persisting them as operator stage preferences."""
+        merc = ((game or {}).get('launch') or {}).get('mercmode') or {}
+        with self.lock:
+            # RE6 keeps its character selection and random costume behavior.
+            self.random_characters = self.title != 're6' and merc.get('random_characters') is True
+            self.random_stages = merc.get('random_stages') is True
 
     def queue_selection(self, stage, character, request_id=None):
         """A session's DJ pick, consumed by one confirmed native round, never persisted."""
@@ -170,7 +181,9 @@ class Controls:
                 if not allowed:
                     self.reason = 'No enabled stage is currently unlocked; change the stage selection'
                     return None
-                self.stage = self.rng.choices([r['id'] for r in allowed], [r['weight'] for r in allowed], k=1)[0]
+                different = [r for r in allowed if r['id'] != self.current_stage]
+                draw = different if self.random_stages and different else allowed
+                self.stage = self.rng.choices([r['id'] for r in draw], [r['weight'] for r in draw], k=1)[0]
             self.reason = ''
             return self.stage
 

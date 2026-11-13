@@ -39,7 +39,7 @@ test('continuous presentation saves an explicit host setting',async()=>{
  const panel=M.mount({root,api:async(path,body)=>{calls.push([path,body]);return {hosts:[]};}});
  await panel.ready;await listeners.get('click')({target:{closest:()=>button}});
  assert.deepEqual(calls[1],['/api/mercmode',{host:'lilspark',enabled:true,presentation_priority:true,titles:['re4','re5'],rounds_per_title:1,
-  stalemate_cut:false,stalemate_cut_s:12,coop_ratio:'off'}]);
+  stalemate_cut:false,stalemate_cut_s:12,coop_ratio:'off',cast_weights:{}}]);
  panel.dispose();
 });
 test('the stalemate rule is a host setting: on by default at 5 s, saved from the panel and the PiP menu, bounded 1..60',async()=>{
@@ -300,4 +300,16 @@ test('each PC shows its current run, the dispatch there and its scheduler, with 
  await listeners.get('click')({target:stop});
  assert.deepEqual(calls.filter(c=>c[1]?.command).at(-1),['/api/mercmode',{host:'lilspark',command:'stop'}]);
  panel.dispose();assert.equal(listeners.size,0);
+});
+
+
+test('per-title counts render and edit independently in the context menu',async()=>{
+ const host={name:'lilspark',settings:{rounds_per_title:5,rounds_by_title:{re4:2,re5:7,re6:9}},titles:[]};
+ const html=M.menuHTML(host);
+ for(const [title,n] of Object.entries(host.settings.rounds_by_title))
+  assert.match(html,new RegExp('data-mm-title-rounds="'+title+'"[^>]*value="'+n+'"'));
+ const calls=[],api=async(path,body)=>calls.push([path,body]);
+ await M.menuAction(api,host,'rounds_title',{title:'re5',rounds:'8'});
+ assert.deepEqual(calls.at(-1),['/api/mercmode',{host:'lilspark',rounds_by_title:{re5:8}}]);
+ await assert.rejects(M.menuAction(api,host,'rounds_title',{title:'bogus',rounds:3}),/Choose RE4/);
 });

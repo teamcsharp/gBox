@@ -36,7 +36,7 @@ import threading
 import time
 from typing import Literal
 
-from pydantic import BaseModel, Field, StrictBool
+from pydantic import BaseModel, Field, StrictBool, StrictInt
 
 SETTING = "autoplay_screensaver"
 STATE = "autoplay_screensaver_run"          # worker name -> current run
@@ -690,7 +690,7 @@ class Screensaver:
                                           **carried,
                                           **({'mercmode_predecessor':mercmode.rotation_predecessor(self.store,w,now),
                                               'mercmode': {'title': merc_pick['title'], 'map_id': merc_pick['map_id'],
-                                               'rounds_per_title': merc_cfg['rounds_per_title'],
+                                               'rounds_per_title': mercmode.rounds_for(merc_cfg, merc_pick['title']),
                                                **coop, **donor,
                                                **({'selection': merc_pick['selection']} if merc_pick.get('selection') else {})}}
                                               if merc_pick else {}),
@@ -1115,7 +1115,7 @@ class Screensaver:
             return 'preparing'                       # its prepare is submitted at the next tick (the pause / stop land first)
         return None
 
-    def _warm_release(self, w, running, now, why):
+    def _warm_release(self, w, running, now, why, *, keep_next=False):
         """Close every verified pool game of this PC (MercMode off, keep_warm 0, the operator took over). A preload
         still loading is marked releasing and closed once it comes up."""
         from . import mercmode
@@ -1127,13 +1127,16 @@ class Screensaver:
             else:
                 left[title] = row | {'state': 'releasing'}
         self.store.put(mercmode.WARM, w['name'], left)
-        self.store.delete(mercmode.NEXT, w['name'])
+        if not keep_next:
+            self.store.delete(mercmode.NEXT, w['name'])
 
     def _tend_warm(self, w, running, now):
         from . import mercmode
         cfg = mercmode.settings(self.store, w['name'])
         if not self._warm_capable(w, cfg):
-            self._warm_release(w, running, now, 'MercMode warm pool off on this PC')
+            # NEXT also owns cold donor relaunches and their accumulated attempt count. A worker
+            # without a warm pool must still honor that reservation on its next cold launch.
+            self._warm_release(w, running, now, 'MercMode warm pool off on this PC', keep_next=cfg['enabled'])
             return
         note = self._preload_start(w, cfg, now)
         if note:
@@ -1232,7 +1235,7 @@ class Screensaver:
                    if row.get('warm_adoption') else {}),
                 'mercmode_predecessor': mercmode.rotation_predecessor(self.store, w, now),
                 'mercmode': {'title': pick['title'], 'map_id': pick['map_id'],
-                             'rounds_per_title': merc_cfg['rounds_per_title'], **selection,
+                             'rounds_per_title': mercmode.rounds_for(merc_cfg, pick['title']), **selection,
                              **({'coop': 'bots'} if row.get('coop') == 'bots' else {})}}   # the preload's draw
         job = self.store.get('job', row.get('job')) or {}
         session = next((s for s in running if s.get('session_id') == row.get('session_id')), None)
@@ -1718,21 +1721,21 @@ class Screensaver:
             if receipt is None:
                 return {'saved': True, 'duplicate': True, 'rotate_requested': bool(run.get('mercmode_rotate_requested'))}
             ids = (run.get('mercmode_round_ids',[])+[receipt['round_id']])[-256:]
-            # a death early in an attempt is a retry, not a round played (operator 2026-10-26: "are sure it is playing 5
-            # rounds of mercenaries in each game before moving onto the next one?" - RE4 went back to RE5 after one stage
-            # each turn: every death + retry sent a boundary, five quick deaths were five "rounds"). A death within
-            # ROUND_MIN_S of the attempt's start counts a round only every QUICK_DEATHS_PER_ROUND (never stuck in a title)
+            # Operator 2026-11-12: every completed attempt counts, including short deaths. accept_boundary
+            # above deduplicates native receipts; launches, reloads and duplicate terminal events add nothing.
             began = max(run.get('playing_since') or run.get('started') or 0,
                         (run.get('mercmode_last_round') or {}).get('at') or 0)
             quick = (receipt.get('witness') or {}).get('screen') == 'dead'                 and (receipt.get('at') or now) - began < mercmode.ROUND_MIN_S
             quick_deaths = run.get('mercmode_quick_deaths', 0) + (1 if quick else 0)
-            count = run.get('mercmode_rounds',0) + (0 if quick else 1)
-            played = count + quick_deaths // mercmode.QUICK_DEATHS_PER_ROUND
+            legacy_deaths = run.get('mercmode_quick_deaths', 0) if run.get('mercmode_count_policy') != 'attempts' else 0
+            count = run.get('mercmode_rounds', 0) + legacy_deaths + 1
+            played = count
             worker = next((w for w in self.workers() if w.get('id')==run['worker_id']),None)
             cfg = mercmode.settings(self.store,run['worker'])
             alternatives = [r for r in mercmode.inventory(self.store,worker,cfg) if r['playable']
                             and r['title'] in cfg['titles'] and r['game_id']!=run['game_id']] if worker else []
-            rotate = bool(cfg['enabled'] and not run.get('mercmode_pinned') and alternatives and played>=cfg['rounds_per_title'])
+            target_rounds = mercmode.rounds_for(cfg, run['mercmode']['title'])
+            rotate = bool(cfg['enabled'] and not run.get('mercmode_pinned') and alternatives and played >= target_rounds)
             head = (cfg.get('queue') or [None])[0] if cfg['enabled'] and not run.get('mercmode_pinned') else None
             ahead = self.store.get(mercmode.NEXT, run['worker']) if cfg['enabled'] and not run.get('mercmode_pinned') else None
             playable = lambda title: worker is not None and any(
@@ -1754,17 +1757,12 @@ class Screensaver:
             skin_rotate = bool(cfg['enabled'] and cfg.get('skin_swap') == 'random' and not alternatives
                                and not run.get('mercmode_pinned') and playable(run['mercmode']['title']))
             rotate = rotate or skin_rotate
-            # At least rounds_per_title rounds in a title before the queue takes MercMode elsewhere (operator 2026-11-10:
-            # "unless these launches have purposes, i want to see at least 5 matches per title"): a queued round of
-            # another title, or of another build, waits until this title has played its rounds; a quick death (a retry,
-            # not a round) never consumes a queued round, so five queued rounds are five matches.
-            done = played >= cfg['rounds_per_title']
+            # Other titles/builds wait for this title's configured attempt count, except explicit purpose work.
+            done = played >= target_rounds
             here = run['mercmode']['title']
             run_mod = run.get('mod') or (self.store.get('session', run['session_id']) or {}).get('mod')
             if head and not done and not purpose and (head['title'] != here or (
                     head.get('mod') and not mercmode.same_build(cfg, builds(head['mod']), run_mod, run))):
-                head = None
-            if quick and head and head['title'] == here and not purpose:
                 head = None
             if ahead and not done and ahead.get('title') != here:
                 ahead = None
@@ -1855,6 +1853,7 @@ class Screensaver:
             # a restarted autobot in this same session (the operator's F3, the hang relaunch) owns the run from here
             self.store.put(STATE,run['worker'],run | {'mercmode_round_ids':ids,'autoplay_job':parent_job['id'],
                 'mercmode_rounds':count,'mercmode_quick_deaths':quick_deaths,'mercmode_rounds_played':played,
+                'mercmode_count_policy': 'attempts',
                 'mercmode_last_round':receipt,'mercmode_rotate_requested':rotate,
                 'mercmode_skin_rotate':bool(rotate and skin_rotate),'mercmode_mod_rotate':bool(rotate and mod_rotate),
                 **({'mercmode_purpose':head.get('purpose')} if rotate and mod_rotate and purpose else {})})
@@ -2089,6 +2088,7 @@ class MercModeSettings(BaseModel):
     enabled: bool | None = None
     titles: list[str] | None = None
     rounds_per_title: int | None = None
+    rounds_by_title: dict[str, StrictInt] | None = None
     presentation_priority: bool | None = None
     queue: list[dict] | None = None             # the DJ queue: [{title, mode, character, stage}], None fields = random
     repeat_queue: StrictBool | None = None     # retain a single build or cycle a playlist every round
@@ -2103,6 +2103,7 @@ class MercModeSettings(BaseModel):
     donor_rotation: str | None = None           # off | pool | fresh: each title block draws a verified donor build
     donor_rounds: int | None = None             # 0 = one build per block; N = relaunch into the next draw every N rounds
     donor_pool: dict | None = None              # {title: [build, ...]}: only these (still fit-gated); {} = every audited
+    cast_weights: dict | None = None            # per-title franchise weights, validated by mercmode.normalize
     # gbox.re_switch: e.g. {"re5": {"platform": "switch", "mode": "no_mercy", "title_id": "010018100CD46000"}}; {} = the
     # native editions. Missing here, the field was dropped silently (the mercmode tool and MCP posted it) - 2026-10-26.
     preferred_editions: dict | None = None

@@ -29,7 +29,7 @@ from collections import deque
 from pathlib import Path
 
 WINDOW_S = 10.0              # who hurt him in the last this-many seconds
-MIN_DEATHS = 2               # evidence: a class must have caused this many deaths before anything changes
+MIN_DEATHS = 1               # the first attributed death informs the next round
 HALF_LIFE_S = 7 * 86400.0    # a lesson's weight halves every week
 MAX_SAMPLES = 400
 # bounds on every adjustment (x the plain value; keep in cm added)
@@ -99,19 +99,22 @@ class DeathLessons:
         while self.window and now - self.window[0]["t"] > WINDOW_S:
             self.window.popleft()
         last, self._hp = self._hp, hp
-        if hp is not None and hp > 0:
-            self._dead = False
         if hp is not None and hp <= 0 and last is not None and last > 0 and not self._dead:
-            self._dead = True
             return self.died(now)
         return None
 
     def died(self, now: float | None = None) -> dict | None:
         """Distil the window into a lesson, keep it (every path) and drop the cached adjustments."""
-        if not self.window:
+        if self._dead or not self.window:
             return None
+        self._dead = True
         now = self.window[-1]["t"] if now is None else now
-        lesson = distil(self.title_id, list(self.window), now, wall_ts=self.clock())
+        # A death screen can arrive after a long gap with no live observations. Preserve its
+        # context but never blame an old hit outside the attribution window for this death.
+        samples = [s for s in self.window if 0 <= now - s["t"] <= WINDOW_S]
+        if not samples:
+            samples = [{**self.window[-1], "hit": None, "crowd": []}]
+        lesson = distil(self.title_id, samples, now, wall_ts=self.clock())
         for p in self.paths:
             try:
                 p.parent.mkdir(parents=True, exist_ok=True)

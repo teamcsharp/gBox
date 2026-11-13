@@ -1,6 +1,6 @@
 """Configure host MercMode, or inspect prepared caches without starting a game."""
 from typing import Literal
-from pydantic import BaseModel, ConfigDict, StrictBool
+from pydantic import BaseModel, ConfigDict, StrictBool, StrictInt
 from .models import Permission as P
 from .registry import tool, Unsupported
 
@@ -12,6 +12,7 @@ class MercModeIn(BaseModel):
     enabled: StrictBool | None=None
     titles: list[Literal['re4','re5','re6','re3','merc3d']] | None=None
     rounds_per_title: int | None=None
+    rounds_by_title: dict[str, StrictInt] | None=None
     presentation_priority: StrictBool | None=None
     queue: list[dict] | None=None         # the DJ queue (gbox.mercmode.queue_entry validates each round)
     repeat_queue: StrictBool | None=None # cycle the queue instead of consuming its entries
@@ -30,6 +31,7 @@ class MercModeIn(BaseModel):
     donor_rotation: Literal['off','pool','fresh'] | None=None
     donor_rounds: int | None=None         # 0 = one build per title block; N = relaunch into the next draw every N rounds
     donor_pool: dict | None=None          # {title: [build, ...]}: only these builds (still fit-gated)
+    cast_weights: dict | None=None        # per-title franchise weights used by the donor writer
     # a dispatch from the app (gbox.mercmode DISPATCH_FEATURE): start / stop / switch this PC's MercMode, its PiP here
     command: Literal['start','stop','switch'] | None=None
     title: Literal['re4','re5','re6','re3','merc3d'] | None=None
