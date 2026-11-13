@@ -562,8 +562,35 @@ def _stop_all(host, runs, stop_s, clock) -> list:
     return [sid for sid, run in runs if not host.join(run, max(0.0, t + stop_s - clock()))]
 
 
+def _round_busy(bots) -> str | None:
+    """A deployment must not split one native Mercenaries attempt in two.
+
+    Read the worker's live state, not the delayed telemetry mirror. Unknown
+    state during an open capture is not a boundary. A finalized terminal or
+    pre-round menu is eligible; active gameplay always wins over a stale close.
+    """
+    menus = {'title', 'main_menu', 'extras_menu', 'mercs_title', 'select_player', 'select_stage'}
+    terminals = {'dead', 'dead_continue', 'results', 'result', 'mission_results'}
+    for sid, run in bots:
+        name = run.get('playbook_module') or str(run.get('mission') or '').removeprefix('playbook: ')
+        live = run.get('live') or {}
+        mercs = name.rsplit('.', 1)[-1] in {'mercs_bot', 're4_merc_bot', 're4switch_bot'}
+        if not mercs and not live.get('round_evidence_id'):
+            continue
+        screen = live.get('screen')
+        closed = live.get('round_evidence_closed') is True
+        if live.get('operator_control') or screen not in menus | terminals \
+                or live.get('round_evidence_id') and not closed \
+                or screen in terminals and not closed:
+            return f'the Mercenaries round on {sid} has not reached a finalized boundary'
+    return None
+
+
 def _apply(host, p: Plan, *, settle_s, stop_s, keep, registry, t0, clock, sleep) -> dict:
     bots = host.bots()
+    busy = _round_busy(bots)                         # recheck after admission, immediately before any stop
+    if busy:
+        return _result(False, t0, clock, retry=True, reason=busy)
     since = time.time()                                     # an operator stop / pad touch after this wins over the restart
     t_stop = clock()
     lingering = _stop_all(host, bots, stop_s, clock)
@@ -628,10 +655,10 @@ def reload_bots(host, *, modules=(), settle_s: float = SETTLE_S, allowed=allowed
         return _refusal(e, t0, clock)
     deadline = clock() + drain_s
     while True:
-        busy = host.busy()
+        busy = host.busy() or _round_busy(host.bots())
         if not busy:
             with GATE.exclusive(GATE_WAIT_S) as got:
-                busy = host.busy() if got else "autoplay starts are still setting up"
+                busy = (host.busy() or _round_busy(host.bots())) if got else "autoplay starts are still setting up"
                 if not busy:
                     return _apply(host, p, settle_s=settle_s, stop_s=stop_s, keep=keep, registry=registry, t0=t0,
                                   clock=clock, sleep=sleep)

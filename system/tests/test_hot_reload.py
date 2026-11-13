@@ -342,6 +342,61 @@ def test_a_round_preparation_makes_the_reload_wait_then_answer_busy_with_nothing
         host.stop_all()
 
 
+@pytest.mark.parametrize('live', [
+    {'screen': 'playing', 'round_evidence_id': 'r1', 'round_evidence_closed': False},
+    {'screen': 'playing', 'round_evidence_id': 'r1', 'round_evidence_closed': True},
+    {'screen': 'unknown', 'round_evidence_id': 'r1', 'round_evidence_closed': False},
+    {'screen': 'dead', 'round_evidence_id': 'r1', 'round_evidence_closed': False},
+    {'screen': 'select_player', 'operator_control': True},
+    {},
+])
+def test_reload_preserves_an_active_mercenaries_attempt(pkg, live):
+    host = FakeHost(pkg.m('bot'))
+    host.runs['w1-a'].update(playbook_module='gbox.re4switch_bot', live=live)
+    pkg.write('bot.py', BOT.replace("'v1'", "'v2'"))
+    try:
+        out = reload(host, pkg, modules=[pkg.m('bot')], drain_s=0)
+        assert not out['ok'] and out['retry'] and not out['restart']
+        assert H.verdict({'result': out})[0] == 'busy'
+        assert host.events == []
+        assert host.runs['w1-a']['thread'].is_alive()
+    finally:
+        host.stop_all()
+
+
+def test_reload_waits_for_evidence_finalization_before_stopping_the_bot(pkg):
+    host = FakeHost(pkg.m('bot'))
+    live = {'screen': 'dead', 'round_evidence_id': 'r1', 'round_evidence_closed': False}
+    host.runs['w1-a'].update(playbook_module='gbox.mercs_bot', live=live)
+    pkg.write('bot.py', BOT.replace("'v1'", "'v2'"))
+    def finish(_):
+        assert host.events == []
+        live['round_evidence_closed'] = True
+    try:
+        out = reload(host, pkg, modules=[pkg.m('bot')], sleep=finish, settle_s=0)
+        assert out['ok'], out
+        assert host.events == [('stop', 'w1-a'), ('release', 'w1-a'), ('start', 'w1-a')]
+    finally:
+        host.stop_all()
+
+
+def test_reload_rechecks_boundary_when_another_round_starts_during_admission(pkg, monkeypatch):
+    host = FakeHost(pkg.m('bot'))
+    live = {'screen': 'results', 'round_evidence_id': 'r1', 'round_evidence_closed': True}
+    host.runs['w1-a'].update(playbook_module='gbox.mercs_bot', live=live)
+    pkg.write('bot.py', BOT.replace("'v1'", "'v2'"))
+    apply = H._apply
+    def raced(*args, **kw):
+        live.update(screen='playing', round_evidence_id='r2', round_evidence_closed=False)
+        return apply(*args, **kw)
+    monkeypatch.setattr(H, '_apply', raced)
+    try:
+        out = reload(host, pkg, modules=[pkg.m('bot')])
+        assert not out['ok'] and out['retry'] and host.events == []
+    finally:
+        host.stop_all()
+
+
 def test_only_bot_modules_reload_in_place(pkg):
     host = FakeHost(pkg.m("bot"), sessions=())
     out = reload(host, pkg, modules=["gbox.server"])
