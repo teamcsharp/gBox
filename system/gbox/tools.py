@@ -1687,6 +1687,9 @@ def _pump(sid: str, ad, server: str, headers: dict, ctx=None):
         padstate.VPAD_SLOT[sid] = getattr(getattr(ad, "vpad", None), "slot", None)
         padstate.ANCHOR[sid] = lambda at: _save_anchor(sid, ad, ctx, at)  # replay waits for these screens
         threading.Thread(target=padstate.watch_xinput, args=(server, headers, sid, lambda: sid in SESSIONS), daemon=True).start()
+        # A controller that enumerates as HID/DirectInput never answers XInputGetState (measured: the operator's
+        # Xbox 360 pad is SDL-visible but absent from every XInput slot), so mirror it through SDL as well.
+        threading.Thread(target=padstate.watch_sdl, args=(server, headers, sid, lambda: sid in SESSIONS), daemon=True).start()
     with httpx.Client(base_url=server, headers=headers, timeout=10) as c:
         pid = getattr(getattr(ad, "proc", None), "pid", None)
         scene_watch = _scene_row_watch(ad)                 # Examine 3D row still settling (#971)
