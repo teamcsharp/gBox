@@ -59,6 +59,43 @@ requests that have not reached permanent refusal keep their bounded admission
 window. This repair removes repeated futile waits; it does not establish the
 cause of the original ambiguous publication or claim a successful throw.
 
+## Bounded request readback, 2026-11-13
+
+An initial coherence check can fail before the first preparation write. The
+request now records that exact zero-write case as refused/`preparation_not_started`,
+with `native_not_submitted=true`. It does not treat a writer exception as proof
+of no write: candidates are recorded before calling the writer, and any attempted
+publication remains ambiguous. A new request may capture a fresh witness only
+after the positively unsubmitted refusal.
+
+A separate fixture replay demonstrated successful native attachment followed by
+a motion change during the final coherence pass. Previously this returned
+`unknown/readback_unavailable`, even though the next read proved the same held
+object without any further write. Readback now permits a read-only retry for
+known mutable-field races, a short read, or the 50 ms sample budget. Each retry
+must first revalidate the original build, session roots, player lifetime and
+context, equip action ownership, target slot/object/generation, and alive state.
+This ownership check has its own 50 ms/read/byte bounds. No request is replayed,
+no preparation is rewritten, and the original 1.5 second deadline is never reset.
+
+Every read is checked against immutable original bindings, including partial
+reads and the inventory block. An observed identity change is terminal even if
+the next read returns to the old value. Unknown slot/class/action/context
+failures remain terminal. A successful receipt still needs a complete coherent
+native hand observation; stable ownership alone reports only waiting.
+`native_equip.readback_reason` and `readback_field` identify transient failures;
+`owner_check_reason`/`owner_check_field` identify a failed retry guard. A timeout
+retains the most recent transient cause. Tests cover recovery without extra
+writes, every immutable identity reverting immediately after a bad observation,
+partial reads, death/context changes, and the unchanged deadline.
+
+These regressions establish request/readback behavior, not the cause of every
+historical ambiguous receipt or measured live grenade throughput. The later
+`fb229d3d` receipt at 1794587809.688 was captured during very low health and a
+native action transition; its old receipt did not retain the underlying cause.
+It is archived in Spark's
+`analysis/merc-tuning-20261113/re5-cb7-fb229-native-equip-unknown-windows.json`.
+
 The publisher now distinguishes a stale initial witness before any writer was
 called from an attempted write with an uncertain outcome. A zero-write refusal
 reports `native_not_submitted` and can capture a new owned witness later. The

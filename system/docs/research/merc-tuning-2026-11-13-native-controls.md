@@ -554,3 +554,33 @@ controller aiming samples; 243 camera values matched the persistent native
 pitch output. This confirms the new input survives native updates, not accuracy
 or verified hit attribution. The archive is
 `mercs/analysis/re5-native-pitch-0d48e242e4af4ce3-1794586851.json`.
+
+## Live mine recovery after 382cb96b
+
+The cb7 RE5 round `fb229d3ded7641e28f0bf669ae3a2220` died after 1,046.6
+sampled seconds, with 278 reported kills, 220,950 points and four time bonuses.
+It spent 80.1% of sampled time stationary, including aimed combat. One mine
+was placed, triggered and retired before a floor-refused ring blocked further
+drops. Its completed audit is `post-cb7b5751-fb229d3ded7641e28f0bf669ae3a2220-audit.json`.
+No terminal rank image was retained; the recorded death is not a rank claim.
+
+Revision `382cb96be1cd8893e7c8d375027a1ccdeabbc041` activated after that
+closed death at `1794587822.045`, service PID 2642965, worker
+`b5a2a2cf2906495c`. Early next-round evidence for
+`6a33c3ad929e46b5b7b67140629e3268` confirms two native movement drops with
+gun 23 unchanged and HP 1000 before/after each request. Both mines had their
+primary and proximity volumes enabled and later positive trigger/retirement
+observations. The player traveled approximately 535 cm during each 3.24/3.43
+second placement request. A subsequent trace shows clearance increasing from
+432 to 516 cm while moving diagonally, before hazard retirement. These are
+actual movement/arming observations, not a full-round survival result.
+
+By `1794588196`, 18 definitely inactive floor refusals had recovered. Two
+periodic opportunities had completed as explicitly coalesced reactive flash
+rings; they were not extra damaging grenade volleys. Refused full rings still
+armed zero actors when their floor casts failed. Provisional escape sites must
+not be called armed mines when the native hazard census is empty. Ordinary
+grenades appeared later in this round, but eight attempted throws still had
+seven equip aborts and zero recorded throws before the next equipment batch
+was loaded. Evidence is in `re5-382-6a33c3ad929e46b5b7b67140629e3268-early-mine-evidence.json`,
+`re5-382-6a33-early-escape.json` and `re5-382-6a33-admission-1794588196.json`.
