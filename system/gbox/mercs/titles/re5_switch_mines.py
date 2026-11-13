@@ -195,7 +195,7 @@ class Mines:
         from .re5_native_mine_tactic import Cadence
         self.automine, self.cadence = True, Cadence()
         self._native_receipts = collections.deque(maxlen=32)
-        self._native_seen_at = {}
+        self._native_receipt_census = {}
         for k in COUNTERS:
             self.stats.setdefault(k, 0)
         self.stats.setdefault("mine_last_actor", 0)
@@ -229,7 +229,7 @@ class Mines:
         self._rearm_tap_at = -1e9
         self.last_at, self.last_pos, self.site, self.clear_from = None, None, None, None
         self.bombs, self.blast = {}, None
-        self._native_seen_at = {}
+        self._native_receipt_census = {}
         self.baseline = None
         self._clear_run, self._clear_yield = None, -1e9
         self._calm_since = {}                          # quiet bombs he is beside: unit -> since when
@@ -288,15 +288,17 @@ class Mines:
             if isinstance(hp, int) and isinstance(b["hp"], int):
                 self.stats["mine_blast_hp_loss"] += max(0, b["hp"] - max(hp, 0))
             self.blast = None
-        if not self.bombs or "ground_mines" not in snap:
+        if not self.bombs or snap.get('ground_mines') is None:
             return
         now_ptrs = {g["ptr"] for g in snap.get("ground_mines") or ()}
-        # A receipt consumed after this snapshot was captured is newer evidence
-        # than that snapshot's census. Wait for a later observation to retire it.
-        gone = [k for k in self.bombs if k not in now_ptrs and now > self._native_seen_at.get(k, -1e9)]
+        # Engine reaction polling and Bot.tick can consume the same snapshot at
+        # different clock times. Shallow decision copies retain the census list:
+        # only a distinct read can contradict a receipt newer than that census.
+        gone = [k for k in self.bombs if k not in now_ptrs
+                and self._native_receipt_census.get(k) is not snap['ground_mines']]
         for ptr in gone:
             del self.bombs[ptr]
-            self._native_seen_at.pop(ptr, None)
+            self._native_receipt_census.pop(ptr, None)
             self.stats["mines_gone"] += 1
         if gone:
             if self.blast is None:
@@ -718,17 +720,18 @@ class Mines:
         self.native.clearance_cm = self.foe_clear_cm
         packet = self.native.poll(snap, self.stats)
         if packet is not None:
-            self._merge_native(packet, now)
+            self._merge_native(packet, now, census=snap.get('ground_mines'))
         forced = self.stats.get('native_mine_force_receipts')
         if isinstance(forced, list):
             for row in forced[:8]:
                 if (isinstance(row, dict) and tuple(row.get('owner') or ()) == self.native.owner
                         and isinstance(row.get('receipt'), dict)):
-                    self._merge_native(dict(row, archive=row.get('archive')), now, manual=True)
+                    self._merge_native(dict(row, archive=row.get('archive')), now, manual=True,
+                                       census=snap.get('ground_mines'))
             del forced[:8]
         self._request_native(snap, now)
 
-    def _merge_native(self, packet, now, *, manual=False):
+    def _merge_native(self, packet, now, *, manual=False, census=None):
         from . import re5_native_mine_tactic as native
         if not packet.get('id') or packet['id'] in self._native_receipts:
             return
@@ -746,7 +749,7 @@ class Mines:
         for row in rows:
             if not row.get('trigger_observed'):
                 self.bombs[row['unit']] = tuple(row['pos'])  # uncertain active actors remain hazards
-                self._native_seen_at[row['unit']] = now
+                self._native_receipt_census[row['unit']] = census
                 if self.baseline is not None:
                     self.baseline.discard(row['unit'])
         if confirmed:

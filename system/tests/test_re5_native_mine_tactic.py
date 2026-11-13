@@ -276,6 +276,40 @@ def test_automine_does_not_depend_on_legacy_inventory_supply_enabled():
     assert not m.enabled and st['automine_enabled'] and len(calls) == 1
 
 
+def test_same_census_at_later_clock_cannot_retire_a_newer_receipt_but_next_read_can():
+    s, st, mem = scene(), stats(), memory()
+    m = M.Mines(st); m.new_round(0)
+    m.native = N.Flight(mem, run=lambda *a: pytest.fail('receipt test must not place'))
+    st['native_mine_force_receipts'] = [
+        {'id': 'manual-drop', 'owner': list(N.identity(s, st)), 'receipt': receipt()}]
+    m.observe_native(mem, s, 1.)                # engine observer consumes receipt after snapshot was taken
+    m.watch(s['player'], dict(s), 1.04)         # Bot's shallow decision copy and a later clock
+    assert UNIT in m.bombs and st['mines_gone'] == 0 and st['mine_blasts'] == 0
+    m.watch(s['player'], dict(s), 1.1)
+    assert UNIT in m.bombs and st['mines_gone'] == 0
+    fresh = dict(s, ground_mines=[])
+    m.watch(fresh['player'], fresh, 1.2)        # a genuinely newer empty native census
+    assert not m.bombs and st['mines_gone'] == 1 and st['mine_blasts'] == 1
+    assert not m._native_receipt_census
+
+
+def test_new_round_drops_census_references_and_rejects_the_previous_round_receipt():
+    s, st, mem = scene(), stats(), memory()
+    m = M.Mines(st); m.new_round(0)
+    m.native = N.Flight(mem, run=lambda *a: pytest.fail('receipt test must not place'))
+    old = {'id': 'old-drop', 'owner': list(N.identity(s, st)), 'receipt': receipt()}
+    st['native_mine_force_receipts'] = [old]
+    m.observe_native(mem, s, 1.)
+    assert UNIT in m.bombs and m._native_receipt_census
+    st['round_evidence_id'] = 'round-two'
+    s['player']['generation'] = 2
+    m.new_round(2.)
+    st['native_mine_force_receipts'] = [dict(old, id='late-old-drop')]
+    m.observe_native(mem, s, 2.1)
+    assert not m.bombs and not m._native_receipt_census
+    assert st['mines_placed'] == 1 and st['native_mine_force_receipts'] == []
+
+
 def test_prompt_observation_starts_round_before_qte_request_and_flee_waits_for_release(monkeypatch):
     monkeypatch.setattr(R, 'PS3_BRAIN', False)
     s, st = scene(), stats()

@@ -51,6 +51,12 @@ Validation before activation: focused mine/manual/queue/control tests passed
 tests passed 42; client request/modifier tests passed 86. Native class/ABI
 checks also passed. These checks do not establish S rank or live escape success.
 
+A follow-up receipt/census race fix retains the exact snapshot census consumed
+with a fresh mine receipt: the same observation cannot retire the newly armed
+mine just because the engine and bot use slightly different timestamps. A new
+census may retire it, and new rounds clear the references. Its focused suite
+passed 91 tests.
+
 ## Adjacent corrections
 
 Ordinary gun animation scaling was silently capped at 5x despite higher
