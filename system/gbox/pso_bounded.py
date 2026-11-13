@@ -891,10 +891,26 @@ class CommitMotion:
                               f"slide {self.slides})")
 
     def _best(self, aim: tuple) -> str:
+        # A key with no learned direction is tried first. Measured at (-128,250) in Forest 1: the aim was 329 units east,
+        # but `up`, `down` and `left` had all been learned as north/south (the camera had rotated), `right` had never
+        # been tried at all, and so no key could point east - the character walked 41 units south while the target sat
+        # south-east and ended the run 425 units away. Every key must be measured before any is trusted.
+        unknown = [key for key in self.keys if key not in self.dirs]
         if not self.dirs:
             return self.keys[0]
-        return max(self.keys, key=lambda key: (self.dirs.get(key) or (0.0, 0.0))[0] * aim[0]
-                   + (self.dirs.get(key) or (0.0, 0.0))[1] * aim[1])
+        best, best_dot = None, -2.0
+        for key in self.keys:
+            direction = self.dirs.get(key)
+            if direction is None:
+                continue
+            dot = direction[0] * aim[0] + direction[1] * aim[1]
+            if dot > best_dot:
+                best, best_dot = key, dot
+        # Explore an unmeasured key only when nothing measured points usefully along the aim: a single unknown key tried
+        # too eagerly costs a tap that goes the wrong way (measured: forcing it first broke a rotating-frame walk).
+        if unknown and best_dot < 0.5:
+            return unknown[0]
+        return best or self.keys[0]
 
 
 @dataclass
