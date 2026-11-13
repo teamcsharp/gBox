@@ -668,14 +668,11 @@ class Controller:
         if kind not in RING_KINDS:
             raise Unavailable(f"unknown grenade kind {kind!r}")
         if kind in CLASSES.SHELL_KINDS:
-            # The operator's 360 launcher ring (2026-11-13: "make sure that I am able to click this button and launch
-            # a 360 nitrogen round out from the character into the scene"). The native launcher-shell path is
-            # research grade - a spawn/arm barrage that never counts an allocation or an arm return as a blast - so
-            # it is reachable only through allow_unverified (the probe row in the chooser), exactly like the other
-            # unverified grenade kinds, and its receipt says verified: False.
-            if not allow_unverified:
-                raise Unavailable(RING_KIND_REFUSED[kind])
-            return self.shell_barrage_ring(kind, count=count, radius_cm=radius_cm)
+            # The operator's 360 launcher ring (2026-11-13) stays refused through the chooser until the single supervised
+            # live shell probe (docs/research/re6-native-shell-ring.md rollout gate) has produced its own emission and
+            # ice evidence; allow_unverified cannot turn an unimplemented blast into a receipt. The research barrage
+            # (shell_barrage_ring -> re6_switch_shell_probe.barrage) is reachable only to agent/probe callers.
+            raise Unavailable(RING_KIND_REFUSED[kind])
         if kind not in RING_IMPLEMENTED_KINDS:
             # Even a research probe must have a native implementation. Refuse before installing
             # code or allocating an actor; allow_unverified only bypasses live-evidence gating.

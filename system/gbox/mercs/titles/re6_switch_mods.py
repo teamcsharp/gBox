@@ -224,10 +224,12 @@ MAGNUM_TYPES = frozenset({0x107, 0x108})
 # The spread (operator 18:00: "change what weapon is being used by the bot actively ... instantly use that weapon"): a
 # gun's model loads only for the round's loadout, so the empty weapon slots of every loadout get these at round set-up
 # (merc_loadout spread=): the magnums and the shotguns, ready for the live switch and the grab swap.
-SPREAD = ((0x108, 5), (0x112, 6), (0x107, 7), (0x104, 8), (0x105, 7), (0x106, 3))   # magnums, the launcher
-# (0x112 the grenade launcher, item 18: spread into every loadout so the arsenal swap always has it loaded to equip,
-#  second in the fill order because the operator's 360 launcher ring reads the launcher's presence - live 2026-11-11
-#  18:40 a launcher-less character refused every shell ring)
+SPREAD = ((0x112, 6), (0x108, 5), (0x107, 7), (0x104, 8), (0x105, 7), (0x106, 3))   # launcher, magnums, shotguns
+# (0x112 the grenade launcher, item 18: spread into every loadout so the arsenal swap always has it loaded to equip.
+#  LIVE 2026-11-13: it was second in the fill order, so a character with only ONE empty slot got the Lightning Hawk
+#  and never the launcher - the operator's 360 launcher ring then refused "the launcher is not in this inventory
+#  yet" in every such round (the live probe of the shell ring failed with exactly that). The launcher goes first;
+#  the ring's precondition is stronger than an extra magnum, and the magnums are still spread while slots last.)
 ASKED: set = set()                                       # the (type, magazine) pairs live_weapon put in the loadouts
 # No pistols (operator 2026-10-27 ~20:00: "for the characters in no mercy, replace the pistol with any random shotgun or
 # magnum"; "i want the characters using random weapons from the game and campaign in mercenaries"): with the spread,

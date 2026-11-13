@@ -7,12 +7,13 @@ from gbox.mercs.titles import re6_switch_native as N
 from gbox.mercs.titles import re6_switch_shell_probe as research
 
 
-def test_a_launcher_ring_is_refused_without_the_probe_opt_in():
-    with pytest.raises(N.Unavailable, match="launcher round needs"):
-        N.Controller.grenade_ring(types.SimpleNamespace(), "shell1304")
+def test_a_launcher_ring_is_refused_before_the_single_probe_gate():
+    for allow in (False, True):
+        with pytest.raises(N.Unavailable, match="launcher round needs"):
+            N.Controller.grenade_ring(types.SimpleNamespace(), "shell1304", allow_unverified=allow)
 
 
-def test_a_launcher_ring_with_the_probe_opt_in_runs_the_shell_barrage(monkeypatch):
+def test_the_research_barrage_helper_runs_the_shell_barrage(monkeypatch):
     calls = {}
 
     def barrage(ctl, **kw):
@@ -28,10 +29,4 @@ def test_a_launcher_ring_with_the_probe_opt_in_runs_the_shell_barrage(monkeypatc
     assert out["requested"] == 6
 
 
-def test_the_ring_dispatch_hands_launcher_kinds_to_the_barrage():
-    seen = {}
-    ctl = types.SimpleNamespace(shell_barrage_ring=lambda kind, count=None, radius_cm=None: (
-        seen.update(kind=kind, count=count, radius=radius_cm) or {"op": "grenade_ring", "research": True}))
-    out = N.Controller.grenade_ring(ctl, "shell1304", count=4, allow_unverified=True)
-    assert seen == {"kind": "shell1304", "count": 4, "radius": None}
-    assert out["research"] is True
+
