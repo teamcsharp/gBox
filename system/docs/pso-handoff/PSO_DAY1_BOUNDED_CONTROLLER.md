@@ -509,3 +509,19 @@ Gate carving is now wired into the runner: every gate the session reports gets a
 units), so a route can cross a doorway instead of going around the room. The fence walk above used it - the route did
 pass through the fence's cells, which is how the character got to 4 units of it.
 
+
+
+## 14. Replaying a demonstration, and a lock that outlived its runner
+
+`walk --route-file <demo.jsonl>` replays a recorded trace verbatim: `TraceRouter` returns the trace's waypoints from
+the one nearest the character, so the follower walks the same line the operator walked - no collision grid, no A*, no
+door carving. With `--to` now optional in that mode, the run's target is the trace's own end point. Live check: the
+trace from the operator's latest session loaded, produced its waypoints and the run reported the trace's end as its
+target (`ending at (518.6, -330.2)`); it arrived in one tick because the character was already standing there - the trace
+is mostly stationary samples, which is exactly what the recorder is for once the operator walks a line.
+
+The runner's one-at-a-time lock now records its **pid**: a lock whose process is gone is taken over (`os.kill(pid, 0)` is
+a query only on Windows), and a lock with no recorded pid - every lock written before this change - is taken over with
+a log line instead of blocking forever. Two crashed runs had each left a lock that a later run then refused to start
+behind.
+

@@ -77,10 +77,27 @@ def claim_ownership() -> bool:
     OUT.mkdir(parents=True, exist_ok=True)
     if LOCK.exists():
         age = time.time() - LOCK.stat().st_mtime
-        if age < LOCK_STALE_S:
-            log(f"refusing to start: another bounded runner holds the lock ({age:.0f}s old)")
+        holder = None
+        try:
+            holder = json.loads(LOCK.read_text(encoding="utf-8")).get("pid")
+        except (OSError, ValueError):
+            holder = None
+        alive = False
+        if holder:
+            try:
+                os.kill(int(holder), 0)              # query only: signal 0 never delivers on Windows
+                alive = True
+            except OSError:
+                alive = False
+        if age < LOCK_STALE_S and alive:
+            log(f"refusing to start: another bounded runner holds the lock ({age:.0f}s old, pid {holder})")
             return False
-    LOCK.write_text(json.dumps({"pid": None, "at": time.time(), "by": "pso-bounded"}), encoding="utf-8")
+        if age < LOCK_STALE_S and holder is None:
+            # A lock written before the pid was recorded cannot name its holder; it is a crashed run, and refusing
+            # forever on it is worse than the small risk of two starts racing (the second write wins).
+            log(f"taking over a lock with no recorded pid ({age:.0f}s old)")
+        log(f"taking over the lock from a dead runner (pid {holder}, {age:.0f}s old)")
+    LOCK.write_text(json.dumps({"pid": os.getpid(), "at": time.time(), "by": "pso-bounded"}), encoding="utf-8")
     return True
 
 
@@ -126,6 +143,34 @@ class SwitchState:
         self.data[sid] = {str(ptr): float(when) for ptr, when in pressed.items()}
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self.path.write_text(json.dumps(self.data, indent=1, sort_keys=True), encoding="utf-8")
+
+
+def simplify_trace(points: list, spacing: float = 8.0) -> list:
+    kept = []
+    for x, z in points:
+        if not kept or math.dist(kept[-1], (x, z)) >= spacing:
+            kept.append((round(x, 1), round(z, 1)))
+    return kept
+
+
+class TraceRouter:
+    """A router that replays one recorded path: the operator's demonstration, verbatim.
+
+    No map, no A*: `route()` returns the trace's waypoints from the nearest one to the current position, so the
+    follower walks the same line the operator walked. This is the "monkey-see-monkey-do" path that avoids every failure
+    of the decoded collision grid (false-positive cells, doors that are walls, rooms in separate components).
+    """
+
+    def __init__(self, waypoints: list) -> None:
+        self.waypoints = [tuple(point) for point in waypoints]
+        self.safe = set()
+
+    def route(self, start: tuple, goal: tuple) -> list:
+        if not self.waypoints:
+            return []
+        nearest = min(range(len(self.waypoints)),
+                      key=lambda index: math.dist(start, self.waypoints[index]))
+        return self.waypoints[nearest:]
 
 
 class DoorState:
@@ -252,10 +297,24 @@ def run(mode: str, args) -> int:
         log(f"routing over {name}: {len(row['cells'])} safe cells")
 
     if mode == "walk":
-        target = tuple(args.to)
+        target = tuple(args.to) if args.to is not None else (0.0, 0.0)
         # No policy: the objective is the point. The same bounded tick still issues the action, so the walk cannot
         # hold the loop, and the watchdog still recovers a wedge one action at a time. With --map the point is
         # pursued along the decoded collision grid's waypoints (the city railing is why a straight line is not enough).
+        if args.route_file:
+            rows = [json.loads(line) for line in pathlib.Path(args.route_file).read_text(encoding="utf-8").splitlines()
+                    if line.strip()]
+            points = [(float(row["x"]), float(row["z"])) for row in rows if row.get("x") is not None]
+            waypoints = simplify_trace(points, args.trace_spacing)
+            if len(waypoints) < 2:
+                log(f"trace {args.route_file} has {len(waypoints)} usable waypoint(s) - nothing to replay")
+                world.release()
+                release_ownership()
+                return 4
+            target = waypoints[-1]
+            router = TraceRouter(waypoints)
+            log(f"replaying {len(waypoints)} waypoints from {pathlib.Path(args.route_file).name} "
+                f"ending at {target}")
         walk_policy = _FixedTarget(policy, target, "door" if args.through else "walk")
         if router is not None:
             walk_policy = B.RoutedPolicy(walk_policy, router, arrive=10.0)
@@ -296,14 +355,14 @@ def run(mode: str, args) -> int:
                 log(f"  tick {tick.index}: {tick.outcome} - {tick.note}")
             if mode == "walk":
                 player = (world.observe() or {}).get("player") or {}
-                distance = B.math.hypot(args.to[0] - float(player.get("x") or 0),
-                                        args.to[1] - float(player.get("z") or 0))
+                distance = B.math.hypot(target[0] - float(player.get("x") or 0),
+                                        target[1] - float(player.get("z") or 0))
                 if args.through:
                     # A doorway crossing is the evidence, and it needs both parts: the room changed AND the character
                     # is at the door. The room value alone flickers at boundaries without any movement (measured: room
                     # 10 -> 5 in one tick, 215 units from the door).
                     if player.get("room") != start_room and distance <= 15.0:
-                        log(f"  crossed the doorway at {tuple(args.to)}: room {start_room} -> "
+                        log(f"  crossed the doorway at {tuple(target)}: room {start_room} -> "
                             f"{player.get('room')} after {automaton.stats()['ticks']} ticks")
                         break
                 elif distance <= arrive:
@@ -354,10 +413,10 @@ def run(mode: str, args) -> int:
     stats = automaton.stats()
     if mode == "walk":
         player = (world.observe() or {}).get("player") or {}
-        left = B.math.hypot(float(args.to[0]) - float(player.get("x") or 0),
-                            float(args.to[1]) - float(player.get("z") or 0))
+        left = B.math.hypot(float(target[0]) - float(player.get("x") or 0),
+                            float(target[1]) - float(player.get("z") or 0))
         stats["final_distance"] = round(left, 1)
-        stats["target"] = list(args.to)
+        stats["target"] = list(target)
     ok, why = ledger.verify()
     summary = {"mode": mode, "session": sid, "run_mode": bound_mode.value, "started": stamp,
                "seconds": args.seconds, "stats": stats, "ledger": str(ledger_path),
@@ -399,7 +458,10 @@ def main(argv=None) -> int:
     parser = argparse.ArgumentParser(description="bounded PSO controller")
     sub = parser.add_subparsers(dest="mode", required=True)
     walk = sub.add_parser("walk", help="drive to one coordinate with bounded controller input")
-    walk.add_argument("--to", type=float, nargs=2, required=True, metavar=("X", "Z"))
+    walk.add_argument("--to", type=float, nargs=2, metavar=("X", "Z"),
+                      help="target coordinate (omit when replaying --route-file)")
+    walk.add_argument("--route-file", default="",
+                      help="replay a recorded demonstration trace (.jsonl) instead of using the map")
     walk.add_argument("--through", action="store_true",
                       help="walk through the coordinate (a doorway) instead of stopping at it")
     play = sub.add_parser("play", help="run the progression policy")
@@ -411,6 +473,8 @@ def main(argv=None) -> int:
                           help="open a grid passage at gates the session has actually crossed (default off)")
         item.add_argument("--no-carve", dest="carve", action="store_false")
         item.add_argument("--carve-radius", type=float, default=8.0)
+        item.add_argument("--trace-spacing", type=float, default=8.0,
+                          help="waypoint spacing when replaying a recorded trace")
         item.add_argument("--motion", default="hill", choices=("hill", "vector", "relative"),
                           help="movement controller: hill climbs measured gains, vector/relative infer a frame")
         item.add_argument("--map-name", default="", help="substring of the grid entry to use (e.g. forest01)")
@@ -421,6 +485,8 @@ def main(argv=None) -> int:
         item.add_argument("--assisted", action="store_true",
                           help="label the run as assisted: never evidence for a normal-play gate")
     args = parser.parse_args(argv)
+    if getattr(args, "mode", None) == "walk" and not args.route_file and args.to is None:
+        parser.error("walk needs --to X Z or --route-file")
     return run(args.mode, args)
 
 
