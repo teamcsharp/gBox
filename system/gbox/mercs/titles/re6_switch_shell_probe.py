@@ -284,3 +284,112 @@ separately establish the ice reaction and player clearance before rollout. There
                 ctl.detach_completed()
         result["elapsed_ms"] = round(1000 * (time.monotonic() - started), 1)
         return result
+
+
+def barrage(ctl, *, count=8, radius_cm=700.0, kind="shell1304", timeout_s=0.6, cancelled=None):
+    """Research barrage: `count` launcher shells spawned on a ring radius_cm around the player and armed at their
+    ring points - the operator's 360 launcher ring (2026-11-13, "launch a 360 nitrogen round out from the
+    character into the scene").
+
+    One barrage per player life, never replayed. A shell counts as detonated only when inspect_shell's own native
+    emission evidence appears (explode phase 2 AND the (4,4) enemy attack pair); the allocation and the arm return
+    value never count. `verified` stays False: this is the native research step behind the chooser's shell kinds,
+    not an advertised capability. Raises Unavailable on admission refusals (no launcher, unknown kind, unsafe
+    radius, an existing barrage this life) exactly like probe_one.
+    """
+    if kind not in S.SHELLS:
+        raise Unavailable("unknown native shell kind")
+    try:
+        count = max(1, min(int(count), 16))
+        radius_cm = float(radius_cm)
+    except (TypeError, ValueError):
+        raise Unavailable("the shell barrage needs a whole count and a radius")
+    if not math.isfinite(radius_cm) or not SAFE_DISTANCE_CM <= radius_cm <= 2600.:
+        raise Unavailable("the shell ring radius must be 601 to 2600 cm")
+    timeout_s = max(.05, min(float(timeout_s), 2.0))
+    rows, started = [], time.monotonic()
+    with ctl.lock:
+        epoch = ctl.ready()
+        if epoch in getattr(ctl, "_shell_barrage_epochs", set()):
+            raise Unavailable("a shell barrage was already submitted for this player generation; not replayed")
+        ctl.player, ctl.generation = epoch
+        ctl.sp = ctl.q(ctl.base + R.S_PLAYER)
+        ctl.manager = ctl.player + 0x13A8
+        ctl.check()
+        _no_owned_remotes(ctl, epoch)
+        if 0x112 not in (R.inventory_guns(ctl, ctl.player) or {}):
+            raise Unavailable("native grenade launcher resources are not present in this loadout")
+        px, py, pz = struct.unpack("<3f", ctl.rd(ctl.player + R.P_POS, 12))
+        if not all(math.isfinite(v) for v in (px, py, pz)):
+            raise Unavailable("player position is unavailable for the shell barrage")
+        attached = False
+        try:
+            attached = True
+            ctl.attach()
+            _install_images(ctl)
+            _no_owned_remotes(ctl, epoch)
+            if ctl.ready() != epoch:
+                raise Unavailable("player changed during the shell barrage admission")
+            packet = ctl.heap + PACKET_OFFSET
+            shell = S.SHELLS[kind]
+            epochs = getattr(ctl, "_shell_barrage_epochs", set())
+            epochs.add(epoch)                                # reserved: a barrage is never replayed this life
+            ctl._shell_barrage_epochs = epochs
+            for i in range(count):
+                if cancelled is not None and cancelled():
+                    raise Unavailable("the shell barrage was cancelled")
+                ctl.check()
+                if ctl.ready() != epoch:
+                    raise Unavailable("player changed during the shell barrage")
+                angle = 2.0 * math.pi * i / count
+                point = _safe_point(ctl, (px + radius_cm * math.cos(angle), py, pz + radius_cm * math.sin(angle)))
+                ctl.write(packet, struct.pack("<4fQI4x", *point, 0.0, 0, 0))
+                returned = ctl.call(S.SPAWN[0], ctl.player, ctl.generation, ctl.base + shell.dti, packet,
+                                    timeout=min(1.0, timeout_s))
+                unit, stage = struct.unpack("<QI", ctl.rd(packet + 16, 12))
+                row = {"index": i, "point": [round(v, 1) for v in point], "unit": unit,
+                       "spawn_stage": stage, "spawned": int(bool(unit) and stage == 2 and returned == unit),
+                       "armed": 0, "emitted": 0}
+                rows.append(row)
+                if not row["spawned"]:
+                    row["reason"] = "shell initialization was not confirmed"
+                    break
+            for row in rows:
+                if not row["spawned"] or (cancelled is not None and cancelled()):
+                    continue
+                born = ctl.w(row["unit"] + 0x1308)
+                row["generation"] = born
+                try:
+                    row["armed"] = int(ctl.call(S.ARM[0], row["unit"], ctl.player, born, ctl.generation,
+                                                ctl.base + shell.vtable, timeout=min(1.0, timeout_s)) == 1)
+                except (Unavailable, OSError, ValueError, struct.error) as exc:
+                    row["reason"] = str(exc)[:120]
+            until = min(time.monotonic() + timeout_s, time.monotonic() + 3.0)
+            while time.monotonic() < until:
+                ctl.check()
+                pending = [r for r in rows if r["spawned"] and not r["emitted"]]
+                if not pending:
+                    break
+                for row in pending:
+                    try:
+                        sample = inspect_shell(ctl, row["unit"], row.get("generation", 0), kind)
+                    except (Unavailable, OSError, ValueError, struct.error):
+                        continue
+                    row["emitted"] = int(bool(sample.get("emitted")))
+                time.sleep(0.01)
+        finally:
+            if attached:
+                ctl.detach_completed()
+    spawned = sum(1 for r in rows if r["spawned"])
+    armed = sum(1 for r in rows if r["armed"])
+    emitted = sum(1 for r in rows if r["emitted"])
+    state = ("cancelled" if cancelled is not None and cancelled()
+             else "uncertain" if spawned or armed else "failed")
+    return {"op": "shell_barrage", "kind": kind, "requested": count, "spawned": spawned, "armed": armed,
+            "detonated": emitted, "verified": False, "state": state,
+            "radius_cm": round(radius_cm, 1), "player_generation": ctl.generation, "ring": rows,
+            "reason": ("native shells spawned and armed; the blast emission and the ice reaction are unverified "
+                       "research" if armed else
+                       "native shells spawned but no arm was confirmed; unverified research, not replayed" if spawned
+                       else "no native shell confirmed its launch; not replayed"),
+            "elapsed_ms": round(1000 * (time.monotonic() - started), 1)}

@@ -635,6 +635,24 @@ class Controller:
         return {"index": index, "kind": kind, "projectile_generation": born,
                 "pos": [round(x, 1), round(y, 1), round(z, 1)], "class_vtable": hex(carried)}
 
+    def shell_barrage_ring(self, kind, *, count=None, radius_cm=None):
+        """One research barrage of launcher shells on a ring around the player (the 360 nitrogen ring).
+
+        Delegates the native spawn/arm/observation sequencing to `re6_switch_shell_probe.barrage` (one barrage per
+        player life, never replayed, emission evidence only from the shell's own explode phase + enemy attack pair).
+        The receipt is a grenade_ring-shaped research receipt with verified: False; the operator-facing kinds stay
+        the verified ones until live emission receipts exist.
+        """
+        from . import re6_switch_shell_probe as research
+        d = ring_defaults()
+        n = max(1, min(int(d["count"] if count is None else count), RING_COUNT_MAX))
+        radius = float(radius_cm if radius_cm is not None else max(700.0, float(d.get("radius_cm") or 0.0)))
+        out = research.barrage(self, count=n, radius_cm=max(700.0, radius), kind=kind, timeout_s=.4)
+        out["op"] = "grenade_ring"
+        out["requested"] = n
+        out["research"] = True
+        return out
+
     def grenade_ring(self, kind="flash", *, count=None, radius_cm=None, inner_cm=None, ripple_ms=None, expand=None,
                      allow_unverified=False):
         """Spawn `count` grenades in a ring around the player and detonate them in a quick ripple.
@@ -649,6 +667,15 @@ class Controller:
         kind = (kind or "flash").lower()
         if kind not in RING_KINDS:
             raise Unavailable(f"unknown grenade kind {kind!r}")
+        if kind in CLASSES.SHELL_KINDS:
+            # The operator's 360 launcher ring (2026-11-13: "make sure that I am able to click this button and launch
+            # a 360 nitrogen round out from the character into the scene"). The native launcher-shell path is
+            # research grade - a spawn/arm barrage that never counts an allocation or an arm return as a blast - so
+            # it is reachable only through allow_unverified (the probe row in the chooser), exactly like the other
+            # unverified grenade kinds, and its receipt says verified: False.
+            if not allow_unverified:
+                raise Unavailable(RING_KIND_REFUSED[kind])
+            return self.shell_barrage_ring(kind, count=count, radius_cm=radius_cm)
         if kind not in RING_IMPLEMENTED_KINDS:
             # Even a research probe must have a native implementation. Refuse before installing
             # code or allocating an actor; allow_unverified only bypasses live-evidence gating.
