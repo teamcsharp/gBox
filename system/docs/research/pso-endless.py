@@ -719,6 +719,7 @@ def route_walk(pad: Pad, tx: float, tz: float, legs: int = 12) -> float:
             if _cells:
                 routers.append((_name, MapRouter(_cells)))
         if routers:
+            fruitless = 0
             for _ in range(legs):
                 me = state(pad).get("player") or {}
                 x, z = float(me.get("x") or 0), float(me.get("z") or 0)
@@ -748,11 +749,23 @@ def route_walk(pad: Pad, tx: float, tz: float, legs: int = 12) -> float:
                 walk_to(pad, target[0], target[1], max_steps=22)
                 after = state(pad).get("player") or {}
                 if math.dist(before, (float(after.get("x") or 0), float(after.get("z") or 0))) < 2.0:
-                    break                                     # this leg is blocked too; stop rather than spin
+                    # ONE fruitless leg can be a narrow doorway; TWO in a row means the cell graph does not describe
+                    # this geometry and further legs only cost time - twelve of them cost about 156 seconds.
+                    fruitless += 1
+                    if fruitless >= 2:
+                        break
+                else:
+                    fruitless = 0
     except Exception:                                         # noqa: BLE001 - the map is an optimisation, not a gate
         pass
     me = state(pad).get("player") or {}
-    return math.hypot(tx - float(me.get("x") or 0), tz - float(me.get("z") or 0))
+    left = math.hypot(tx - float(me.get("x") or 0), tz - float(me.get("z") or 0))
+    if left > 25.0:
+        # the routed path gained nothing: walk straight at it once. The map is an optimisation; this is the movement.
+        walk_to(pad, tx, tz, max_steps=40)
+        me = state(pad).get("player") or {}
+        left = math.hypot(tx - float(me.get("x") or 0), tz - float(me.get("z") or 0))
+    return left
 
 
 def play(pad: Pad, seconds: float = 120.0) -> str:
