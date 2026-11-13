@@ -32,6 +32,58 @@ BUTTONS = {0: "b", 1: "a", 2: "y", 3: "x", 4: "l", 5: "r", 6: "select", 7: "star
 DIRECTIONS = ("up", "down", "left", "right")
 
 
+PROCESS_SUSPEND_RESUME = 0x0800
+
+
+def _bot_pids():
+    """PIDs of every running `endless.py` - the only processes the relay may suspend.
+
+    `wmic` is absent on current Windows, which is why the first version of this silently found nothing and never
+    suspended anything. PowerShell's CIM query is the supported equivalent and is present on every supported build.
+    """
+    import subprocess
+
+    pids = []
+    script = ("Get-CimInstance Win32_Process -Filter \"Name='python.exe'\" | "
+              "Where-Object { $_.CommandLine -match 'endless' } | "
+              "ForEach-Object { $_.ProcessId }")
+    try:
+        out = subprocess.run(["powershell", "-NoProfile", "-Command", script],
+                             capture_output=True, text=True, timeout=20).stdout
+    except Exception:                                          # noqa: BLE001
+        return pids
+    for line in (out or "").splitlines():
+        line = line.strip()
+        if line.isdigit():
+            pids.append(int(line))
+    return pids
+
+
+def suspend_bots() -> list:
+    """Freeze the bot processes so only the operator is writing to the pad."""
+    import ctypes
+
+    ntdll = ctypes.windll.ntdll
+    frozen = []
+    for pid in _bot_pids():
+        handle = ctypes.windll.kernel32.OpenProcess(PROCESS_SUSPEND_RESUME | 0x0400, False, pid)
+        if handle:
+            if ntdll.NtSuspendProcess(handle) == 0:
+                frozen.append((pid, handle))
+            else:
+                ctypes.windll.kernel32.CloseHandle(handle)
+    return frozen
+
+
+def resume_bots(frozen) -> None:
+    import ctypes
+
+    ntdll = ctypes.windll.ntdll
+    for pid, handle in frozen:
+        ntdll.NtResumeProcess(handle)
+        ctypes.windll.kernel32.CloseHandle(handle)
+
+
 def send(pad, events):
     if not events:
         return
@@ -67,6 +119,7 @@ def main():
     print(f"relay watching '{joy.get_name()}'", flush=True)
 
     held, last_stick, last_activity, last_rebind = set(), (0.0, 0.0), 0.0, 0.0
+    frozen = []
     while True:
         pygame.event.pump()
         now = {name for index, name in BUTTONS.items() if index < joy.get_numbuttons() and joy.get_button(index)}
@@ -94,6 +147,10 @@ def main():
             pad = rebind(pad)
 
         if events:
+            if not frozen:
+                frozen.extend(suspend_bots())          # the operator is playing: freeze the bot so only one writes
+                if frozen:
+                    print(f"  suspended the bot ({len(frozen)} process(es)) - operator has the pad", flush=True)
             last_activity = time.time()
             try:
                 PAUSE_FILE.write_text("operator playing", encoding="utf-8")
@@ -102,6 +159,10 @@ def main():
             send(pad, events)
             print(f"  relayed {len(events)} event(s): {[e['key'] for e in events]}", flush=True)
         elif time.time() - last_activity > IDLE_RELEASE:
+            if frozen:
+                resume_bots(frozen)
+                frozen = []
+                print("  operator idle - bot resumed", flush=True)
             if PAUSE_FILE.exists():
                 try:
                     PAUSE_FILE.unlink()
