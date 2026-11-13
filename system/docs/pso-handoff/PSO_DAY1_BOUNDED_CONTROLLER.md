@@ -820,3 +820,28 @@ Also added this round: when no measured key points at the target (alignment < 0.
 learned map and re-dealing the four directions - instead of walking the least-bad way. Taps rotate the follow camera
 125-180 degrees, so a turn is how a new direction becomes available.
 
+
+
+## 26. Correction: the "dead input" was my probe, not the game
+
+Two rounds concluded that a session's input path dies after about nine minutes, based on `/api/sessions/{sid}/input`
+returning `[]`. That conclusion is **wrong**. The route has two handlers:
+
+| method | purpose | response |
+|---|---|---|
+| POST | queue input for the session | `{"queued": N}` |
+| GET | worker side: take and clear the queue | the queued events, `[]` when empty |
+
+My probe scripts passed the payload but left the HTTP method at its `GET` default, so they were **reading and clearing
+the queue** instead of writing to it - which is also why the character sometimes stopped moving right after a "probe":
+the probe had just drained whatever the runner had queued. The runner itself always POSTs (`SessionWorld._apply` passes
+`"POST"`), and a fresh session's POST returns `{"queued": 2}` and moves the character (heading 270 -> 8.2 on the first
+tap).
+
+What remains true: the hard freezes at `(604,-151)` and `(106,424)` were real - all four taps moved 0.0 and a turn
+changed the heading by 0.0 - and a restart fixed them. What is now in doubt is the *cause*: it is not a dying input
+queue. A GET that empties the queue under a running bot is a plausible contributor and was never controlled for.
+
+The `dead_input` counter added for the wrong reason is harmless (a POST never returns a list), but its comment now says
+what it actually detects: an answer no POST should ever give.
+
