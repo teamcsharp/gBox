@@ -280,10 +280,10 @@ def unstick(pad: Pad, attempts: int = 3) -> str:
     return ""
 
 
-def play(pad: Pad, seconds: float = 45.0) -> str:
+def play(pad: Pad, seconds: float = 120.0) -> str:
     """Fight what is near, otherwise travel. Returns what it did most."""
     started = time.time()
-    last_position, stuck, killed, moved = None, 0, 0, 0.0
+    last_position, stuck, killed, moved, closest = None, 0, 0, 0.0, 999.0
     last_enemy_hp = {}
 
     while time.time() - started < seconds:
@@ -314,6 +314,7 @@ def play(pad: Pad, seconds: float = 45.0) -> str:
                          + (float(e.get("z") or 0) - z) ** 2)
             tx, tz = float(target.get("x") or 0), float(target.get("z") or 0)
             distance = math.hypot(tx - x, tz - z)
+            closest = min(closest, distance)
             name = str(target.get("class"))
             hp = float(target.get("hp"))
             if name in last_enemy_hp and hp < last_enemy_hp[name]:
@@ -357,7 +358,7 @@ def play(pad: Pad, seconds: float = 45.0) -> str:
             moved += 1
         time.sleep(0.15)
 
-    return f"played {seconds:.0f}s, {moved} travel steps"
+    return f"played {seconds:.0f}s, {moved} travel steps, closest approach {closest:.1f}"
 
 
 # ---- outer loop ------------------------------------------------------------------------------------------------------
@@ -385,7 +386,7 @@ if __name__ == "__main__":
                 log("could not reach a field this cycle - playing where we are")
 
             while live_sessions():
-                outcome = play(pad, seconds=45)
+                outcome = play(pad, seconds=120)
                 log(outcome)
                 if outcome == "no player":
                     # died, or a transition: recover once, then let the outer loop rebuild
