@@ -250,6 +250,14 @@ vertical blast bounds or pre-arming floor validation need investigation before
 relaxing that protection. Blocked mine escape, low health and slow decisions
 remained; no survival guarantee follows.
 
+The receipt chronology separates two problems: the first blocked escape began
+before that lower-floor ring, with the existing traversal mine and five floor
+vetoes/three mine vetoes. After the four same-floor ring members triggered and
+the traversal mine retired, the lower-floor mine remained the sole live hazard
+at263cm flat clearance. It prolonged the escape problem; it did not cause the
+initial stall. The native ground projection currently runs after activation and
+can select a much lower surface, so pre-arming validation needs investigation.
+
 Revision `f2b1b3f38f5237e54a5f876c338cb54db48a8a65` activated in the following
 empty MercMode boundary; service PID1324645, worker`5848d136b3904c8b`.
 Its crowd roulette has an independent120-second clock, verified effect
