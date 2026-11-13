@@ -298,3 +298,25 @@ def test_title_decision_budget_subtracts_work_and_does_not_catch_up(work, monkey
     assert sleeps == pytest.approx([max(.001, 1/30-work)]*50)
     assert stats['decision_work_p95_ms'] == pytest.approx(work*1000)
     assert stats['decision_hz'] <= 31
+    assert stats['decision_stages_ms']['bot'] == pytest.approx(work*1000)
+
+
+def test_slow_decision_keeps_its_round_and_failed_stage_timing(monkeypatch):
+    clk = Clock()
+    monkeypatch.setattr(engine.time, 'perf_counter', clk)
+    stats = {'screen':'playing', 'round_evidence_id':'round-a'}
+    work = engine.DecisionWork(stats)
+    def blocked():
+        clk.t += 8.1
+        raise OSError('unavailable')
+    with pytest.raises(OSError):
+        work.call('grenade_ring', blocked)
+    assert work.finish() == pytest.approx(8.1)
+    row = stats['decision_slow_recent'][0]
+    assert row['round_id'] == 'round-a' and row['stages_ms']['grenade_ring'] == pytest.approx(8100)
+    stats['round_evidence_id'] = 'round-b'
+    work.begin()
+    clk.t += .01
+    work.finish()
+    assert stats['decision_stages_ms'] == {}
+    assert stats['decision_slow_recent'][0]['round_id'] == 'round-a'

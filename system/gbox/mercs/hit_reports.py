@@ -9,7 +9,7 @@ MAX_PER_ROUND per round; a failed post is a stat and never stalls the round.
 from __future__ import annotations
 
 import threading
-import time
+from .follow_report_delivery import submit
 
 MAX_PER_ROUND = 6
 _CFG = {"url": "", "token": "", "title": "", "session_id": ""}
@@ -17,8 +17,9 @@ _LOCK = threading.Lock()
 
 
 def configure(url="", token="", *, title="", session_id=""):
-    _CFG.update(url=str(url or "").rstrip("/"), token=str(token or ""), title=str(title or ""),
-                session_id=str(session_id or ""))
+    with _LOCK:
+        _CFG.update(url=str(url or "").rstrip("/"), token=str(token or ""), title=str(title or ""),
+                    session_id=str(session_id or ""))
 
 
 def post(url, token, payload):
@@ -105,13 +106,6 @@ def observe(stats, snap, now, *, attackers=None, doing=None, why=None, round_id=
                    "source": "agent", "kind": "text", "author": "agent", "automated": True,
                    "context": {"session_id": _CFG.get("session_id"), "round_id": rid, "title": _CFG.get("title"),
                                "hp_before": hp_before, "hp_after": hp, "hits_taken": taken}}
-        try:
-            reply = post(_CFG["url"], _CFG["token"], payload)
-        except Exception as exc:                         # noqa: BLE001 - a failed report never stalls the round
-            stats["hit_report_error"] = f"{type(exc).__name__}: {exc}"[:200]
-            stats["hit_report_failures"] = int(stats.get("hit_report_failures", 0)) + 1
-            return None
-        stats["hit_reports"] = int(stats.get("hit_reports", 0)) + 1
-        stats["hit_report_last"] = {"at": round(time.time(), 1), "request": (reply or {}).get("id"),
-                                    "round": rid, "hp_before": hp_before, "hp_after": hp}
-        return stats["hit_report_last"]
+        config = dict(_CFG)
+    return submit(post, config, payload, stats, 'hit',
+                  {'round':rid, 'hp_before':hp_before, 'hp_after':hp})

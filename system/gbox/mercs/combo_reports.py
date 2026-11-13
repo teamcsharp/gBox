@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import math
 import threading
-import time
+from .follow_report_delivery import submit
 
 MAX_PER_ROUND = 3
 THREAT_CM = 600.0
@@ -19,8 +19,9 @@ _LOCK = threading.Lock()
 
 def configure(url="", token="", *, title="", session_id=""):
     """The control plane and the round's provenance (the engine calls this once per run)."""
-    _CFG.update(url=str(url or "").rstrip("/"), token=str(token or ""), title=str(title or ""),
-                session_id=str(session_id or ""))
+    with _LOCK:
+        _CFG.update(url=str(url or "").rstrip("/"), token=str(token or ""), title=str(title or ""),
+                    session_id=str(session_id or ""))
 
 
 def post(url, token, payload):
@@ -79,15 +80,16 @@ def observe(stats, snap, now, *, doing=None, why=None, round_id=None):
     combo = (snap or {}).get("combo") if isinstance(snap, dict) else None
     if not isinstance(combo, int) or isinstance(combo, bool):
         return None
-    prev = stats.get("_combo_report_prev")
-    stats["_combo_report_prev"] = combo
-    if not isinstance(prev, int) or isinstance(prev, bool) or prev <= 0 or combo != 0:
-        return None
     rid = str(round_id or stats.get("round_evidence_id") or _CFG.get("session_id") or "")
     with _LOCK:
         if stats.get("_combo_report_round") != rid:       # a new round: the count starts over
             stats["_combo_report_round"] = rid
             stats["_combo_reports"] = 0
+            stats['_combo_report_prev'] = None
+        prev = stats.get('_combo_report_prev')
+        stats['_combo_report_prev'] = combo
+        if not isinstance(prev, int) or isinstance(prev, bool) or prev <= 0 or combo != 0:
+            return None
         if int(stats.get("_combo_reports") or 0) >= MAX_PER_ROUND:
             stats["combo_reports_suppressed"] = int(stats.get("combo_reports_suppressed", 0)) + 1
             return None
@@ -100,13 +102,7 @@ def observe(stats, snap, now, *, doing=None, why=None, round_id=None):
                    "author": "agent", "automated": True,
                    "context": {"session_id": _CFG.get("session_id"), "round_id": rid, "title": _CFG.get("title"),
                                "combo_before": prev, "combo": 0}}
-        try:
-            reply = post(_CFG["url"], _CFG["token"], payload)
-        except Exception as exc:                         # noqa: BLE001 - a failed report never stalls the round
-            stats["combo_report_error"] = f"{type(exc).__name__}: {exc}"[:200]
-            stats["combo_report_failures"] = int(stats.get("combo_report_failures", 0)) + 1
-            return None
-        stats["combo_reports"] = int(stats.get("combo_reports", 0)) + 1
-        stats["combo_report_last"] = {"at": round(time.time(), 1), "request": (reply or {}).get("id"),
-                                      "round": rid, "combo_before": prev, "kills": stats.get("kills")}
-        return stats["combo_report_last"]
+        config = dict(_CFG)
+        kills = stats.get('kills')
+    return submit(post, config, payload, stats, 'combo',
+                  {'round':rid, 'combo_before':prev, 'kills':kills})

@@ -97,6 +97,7 @@ class FlightRecorder:
                'native_action': safe(p.get('action', p.get('motion'))), 'fire_cooldown_s': safe(p.get('fire_cooldown_s')),
                'throwables': safe(snap.get('throwables')),
                'diagnostics': {k: safe(stats[k]) for k in (
+                   'decision_stages_ms', 'decision_work_ms', 'decision_work_p95_ms',
                    'aim_diag', 'aim_errdeg', 'laser_gate', 'sight_block_last', 'nav_status',
                    'target_feedback_target', 'target_feedback_yaw_deg', 'target_feedback_pitch_deg',
                    'target_feedback_gate', 'target_feedback_ram', 'target_feedback_block_why',

@@ -47,6 +47,40 @@ RECOVERY_DOWN_S = RECOVERY_UP_S = 1. / 60.    # verified RE5 self-recovery: one 
 TICK_ERRORS_MAX = 200
 
 
+class DecisionWork:
+    """Attribute combat-loop latency without including the frame-budget sleep.
+
+    Stage times are wall time and may include nested native calls; they are not
+    CPU utilization. Slow samples retain round identity for later death review.
+    """
+    def __init__(self, stats):
+        self.stats = stats
+        self.begin()
+
+    def begin(self):
+        self.started = time.perf_counter()
+        self.stages = {}
+
+    def call(self, stage, fn, *args, **kwargs):
+        start = time.perf_counter()
+        try:
+            return fn(*args, **kwargs)
+        finally:
+            self.stages[stage] = self.stages.get(stage, 0.0) + time.perf_counter() - start
+
+    def finish(self):
+        total = max(0.0, time.perf_counter() - self.started)
+        stages = {key:round(value * 1000, 2) for key,value in self.stages.items()}
+        self.stats['decision_stages_ms'] = stages
+        if total >= .25 and self.stats.get('screen') == 'playing':
+            row = {'at':time.time(), 'round_id':self.stats.get('round_evidence_id'),
+                   'work_ms':round(total * 1000, 2), 'stages_ms':stages}
+            rows = list(self.stats.get('decision_slow_recent') or ())[-19:]
+            self.stats.update(decision_slow_recent=rows + [row],
+                              decision_slow_cycles=int(self.stats.get('decision_slow_cycles', 0)) + 1)
+        return total
+
+
 def tick_error_where(exc) -> str:
     """The innermost frame of a tick's exception in our own code (not the standard library, not site-packages):
     file:line function."""
@@ -232,6 +266,7 @@ def play_round(prof, m, send, stopped, stats: dict, lessons=None, sleep=time.sle
     decision_interval = getattr(drv, 'decision_interval_s', None)
     cycle_started = time.perf_counter()
     timing_since, timing_count, work_samples = cycle_started, 0, []
+    decision_work = DecisionWork(stats)
 
     def hold(keys):
         nonlocal held
@@ -255,6 +290,7 @@ def play_round(prof, m, send, stopped, stats: dict, lessons=None, sleep=time.sle
         """Frame-synced: wait (polling the title's frame counter, a 4-byte read) until the game has stepped since the
         last decision, at most FRAME_WAIT_S; without a counter, tick_s."""
         nonlocal timing_since, timing_count
+        decision_work.finish()
         if frame_fn is None:
             if decision_interval is None:
                 sleep(tick_s)
@@ -496,6 +532,7 @@ def play_round(prof, m, send, stopped, stats: dict, lessons=None, sleep=time.sle
     try:
         while not stopped():
             cycle_started = time.perf_counter()
+            decision_work.begin()
             if session_runtime is not None:
                 status = session_runtime.poll(m, drv)
                 if session_runtime.signature() != role_signature:
@@ -505,8 +542,8 @@ def play_round(prof, m, send, stopped, stats: dict, lessons=None, sleep=time.sle
             now = clock()
             before_observation = dict(stats)
             try:
-                snap = drv.snapshot(m)
-                where = drv.screen(m, snap)
+                snap = decision_work.call('snapshot', drv.snapshot, m)
+                where = decision_work.call('screen', drv.screen, m, snap)
             except OSError as error:
                 # A missing sample is not a game decision. Release this bot's
                 # keys, preserve its round, then re-read for a bounded interval.
@@ -530,14 +567,14 @@ def play_round(prof, m, send, stopped, stats: dict, lessons=None, sleep=time.sle
             if damage is not None:
                 from .damage import Backpressure
                 try:
-                    damage.before(snap, where, m, bot, held, now)
+                    decision_work.call('damage_before', damage.before, snap, where, m, bot, held, now)
                 except Backpressure as exc:
                     stats.update(player_damage_status="backpressure", player_damage_error=str(exc)[:300])
                     log("player_damage_backpressure", error=str(exc)[:300])
                     return "evidence_backpressure"      # finally releases held input before returning
             observe_round = getattr(bot, "observe_round", None)
             if observe_round is not None:
-                observe_round(snap, where, now)
+                decision_work.call('observe_round', observe_round, snap, where, now)
             if where == "playing":
                 # A fast retry can begin inside this invocation: DEAD is IN_ROUND,
                 # and short menus/loading gaps do not satisfy ROUND_GONE_S.
@@ -555,10 +592,10 @@ def play_round(prof, m, send, stopped, stats: dict, lessons=None, sleep=time.sle
             assistance.observe(snap.get('assistance'))
             round_fields(stats, assistance)
             if damage is not None:
-                damage.after(snap, where, now)
+                decision_work.call('damage_after', damage.after, snap, where, now)
             if tactical is not None:                  # the tactical map: who is where, what the bot means to do
                 try:
-                    tactical(snap, bot, where)
+                    decision_work.call('tactical', tactical, snap, bot, where)
                 except Exception:                     # noqa: BLE001 - the map never costs the round a tick
                     pass
             if where in D.IN_ROUND:
@@ -566,7 +603,7 @@ def play_round(prof, m, send, stopped, stats: dict, lessons=None, sleep=time.sle
                 # it can latch a preceding round's stage from the reused autoplay stats.
                 stats.update(drv.progress(snap))
             if capture is not None:                   # the run map: a sample 5 times a second (appends; never raises)
-                capture.observe(now, where, snap, bot, stats,
+                decision_work.call('capture', capture.observe, now, where, snap, bot, stats,
                                 controls={'keys': sorted(held), 'timing': 'pre_decision',
                                           'source': 'transport_tracked_held_state'})
             if where not in D.IN_ROUND:
@@ -686,7 +723,7 @@ def play_round(prof, m, send, stopped, stats: dict, lessons=None, sleep=time.sle
                     sleep(0.15)
                 continue
             try:
-                act = bot.tick(snap)
+                act = decision_work.call('bot', bot.tick, snap)
                 tick_errors = 0
             except Exception as exc:                 # noqa: BLE001 - TICK_ERRORS_MAX: a bad tick never ends the round
                 tick_errors = tick_failed(exc, tick_errors)
@@ -695,7 +732,7 @@ def play_round(prof, m, send, stopped, stats: dict, lessons=None, sleep=time.sle
                 trace.observe(snap, bot, stats, now, act.get("hold", ()), "decision", act.get("tap"))
             if combo_step is not None and where == "playing":
                 try:
-                    combo_step(stats, snap, now, doing=getattr(bot, "doing", None),
+                    decision_work.call('combo_report', combo_step, stats, snap, now, doing=getattr(bot, "doing", None),
                                why=getattr(bot, "why", None))
                 except Exception as exc:              # noqa: BLE001 - a follow report never ends the round
                     stats["combo_report_error"] = f"{type(exc).__name__}: {exc}"[:200]
@@ -703,7 +740,7 @@ def play_round(prof, m, send, stopped, stats: dict, lessons=None, sleep=time.sle
                 # Every playing tick (the module keeps the hp baseline and its own counter; the reports fire on the
                 # rise), with the attackers the bot is tracking or, while it is busy elsewhere, the snapshot's near ones.
                 try:
-                    hit_step(stats, snap, now, attackers=_attackers(bot, snap),
+                    decision_work.call('hit_report', hit_step, stats, snap, now, attackers=_attackers(bot, snap),
                              doing=getattr(bot, "doing", None), why=getattr(bot, "why", None))
                 except Exception as exc:              # noqa: BLE001 - a follow report never ends the round
                     stats["hit_report_error"] = f"{type(exc).__name__}: {exc}"[:200]
@@ -716,7 +753,7 @@ def play_round(prof, m, send, stopped, stats: dict, lessons=None, sleep=time.sle
             lat.observe(bot, snap, act, held, vi)
             if ring_step is not None and where == "playing":   # the ring takes its own tick: keys released first
                 try:
-                    ring_out = ring_step(snap, stats, now, hold)
+                    ring_out = decision_work.call('grenade_ring', ring_step, snap, stats, now, hold)
                 except Exception as exc:             # noqa: BLE001 - a ring never ends the round
                     stats["ring_error"] = f"{type(exc).__name__}: {exc}"[:200]
                 else:
@@ -729,7 +766,7 @@ def play_round(prof, m, send, stopped, stats: dict, lessons=None, sleep=time.sle
                         continue
             if remote_step is not None and where == "playing":   # the RE6 remote-mine rings and flag detonation
                 try:
-                    remote_out = remote_step(snap, stats, now, hold)
+                    remote_out = decision_work.call('remote_mines', remote_step, snap, stats, now, hold)
                 except Exception as exc:             # noqa: BLE001 - a mine rule never ends the round
                     stats["remote_mines_error"] = f"{type(exc).__name__}: {exc}"[:200]
                 else:
@@ -751,7 +788,7 @@ def play_round(prof, m, send, stopped, stats: dict, lessons=None, sleep=time.sle
                 log("hit_taken", player_r=list((snap.get("player") or {}).get("r") or ()), attackers=attackers)
                 if hit_step is not None:             # the operator: every hurt files a follow report
                     try:
-                        hit_step(stats, snap, now, attackers=attackers, doing=getattr(bot, "doing", None),
+                        decision_work.call('hit_report', hit_step, stats, snap, now, attackers=attackers, doing=getattr(bot, "doing", None),
                                  why=getattr(bot, "why", None))
                     except Exception as exc:         # noqa: BLE001 - a follow report never ends the round
                         stats["hit_report_error"] = f"{type(exc).__name__}: {exc}"[:200]
@@ -766,7 +803,7 @@ def play_round(prof, m, send, stopped, stats: dict, lessons=None, sleep=time.sle
                 send([{"key": act["tap"], "down": False}])
                 sleep(TAP_REST_S)
                 continue
-            hold(set(act.get("hold", ())))
+            decision_work.call('input', hold, set(act.get("hold", ())))
             next_frame()
         return "stopped"
     finally:

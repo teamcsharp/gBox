@@ -7,7 +7,10 @@ TITLE = "01002A000CD48000"
 
 
 @pytest.fixture(autouse=True)
-def _configured():
+def _configured(monkeypatch, tmp_path):
+    from gbox.mercs import follow_report_delivery as delivery
+    monkeypatch.setattr(delivery, 'ROOT', tmp_path)
+    monkeypatch.setattr(delivery, '_dispatch', lambda callback: callback())
     HR._CFG.update(url="http://x", token="tok", title=TITLE, session_id="sess-1")
 
 

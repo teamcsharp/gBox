@@ -7,7 +7,10 @@ TITLE = "01002A000CD48000"
 
 
 @pytest.fixture(autouse=True)
-def _configured(monkeypatch):
+def _configured(monkeypatch, tmp_path):
+    from gbox.mercs import follow_report_delivery as delivery
+    monkeypatch.setattr(delivery, 'ROOT', tmp_path)
+    monkeypatch.setattr(delivery, '_dispatch', lambda callback: callback())
     CR._CFG.update(url="http://x", token="tok", title=TITLE, session_id="sess-1")
 
 
@@ -58,3 +61,16 @@ def test_a_failed_post_is_a_stat_and_never_raises(monkeypatch):
     assert CR.observe(live, snap(0), 101.0) is None
     assert live["combo_report_failures"] == 1 and "connection refused" in live["combo_report_error"]
     assert "combo_reports" not in live
+
+
+def test_first_zero_of_new_round_is_not_the_previous_round_losing_its_combo(monkeypatch):
+    calls = []
+    monkeypatch.setattr(CR, 'post', lambda *args: calls.append(args) or {'id':'r'})
+    live = {'round_evidence_id':'old'}
+    CR.observe(live, snap(12), 1)
+    live['round_evidence_id'] = 'new'
+    CR.observe(live, snap(0), 2)
+    assert calls == []
+    CR.observe(live, snap(3), 3)
+    CR.observe(live, snap(0), 4)
+    assert len(calls) == 1 and calls[0][2]['context']['round_id'] == 'new'
