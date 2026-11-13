@@ -220,7 +220,7 @@ native mailbox/build/player life and both collision volumes. Only confirmed
 inactive, detached actors are reusable. In round6a33 nine mines had armed at the
 midround check: four distance singles plus a five-mine ring; native trigger and
 retirement evidence exists. At least76 hit-ring floor refusals included14 ray
-misses and62 results outside61cm floor tolerance, some3ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã¢â‚¬Â¦ÃƒÂ¢Ã¢â€šÂ¬Ã…â€œ11m below the player.
+misses and62 results outside61cm floor tolerance, some3ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã¢â‚¬Â¦Ãƒâ€šÃ‚Â¡ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¦ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã¢â‚¬Å“11m below the player.
 Keep the floor checks. Provisional escape sites are not armed mines.
 
 `c2d71665e` repairs consumed distance on such a refusal: preserve travel already
@@ -554,14 +554,14 @@ same worker modules serve every title).
 
 ## DeepSeek PM round 3 (2026-11-13 12:57 onward): the operator's mine-ring button, and what the reels show
 
-### The "Mine ring Ãƒâ€šÃ‚Â· 5 ft" button on RE6 is fixed in the client (no restart)
+### The "Mine ring ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â· 5 ft" button on RE6 is fixed in the client (no restart)
 
 The root cause was not a missing backend: RE6 already exposes the interventions op **`remote_mines`** ->
 `re6_switch_native.bomb_ring_now` / `Controller.drop_bomb_ring` (armed native remote bombs ejected from the body,
 no throw/animation, placements recorded for the deadline controller). What never existed was any UI control that
 sent it; the topbar icon the operator pressed was the RE5 proximity-mine lane, which RE6 does not advertise.
 
-- `95c958138` adds a **"Remote mine ring Ãƒâ€šÃ‚Â· 5 ft"** topbar control, shown only where the worker advertises
+- `95c958138` adds a **"Remote mine ring ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â· 5 ft"** topbar control, shown only where the worker advertises
   `remote_mines` (hidden on RE5/RE4 and on any title without the lane). Each click posts
   `{op:'remote_mines', args:{action:'ring', count:5, radius_cm:152.4}}`; the bot's own deadline controller then
   escapes the blast distance and sets the set off through the native flag. It sits beside the existing grenade-ring
@@ -707,3 +707,29 @@ earlier RE6 deaths (13:37, 13:45) predate it.
 **State**: MercMode rotation restored (`queue: []`, 5/5/5); Hermes review gate still responsive (enabled, no
 `last_error`). Open: close the long-tail escape sets (a planned navmesh route to a far point is the real fix),
 attribute the next RE6 death, and the unproven bonus routing and S-rank/five-star goal.
+
+### Round 6: nav-mesh escape route planning, and the combo finally holds while a bomb is pending
+
+`183826183` plans the sprint instead of steering by feel: while a sprint window is open, `Bot._escape_route`
+picks the nearest nav-mesh triangle whose centre is already clear of every armed bomb by the rule's clearance
+plus 50 cm, plans A* to it (`NavMesh.path`), and publishes the first far-enough waypoint's heading as
+`_escape_heading`; the movement guard follows that heading among its floor-proven options (falling back to the
+radial clearance choice, then the 60 cm short step). New counters: `escape_route_used`, `escape_route_failed`.
+Tests: 74 in the movement/bomb/escape/fire/navigation suites, including the far-clear-triangle choice and
+"a published plan heading wins over the radial step".
+
+Live after reload (RE6, Leon / High Seas Fortress):
+
+- `escape_route_used` climbed to 362 with `escape_route_failed` never set - the planner is invoked and finds a
+  goal; the "(short verified step)" fallback was also observed live.
+- The observed round had **57 kills, combo 57, combo_breaks 0, deaths 0, bomb_self_hits 0** while a bomb set
+  stayed pending (`mine_escape_required` true, clearance ~226 cm). That is the strongest combo maintenance
+  measured so far - the operator's "always accruing kills" while a set is out.
+- The set did **not** clear in the sampled window: clearance oscillated 97-477 cm against 1200. The route is
+  planned but the sprints do not convert into clearance - likely combat interruptions (grabs, quick turns) and
+  the guard's per-step bomb rule fighting the route near the bomb. Not resolved; do not report the 5 s deadline
+  as fixed.
+
+Manual ring control remains verified (round 5: 5 armed bombs in 83.8 ms, escaped, detonated, 0 self-hits).
+MercMode queue restored to `[]`; the switch to RE6 for this measurement used the operator `command: switch`
+control, not a config change. Hermes gate unchanged/healthy.
