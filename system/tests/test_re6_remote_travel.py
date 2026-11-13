@@ -154,6 +154,22 @@ def test_nearby_old_bombs_block_both_travel_and_emergency_production(lane, monke
     assert st['mine_escape_required'] and st['mine_clearance_cm'] == 500.
 
 
+def test_a_released_qte_ring_may_be_laid_while_an_old_bomb_is_out(lane, monkeypatch):
+    # The operator wants the area mined after every survived QTE, even when an earlier set is still lying. The QTE
+    # ring is admitted up to QTE_RING_MAX_OUTSTANDING outstanding bombs; the flag gate still refuses detonation below
+    # the rule's clearance.
+    from gbox.mercs import remote_mines as RULES
+    step, st, flight = lane
+    monkeypatch.setattr(N, 'bomb_detonate_now', lambda *a, **k: dict(verified=False, reason='old bomb pending'))
+    st['mine_deadline_pending'] = 1
+    step(snap(100., units=[bomb(x=0.)]), st, 100., lambda _: None)
+    assert not flight.requests                      # ordinary production still waits for the old bomb
+    st['qte_escape_mines_due'] = 'episode-1'
+    out = step(snap(100., units=[bomb(x=0.)]), st, 100.5, lambda _: None)
+    assert flight.requests and flight.requests[0]['reason'] == 'qte_escape'
+    assert flight.requests[0]['count'] == RULES.FLASH_COMBO_MINES
+    assert st['mine_qte_rings'] == 1 and 'qte_escape_mines_due' not in st
+
 @pytest.mark.parametrize('flash', [False, True])
 def test_unavailable_crowd_ring_cannot_starve_earned_travel_drop(lane, monkeypatch, flash):
     step, st, flight = lane
@@ -307,7 +323,7 @@ def test_worker_refuses_if_player_stopped_before_controller_became_available(lan
 def test_disabling_policy_cancels_queued_emergency_ring(lane, monkeypatch):
     step, st, flight = lane
     seen = []
-    monkeypatch.setattr(C, 'emergency_ring_now', lambda ad, owner, cancelled, count, radius:
+    monkeypatch.setattr(C, 'emergency_ring_now', lambda ad, owner, cancelled, count, radius, **k:
                         seen.append(cancelled()) or dict(state='unavailable', placed=0))
     st['ring_flash_at'] = 100.
     step(snap(), st, 100.)

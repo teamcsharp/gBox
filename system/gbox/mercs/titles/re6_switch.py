@@ -1236,7 +1236,7 @@ def _screen_impl(m, merc=None, now: float | None = None) -> dict:
             where, cursor, target = "main_menu", _i32(m, ui["uIdStartUp00"] + MENU_CURSOR), MAIN_PLAY_GAME
         elif "uIdTitle00" in ui and getattr(m, "mercs_split_screen", False) is True                 and snap.get("mercenaries_mode") == "no_mercy":
             # split screen's lobby (a live run 2026-10-27, real frames): after the stage select, "THE MERCENARIES NO
-            # MERCY ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â· <stage>", Player 1 joined, Player 2's slot "Press -/+ to join", A starts the game. Its own unit is
+            # MERCY ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â· <stage>", Player 1 joined, Player 2's slot "Press -/+ to join", A starts the game. Its own unit is
             # not named yet; the title unit stays listed under it, and a real title never has the No Mercy mode set
             where = "split_lobby"
         elif "uIdTitle00" in ui:
@@ -1928,6 +1928,10 @@ GEOM_FIRE_ERR, GEOM_FIRE_PITCH, GEOM_CLOSE_R = math.radians(8), math.radians(10)
 # without the laser or a mesh proof, the NOHIT fire_track self-limiting a walled line. Ordinary ground zombies at range
 # are NOT blind-fired at (they still need the close band or a mesh-proven line), keeping the no-wall-shot rule for them.
 LONGSHOT_FIRE_ERR, LONGSHOT_FIRE_PITCH = math.radians(4), math.radians(6)
+#: A laser-sight / rocket / distant shooter the operator named is answered at ANY distance his weapon can reach:
+#: the long-shot geometry gate runs to SNIPER_LONG_R (60 m), not merely LONG_R (the "one in front" raise range).
+#: Its 4/6 deg cone is already tight (a native lock aims at the chest); the ray must still be clear/LOS-proven.
+SNIPER_LONG_R = 6000.0
 UNAIM_ERR = math.radians(100)           # aiming, the target this far off the line with none in front: gun down, turn
 TURN_TOL, TURN_FINE = math.radians(8), math.radians(30)   # the camera's turn (gun down): pulsed inside TURN_FINE
 YAW_DEAD, PITCH_DEAD = math.radians(0.8), math.radians(1.0)
@@ -2367,7 +2371,7 @@ NADE_LAND_SLACK = 150.0
 # the distant / elevated shooters (their GunAim / Shoot / Bow / Rocket action read on any floor). A ranged threat is a
 # top target in _choose, and the tick counts re6_threats_tracked (live enemies with a 3D position) and re6_sniper_targets
 # (those reading a ranged action). LONGSHOT_R: beyond it a ranged/elevated threat is engaged as a long shot (re6_longshots).
-LEDGE_RANGED_R, LONGSHOT_R = 4000.0, 1500.0
+LEDGE_RANGED_R, LONGSHOT_R = 8000.0, 1500.0
 # Where it lands (operator 2026-10-28 05:0x: "she is throwing the grenades off of a cliff and is facing a wall. I need her
 # throwing them at the ground and then using the commotion to dispatch, melee, flee"): every grenade, the flash too,
 # faces them first, and the aim lock holds the camera on the ground among them (NADE_GROUND_MIN out at least, on his
@@ -4609,7 +4613,7 @@ class Bot:
         if any(now - t <= 1.5 and isinstance(h, (int, float)) and isinstance(hp_now, (int, float))
                and h > hp_now for t, h, _ in self.hp_hist):
             self._burst().end('damage_response')  # emergency flash/heal may interrupt the commitment
-        # #5056: just took HP loss with no enemy within HAZARD_CONTACT_R ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â the damage came from a ranged enemy
+        # #5056: just took HP loss with no enemy within HAZARD_CONTACT_R ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚Â the damage came from a ranged enemy
         # (or a hazard), not a melee attacker. Break out of the current decision mode (cc_kick, quick_turn,
         # bonus_run, etc.) and turn to fight the ranged enemy or move to safety, rather than continuing the
         # current action that left the bot exposed.
@@ -5000,16 +5004,19 @@ class Bot:
             if cone_geom and not close_geom:
                 self.stats['fire_envelope_blocks'] = self.stats.get('fire_envelope_blocks', 0) + 1
             # option (b): the long shot at an exposed threat the operator named - elevated / ledge (off his level) or a
-            # shooter aiming at him (windup ranged) - on a tight cone, to LONG_R, no laser / mesh needed. Its own
-            # 4/6 deg cone is already tight enough at LONG_R (the envelope above would make an elevated shot
-            # impossible: 2.4 deg of aim-point difference is 50 cm at 12 m).
-            long_geom = (dist <= LONG_R and abs(yaw_err) <= LONGSHOT_FIRE_ERR and abs(pitch_err) <= LONGSHOT_FIRE_PITCH
+            # shooter aiming at him (windup ranged) - on a tight cone, out to SNIPER_LONG_R (any distance his weapon
+            # reaches), no laser / mesh needed. Its own 4/6 deg cone is already tight enough at range (the envelope
+            # above would make an elevated shot impossible: 2.4 deg of aim-point difference is 50 cm at 12 m).
+            long_geom = (dist <= SNIPER_LONG_R and abs(yaw_err) <= LONGSHOT_FIRE_ERR
+                         and abs(pitch_err) <= LONGSHOT_FIRE_PITCH
                          and (abs(aim_at["pos"][1] - p["pos"][1]) > AIM_DY or windup(aim_at, p["pos"]) == "ranged"))
             if close_geom or long_geom:
                 on, on_e, source = True, aim_at, "geometry"
                 self.stats["re6_geometry_fires"] = self.stats.get("re6_geometry_fires", 0) + 1
                 if long_geom and not close_geom:
                     self.stats["re6_longshot_fires"] = self.stats.get("re6_longshot_fires", 0) + 1
+                    if dist > LONG_R:
+                        self.stats["re6_sniper_longshots"] = self.stats.get("re6_sniper_longshots", 0) + 1
         contact = on
         correcting = (not on and p.get('ammo') != 0 and (aim_at.get('hp') or 0) > 0
                       and dist <= ENGAGE_R and abs(yaw_err) <= SPRAY_YAW and abs(pitch_err) <= SPRAY_PITCH
@@ -5714,7 +5721,7 @@ class Bot:
     def _prompt(self, p, snap, now) -> dict | None:
         """A shown prompt's button, pressed at once and again every PROMPT_REPEAT_S while it stays. None: no prompt to
         take this tick. A flanking crowd (4+ within CC_CROWD_R) defers the press: lowering the gun to take a prompt
-        in a surround is the crowd_gun_down trigger (cluster b294c62b554c77fd) ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â the bot waits for the crowd to
+        in a surround is the crowd_gun_down trigger (cluster b294c62b554c77fd) ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚Â the bot waits for the crowd to
         thin before pressing, matching the crowd_hold convention used by the other decision paths."""
         shown = getattr(self, "_prompt_shown", None) or []
         if not PROMPTS or not shown:
@@ -5731,7 +5738,7 @@ class Bot:
             if (key is None or (prompt_skipped(q) and not heal)
                     or (key != 'stick' and now - live["at"] < PROMPT_REPEAT_S)):
                 continue
-            # crowd guard: 4+ live enemies on his level within CC_CROWD_R ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ defer the press (gun stays up)
+            # crowd guard: 4+ live enemies on his level within CC_CROWD_R ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚Â ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â‚¬Å¾Ã‚Â¢ defer the press (gun stays up)
             n = sum(1 for e in (snap.get("enemies") or ()) if (e.get("hp") or 0) > 0
                     and abs(e["pos"][1] - p["pos"][1]) <= MAX_DY
                     and math.hypot(e["pos"][0] - px, e["pos"][2] - pz) <= CC_CROWD_R)
@@ -6525,7 +6532,7 @@ class Bot:
     # --- line of sight ---------------------------------------------------------------------------------------------
     @staticmethod
     def _fire_envelope(dist, yaw_err, pitch_err) -> bool:
-        """The current aim error would still land inside the body at this distance (FIRE_BODY_HALF_CM/â€¦_V_CM).
+        """The current aim error would still land inside the body at this distance (FIRE_BODY_HALF_CM/Ã¢â‚¬Â¦_V_CM).
 
         A cone limit alone is not accuracy: the same 12 deg is 21 cm at 1 m but 89 cm at 4.2 m. This converts the
         angular error at the target's distance into centimetres before authorising the pull, so a "correcting"

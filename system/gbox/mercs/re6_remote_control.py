@@ -21,6 +21,9 @@ TRAVEL_CM, REQUEST_GAP_S = 609.6, 3.0
 #: every actual bomb and refuses below detonate_safe_cm - and every deadline stays its own (recorded as missed when
 #: it is). Emergency rings still wait for the old set, and any bomb nearer than this still blocks production.
 TRAIL_CHAIN_CM = TRAVEL_CM - 100.
+#: A QTE recovery ring is requested even while older bombs are still lying (the operator wants mines dropped around
+#: the area as the bot flees the QTE), up to this many outstanding remote bombs - past it the lane must clear first.
+QTE_RING_MAX_OUTSTANDING = 24
 TRAIL_CHAIN_LIMIT = 2  # one follow-up, then clear the set before creating a fresh nearby bomb
 TRAVEL_ACTIONS = frozenset('cPlAction_pl_act_' + name for name in (
     'walk', 'run', 'dash', 'weapon_ready_move', 'weapon_fire'))
@@ -145,8 +148,13 @@ def landing_drop_now(ad, owner, cancelled, mesh, evidence):
     return out
 
 
-def emergency_ring_now(ad, owner, cancelled, count, radius):
-    """Serialize the live all-bomb preflight with the existing ring operation."""
+def emergency_ring_now(ad, owner, cancelled, count, radius, *, allow_existing=False):
+    """Serialize the live all-bomb preflight with the existing ring operation.
+
+    allow_existing: the QTE recovery ring may be laid while older remote bombs are still out (the operator wants the
+    area mined after every QTE). The native placement never detonates anything; the flag gate still reads every bomb
+    and refuses below its clearance.
+    """
     from .titles import re6_switch_native as native
     try:
         with native._CREATE_LOCK:
@@ -157,7 +165,9 @@ def emergency_ring_now(ad, owner, cancelled, count, radius):
             if cancelled() or ctl.ready() != tuple(owner[1:]):
                 raise native.Unavailable('emergency ring belongs to an ended player life')
             units = native.R.owned_throwables(ctl, ctl.base, owner[1])
-            if not isinstance(units, list) or any(u.get('kind') == 'remote' for u in units):
+            if not isinstance(units, list):
+                raise native.Unavailable('native bomb census is unavailable for an emergency ring')
+            if any(u.get('kind') == 'remote' for u in units) and not allow_existing:
                 raise native.Unavailable('existing native bomb must resolve before an emergency ring')
             return native.bomb_ring_now(ad, count=count, radius_cm=radius, expected_player=owner[1],
                                        expected_generation=owner[2], cancelled=cancelled)
@@ -227,13 +237,15 @@ def control(ad, prof, bot_getter=None):
     last_attempt = -math.inf
     blocked_owner, receipt_owner, awaiting_census, last_census = None, None, {}, None
     live_view = {}
+    recovery = None
+    grant_state = {"value": None}
 
     def owner_of(snap, stats):
         p = snap.get('player') or {}
         return stats.get('round_evidence_id'), p.get('ptr'), p.get('generation')
 
     def observe(snap, stats, now):
-        nonlocal last_attempt, blocked_owner, receipt_owner, last_census
+        nonlocal last_attempt, blocked_owner, receipt_owner, last_census, recovery
         owner = owner_of(snap, stats)
         # How long a set actually takes to clear (the deadline is 5 s): the escape flag flips in Deadlines.observe,
         # which the engine runs before this controller. Observability only - it changes no control decision.
@@ -247,6 +259,23 @@ def control(ad, prof, bot_getter=None):
             if finite(started):
                 stats['mine_escape_clear_s_last'] = round(now - started, 2)
         stats['mine_escape_was_required'] = escape_now
+        # QTE recovery (titles/re6_switch_shell_probe's sibling titles/qte_escape.Recovery): flash cover while held,
+        # then the operator's post-QTE mine ring. This per-tick remote step is the hook the title already has; the
+        # recovery never owns the pad. A recovery fault must never end the remote lane.
+        try:
+            grants = stats.get('qte_solved_ram')
+            delta = 0
+            if isinstance(grants, int):
+                if isinstance(grant_state['value'], int) and grants > grant_state['value']:
+                    delta = grants - grant_state['value']
+                grant_state['value'] = grants
+            if recovery is None:
+                from .qte_escape import Recovery
+                recovery = Recovery(ad)
+            recovery.observe(snap, stats, now, grants=delta,
+                             playing=stats.get('screen') in (None, 'playing'))
+        except Exception as exc:                             # noqa: BLE001 - never ends the lane
+            stats['qte_recovery_error'] = f'{type(exc).__name__}: {exc}'[:160]
         travel.observe(owner, snap, stats, now, rules.policy(stats)['enabled'])
         landing.observe(owner, snap, stats, now, rules.policy(stats)['enabled'])
         p = snap.get('player') or {}
@@ -257,6 +286,7 @@ def control(ad, prof, bot_getter=None):
         if receipt_owner != owner:
             awaiting_census.clear()
             receipt_owner, last_census = owner, None
+            grant_state['value'] = None
             stats.pop('mine_allocation_blocked_reason', None)
         if stats.get('operator_control'):
             flight.close()
@@ -396,13 +426,17 @@ def control(ad, prof, bot_getter=None):
         pos = p['pos']
         remotes = [u for u in snap['throwables'] if isinstance(u, dict) and u.get('kind') == 'remote']
         behind = [tuple(u['pos']) for u in remotes if position(u.get('pos'))]
+        # A released QTE asks for its own recovery ring even while older bombs are still lying - the operator wants
+        # the area mined as the bot leaves a QTE - up to a bounded number outstanding; past it the lane must clear.
+        recovery_due = bool(stats.get('qte_escape_mines_due'))
+        qte_ring = recovery_due and len(remotes) < QTE_RING_MAX_OUTSTANDING
         # Every armed bomb normally holds the next set until it detonates. One bomb this far behind him is already
         # escaped, so a moving bot may chain the next 20 ft travel drop while it lies there (TRAIL_CHAIN_CM); a
         # bomb nearer than that, or a census missing its position, still blocks every kind of drop. Detonation
         # still reads every actual bomb and refuses below the rule's clearance.
         chaining = (0 < len(remotes) < TRAIL_CHAIN_LIMIT and len(behind) == len(remotes)
                     and all(math.dist(pos, b) >= TRAIL_CHAIN_CM for b in behind))
-        if remotes and not chaining:
+        if remotes and not chaining and not qte_ring:
             return dict(result, reason=result.get('reason') or 'native remote bomb still present; wait for placement or completed blast')
         bot = bot_getter() if callable(bot_getter) else None
         if bot is not None and (getattr(bot, 'bomb_phase', None) not in (None, 'wait') or getattr(bot, 'nade', None) is not None):
@@ -411,21 +445,21 @@ def control(ad, prof, bot_getter=None):
             return dict(result, reason="the driver's own bomb or grenade action is in progress")
         near = sum(1 for e in snap.get('enemies') or [] if (e.get('hp') or 0) > 0 and e.get('pos')
                    and math.dist(pos, e['pos']) <= rules.SURROUND_R_CM)
-        recovery = stats.get('qte_escape_mines_due')
-        flash_at = stats.get('qte_escape_flash_at') if recovery else stats.get('ring_flash_at')
-        flash = (finite(flash_at) and 0 <= now - flash_at <= (5 if recovery else rules.FLASH_COMBO_S)
+        flash_at = stats.get('qte_escape_flash_at') if recovery_due else stats.get('ring_flash_at')
+        flash = (finite(flash_at) and 0 <= now - flash_at <= (5 if recovery_due else rules.FLASH_COMBO_S)
                  and stats.get('mine_flash_combo_at') != flash_at)
         surrounded = near >= rules.SURROUND_N and now - float(stats.get('mine_surround_at') or 0) >= rules.SURROUND_S
-        emergency = flash or surrounded
+        emergency = flash or surrounded or qte_ring
         landed = not emergency and landing.due()
         travel_due = travel.due(now)
-        if remotes and chaining and travel_due:
+        if remotes and chaining and travel_due and not qte_ring:
             # A crowd ring cannot run while old bombs are armed. Its request
             # must not starve an earned single travel drop in that same crowd.
             emergency = landed = False
         if not emergency and not landed and not travel_due:
             return dict(result, reason=f'measured travel {travel.distance:.0f}/{TRAVEL_CM:.0f} cm; no stationary timer drops')
-        if stats.get('mine_deadline_pending') and not (travel_due and not emergency and not landed and chaining):
+        if stats.get('mine_deadline_pending') and not qte_ring and not (
+                travel_due and not emergency and not landed and chaining):
             return dict(result, reason=result.get('reason') or 'existing bombs: escape and detonate before another ring')
         count, radius = (rules.FLASH_COMBO_MINES, policy['radius_cm']) if emergency else (1, 0.)
         owner = owner_of(snap, stats)
@@ -442,9 +476,11 @@ def control(ad, prof, bot_getter=None):
                 return landing_drop_now(ad, owner, stopped, landing_mesh, landing_evidence)
             if not emergency:
                 return single_drop_now(ad, owner, stopped, allow_existing=chaining)
-            return emergency_ring_now(ad, owner, stopped, count, radius)
+            return emergency_ring_now(ad, owner, stopped, count, radius, allow_existing=qte_ring)
         metadata = {'count': count, 'radius_cm': radius,
-                 'reason': 'flash' if emergency and flash else 'surrounded' if emergency and surrounded else 'traversal_landing' if landed else 'travel',
+                 'reason': 'qte_escape' if qte_ring and not flash and not surrounded else
+                           'flash' if emergency and flash else 'surrounded' if emergency and surrounded else
+                           'traversal_landing' if landed else 'travel',
                  'travel_cm': round(travel.distance, 1), 'player_pos': list(pos),
                  'session': stats.get('source_session_id')}
         if landed:
@@ -470,6 +506,9 @@ def control(ad, prof, bot_getter=None):
         if emergency and flash:
             stats['mine_flash_combo_at'] = flash_at
             stats['mine_flash_combos'] = int(stats.get('mine_flash_combos', 0)) + 1
+            stats.pop('qte_escape_mines_due', None)
+        if qte_ring:
+            stats['mine_qte_rings'] = int(stats.get('mine_qte_rings', 0)) + 1
             stats.pop('qte_escape_mines_due', None)
         return dict(result, op='bomb_ring' if emergency else 'bomb_landing' if landed else 'bomb_trail', pending=True,
                     reason=f'native {"emergency ring of up to " + str(count) if emergency else "single landing bomb" if landed else "single travel bomb"} requested; movement remains active')
