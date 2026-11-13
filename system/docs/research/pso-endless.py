@@ -31,6 +31,7 @@ import singleton                      # one bot only: a second loop fights the f
 # The operator's controller relay (controller_relay.py) creates this while they are playing, so the bot stands down.
 OPERATOR_PLAYING = pathlib.Path(r"D:\gBox\pso-ds\operator-playing.flag")
 FLAG_STALE_S = 15.0        # a pause flag older than this is a dead relay, not a playing operator
+TRIVIAL_HP = 40            # an enemy this cheap is worth killing before a box (the flies are 8 HP)
 LOOP_LOCK = pathlib.Path(r"D:\gBox\pso-ds\endless.lock")
 
 # The game's own affordance classifier, so a door key is recognised from its entity CLASS in RAM rather than guessed
@@ -620,6 +621,42 @@ def map_step(pad: Pad, tx: float, tz: float) -> "tuple[float, float] | None":
     return None
 
 
+DEG_PER_TAP = 10.0      # measured: a single tap rotates ~11 deg left, ~8 deg right (a hold rotates far more)
+WALK_BURST = 0.5        # ~10 units per burst; a longer hold does not walk at all
+
+
+def steer_to(pad: Pad, tx: float, tz: float) -> float:
+    """Turn to face (tx,tz) with counted taps, then take one short step. Returns the remaining distance.
+
+    Taps, not holds: a press is a fixed ~46-degree rotation, so holding over-rotates by a full step every correction
+    and the character zigzags. Counting taps makes the facing deterministic.
+    """
+    me = (state(pad).get("player") or {})
+    x, z = float(me.get("x") or 0), float(me.get("z") or 0)
+    heading = float(me.get("heading_deg") or 0)
+    distance = math.hypot(tx - x, tz - z)
+    if distance < 1.0:
+        return distance
+    want = (math.degrees(math.atan2(tx - x, tz - z)) + 360.0) % 360.0
+    error = ((want - heading + 540.0) % 360.0) - 180.0
+    taps = int(round(abs(error) / DEG_PER_TAP))
+    if taps > 0:
+        key = "left" if error > 0 else "right"
+        for _ in range(min(taps, 20)):
+            tap(pad, key)
+            time.sleep(0.12)
+        time.sleep(0.2)
+        me = (state(pad).get("player") or {})
+        x, z = float(me.get("x") or 0), float(me.get("z") or 0)
+        heading = float(me.get("heading_deg") or 0)
+        want = (math.degrees(math.atan2(tx - x, tz - z)) + 360.0) % 360.0
+        error = ((want - heading + 540.0) % 360.0) - 180.0
+    if abs(error) < 35:
+        hold(pad, "up", WALK_BURST)
+        time.sleep(0.15)
+    return math.hypot(tx - x, tz - z)
+
+
 def play(pad: Pad, seconds: float = 120.0) -> str:
     """Fight what is near, otherwise travel. Returns what it did most."""
     started = time.time()
@@ -696,7 +733,12 @@ def play(pad: Pad, seconds: float = 120.0) -> str:
                         if ("Container" in str(e.get("class")) or "Capsule" in str(e.get("class"))
                             or "Trap" in str(e.get("class")))
                         and e.get("x") is not None and e.get("z") is not None]
-        if nearby_boxes:
+        # A CHEAP ENEMY OUTRANKS A BOX. An 8 HP fly is one swing and one step toward levelling; a 300 HP nest and a
+        # 1556 HP beast are not worth the window. So boxes come first only when nothing cheap is in reach.
+        trivials = [e for e in enemies
+                    if float(e.get("hp") or 9999) <= TRIVIAL_HP
+                    and math.hypot(float(e.get("x") or 0) - x, float(e.get("z") or 0) - z) <= 22.0]
+        if nearby_boxes and not trivials:
             box = min(nearby_boxes, key=lambda e: (float(e.get("x") or 0) - x) ** 2
                       + (float(e.get("z") or 0) - z) ** 2)
             bx, bz = float(box.get("x") or 0), float(box.get("z") or 0)
