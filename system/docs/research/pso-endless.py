@@ -19,6 +19,7 @@ from __future__ import annotations
 import json
 import math
 import pathlib
+import re
 import sys
 import time
 import traceback
@@ -42,7 +43,14 @@ BOOT_MENU = [("start", 2.6), ("down", 1.2), ("a", 3.0), ("a", 3.0), ("a", 3.0), 
 
 
 def log(message: str) -> None:
-    print(f"[{time.strftime('%H:%M:%S')}] {message}", flush=True)
+    """Print a timestamped line, ASCII-safe.
+
+    The console here is cp1252, so a BOM or any non-Latin character in a note or an entity class would raise
+    UnicodeEncodeError and take the loop down. Anything unprintable becomes '?' - a mangled log line is always better
+    than a dead bot.
+    """
+    safe = str(message).encode("ascii", "replace").decode("ascii")
+    print(f"[{time.strftime('%H:%M:%S')}] {safe}", flush=True)
 
 
 def live_sessions() -> list:
@@ -514,6 +522,54 @@ def unstick(pad: Pad, attempts: int = 3) -> str:
     return ""
 
 
+OPERATOR_NOTES = pathlib.Path(r"D:\gBox\pso-ds\operator-notes.txt")
+NOTE_STATE = {"last": None, "mode": None, "goto": None}
+
+
+def read_notes(pad: Pad) -> None:
+    """Read the operator's notes file; log it, classify it, and set the flags the loop obeys."""
+    try:
+        if not OPERATOR_NOTES.exists():
+            return
+        raw = OPERATOR_NOTES.read_text(encoding="utf-8-sig", errors="replace").strip()
+    except OSError:
+        return
+    if not raw or raw == NOTE_STATE["last"]:
+        return
+    NOTE_STATE["last"] = raw
+    latest = [line.strip() for line in raw.splitlines() if line.strip()]
+    text_line = latest[-1] if latest else raw
+    log(f"  NOTE from operator: {text_line}")
+    lowered = text_line.lower()
+
+    if any(word in lowered for word in ("stop", "halt", "wait", "hold")):
+        NOTE_STATE["mode"] = "stop"
+        log("  note internalized: standing down")
+        return
+    if any(word in lowered for word in ("go ", "resume", "play", "continue")) or lowered in ("go", "resume"):
+        NOTE_STATE["mode"] = None
+        log("  note internalized: resuming")
+        return
+    if any(word in lowered for word in ("kill", "attack", "fight", "enemy")):
+        NOTE_STATE["mode"] = "fight"
+        log("  note internalized: prioritising enemies")
+        return
+    if any(word in lowered for word in ("box", "loot", "rare", "item", "drop")):
+        NOTE_STATE["mode"] = "loot"
+        log("  note internalized: prioritising containers and rares")
+        return
+    if any(word in lowered for word in ("door", "gate", "warp", "exit", "next room", "level")):
+        NOTE_STATE["mode"] = "exit"
+        log("  note internalized: prioritising the way forward")
+        return
+    match = re.search(r"goto\s+(-?\d+(?:\.\d+)?)\s+(-?\d+(?:\.\d+)?)", lowered)
+    if match:
+        NOTE_STATE["goto"] = (float(match.group(1)), float(match.group(2)))
+        log(f"  note internalized: walking to {NOTE_STATE['goto']}")
+        return
+    log("  note internalized: noted (no action keyword) - it stays in effect as context")
+
+
 def play(pad: Pad, seconds: float = 120.0) -> str:
     """Fight what is near, otherwise travel. Returns what it did most."""
     started = time.time()
@@ -538,6 +594,12 @@ def play(pad: Pad, seconds: float = 120.0) -> str:
             continue
         else:
             globals()["_PAUSED_LOGGED"] = False
+
+        # The operator types notes into operator-notes.txt; they are read and acted on every iteration.
+        read_notes(pad)
+        if NOTE_STATE.get("mode") == "stop":
+            time.sleep(0.5)
+            continue
 
         now = state(pad)
         player = now.get("player") or {}
