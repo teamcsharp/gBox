@@ -3330,6 +3330,7 @@ class Bot:
 
     # --- the decision ----------------------------------------------------------------------------------------------
     def tick(self, snap: dict) -> dict:
+        self._combat_escape_move = None
         # Only the driver supplies a life-checked, timed operator pick.
         # Raw telemetry remains complete; native equipment choices honor it.
         self._operator_primary = snap.get('primary_weapon')
@@ -3350,6 +3351,7 @@ class Bot:
         out = self._detonator_away(snap, out, now)                 # never the detonator in hand outside a throw
         if UNIVERSAL_CORE:
             out = self._idle_core(snap, out, now)                  # the gun up without a shot: in at him as he aims
+        out = self._escape_fire_inputs(snap, out)
         from . import re6_switch_wall
         out = re6_switch_wall.mesh_guard(self, snap, out)          # the way probed on the nav mesh before the wall
         out = re6_switch_wall.apply(self, snap, out, now)
@@ -3881,9 +3883,8 @@ class Bot:
             self.wiggle += 1
             if "b" in WIGGLE[self.wiggle % len(WIGGLE)]:
                 self._prompt_pressed("b", now)
-            if held and self._grab_detonate(p, snap):            # the bomb set off from the mash
-                return self._go("held", "grab_detonate", {"hold": WIGGLE[self.wiggle % len(WIGGLE)] + ("zr",)},
-                                f"held (action {state}), the bomb out and him clear of it: set off (ZR)")
+            if held:
+                self._grab_detonate(p, snap)                   # native all-bomb clearance, never a detonator press
             return self._go("held", "break_free", {"hold": WIGGLE[self.wiggle % len(WIGGLE)]},
                             f"held (action {state}): B mashed, the stick round")
         self.in_hold = False
@@ -4287,17 +4288,25 @@ class Bot:
             self.stats["weapon_swaps"] += 1
 
     def _grab_detonate(self, p, snap) -> bool:
-        """Held with the bomb out and the remote in hand, him outside the learned reach + margin: ZR in the mash."""
+        """A grab never bypasses the native all-bomb clearance gate with ZR.
+
+        The old single bomb_pos check could approve a distant bomb while another
+        owned bomb was at his feet. Return False even after a native confirmation:
+        that means the caller must not add a second input detonation.
+        """
         bomb = p.get("bomb") or {}
-        if not (GRAB_DETONATE and bomb.get("out") and p.get("equipped") == BOMB_INDEX):
+        now = self.clock()
+        if not (GRAB_DETONATE and bomb.get("out") and self._mind_ok(now)):
             return False
-        at = snap.get("bomb_pos")
-        if at is None:
+        if now - getattr(self, '_grab_mind_at', -1e9) < 1.0:
             return False
-        if math.hypot(at[0] - p["pos"][0], at[2] - p["pos"][2]) < self.book.safe:
-            return False
-        self.stats["grab_det_presses"] += 1
-        return True
+        self._grab_mind_at = now
+        result = self.mind(snap)
+        if result.get('verified'):
+            self.stats['grab_native_detonations'] = self.stats.get('grab_native_detonations', 0) + 1
+        else:
+            self.stats['grab_native_refusal'] = str(result.get('reason') or 'unconfirmed')[:160]
+        return False
 
     def _weapon_switch(self, p, now) -> dict | None:
         """The wanted weapon into his hands - the app's (WANT_WEAPON), else a shotgun for a crowd on him, else a grab's
@@ -6591,7 +6600,7 @@ class Bot:
         shotgun = p.get('weapon_id') in (4, 5, 6, 16)
         if (not fever and (p.get('ammo') or 0) > 0 and abs(err) <= math.radians(60)
                 and not self.is_blocked(e, now)
-                and (self.aim_since is not None or shotgun)
+                and (self.aim_since is not None or shotgun or getattr(self, '_combat_escape_move', None))
                 and (self._burst().active(now) or shotgun)):
             self._burst().begin(now)
             if self._burst().active(now):
@@ -7346,6 +7355,16 @@ class Bot:
             keys = keys + (self.detour,)
         why = why or f"walking off the bomb: {me:.0f} cm from it, {on} on it"
         d_near = min((math.hypot(e["pos"][0] - px, e["pos"][2] - pz) for e in live), default=math.inf)
+        eq = p.get('equipped')
+        if (type(eq) is int and 0 <= eq < WEAPON_INDEXES and (p.get('ammo') or 0) > 0
+                and not self.down and d_near <= BOMB_FIGHT_R):
+            # Escape is movement, not a reason to repeatedly lower a loaded gun.
+            # Let the normal aim/LOS/fire gates fight while retaining this route.
+            self._combat_escape_move = tuple(k for k in keys if k in ('lup', 'ldown', 'lleft', 'lright'))
+            self._burst().begin(now)
+            self._cc_gun_until = now + .9
+            self.stats['bomb_escape_fight_ticks'] = self.stats.get('bomb_escape_fight_ticks', 0) + 1
+            return None
         if d_near <= BOMB_FIGHT_R and now - self.melee_at >= CC_KICK_GAP_S:   # one on him: a kick as he goes
             self.melee_at = now
             self.stats["melee"] += 1
@@ -7353,6 +7372,23 @@ class Bot:
             keys += ("zr",)
             why += f", a kick at the one at {d_near:.0f} cm"
         return self._go("bomb", act, {"hold": keys}, why)
+
+    def _escape_fire_inputs(self, snap, out):
+        """Merge retreat movement into firearm aim before the final wall checks.
+
+        Never inject trigger input, and never preserve aim with an item/detonator
+        in hand. Healing, QTEs, reloads and other non-aim actions keep priority.
+        """
+        move = getattr(self, '_combat_escape_move', None)
+        p = snap.get('player') or {}
+        eq = p.get('equipped')
+        hold = set(out.get('hold') or ())
+        if move and 'zl' in hold and type(eq) is int and 0 <= eq < WEAPON_INDEXES and (p.get('ammo') or 0) > 0:
+            hold.difference_update(('lup', 'ldown', 'lleft', 'lright'))
+            hold.update(move)
+            self.stats['bomb_retreat_aim_ticks'] = self.stats.get('bomb_retreat_aim_ticks', 0) + 1
+            return dict(out, hold=tuple(sorted(hold)))
+        return out
 
     def _bomb_kills_tick(self, snap, now) -> None:
         """A blast's kills (stats bomb_kills): the kill count BOMB_KILLS_S after it less the count when it was set off;

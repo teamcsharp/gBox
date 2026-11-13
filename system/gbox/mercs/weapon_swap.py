@@ -71,14 +71,14 @@ class SwapProfile:
     crowd_clear_hold_s: float = 1.2         # keep the heavy weapon this long after it thins
 
 
-# Per-title profiles. RE6 gets the full magnum<->grenade-launcher swap (its launcher
-# is a verified direct-fire gun on this build). RE5's launcher firing is NOT verified
+# Per-title profiles. The current tuning directive prefers shotguns for crowds
+# in both titles; RE6 can fall back to its loaded grenade launcher. RE5's launcher firing is NOT verified
 # (re5_weapons.fire_policy refuses it without a decoded round type), so RE5's crowd
 # weapon falls back to the verified shotgun/magnum and the native-flash grenade bursts
 # + mines already carry the "heavy" crowd answer there -- see re5_rampage_families.
 PROFILES = {
-    "re6": SwapProfile(crowd_family="launcher",
-                       crowd_fallback=("launcher", "shotgun", "magnum")),
+    "re6": SwapProfile(crowd_family="shotgun",
+                       crowd_fallback=("shotgun", "launcher", "magnum")),
     "re5": SwapProfile(crowd_family="shotgun",
                        crowd_fallback=("shotgun", "magnum", "automatic")),
 }

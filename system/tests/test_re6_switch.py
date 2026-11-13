@@ -2219,7 +2219,7 @@ def test_the_bot_switches_to_the_wanted_weapon_and_a_crowd_gets_the_shotgun(monk
     assert {"tap": "right"} in acts and bot.stats["crowd_shotgun_s"] > 0
 
 
-def test_a_grab_picks_a_shotgun_or_magnum_and_sets_the_bomb_off_only_from_clear_of_it(monkeypatch):
+def test_a_grab_picks_a_shotgun_or_magnum_without_bypassing_native_clearance(monkeypatch):
     monkeypatch.setattr(R, "WANT_WEAPON", None)
     bot, clock, snap = brain(round_guest(enemies=((0.0, 0.0, 80.0, 700),), state=8, cam_yaw=0.0))
     snap["player"].update(equipped=R.BOMB_INDEX, guns={0x10F: 0, 0x107: 1, 0x104: 3},
@@ -2227,7 +2227,7 @@ def test_a_grab_picks_a_shotgun_or_magnum_and_sets_the_bomb_off_only_from_clear_
     snap["bomb_pos"] = (0.0, 0.0, 1500.0)                                    # 15 m off: clear of its reach
     acts = run(bot, snap, clock, 3)
     assert bot.grab_weapon in (1, 3) and bot.stats["weapon_swaps"] == 1
-    assert any("zr" in a.get("hold", ()) for a in acts) and bot.stats["grab_det_presses"] >= 1
+    assert not any("zr" in a.get("hold", ()) for a in acts) and bot.stats["grab_det_presses"] == 0
     snap["player"].update(state=0, bomb={"count": 4, "out": False})           # it went off; free
     run(bot, snap, clock, 1)
     assert bot.stats["grab_detonations"] == 1

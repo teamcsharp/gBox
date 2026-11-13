@@ -95,3 +95,56 @@ def test_waiting_remote_bombs_do_not_prevent_a_loaded_crowd_shotgun_switch(monke
     bot._equip_keys = lambda player, wanted: {'hold': ()}
     assert bot._weapon_switch(p, 10.) is not None
     assert bot.stats['weapon_switches'] == 1
+
+
+def test_unblocked_bomb_escape_keeps_loaded_firearm_and_merges_retreat(monkeypatch):
+    bot,snap=crowd(weapon=12)
+    p=snap['player'];p.update(equipped=0,bomb={'out':True,'armed':True})
+    bot.bomb_at=(0,200);bot.aim_since=1.
+    bot._open_heading=lambda *a,**kw:math.pi
+    for now in (1.1,1.2,1.3):
+        assert bot._bomb_escape(p,snap,now) is None
+        assert bot.aim_since==1.
+        assert bot._crowd_control(snap['enemies'],lambda e:100,lambda e:0,now) is None
+        out=bot._escape_fire_inputs(snap,{'hold':('zl','zr','rright','lup')})
+        assert 'zl' in out['hold'] and 'zr' in out['hold'] and 'rright' in out['hold']
+        assert 'lup' not in out['hold'] and 'ldown' in out['hold']
+    assert bot.stats['bomb_kicks']==0
+
+
+def test_retreat_merge_never_invents_trigger_or_interrupts_healing():
+    bot,snap=crowd();snap['player']['equipped']=0
+    bot._combat_escape_move=('ldown',)
+    assert 'zr' not in bot._escape_fire_inputs(snap,{'hold':('zl',)})['hold']
+    heal={'tap':'r'}
+    assert bot._escape_fire_inputs(snap,heal)==heal
+    snap['player']['equipped']=R.BOMB_INDEX
+    out={'hold':('zl',)}
+    assert bot._escape_fire_inputs(snap,out)==out
+
+
+def test_grab_never_turns_single_far_bomb_position_into_a_detonator_press():
+    bot,snap=crowd();p=snap['player']
+    p.update(equipped=R.BOMB_INDEX,bomb={'out':True,'armed':True})
+    snap['bomb_pos']=(0,0,5000)
+    snap['throwables']=[{'kind':'remote','pos':(0,0,5000)},{'kind':'remote','pos':(0,0,50)}]
+    bot._mind_ok=lambda now:True
+    calls=[]
+    def mind(s):
+        calls.append(s)
+        return {'verified':False,'reason':'owned bomb inside clearance'}
+    bot.mind=mind
+    assert bot._grab_detonate(p,snap) is False
+    assert len(calls)==1 and bot.stats['grab_det_presses']==0
+    assert 'inside clearance' in bot.stats['grab_native_refusal']
+    bot._grab_mind_at=-1e9
+    bot.mind=lambda s:{'verified':True}
+    assert bot._grab_detonate(p,snap) is False
+    assert bot.stats['grab_native_detonations']==1
+
+
+def test_arsenal_prefers_loaded_shotgun_for_crowds():
+    from gbox.mercs import weapon_swap as W
+    from dataclasses import replace
+    profile=replace(W.PROFILES['re6'],enabled=True)
+    assert W.decide(profile,loaded_families=['launcher','magnum','shotgun'],crowd_count=5,now=2.,state={})=='shotgun'
