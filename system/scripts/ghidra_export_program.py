@@ -3,7 +3,7 @@
 
 Run with the PyGhidra interpreter and GHIDRA_INSTALL_DIR set. Existing projects are opened by project/program name;
 --analyze explicitly opts into further analysis. Each batch emits coverage and checkpoints through Bridge.export.
-An exclusive export lock prevents two writers. Failed functions get one longer retry pass, then remain explicit.
+An exclusive export lock prevents two writers. Failed functions get bounded longer retries, then remain explicit.
 """
 from __future__ import annotations
 
@@ -31,7 +31,13 @@ def main():
     parser.add_argument("--batch-seconds", type=float, default=120)
     parser.add_argument("--function-seconds", type=int, default=30)
     parser.add_argument("--retry-seconds", type=int, default=120)
+    parser.add_argument("--retry-attempts", type=int, choices=range(1, 5), default=2,
+                        help="maximum total attempts per failed function, including prior runs (default: 2)")
+    parser.add_argument("--max-payload-mb", type=int, default=None,
+                        help="16..512 MiB native decompiler result limit; useful for large-function retries")
     args = parser.parse_args()
+    if args.max_payload_mb is not None and not 16 <= args.max_payload_mb <= 512:
+        parser.error('--max-payload-mb must be 16..512')
     if not args.binary.is_file():
         parser.error("binary must be the original analyzed executable on this worker")
     args.export_dir.mkdir(parents=True, exist_ok=True)
@@ -45,6 +51,13 @@ def main():
             info = bridge.open(project_dir=args.project_dir, project_name=args.project_name,
                                program_name=args.program, analyze=args.analyze)
             bridge._check_target(str(args.binary.resolve()), digest)
+            if args.max_payload_mb is not None:
+                from ghidra.app.decompiler import DecompileOptions
+                decompiler = bridge._decompiler()
+                options = decompiler.getOptions() or DecompileOptions()
+                options.setMaxPayloadMBytes(args.max_payload_mb)
+                if not decompiler.setOptions(options):
+                    raise RuntimeError('native decompiler refused the requested payload limit')
             print(json.dumps({"event": "opened", "at": time.time(), "program": info}), flush=True)
             while True:
                 result = bridge.export(args.export_dir, limit=args.batch_size, budget_s=args.batch_seconds,
@@ -54,13 +67,14 @@ def main():
                     break
             if result["error"] or result["timeout"]:
                 while True:
-                    manifest = json.loads((args.export_dir / "_manifest.json").read_text())
-                    failures = sum(row['state'] in ('error', 'timeout') and row.get('attempts', 0) < 2
+                    manifest = json.loads((args.export_dir / "_manifest.json").read_text(encoding="utf-8"))
+                    failures = sum(row['state'] in ('error', 'timeout') and row.get('attempts', 0) < args.retry_attempts
                                    for row in manifest['outcomes'].values())
                     if not failures:
                         break
                     result = bridge.export(args.export_dir, limit=min(10000, failures), budget_s=3000,
-                                           function_timeout_s=args.retry_seconds, retry_failed=True, retry_below_attempts=2)
+                                           function_timeout_s=args.retry_seconds, retry_failed=True,
+                                           retry_below_attempts=args.retry_attempts)
                     print(json.dumps({"event": "retry", "at": time.time(), **result}), flush=True)
                     if not result.get('attempted_this_batch'):
                         raise RuntimeError('retry pass made no progress; export remains incomplete')
