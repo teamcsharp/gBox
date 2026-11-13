@@ -75,6 +75,22 @@ def test_a_write_that_does_not_hold_is_a_failure():
     assert not A.aim_writer(Session(g))(A.aim_state(g, BASE, PLAYER), 0.1, None)
 
 
+def test_turning_on_a_slope_preserves_tilt_and_unit_rotation():
+    g = guest()
+    # A 30-degree slope plus yaw: changing heading must retain the tilt.
+    tilt, yaw = math.radians(30) / 2, .5 / 2
+    q = (math.cos(yaw)*math.sin(tilt), math.sin(yaw)*math.cos(tilt),
+         -math.sin(yaw)*math.sin(tilt), math.cos(yaw)*math.cos(tilt))
+    g.put(PLAYER + A.P_ROT, struct.pack('<4f', *q))
+    writer = A.aim_writer(Session(g))
+    for heading in (1.2, -2.9, 3.1, .8, .8):
+        assert writer(A.aim_state(g, BASE, PLAYER), None, heading)
+        x, y, z, w = struct.unpack('<4f', g.rd(PLAYER + A.P_ROT, 16))
+        assert x*x+y*y+z*z+w*w == pytest.approx(1., abs=1e-6)
+        assert math.hypot(x, z) == pytest.approx(math.sin(tilt), abs=1e-6)
+        assert A.wrap(2*math.atan2(y, w)-heading) == pytest.approx(0., abs=1e-6)
+
+
 @pytest.mark.parametrize('changed', ['life', 'camera', 'stale', 'nan'])
 def test_writer_revalidates_owner_and_freshness_before_any_write(changed):
     g = guest(); st = A.aim_state(g, BASE, PLAYER)

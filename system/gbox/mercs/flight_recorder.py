@@ -70,22 +70,26 @@ class FlightRecorder:
         p = snap.get('player') or {}
         plan = plan or {}
         target = plan.get('target') or {}
+        held_weapon = next((i.get('item') for i in snap.get('inventory') or () if i.get('hand')), None)
         row = {'t': round(now, 3), 'pos': self.point(p.get('pos')),
                'hp': safe(p.get('hp')), 'hp_max': safe(p.get('hp_max')),
                'player': safe(p.get('ptr')), 'heading': safe(p.get('rot', p.get('facing'))),
                'phase': safe(plan.get('phase', stats.get('phase'))), 'why': safe(plan.get('note')),
-               'game_phase': safe((snap.get('game') or {}).get('phase')),
+               'game_phase': safe((snap.get('game') or {}).get('phase', snap.get('mercenaries_phase'))),
                'controls': safe(plan.get('controls')), 'goal': safe(plan.get('operator_goal')),
                'target': safe(target), 'route': [self.point(v) for v in (plan.get('route') or [])[:12]],
                'route_source': safe(plan.get('route_source')),
                'timer': safe(snap.get('timer')), 'kills': safe(snap.get('kills')),
-               'weapon': safe(snap.get('equipped_id', snap.get('weapon_class', p.get('weapon_id')))),
+               'weapon': safe(snap.get('equipped_id', snap.get('weapon_class', p.get('weapon_id', held_weapon)))),
                'aim': safe(snap.get('aim')), 'aim_plan': safe(plan.get('aim')),
-               'laser': safe(snap.get('laser')), 'camera': safe(snap.get('camera')),
-               'native_action': safe(p.get('action')), 'fire_cooldown_s': safe(p.get('fire_cooldown_s')),
+               'laser': safe(snap.get('laser')), 'camera': safe(snap.get('camera', snap.get('aim_cam'))),
+               'native_action': safe(p.get('action', p.get('motion'))), 'fire_cooldown_s': safe(p.get('fire_cooldown_s')),
                'throwables': safe(snap.get('throwables')),
                'diagnostics': {k: safe(stats[k]) for k in (
                    'aim_diag', 'aim_errdeg', 'laser_gate', 'sight_block_last', 'nav_status',
+                   'target_feedback_target', 'target_feedback_yaw_deg', 'target_feedback_pitch_deg',
+                   'target_feedback_gate', 'target_feedback_ram', 'target_feedback_block_why',
+                   'target_feedback_writes', 'target_feedback_write_failures',
                    'shots', 'hits', 'aimbook_hits', 'aimbook_misses', 'heals', 'first_aid_last',
                    'bonuses_taken', 'bonus_approaches', 'bonus_unconfirmed', 'nav_stuck',
                    'fire_burst_goal', 'fire_burst_remaining', 'fire_burst_state', 'fire_burst_requests',
@@ -173,7 +177,7 @@ class FlightRecorder:
             while self.inputs and tail[-1]['t'] - self.inputs[0]['t'] > 60:
                 self.inputs.popleft()
         gaps = [b['t'] - a['t'] for a, b in zip(tail, tail[1:])]
-        fields = ('pos', 'hp', 'controls', 'weapon', 'aim', 'aim_plan', 'route')
+        fields = ('pos', 'hp', 'controls', 'weapon', 'aim', 'aim_plan', 'route', 'camera', 'laser', 'native_action')
         present = {field: sum(r.get(field) is not None and r.get(field) != [] for r in tail) for field in fields}
         quality = {'tail_samples': len(tail), 'tail_observed_s': round(tail[-1]['t']-tail[0]['t'], 3) if tail else 0,
                    'tail_max_gap_s': round(max(gaps), 3) if gaps else None,

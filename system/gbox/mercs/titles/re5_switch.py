@@ -5818,11 +5818,14 @@ class Bot:
             self._ab_plan = (key, plan)
             if plain:
                 d = tuple(plan.point[k] - plan.chest[k] for k in range(3))
+                physical = tuple(chest[k] + plan.point0[k] - plan.chest[k] for k in range(3))
             else:                                         # the site kept: the lead and the angular correction only
                 p0 = (chest[0], chest[1], chest[2])
                 lead = tuple(v * plan.corr.lead_s for v in (plan.vel[0], 0.0, plan.vel[2]))
-                q = aim_book.turn_point(origin, tuple(p0[k] + lead[k] for k in range(3)), plan.corr.yaw, plan.corr.pitch)
+                physical = tuple(p0[k] + lead[k] for k in range(3))
+                q = aim_book.turn_point(origin, physical, plan.corr.yaw, plan.corr.pitch)
                 d = tuple(q[k] - p0[k] for k in range(3))
+            self._ab_physical = (key, physical)
             return (chest[0] + d[0], chest[1] + d[1], chest[2] + d[2])
         except Exception as exc:                          # noqa: BLE001 - the book never costs the aim
             self.stats["aimbook_error"] = f"{type(exc).__name__}: {exc}"[:160]
@@ -5861,9 +5864,13 @@ class Bot:
             los = self.__dict__.get("_ab_los")
             los = los[1] if los and los[0] == key else None
             contact = ctx.get("body_contact")
+            # Calibrate the camera-to-ray offset, never the error against an
+            # already bias-shifted command. Recoil reuses an older ray and must
+            # not contribute a fresh calibration observation.
+            calibration = ctx.get('camera_ray_residual') if ctx.get('ray_observed') else None
             self._aim_core().shot(now, e, plan, origin=origin, at=dot,
                                   contact=None if laserless or contact is None else bool(contact), los=los,
-                                  family=self._aim_family(), body=body(e))
+                                  family=self._aim_family(), body=body(e), extra={'resid': calibration})
         except Exception as exc:                          # noqa: BLE001 - the book never costs the pull
             self.stats["aimbook_error"] = f"{type(exc).__name__}: {exc}"[:160]
 

@@ -135,6 +135,8 @@ def test_close_target_uses_actual_low_offset_muzzle_not_nominal_camera_height():
     assert writes[-1][0] > 0 and writes[-1][1] < 0
     # The measured segment crosses his hips. A chest-angle heuristic must not
     # block this real body contact while correction continues.
+    assert 'zr' not in act['hold']  # brief pitch correction before accepting a grazing segment
+    act = F.apply(bot, s, {'hold': ('zl', 'zr')}, .05 + F.SEGMENT_PITCH_HOLD_S + .01)
     assert 'zr' in act['hold'] and bot.stats['target_feedback_gate'] == 'body segment'
     assert not bot.stats.get('target_feedback_unloads')
 
@@ -272,7 +274,9 @@ def test_near_body_miss_corrects_without_unloading():
 def test_arm_length_with_the_aim_over_his_chest_fires():
     """The live case: a Majini 1.2 m away, the camera level, his chest 14 deg below the aim (the old gate's 10 deg)."""
     bot, _ = controller()
-    act = F.apply(bot, scene(pitch=0, distance=120), {'hold': ('zl',)}, .3)
+    s = scene(pitch=0, distance=120)
+    assert 'zr' not in F.apply(bot, s, {'hold': ('zl',)}, .3)['hold']
+    act = F.apply(bot, s, {'hold': ('zl',)}, .3 + F.SEGMENT_PITCH_HOLD_S + .01)
     assert 'zr' in act['hold']
 
 
@@ -334,3 +338,57 @@ def test_shotgun_spread_is_named_without_claiming_body_contact():
     act = F.apply(bot, s, {'hold': ('zl',)}, .3)
     assert 'zr' in act['hold'] and bot._aimctx['contact_kind'] == 'shotgun spread'
     assert not bot._aimctx['body_contact']
+
+
+def test_lateral_learning_and_lead_are_used_without_a_laser():
+    bot, writes = controller(); s = scene(distance=600)
+    s['laser'] = {'up': False}
+    bot._aim_book_point = lambda *args: (60., R.CHEST_H, 600.)
+    F.apply(bot, s, {'hold': ('zl',)}, .05)
+    assert writes[-1][1] == pytest.approx(math.atan2(60., 600.))
+    assert writes[-1][0] == pytest.approx(math.atan2(R.CHEST_H-140., math.hypot(60., 600.)))
+
+
+def test_aligned_missing_ray_can_fire_without_inventing_ray_evidence():
+    bot, _ = controller(); s = scene(pitch=_chest_pitch(300))
+    s['laser'] = {'up': False}
+    out = F.apply(bot, s, {'hold': ('zl',)}, .3)
+    assert 'zr' in out['hold']
+    assert bot._aimctx['origin'] is bot._aimctx['dot'] is None
+    assert bot._aimctx['laserless'] and not bot._aimctx['ray_observed']
+    assert not bot._aimctx['body_contact'] and bot._feedback_contact is None
+
+
+def test_live_ray_cancels_camera_bias_without_aiming_at_the_biased_command():
+    bot, writes = controller()
+    bias = math.radians(7)
+    pitch, heading = .2, -.6
+    def book(target, chest, aim_h, origin, now):
+        bot._ab_physical = (2, chest)
+        return (600*math.sin(-bias), chest[1], 600*math.cos(-bias))
+    bot._aim_book_point = book
+    for frame in range(1, 121):
+        s = scene(pitch=pitch, heading=heading, distance=600)
+        s['laser']['at'] = (5000*math.sin(heading+bias)*math.cos(pitch),
+                            140+5000*math.sin(pitch), 5000*math.cos(heading+bias)*math.cos(pitch))
+        F.apply(bot, s, {'hold': ('zl',)}, frame/120)
+        pitch, heading = writes[-1]
+    assert heading+bias == pytest.approx(0., abs=.001)
+    assert pitch == pytest.approx(_chest_pitch(600), abs=.001)
+    assert bot._aimctx['camera_ray_residual'][0] == pytest.approx(bias)
+
+
+@pytest.mark.parametrize('fresh', [True, False])
+def test_learning_uses_observed_camera_residual_and_never_reused_recoil_ray(monkeypatch, fresh):
+    monkeypatch.setattr(R, 'AIM_BOOK', True)
+    bot = R.Bot.__new__(R.Bot)
+    bot.stats = {}
+    bot._ab_snap = scene()
+    bot._ab_plan = (2, object())
+    bot._aim_family = lambda: 'magnum'
+    calls = []
+    bot._aim_core = lambda: SimpleNamespace(shot=lambda *a, **kw: calls.append(kw))
+    R.Bot._aim_book_shot(bot, {'target': 2, 'ray_observed': fresh,
+                             'camera_ray_residual': (.1, -.02)}, 1.)
+    assert not bot.stats.get('aimbook_error')
+    assert calls[0]['extra']['resid'] == ((.1, -.02) if fresh else None)

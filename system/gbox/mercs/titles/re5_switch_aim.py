@@ -105,14 +105,21 @@ def aim_writer(m):
                     return False
             if heading is not None:
                 h = wrap(float(heading))
-                # Preserve any x/z tilt (slopes, animations); only the y/w yaw components are rewritten.
-                qx, _qy, qz, _qw = struct.unpack("<4f", ad.read_memory(st["player"] + P_ROT, 16))
-                if not (math.isfinite(qx) and math.isfinite(qz)):
+                q = struct.unpack("<4f", ad.read_memory(st["player"] + P_ROT, 16))
+                if not all(math.isfinite(v) for v in q):
                     return False
-                norm = math.sqrt(qx * qx + qz * qz)
-                if norm > 0.99:                     # a near-pure x/z rotation: not a simple upright player heading
+                norm = math.sqrt(sum(v*v for v in q))
+                if not .5 <= norm <= 1.5:
                     return False
-                ad.write_memory(st["player"] + P_ROT, struct.pack("<4f", qx, math.sin(h / 2), qz, math.cos(h / 2)))
+                qx, qy, qz, qw = (v / norm for v in q)
+                if math.hypot(qy, qw) < .1:
+                    return False
+                # Compose a world-up yaw delta with the whole rotation. Replacing
+                # just y/w inflated the norm and corrupted tilt on stairs/slopes.
+                delta = wrap(h - 2.0 * math.atan2(qy, qw)) / 2.0
+                c, s = math.cos(delta), math.sin(delta)
+                turned = (c*qx + s*qz, c*qy + s*qw, c*qz - s*qx, c*qw - s*qy)
+                ad.write_memory(st["player"] + P_ROT, struct.pack("<4f", *turned))
                 _qx2, qy2, _qz2, qw2 = struct.unpack("<4f", ad.read_memory(st["player"] + P_ROT, 16))
                 if abs(wrap(2.0 * math.atan2(qy2, qw2) - h)) > LOCK_TOL:
                     return False
@@ -284,7 +291,9 @@ def apply(bot, snap, act, now):
     # Permission to fire/flash belongs to THIS snapshot. Every early return
     # must leave a prior target's accepted contact behind.
     bot.stats.update(target_feedback_on=False, target_feedback_ram=False,
-                     target_feedback_gate='no verified target this tick')
+                     target_feedback_gate='no verified target this tick',
+                     target_feedback_target=None, target_feedback_yaw_deg=None,
+                     target_feedback_pitch_deg=None, target_feedback_block_why=None)
     previous = getattr(bot, '_feedback_at', None)
     bot._feedback_at = now
     if bot.stats.get('operator_control') is True or 'zl' not in keys \
@@ -326,11 +335,17 @@ def apply(bot, snap, act, now):
     dist = math.hypot(foot[0] - px, foot[2] - pz)
     aim_h = bot._aim_h(target, dist, now)
     chest = (foot[0], foot[1] + aim_h, foot[2])
+    physical = chest
+    bot._ab_physical = None
     book = getattr(bot, '_aim_book_point', None)       # the aim book's point on him (re5_switch AIM_BOOK)
     if callable(book):
         chest = book(target, chest, aim_h, (px, py + R.MUZZLE_H, pz), now)
-    want_pitch = math.atan2(chest[1] - py - R.MUZZLE_H, max(dist, 1.0))
-    yaw_error = R.wrap(R.heading(foot[0] - px, foot[2] - pz) - cam['heading'])
+        physical_plan = getattr(bot, '_ab_physical', None)
+        if physical_plan and physical_plan[0] == target.get('ptr', target.get('slot')):
+            physical = physical_plan[1]
+    aim_dx, aim_dz = chest[0] - px, chest[2] - pz
+    want_pitch = math.atan2(chest[1] - py - R.MUZZLE_H, max(math.hypot(aim_dx, aim_dz), 1.0))
+    yaw_error = R.wrap(R.heading(aim_dx, aim_dz) - cam['heading'])
     pitch_error = want_pitch - cam['pitch']
     laser = snap.get('laser') or {}
     origin, dot = laser.get('from'), laser.get('at')
@@ -338,6 +353,8 @@ def apply(bot, snap, act, now):
                      and all(math.isfinite(v) for v in (*origin, *dot))
                      and math.dist(origin, (px, py + R.MUZZLE_H, pz)) < 200
                      and math.dist(origin, dot) >= 1)
+    coherent = False
+    calibration = None
     if valid_ray:
         # At arm's length the muzzle can be well below and beside the nominal
         # standing camera. Aim from that actual origin, not a fixed 140 cm eye.
@@ -351,7 +368,12 @@ def apply(bot, snap, act, now):
         coherent = (abs(R.wrap(ray_yaw - cam['heading'])) <= math.radians(15)
                     and abs(ray_pitch - cam['pitch']) <= math.radians(12))
         if coherent:
-            yaw_error, pitch_error = R.ray_error(origin, dot, chest)
+            # The measured ray goes to the physical body point (plus lead).
+            # Its camera bias is already visible in this error; adding the book's
+            # feed-forward correction again steers beside the enemy indefinitely.
+            yaw_error, pitch_error = R.ray_error(origin, dot, physical)
+            if p.get('motion') == R.MOTION_AIMED:
+                calibration = (R.wrap(ray_yaw-cam['heading']), ray_pitch-cam['pitch'])
 
     dt = 0.0 if previous is None else now - previous
     writer = bot._writer()
@@ -509,24 +531,30 @@ def apply(bot, snap, act, now):
             setter = getattr(bot, '_set_target', None)
             if callable(setter): setter(key, now)
             else: bot.target = key
-        feedback_origin = contact['origin'] if recoil else origin
-        feedback_dot = contact['dot'] if recoil else dot
+        feedback_origin = contact['origin'] if recoil else origin if valid_ray else None
+        feedback_dot = contact['dot'] if recoil else dot if valid_ray else None
         accepted_kind = contact['kind'] if recoil else contact_kind
         bot._aimctx = dict(getattr(bot, '_aimctx', None) or {}, target=key, dist=dist,
                           yaw_err=yaw_error, pitch_err=pitch_error, foot=tuple(foot),
-                          origin=tuple(feedback_origin), dot=tuple(feedback_dot),
-                          where=R.dot_on(feedback_dot, foot), laserless=False,
-                          contact_kind=accepted_kind, ray_observed=not recoil,
+                          origin=tuple(feedback_origin) if feedback_origin is not None else None,
+                          dot=tuple(feedback_dot) if feedback_dot is not None else None,
+                          where=R.dot_on(feedback_dot, foot) if feedback_dot is not None else None,
+                          laserless=not (valid_ray or recoil),
+                          contact_kind=accepted_kind, ray_observed=valid_ray and not recoil,
+                          camera_ray_residual=calibration,
                           body_contact=contact['body'] if recoil else body_contact,
-                          gate='verified shot recoil' if recoil else 'measured ' + accepted_kind)
+                          gate='verified shot recoil' if recoil else
+                               'unverified aligned shot' if not valid_ray else 'measured ' + accepted_kind)
         keys |= bot._trigger(True, now)
         bot.doing = 'fire'
-        if not recoil and not auto:
+        if not recoil and not auto and valid_ray:
             bot._feedback_contact = {'at': now, 'identity': (p.get('ptr'), p.get('generation')),
                                      'target': key, 'pos': tuple(p['pos']),
                                      'heading': cam['heading'], 'pitch': cam['pitch'], 'weapon': held.get('item'),
                                      'origin': tuple(origin), 'dot': tuple(dot),
                                      'kind': contact_kind, 'body': body_contact}
+        elif not valid_ray and not recoil:
+            bot._feedback_contact = None
     bot.stats['target_feedback_gate'] = 'recoil continuation' if recoil else contact_kind if on else \
         'waiting for aimed motion' if p.get('motion') not in (R.MOTION_AIMED, R.MOTION_SHOT) else \
         'no current laser' if not valid_ray else 'ray misses or stops before target'

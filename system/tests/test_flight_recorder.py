@@ -2,6 +2,20 @@ import json
 from gbox.mercs.flight_recorder import FlightRecorder
 
 
+def test_re5_camera_weapon_motion_and_aim_feedback_are_preserved():
+    f = FlightRecorder()
+    snap = {'player': {'motion': 26, 'pos': [0, 0, 0]}, 'mercenaries_phase': 1,
+            'inventory': [{'hand': False, 'item': 2}, {'hand': True, 'item': 11}],
+            'aim_cam': {'pitch': .3, 'heading': -.2}, 'laser': {'up': False}}
+    stats = {'target_feedback_yaw_deg': 22., 'target_feedback_write_failures': 3,
+             'target_feedback_gate': 'no current laser'}
+    f.observe(1, snap, {}, stats)
+    out = f.snapshot(); row = out['tail'][0]
+    assert row['weapon'] == 11 and row['native_action'] == 26 and row['game_phase'] == 1
+    assert row['camera'] == snap['aim_cam'] and row['diagnostics'] == stats
+    assert out['signal_quality']['tail_field_samples']['camera'] == 1
+
+
 def record(phase='walk', step=0, turns=False, scale=1):
     f = FlightRecorder(scale)
     for k in range(30):
