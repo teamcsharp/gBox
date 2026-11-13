@@ -368,3 +368,13 @@ any range - that is the point-blank aiming-without-shooting the operator photogr
    fighting, so `mine_travel_cm` rarely reaches the 20 ft interval.
 6. Hermes review gate is responsive (no `last_error`): 1520 reviewed, 325 merged, 2312 pending, 7 retry; the
    backlog is not assimilation and gameplay acceptance is still separate.
+### Round-1 hot reload: all five fixes confirmed in a live round (12:22)
+
+The bot hot-reloaded at 12:22:11 ("reloaded re6_remote_control, re6_switch") at a `dead` boundary, and the next
+RE6 No Mercy round then showed the new counters directly: `raise_geometry_fires` climbing to 23 in the first
+minute (proven-line shots no longer waiting the laser), `escape_timeouts` 1 (a timed-out bomb escape returned the
+gun to the fight), `mine_trail_chained` 1 (a 20 ft travel bomb chained behind an already-escaped bomb on the
+round's opening route), and combo rising 2 -> 7 with 0 breaks while the bot cycled bomb_escape/raise/aim/cc_turn.
+Frame: `.scratch-ds-pm/re6-newcode-round.jpg` (008 COMBO, point-blank shotgun on a zombie). Two deaths still
+happened before this reload (rounds ended `died`); survival is the next live priority, followed by the raise
+churn reraise=81/86 s and the RE6 manual remote-bomb ring.
