@@ -1046,7 +1046,10 @@ class ProgressionPolicy:
                     continue
                 ptr = str(entity.get("ptr") or "")
                 hp = entity.get("hp")
-                if "Warp" in cls:
+                if "Warp" in cls and not cls.startswith("TObjCityDoor"):
+                    # `TObjCityDoor_Warp` is a city door, not a pad: the bot reached 9 units from one at (254,25) and
+                    # pressing A did nothing, twice, while the real pad is the TObject at (360,26) - two verified
+                    # floor 0 -> 1 transitions.
                     candidates.append(Objective(0, "warp", (float(entity["x"]), float(entity["z"])),
                                                 distance, cls, ptr, None, "level exit in reach"))
                 elif kind == "enemy" and hp is not None and float(hp) > 0 and distance <= self.engage:
