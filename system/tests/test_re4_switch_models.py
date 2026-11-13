@@ -369,3 +369,26 @@ def test_refinish_archive_rewrites_only_the_appended_atlases(tmp_path):
 def test_cast_pool_refuses_a_pinned_assignment_it_cannot_honour(tmp_path):
     with pytest.raises(M.ModelError, match="pinned assignment"):
         M.cast_pool(tmp_path, tmp_path, tmp_path, [], "seed", tmp_path / "out", assignment={"leon": "nobody"})
+
+
+def test_repair_preexisting_inside_out_overlay_preserves_rig_and_corner_attributes():
+    from test_mesh_orientation import cube
+    from gbox import mesh_orientation as O
+    points, faces, normals = cube(size=100)
+    order, runs = A.soup([faces[:, [0, 2, 1]]])
+    uv = np.arange(16, dtype=float).reshape(8, 2) / 16
+    index = np.arange(8) % 2
+    original = A.HdBin.parse(make_bin(skeleton=SKELETON)).with_geometry(
+        positions=points[order], normals=-normals[order], uvs=uv[order],
+        weight_sets=[((0, 100),), ((2, 100),)], weight_index=index[order],
+        materials=[material(runs[0], diffuse=5)])
+    data, report = M.repair_surface_orientation(original.build())
+    fixed = A.HdBin.parse(data)
+    assert report['changed'] and report['winding_turned'] and report['normals_negated']
+    assert report['after']['verdict'] == 'outward'
+    assert fixed.sections['bones'] == original.sections['bones']
+    assert fixed.materials()[0].header == original.materials()[0].header
+    def attributes(m):
+        return sorted(tuple(row) for row in np.c_[m.positions(), m.uvs(), m.weight_index()])
+    assert attributes(fixed) == attributes(original)
+    assert M.repair_surface_orientation(data)[0] == data  # idempotent, not another flip

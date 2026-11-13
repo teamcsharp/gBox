@@ -1100,6 +1100,38 @@ def donor_surface(body: A.HdBin, donor: dict, *, image: int, scales: dict[str, f
     return built, fit_report, step
 
 
+def repair_surface_orientation(payload: bytes) -> tuple[bytes, dict]:
+    """Repair an already authored donor BIN; keep its fitted pose, rig and textures.
+
+    Older overlays predate source_mesh's orientation repair. Updating Python does
+    not update those binary files. Call only on the receipt's donor body slots;
+    an open native effect or lining is not an independently inverted character.
+    """
+    from . import mesh_orientation
+    model = A.HdBin.parse(payload)
+    materials = model.materials()
+    groups = A.triangles(materials)
+    faces, normals, report = mesh_orientation.orient(model.positions(), np.concatenate(groups), model.normals())
+    if not (report['winding_turned'] or report['normals_negated']):
+        return payload, report | {'changed': False}
+    split, at = [], 0
+    for group in groups:
+        split.append(faces[at:at + len(group)])
+        at += len(group)
+    order, runs = A.soup(split)
+    repaired = model.with_geometry(
+        positions=model.positions()[order], normals=normals[order], uvs=model.uvs()[order],
+        colors=model.colors()[order], weight_sets=model.weights(), weight_index=model.weight_index()[order],
+        materials=[A.Material(m.header, run) for m, run in zip(materials, runs)])
+    after = mesh_orientation.measure(repaired.positions(), np.concatenate(A.triangles(repaired.materials())),
+                                     repaired.normals())
+    if after['verdict'] != 'outward' or (after['normals_against_winding'] or 0) > .5:
+        raise ModelError('orientation repair did not produce an outward donor surface')
+    return repaired.build(), report | {'changed': True, 'after': after,
+                                       'skeleton_bytes_identical': repaired.sections['bones'] == model.sections['bones'],
+                                       'live_verified': False}
+
+
 def author_body(target: bytes, archive: bytes, donor: dict, *, image: int | None = None, shrink: float = 0.1,
                 scales: dict[str, float] = SCALES, layout: PackLayout | None = None,
                 role_bones: dict[str, int] = ROLE_BONES, opaque_atlas: bool = False, method: str = "proportional",
