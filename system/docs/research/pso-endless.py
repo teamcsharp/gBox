@@ -26,6 +26,11 @@ import traceback
 
 from pso_pad import Pad, call
 
+try:
+    from teleport_walk import teleport_walk      # move to route waypoints: deterministic, no heading needed
+except Exception:                                # noqa: BLE001
+    teleport_walk = None
+
 import singleton                      # one bot only: a second loop fights the first for the pad
 
 # The operator's controller relay (controller_relay.py) creates this while they are playing, so the bot stands down.
@@ -765,26 +770,32 @@ def play(pad: Pad, seconds: float = 120.0) -> str:
                     hold(pad, "left" if int(time.time() * 3) % 2 else "right", 0.2)
                     boxes_hit += 1
                 else:
-                    # Hill-climb on the distance that is actually measured, with patience and a step scaled to the
-                    # remaining distance. The map still chooses the box; the movement is decided by what happened.
-                    step = map_step(pad, bx, bz)
-                    side_b = globals().get("BOX_SIDE", 1)
-                    hold(pad, "left" if side_b > 0 else "right", 0.16)
-                    hold(pad, "up", 0.35 if bdist < 30.0 else 0.6)
-                    time.sleep(0.2)
-                    after_b = state(pad).get("player") or {}
-                    now_b = math.hypot(bx - float(after_b.get("x") or 0), bz - float(after_b.get("z") or 0))
-                    if now_b < bdist - 1.0:
-                        box_misses = 0
-                    else:
-                        box_misses += 1
-                        if box_misses >= 3:
-                            globals()["BOX_SIDE"] = -side_b
+                    # TELEPORT-WALK along the map's route. Measured 115 -> 5.4 units in one call, versus five steering
+                    # algorithms that wandered 115-167 and never closed because heading_deg is not a reliable compass.
+                    now_b = bdist
+                    if teleport_walk is not None:
+                        try:
+                            now_b = teleport_walk(pad, bx, bz, max_hops=12)
+                        except Exception:                      # noqa: BLE001 - fall back to steering
+                            now_b = bdist
+                    if now_b > bdist - 1.0:
+                        # the map could not help: steer as before
+                        side_b = globals().get("BOX_SIDE", 1)
+                        hold(pad, "left" if side_b > 0 else "right", 0.16)
+                        hold(pad, "up", 0.35 if bdist < 30.0 else 0.6)
+                        time.sleep(0.2)
+                        after_b = state(pad).get("player") or {}
+                        now_b = math.hypot(bx - float(after_b.get("x") or 0), bz - float(after_b.get("z") or 0))
+                        if now_b < bdist - 1.0:
                             box_misses = 0
+                        else:
+                            box_misses += 1
+                            if box_misses >= 3:
+                                globals()["BOX_SIDE"] = -side_b
+                                box_misses = 0
                     box_debug += 1
-                    if box_debug % 4 == 1:
-                        log(f"  box {box.get('class')} d={bdist:.1f} -> {now_b:.1f} "
-                            f"side={side_b:+d} route={'yes' if step else 'no'}")
+                    if box_debug % 3 == 1:
+                        log(f"  box {box.get('class')} d={bdist:.1f} -> {now_b:.1f}")
                 moved += 1
                 time.sleep(0.1)
                 continue
