@@ -308,16 +308,17 @@ class DriftingWorld(FakeWorld):
 
 
 class _FixedWalk:
-    """A policy whose only objective is one coordinate."""
+    """A policy whose only objective is one coordinate (kind='door' walks through it)."""
 
-    def __init__(self, point):
+    def __init__(self, point, kind="walk"):
         self.point = point
+        self.kind = kind
 
     def choose(self, snap, now, *, pressed=None, avoid=None):
         player = snap.get("player") or {}
         distance = math.hypot(self.point[0] - float(player.get("x") or 0),
                               self.point[1] - float(player.get("z") or 0))
-        return B.Objective(0, "walk", self.point, distance, "coordinate", "", None, "walk target")
+        return B.Objective(0, self.kind, self.point, distance, "coordinate", "", None, "walk target")
 
     def note(self, kind, progressed):
         pass
@@ -374,7 +375,7 @@ def test_a_room_that_settles_is_progress(workdir):
 def test_no_objective_progress_for_the_limit_ends_the_run_with_a_fixture(workdir):
     clock = FakeClock()
     world = FakeWorld(clock)
-    world.entities = [entity("TObjDoor", "80DAD5C0", 40.0, 0.0)]
+    world.entities = [entity("TLazerFenceSw", "80DAD5C0", 40.0, 0.0)]
     # A long no-close budget isolates the objective-progress deadline: this test is about the second clock.
     box = automaton(world, workdir, bounds=B.Bounds(max_objective_s=2.0, max_no_close_s=1000.0))
     box.run_for(60.0)
@@ -417,7 +418,7 @@ def test_the_policy_sticks_to_its_current_objective_when_a_rival_is_the_same_ran
     """Two doors at similar range must not swap every tick: each swap re-planned the route (measured at 1 tick/s)."""
     clock = FakeClock()
     world = FakeWorld(clock)
-    world.entities = [entity("TObjDoor", "doorA", 100.0, 0.0), entity("TObjDoor", "doorB", 101.0, 0.0)]
+    world.entities = [entity("TLazerFenceSw", "doorA", 100.0, 0.0), entity("TLazerFenceSw", "doorB", 101.0, 0.0)]
     policy = B.ProgressionPolicy()
     first = policy.choose(world.observe() and B.snapshot(world.observe()), clock.now())
     assert first.ptr == "doorA"
@@ -440,25 +441,16 @@ def test_a_verified_switch_is_never_targeted_again(workdir):
     assert later is None, "a switch whose flag changed is done, however long ago that was"
 
 
-def test_an_open_door_outranks_a_switch_and_a_closed_one_is_not_a_candidate(workdir):
-    """There is no readable door state (`+0xAC` is 0 either way), so the controller learns it by attempting crossings.
-
-    A door that has been crossed ranks above any switch - it leads on. A door that has been tried and blocked is not a
-    candidate at all until something changes. An unknown door still ranks below switches, so keys are explored first.
-    """
+def test_a_door_is_a_passage_not_an_objective(workdir):
+    """Making a door an objective ping-ponged the character through it (280 ticks around one door): it crossed, the
+    aim-past point was then behind it, and it crossed back. Doors are crossed by routes; only switches are goals."""
     world = FakeWorld(FakeClock())
-    world.entities = [entity("TObjDoor", "doorA", 40.0, 0.0),
-                      entity("TObjDoorKey", "keyA", 300.0, 0.0)]
+    world.entities = [entity("TObjDoor", "doorA", 20.0, 0.0), entity("TLazerFenceSw", "keyA", 300.0, 0.0)]
     snapshot = B.snapshot(world.observe())
-
-    unknown = B.ProgressionPolicy().choose(snapshot, 1000.0)
-    assert unknown.kind == "switch", "an unknown door does not outrank a key"
-
-    opened = B.ProgressionPolicy(door_state={"doorA": "open"}).choose(snapshot, 1000.0)
-    assert (opened.kind, opened.ptr) == ("door", "doorA"), "a door known to be open leads on"
-
-    blocked = B.ProgressionPolicy(door_state={"doorA": "closed"}).choose(snapshot, 1000.0)
-    assert blocked.kind == "switch" and blocked.ptr == "keyA", "a blocked door is not a candidate"
+    objective = B.ProgressionPolicy(door_state={"doorA": "open"}).choose(snapshot, 1000.0)
+    assert objective.kind == "switch", "a door is never a destination, even when it is known to be open"
+    only_door = B.snapshot(FakeWorld(FakeClock()).observe() | {"entities": [entity("TObjDoor", "doorB", 20.0, 0.0)]})
+    assert B.ProgressionPolicy().choose(only_door, 1000.0) is None, "a room with only a door has no objective"
 
 
 def test_a_switch_outranks_a_nearer_container(workdir):
@@ -644,7 +636,8 @@ def test_a_door_is_walked_through_and_the_room_change_is_the_progress(workdir):
     world = FakeWorld(clock)
     world.door = (30.0, 0.0)
     world.entities = [entity("TObjDoor", "80DAD5C0", 30.0, 0.0)]
-    box = automaton(world, workdir, motion=B.HeadingMotion(arrive=10.0))
+    box = automaton(world, workdir, policy=_FixedWalk((30.0, 0.0), kind="door"),
+                    motion=B.HeadingMotion(arrive=10.0))
     for _ in range(80):
         box.tick()
         if world.room != 1:

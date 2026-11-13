@@ -425,3 +425,38 @@ python pso-citymap.py --route 105,160 254,25                  # decode the city 
 ```
 
 Ledgers, fixtures and the flag audit are written to `D:\gBox\pso-ds\bounded\` (game-session data, never committed).
+
+
+## 11. Rounds 7-8 — operating gBox, and the operator's controller
+
+**gBox itself can hang, and the bot then has no channel at all.** Measured: seven `gBox.exe` processes, `/api/sessions`
+taking **10 s** (and timing out under a 3 s probe) while `/api/workers` answered in 2.5 s and the port stayed open. Every
+controller loop reads state and writes input through that API, so a stuck app looks exactly like a bot that "meanders in
+place": it is driving a dead channel.
+
+Restart recipe that worked (after killing every `gBox.exe` and the `gbox``\``venv` python processes, including
+`desktop_supervisor.py`, `desktop_local`, `serve --worker`, `gamepads --watch`, `audio_volume`, `winembed.py`):
+
+1. `python -P -m gbox.desktop_local --config C:\_tools\gBox\system\gbox.toml --port 18765 --name i9-NUC`
+2. `python -P -m gbox --config C:\_tools\gBox\system\gbox.toml serve --worker`
+
+The worker then refuses to start with *"Worker activation held: a delivered native launch still has an owned PID
+record; no emulator was stopped"* if `D:\gBox\runtime\gbox-running.json` records a live PID. **The emulator's process is
+named `gBox Dolphin`, not `Dolphin`** - a kill filter on `Dolphin` misses it, and the recorded PID stays alive. Kill
+`gBox Dolphin`, then the worker starts. After the restart the API answered in **0.08 s** (was 10 s), and a session
+launched and booted to the city in about two minutes with the stage-flag array at zero.
+
+**The operator's controller.** Dolphin's live config (`D:\gBox\runtime\dolphin\Dolphin-x64\User\Config\GCPadNew.ini`)
+binds `GCPad1` to `Device = XInput/0/Gamepad`. Polling both slots for 25 s: **slot 0 silent** (all zero), **slot 1 a
+resting stick drift** (`lx=1415, ly=749`) and no buttons. The bot's virtual pad does **not** appear in the XInput device
+list at all, so the bot has been driving through the adapter's keyboard path (which does move the character - verified
+again). That is the concrete answer to "why do I have to use the keyboard": the pad is not the device Dolphin reads, and
+the virtual pad that would have bridged it is absent.
+
+`docs/research/pso-controller.py` bridges it without touching Dolphin's config: it reads the operator's pad through
+gBox's own XInput binding at 60 Hz, forwards the key changes into the session's normal input path, and **records the
+demonstration while it does** - every input edge and the player position at ~8 Hz, written as `demo-<stamp>.jsonl` plus
+a simplified waypoint route. Its first version latched onto a resting stick because raw XInput axes (-32768..32767) were
+compared against a normalised 0.55 deadzone; it now requires a **button press** to identify the pad and normalises the
+axes.
+

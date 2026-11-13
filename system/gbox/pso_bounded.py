@@ -909,15 +909,10 @@ class ProgressionPolicy:
                     candidates.append(Objective(2, "switch", (float(entity["x"]), float(entity["z"])),
                                                 distance, cls, ptr, None, "switch for the way on"))
                 elif cls in DOOR_CLASSES:
-                    state = self.door_state.get(ptr)
-                    if state == "closed":
-                        continue                          # attempted and blocked: not this way until something changes
-                    # A door known to be open outranks any switch: it leads on, and a switch three rooms away does
-                    # not. An unknown door still ranks below switches, so keys are explored first.
-                    rank = 2 if state == "open" else 4
-                    candidates.append(Objective(rank, "door", (float(entity["x"]), float(entity["z"])),
-                                                distance, cls, ptr, None,
-                                                "open door on the way on" if state == "open" else "door on the way on"))
+                    # A door is a passage, not a destination. Carved routes already cross open doorways, and making a
+                    # door an objective produced a ping-pong through it: the character crossed, the aim-past point was
+                    # then behind it, and it turned round and crossed back (measured: 280 ticks around one door).
+                    continue
                 elif kind == "object" and any(hint in cls for hint in CONTAINER_HINTS):
                     if self.optional_streak < self.optional_limit:
                         candidates.append(Objective(4, "container", (float(entity["x"]), float(entity["z"])),
