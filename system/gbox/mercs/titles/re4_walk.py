@@ -77,6 +77,8 @@ ARC_TOL = math.radians(50)                           # within this: on while tur
 RUN_ARC = math.radians(30)                           # B only while the arc is this gentle (a run turns wide)
 QUICK_TURN_ERR, QUICK_TURN_S = math.radians(150), 1.0
 ACTION_PULSE_S = 0.35                                # Y down this long, up this long, at a crossing
+DOOR_STALL_S, DOOR_MOVE_MM = .8, 180.0
+DOOR_PRESS_S, DOOR_GAP_S, DOOR_PUSH_S = .07, .07, 1.4
 # --- the operator's marks (mm; re5_switch MAP_GOALS x 10) ---
 GOAL_FIRE_MM, GOAL_THREAT_MM, GOAL_FIGHT_MM, GOAL_ARRIVE_MM = 15000.0, 2000.0, 6000.0, 2000.0
 ROUTE_SOURCE = "room_collision"
@@ -124,6 +126,7 @@ class Walker:
         self.at_link = False
         self.how = ""
         self.leg = None                                 # this tick's route leg ({at, keys, to, crossing, open})
+        self._door = {'pos': None, 'since': 0.0, 'start': None, 'retry': -1e9, 'phase': -1}
 
     # --- what he stands on ---
     def observe(self, snap: dict, now: float | None = None) -> None:
@@ -400,6 +403,9 @@ class Walker:
         st = self._stand
         if pos is None:
             return keys
+        door = self._door_step(keys, pos)
+        if door is not None:
+            return door
         if self.now < st["until"]:
             return st["keys"]
         if st["pos"] is None or _flat(pos, st["pos"]) > STAND_MOVE_MM or self.now - st["at"] > STAND_MAX_S * 4:
@@ -417,6 +423,41 @@ class Walker:
         self._count("stand_breaks")
         self.stats["walk_how"] = f"stood {STAND_MAX_S:.0f} s: a step along open floor (he never stands)"
         return step
+
+    def _door_step(self, keys, pos):
+        """Try Y, release, Y to open/kick before abandoning a blocked forward leg.
+
+        This is an interaction attempt, not a claim that every obstacle is a
+        door. Actual displacement confirms passage. No gunfire is directed at
+        an unidentified wall. Each phase gets an input edge even on slow ticks.
+        """
+        d = self._door
+        if d['pos'] is None or _flat(pos, d['pos']) >= DOOR_MOVE_MM:
+            if d['start'] is not None:
+                self._count('door_progress_after_action')
+            d.update(pos=pos, since=self.now, start=None, phase=-1)
+            return None
+        if d['start'] is not None:
+            elapsed = self.now - d['start']
+            phase = d['phase']
+            duration = DOOR_PRESS_S if phase in (0, 2) else DOOR_GAP_S if phase == 1 else DOOR_PUSH_S
+            if self.now - d['phase_at'] >= duration:
+                phase += 1
+                d.update(phase=phase, phase_at=self.now)
+            if phase >= 4 or elapsed > 3.0:
+                d.update(start=None, retry=self.now + 4.0, since=self.now)
+                self._count('door_attempt_no_progress')
+                return None
+            self.stats['walk_how'] = 'open/kick: Y, release, Y, then through the doorway'
+            return (FORWARD, ACTION) if phase in (0, 2) else (FORWARD,)
+        if self.at_link or FORWARD not in keys or self.turn_pos in keys or self.turn_neg in keys:
+            d.update(since=self.now)
+            return None
+        if self.now >= d['retry'] and self.now - d['since'] >= DOOR_STALL_S:
+            d.update(start=self.now, phase=0, phase_at=self.now)
+            self._count('door_action_attempts')
+            return (FORWARD, ACTION)
+        return None
 
     def step(self, pos=None) -> tuple:
         """A step along open floor: the heading nearest the route's point (or straight on) whose STAND_PROBE_MM probe

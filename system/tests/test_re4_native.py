@@ -194,8 +194,9 @@ def test_every_pinned_player_class_keeps_its_own_tick(monkeypatch, player_class,
 
 def test_foreign_re6_controls_are_not_offered_by_re4(monkeypatch):
     ctl = fake_controller(monkeypatch)
-    for name in ("weapon_choices", "current_weapon", "equip_primary", "ammo_status", "set_infinite_ammo", "drop_bomb"):
+    for name in ("drop_bomb",):
         assert getattr(ctl, name) is None
+    assert ctl.equip_primary.__func__ is N.Controller.equip_primary
 
 
 def test_ring_health_does_not_include_adjacent_max_health(monkeypatch):

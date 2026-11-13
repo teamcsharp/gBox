@@ -646,7 +646,7 @@ LOADOUT_CODE_PATCH = False
 ROUND_WEAPON_TRIES = 3                 # gives tried per round before it is reported and left alone
 # what a random weapon may replace in his hand: a gun with a max-level row, or a loadout's own equipped weapon
 # (Krauser's bow) - never a grenade the bot holds (THROWS) or the knife
-SWAPPABLE = frozenset(W.MAX_LEVELS) | frozenset(lo["equips"] for lo in W.MERC_LOADOUTS.values())
+SWAPPABLE = frozenset(W.CLASS_OF) - {0x01, 0x02, 0x0E, 0x38}
 # The magnums and shotguns come up often (operator 2026-11-10: "the scatter works if they have a magnum and 20x
 # firerate. Its boring with the pistol"; then: "I need the bot firing relentlessly with any weapon type magnum or
 # shotgun with rapid fire"), and the operator 2026-11-11: "randomize the weapon being used between rounds between all
@@ -688,10 +688,11 @@ def _code_patch_refusal(ad) -> str | None:
 
 
 def _give_weapon(ad, base: int, st: dict, rng, fixed: int | None = None, exclude=()) -> dict | None:
-    """A random high-powered campaign weapon (re4_weapons.HIGH_POWER; `fixed` instead when given) at max level, full,
-    into the gun in his hand: the item's id, levels and rounds, the item manager's held id, the game state's class /
-    variant / level nibbles and reload. Every byte is read back; if any does not hold, the hand's old bytes go back.
-    None when the hand cannot be read."""
+    """Choose a campaign weapon and ask the native equipment lifecycle to install it.
+
+    Confirmation requires the live weapon object's item to match. An unresolved
+    native call is never rolled back by restoring potentially retired pointers.
+    """
     rd = lambda a, n: bytes(ad.read_memory(a, n))                         # noqa: E731
     r = W.Reader(rd, base)
     errors = (ValueError, OSError, RuntimeError, struct.error)
@@ -708,9 +709,9 @@ def _give_weapon(ad, base: int, st: dict, rng, fixed: int | None = None, exclude
     if held["id"] not in SWAPPABLE:
         return {"verified": False, "was": held["name"], "reason": f"{held['name']} in his hand is not a gun to swap"}
     if fixed is not None:
-        picks = [fixed] if fixed in rows and W.max_levels(fixed) is not None else []
+        picks = [fixed] if fixed in rows and fixed in W.CLASS_OF else []
     else:
-        pool = [i for i in W.HIGH_POWER if i in rows and W.max_levels(i) is not None and i != held["id"]]
+        pool = [i for i in W.HIGH_POWER if i in rows and i != held["id"]]
         primary = [i for i in pool if i in PRIMARY]       # the magnums/shotguns, emphasised (PRIMARY_SHARE)
         if primary and rng.random() < PRIMARY_SHARE:
             magnums = [i for i in primary if i in MAGNUMS]
@@ -721,41 +722,22 @@ def _give_weapon(ad, base: int, st: dict, rng, fixed: int | None = None, exclude
     if not picks:
         return {"verified": False, "was": held["name"], "reason": "no weapon row to give"}
     iid = rng.choice(picks) if len(picks) > 1 else picks[0]
-    row, lv = rows[iid], W.max_levels(iid)
-    cap = row["capacity"][lv["capacity"]] or max(row["capacity"])
-    loaded = 99 if cap in (0, W.CAP_INFINITE) else min(cap, 0x1FFF)
-    item, mgr = held["addr"], base + W.ITEM_MGR
-    nibbles = (lv["firepower"], lv["firing_speed"], lv["capacity"])
     try:
-        saved = {"item": rd(item, W.ITEM_SZ), "held": rd(mgr + W.M_EQUIPPED_ID, 2),
-                 "cls": rd(g + W.G_CLASS, HAND_CLASS_N), "reload": rd(g + W.G_RELOAD, 1)}
-    except errors:
-        return None
-    ok = False
-    try:
-        _write_hand(ad, base, item, g, iid, row, lv["packed"], loaded, nibbles, lv["reload"])
-        back = W.decode_item(rd(item, W.ITEM_SZ), item)
-        # The identity is what the swap must own: the item is the new gun, the manager holds it, and the game state's
-        # class byte is the new row's class. The level/rounds/reload bytes are the game's own state - a stale cosmetic
-        # byte must not discard a good magnum (live 2026-11-11 19:46: the strict all-fields read-back kept putting the
-        # shotgun back, so the operator saw class 15 in a fight despite MAGNUM_SHARE 1.0).
-        ok = (back["id"] == iid and not back["empty"]
-              and struct.unpack("<H", rd(mgr + W.M_EQUIPPED_ID, 2))[0] == iid
-              and rd(g + W.G_CLASS, 1) == bytes([row["class"]]))
-    except errors:
-        ok = False
-    if not ok:
-        try:                                             # the hand as it was: never half a weapon
-            ad.write_memory(item, saved["item"])
-            ad.write_memory(mgr + W.M_EQUIPPED_ID, saved["held"])
-            ad.write_memory(g + W.G_CLASS, saved["cls"])
-            ad.write_memory(g + W.G_RELOAD, saved["reload"])
-        except errors:
-            pass
-        return {"id": iid, "name": W.name(iid), "was": held["name"], "verified": False,
-                "reason": "the swap did not read back: his own weapon put back"}
-    return {"id": iid, "name": W.name(iid), "was": held["name"], "loaded": loaded, "levels": lv["packed"],
-            "verified": True}
+        from ..interventions import native_controller
+        ctl = native_controller(ad)
+        if ctl is None or not ctl.lock.acquire(blocking=False):
+            return {"id": iid, "name": W.name(iid), "verified": False, "reason": "native controls busy"}
+        try:
+            release = st.get("release_inputs")
+            if callable(release):
+                release()
+            result = ctl.equip_primary(iid)
+        finally:
+            ctl.lock.release()
+    except (ValueError, OSError, RuntimeError, AttributeError, struct.error) as exc:
+        return {"id": iid, "name": W.name(iid), "verified": False,
+                "reason": f"native equip: {type(exc).__name__}: {exc}"[:250]}
+    return dict(result, id=iid, name=W.name(iid), was=held["name"])
 
 
 def _round_weapon(ad, snap: dict, st: dict) -> dict | None:
@@ -856,7 +838,8 @@ def _crowd_weapon(ad, snap: dict, st: dict, rng=None) -> dict | None:
         held = W.Reader(lambda a, n: bytes(ad.read_memory(a, n)), snap["module_base"]).equipped()
     except (ValueError, OSError, RuntimeError, struct.error):
         return None
-    if not held or held.get("id") not in SWAPPABLE or held.get("id") in SHOTGUNS:
+    actual = (snap.get('aim') or {}).get('item')
+    if not held or held.get("id") not in SWAPPABLE or held.get("id") in SHOTGUNS and actual == held.get('id'):
         return None
     if now < float(st.get("crowd_retry_at") or 0):
         return None
@@ -915,7 +898,7 @@ def _boss_weapon(ad, snap: dict, st: dict, rng=None) -> dict | None:
         return None
     if held is None or not held.get("addr"):
         return None
-    if held.get("id") in BOSS_GUNS:
+    if held.get("id") in BOSS_GUNS and (snap.get('aim') or {}).get('item') == held.get('id'):
         # Already a magnum/shotgun: nothing to write, and the receipt says so rather than a silent no-op.
         st["boss_weapon"] = {"verified": True, "already": True, "id": held.get("id"), "name": held.get("name")}
         return st["boss_weapon"]
@@ -1401,7 +1384,7 @@ def _first_aid(ad, snap, st):
     return 0
 
 
-def maintain(ad, snap: dict | None = None) -> dict:
+def maintain(ad, snap: dict | None = None, *, release_inputs=None) -> dict:
     """Every RAM snapshot of a round: the health caps, the time per kill, the clock write's confirmation."""
     if not snap or snap.get("module_base") is None:
         return {}
@@ -1418,6 +1401,7 @@ def maintain(ad, snap: dict | None = None) -> dict:
                                                  "fp_applied_boot", "rf_applied_boot") if k in st})
             st.clear()
             st.update(keep, boot=boot)
+        st["release_inputs"] = release_inputs
         n = _hand(ad, snap)                              # the bot's grenade in hand / the gun back (re4_switch.THROWS)
         if n:
             out["hand_writes"] = n
@@ -1461,7 +1445,14 @@ def maintain(ad, snap: dict | None = None) -> dict:
         # The random (or chosen) weapon: in his hand by data writes once the round is live, every round
         # (_round_weapon). The loadout code patch is off (LOADOUT_CODE_PATCH: it hung every stage load).
         given_round_weapon = False
-        if st.get("random_weapon") or st.get("loadout_weapon"):
+        from .. import primary_weapon
+        player = dict(snap.get("player") or {})
+        player["generation"] = player.get("generation", player.get("id"))
+        primary = primary_weapon.snapshot(ad, dict(snap, player=player, mercenaries_phase=
+            1 if (snap.get("game") or {}).get("phase") in ("playing", "grabbed", "held") else 0))
+        snap["primary_weapon"] = primary
+        locked = bool(primary and primary.get("usable"))
+        if not locked and (st.get("random_weapon") or st.get("loadout_weapon")):
             given = _round_weapon(ad, snap, st)
             if given is not None and given.get("verified"):
                 given_round_weapon = True
@@ -1476,7 +1467,7 @@ def maintain(ad, snap: dict | None = None) -> dict:
         ask = getattr(D, "WEAPON_ASK", None)
         ring_owns_weapon = isinstance(ask, dict) and ask.get("item") \
             and time.monotonic() < float(ask.get("until") or 0)
-        free_hand = not ring_owns_weapon and st.get("hand_saved") is None
+        free_hand = not locked and not ring_owns_weapon and st.get("hand_saved") is None
         swapped = _boss_weapon(ad, snap, st) if BOSS_WEAPON and free_hand else None
         if swapped is not None and swapped.get("verified") and not swapped.get("already"):
             out["boss_weapon_swapped"] = 1
@@ -1494,7 +1485,7 @@ def maintain(ad, snap: dict | None = None) -> dict:
                 ask.clear()
             elif time.monotonic() >= float(ask.get("until") or 0):
                 ask.clear()
-            elif snap.get("equipped_id") == int(ask["item"]):
+            elif snap.get("equipped_id") == int(ask["item"]) and (snap.get("aim") or {}).get("item") == int(ask["item"]):
                 ask["verified"] = True  # hold ownership without repeatedly giving the same weapon
                 if ask.get("why") == "restore after mine ring":
                     ask.clear()
@@ -1509,6 +1500,8 @@ def maintain(ad, snap: dict | None = None) -> dict:
                     ask["verified"] = True
                 elif isinstance(given, dict) and given.get("reason"):
                     st["mine_ring_arm_error"] = str(given.get("reason"))[:160]
+        if given_round_weapon or out.get('boss_weapon_swapped') or out.get('crowd_weapon_swapped') or out.get('weapon_given'):
+            return out  # no old snapshot's aim/object writes after native equipment rebuild
         if st.get("aim_lock"):
             ram0, sway0 = st.get("aim_ram_writes", 0), st.get("aim_sway_zeroed", 0)
             n = _aim(ad, snap)

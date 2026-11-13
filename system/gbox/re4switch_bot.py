@@ -547,7 +547,15 @@ def play(ad, send, stopped, sleep=time.sleep, stats: dict | None = None, *, cloc
                 if snap is not None:
                     snap.setdefault("game", gs)                  # (a snapshot whose own state read failed: this tick's)
                     last_snap = snap
-                    _maintain_mods(ad, snap, stats)
+                    from .mercs import primary_weapon
+                    native_player = dict(snap.get("player") or {})
+                    native_player["generation"] = native_player.get("generation", native_player.get("id"))
+                    if primary_weapon.release_for_handover(stats, dict(snap, player=native_player),
+                                                          lambda _keys: (keys.release() or True)):
+                        _capture_round(rnd, snap, bot, stats, clock())
+                        sleep(FIGHT_TICK_S)
+                        continue
+                    _maintain_mods(ad, snap, stats, keys.release)
                     if rnd is not None:
                         rnd.observe(snap, clock())
                         if live and where == "playing":
@@ -557,6 +565,17 @@ def play(ad, send, stopped, sleep=time.sleep, stats: dict | None = None, *, cloc
                         _report(rnd, snap, stats, clock(), round_boundary, keys)
                 if bot is not None and snap is not None:
                     stats["fight"] = "ram"
+                    if ring_step is not None:
+                        try:
+                            ring_out = ring_step(snap, stats, clock(), lambda _keys: (keys.release() or True))
+                            stats["ring_armed"] = True
+                            stats["ring_decision"] = str(ring_out.get("reason") or "")[:200]
+                            if ring_out.get("fired"):
+                                _capture_round(rnd, snap, bot, stats, clock())
+                                sleep(FIGHT_TICK_S)
+                                continue
+                        except Exception as exc:
+                            stats["ring_error"] = f"{type(exc).__name__}: {exc}"[:160]
                     bonus_goal(bot, snap, clock())            # the nearest time bonus as a point goal (BONUS_ROUTE)
                     keys.apply(bot.tick(snap, now=clock()),
                                tap_hold=BOW_TAP_HOLD_S if is_bow(snap) else GUN_TAP_HOLD_S)
@@ -725,7 +744,7 @@ def play(ad, send, stopped, sleep=time.sleep, stats: dict | None = None, *, cloc
             if snap is not None:
                 last_snap = snap
             if snap is not None:
-                _maintain_mods(ad, snap, stats)
+                _maintain_mods(ad, snap, stats, keys.release)
             if rnd is not None and snap is not None:
                 rnd.observe(snap, clock())
                 _report(rnd, snap, stats, clock(), round_boundary, keys)
@@ -784,11 +803,11 @@ def play(ad, send, stopped, sleep=time.sleep, stats: dict | None = None, *, cloc
                      "frame-only fight: the player and Ganados are not mapped in RAM yet (re4_switch.PLAYER_CLASS)")}
 
 
-def _maintain_mods(ad, snap: dict, stats: dict) -> None:
+def _maintain_mods(ad, snap: dict, stats: dict, release_inputs=None) -> None:
     """The live sidebar's RE4 mods (re4_switch_mods.maintain: health caps, time per kill) on this snapshot."""
     try:
         from .mercs.titles import re4_switch_mods
-        done = re4_switch_mods.maintain(ad, snap)
+        done = re4_switch_mods.maintain(ad, snap, release_inputs=release_inputs)
     except Exception as exc:                                 # noqa: BLE001 - a mod never costs the fight
         stats["mods_error"] = f"{type(exc).__name__}: {exc}"[:160]
         return

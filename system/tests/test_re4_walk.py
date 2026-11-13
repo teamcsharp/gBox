@@ -26,6 +26,32 @@ def _walker(pos, rot=0.0, now=0.0, mesh=None):
 EAST = math.pi / 2                       # heading atan2(dx, dz): facing +x
 
 
+def test_blocked_forward_leg_tries_two_distinct_y_presses_then_continues():
+    w = _walker((0., 0., 0.))
+    pos = w._pos()
+    assert w._door_step(('lup', 'b'), pos) is None
+    presses = []
+    for t in (.81, .89, .97, 1.05, 2.5):
+        w.now = t
+        presses.append(w._door_step(('lup', 'b'), pos))
+    assert presses[:4] == [('lup', 'y'), ('lup',), ('lup', 'y'), ('lup',)]
+    assert presses[4] is None and w.stats['door_attempt_no_progress'] == 1
+    w.now = 2.6
+    assert w._door_step(('lup',), pos) is None  # no endless kick loop
+
+
+def test_successful_door_movement_cancels_kicking_and_turning_is_not_a_stall():
+    w = _walker((0., 0., 0.)); pos = w._pos()
+    w._door_step(('lup',), pos)
+    w.now = 1.
+    assert w._door_step(('lup', 'lleft'), pos) is None
+    w.now = 1.9
+    assert w._door_step(('lup',), pos) == ('lup', 'y')
+    w.now = 2.
+    assert w._door_step(('lup',), (0., 0., 500.)) is None
+    assert w.stats['door_progress_after_action'] == 1
+
+
 def test_tank_steering_walks_arcs_turns_on_the_spot_and_quick_turns():
     w = _walker((1000.0, 0.0, 2600.0))
     assert w.steer(0.0) == ("lup", "b") and w.steer(0.0, run=False) == ("lup",)
@@ -148,7 +174,7 @@ def test_a_mark_from_another_round_is_ignored_and_the_bot_plays_on():
                           "pos": [5000.0, 0.0, 2600.0], "label": "Go"})
     assert bot.map_goal_plan()["operator_goal"] is None
     snap = _snap((1000.0, 0.0, 2600.0), rot=EAST)
-    assert bot.tick(snap) == re4_switch.Bot.tick.__wrapped__(re4_switch.Bot(), _snap((1000.0, 0.0, 2600.0), rot=EAST))
+    assert bot.tick(snap) == re4_switch.Bot.tick.__wrapped__(re4_switch.Bot(clock=lambda: 100.0), _snap((1000.0, 0.0, 2600.0), rot=EAST))
 
 
 def test_plan_carries_the_route_target_and_goal_fields_for_the_map():

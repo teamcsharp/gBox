@@ -157,7 +157,35 @@ def is_code_address(base: int, at: int) -> bool:
 
 class Controller(N.Controller):
     # These RE6 operations are not implementations for RE4. Do not advertise inherited foreign-title controls.
-    weapon_choices = current_weapon = equip_primary = ammo_status = set_infinite_ammo = drop_bomb = None
+    drop_bomb = None
+
+    def weapon_choices(self):
+        from . import re4_switch_weapon_native as E
+        return E.choices(self)
+
+    def current_weapon(self):
+        from . import re4_switch_weapon_native as E
+        self.ready()
+        return (E.active(self) or {}).get('item')
+
+    def equip_primary(self, item, *, expected=None, allowed=None):
+        from . import re4_switch_weapon_native as E
+        return E.replace(self, item, expected=expected, allowed=allowed)
+
+    def ammo_status(self):
+        from . import re4_switch_mods as M
+        self.ready()
+        return {'available': True, 'enabled': bool(M._state(self.ad).get('infinite_ammo')),
+                'source': 'maintained_native_magazine'}
+
+    def set_infinite_ammo(self, enabled, *, expected=None, allowed=None):
+        from . import re4_switch_mods as M
+        if type(enabled) is not bool:
+            raise ValueError('enabled must be boolean')
+        if (expected is not None and self.ready() != expected) or (allowed is not None and not allowed()):
+            raise Unavailable('player changed or request expired')
+        result = M.run(self.ad, 'infinite_ammo', on=enabled)
+        return dict(result, state='confirmed', op='set_infinite_ammo', enabled=enabled)
 
     def __init__(self, ad, *, mailbox: int | None = None):
         if os.name != "posix" or os.uname().machine.lower() not in ("aarch64", "arm64") or \

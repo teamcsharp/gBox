@@ -467,7 +467,20 @@ def _armoury(ad, held=0x27, character=0, levels=0x2114):
     ad.put(g + 0x5030, blob)
     ad.put(BASE + W.ITEM_MGR + W.M_EQUIPPED, struct.pack("<QH", ITEM, held) + bytes(6))
     ad.put(ITEM, struct.pack("<HHBBHHBBBB", held, 1, 1, 0, levels, 9 << 3, 0, 0, 0, 1))
+    from re4_equip_fixture import controller
+    ad.native = controller(ad, BASE, PLAYER, ITEM)
     return W
+
+
+@pytest.fixture(autouse=True)
+def native_equipment(monkeypatch):
+    from gbox.mercs import interventions
+    from gbox.mercs.titles.re4_switch_native import Unavailable
+    def get(ad):
+        if hasattr(ad, 'native'):
+            return ad.native
+        raise Unavailable('no native fixture')
+    monkeypatch.setattr(interventions, 'native_controller', get)
 
 
 def _round(phase="playing", control=True, clock=True, player=True):
@@ -492,7 +505,7 @@ def test_the_random_weapon_goes_in_his_hand_once_the_round_is_live(ad):
     assert not ad.writes
     assert M.maintain(ad, _round())["weapon_given"] == 1
     it, held, cls, reload = _hand(ad, W)
-    lv = W.max_levels(it["id"])
+    lv = W.max_levels(it["id"]) or {"packed":0,"firepower":0,"firing_speed":0,"capacity":0,"reload":0}
     assert it["id"] in W.HIGH_POWER and it["id"] != 0x27 and held == it["id"]
     assert it["levels_raw"] == lv["packed"] and not it["empty"] and it["loaded"] > 0
     assert cls == bytes([W.CLASS_OF[it["id"]], 0, 0, lv["firepower"], lv["firing_speed"], lv["capacity"]])
@@ -513,7 +526,7 @@ def test_the_playbook_mods_panel_never_sums_a_record(monkeypatch, ad):
     ``re4switch_bot._maintain_mods`` summed every value. Counters add; records are shown."""
     from gbox import re4switch_bot as B
     from gbox.mercs.titles import re4_switch_mods as M
-    monkeypatch.setattr(M, "maintain", lambda a, s: {"weapon_given": 1, "fire_tables": 2,
+    monkeypatch.setattr(M, "maintain", lambda a, s, **kw: {"weapon_given": 1, "fire_tables": 2,
                                                      "weapon_round": {"round": 3, "name": "Killer7"}})
     stats = {}
     B._maintain_mods(ad, {}, stats)
@@ -546,7 +559,7 @@ def test_a_random_weapon_is_a_max_level_magnum_or_shotgun_every_round(ad):
             it, held, _cls, _rel = _hand(ad, W)
             assert (it["id"] in M.PRIMARY or it["id"] in M.W.HIGH_POWER) and held == it["id"], \
                 "a maxed campaign weapon (primary or the any-weapon branch) in his hand"
-            assert W.max_levels(it["id"]) is not None
+            assert W.max_levels(it["id"]) is not None or it["id"] in (0x35, 0x6D), "launchers have no upgrades"
             draws.append(it["id"])
         assert set(draws) & set(M.MAGNUMS), "the magnums come up (MAGNUM_SHARE 1.0: a shotgun only with no magnum pool)"
         assert len(draws) == 40, "PRIMARY_SHARE 1.0: every draw a magnum or a shotgun"
@@ -586,23 +599,21 @@ class _DropsHeldId(Ad):
         super().write_memory(addr, data)
 
 
-def test_a_swap_that_does_not_read_back_puts_his_own_weapon_back(monkeypatch):
+def test_an_unconfirmed_native_swap_is_not_replayed(monkeypatch):
     M.ORIG.clear()
     ad = _DropsHeldId()
     W = _armoury(ad)
-    before = ad.read_memory(ITEM, W.ITEM_SZ), ad.read_memory(BASE + W.GAME_OBJ + W.G_CLASS, 6)
     M._state(ad)["random_weapon"] = True
-    for _ in range(M.ROUND_WEAPON_TRIES + 2):
-        assert "weapon_given" not in M.maintain(ad, _round())
-    assert (ad.read_memory(ITEM, W.ITEM_SZ), ad.read_memory(BASE + W.GAME_OBJ + W.G_CLASS, 6)) == before
+    assert "weapon_given" not in M.maintain(ad, _round())
     given = M._state(ad)["weapon_given"]
-    assert given["verified"] is False and "put back" in given["reason"]
-    item_writes = [a for a, _ in ad.writes if a == ITEM]
-    assert len(item_writes) == 2, "one swap and undo; busy polling cannot repeatedly mutate the hand"
+    assert given["verified"] is False and "native" in given["reason"]
+    assert ad.native.weapon_uncertain
+    writes = len(ad.writes)
     st = M._state(ad)
     pending = st["rw_pending"]
-    monkeypatch.setattr(M.time, "monotonic", lambda: st["rw_retry_at"] + 0.1)
+    monkeypatch.setattr(M.time, "monotonic", lambda: st["rw_retry_at"] + .1)
     M.maintain(ad, _round())
+    assert len(ad.writes) == writes
     assert st["rw_pending"] == pending and st.get("rw_given_epoch") != st["rw_epoch"]
 
 
@@ -746,6 +757,7 @@ def _boss_scene(ad, held):
     W = _armoury(ad, held=held)
     s = _round()
     s["players"] = None
+    s["aim"] = {"item": held}
     s["player"] = {"ptr": PLAYER, "pos": [0.0, 0.0, 0.0], "rot": 0.0}
     s["game"]["stage"] = 0
     s["enemies"] = [{"pos": [0.0, 0.0, 9000.0], "hp": 6500, "hp_max": 6500, "ptr": 7,
@@ -785,6 +797,7 @@ def test_a_close_crowd_gets_one_random_shotgun_and_retains_the_round_draw(ad):
     receipt = M._crowd_weapon(ad, s, st, random.Random(8))
     assert receipt["verified"] and receipt["id"] in M.SHOTGUNS
     assert _hand(ad, W)[0]["id"] == receipt["id"]
+    s["aim"]["item"] = receipt["id"]
     assert M._crowd_weapon(ad, s, st) is None and st["crowd_weapon_swaps"] == 1
     assert st["round_weapon"]["id"] == 0x27
 
@@ -800,6 +813,7 @@ def test_ring_keeps_its_weapon_despite_a_boss_and_a_crowd(ad, monkeypatch):
     import time
     W, s = _boss_scene(ad, held=D.MINE_RING_ITEM)
     s["equipped_id"] = D.MINE_RING_ITEM
+    s["aim"] = {"item": D.MINE_RING_ITEM}
     s["enemies"] += [{"pos": [i * 500, 0, 2500], "hp": 400} for i in range(3)]
     monkeypatch.setattr(D, "WEAPON_ASK", {"item": D.MINE_RING_ITEM, "why": "mine ring",
                                          "until": time.monotonic() + 20})

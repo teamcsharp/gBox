@@ -514,7 +514,7 @@ def _worker_loop(sid, server, headers, ad, stats_of, alive, event, game=None):
                                     from . import primary_weapon
                                     player, generation = ctl.ready()
                                     pending = {'id': row['id'], 'player': player, 'generation': generation,
-                                               'until': time.monotonic() + (9.0 if row['op'] == Q.OP else 3.0)}
+                                               'until': time.monotonic() + (9.0 if row['op'] == Q.OP or "re4_switch_native" in type(ctl).__module__ else 3.0)}
                                     if stats is None:
                                         raise N.Unavailable('autoplay state is unavailable')
                                     stats['native_weapon_pending'] = pending

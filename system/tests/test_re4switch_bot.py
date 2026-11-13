@@ -286,6 +286,16 @@ def test_with_the_player_in_ram_the_bot_fights_through_holds_and_taps(monkeypatc
     assert stats["shots"] >= 1 and "w" not in _down(adapter), "the blunt cadence does not run beside the fight"
 
 
+def test_normal_ram_round_runs_the_native_grenade_ring_controller(monkeypatch):
+    calls = []
+    def ring(snap, stats, now, release):
+        calls.append(snap)
+        return {'armed': False, 'fired': False, 'reason': 'cooldown'}
+    monkeypatch.setattr(B, '_ring_step', lambda *args: ring)
+    _round(monkeypatch, [100.0-i for i in range(25)], n=30)
+    assert calls and all(s.get('player') for s in calls)
+
+
 @pytest.mark.parametrize('stale', [True, False])
 def test_input_recorder_failure_never_stops_the_fight(monkeypatch, stale):
     from gbox.mercs.run_capture import RunCapture
