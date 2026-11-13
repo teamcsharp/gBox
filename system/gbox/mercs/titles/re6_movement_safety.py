@@ -157,25 +157,50 @@ def guard(bot, snap, action, now):
             heading = stick_heading(held, yaw)
             if heading is None:
                 return action
+            sites = [tuple(s) for s in (bot.stats.get('mine_avoid_positions') or ())
+                     if isinstance(s, (list, tuple)) and len(s) == 3]
+            def end_of(keys, lookahead=LOOKAHEAD_CM):
+                way = stick_heading(keys, yaw)
+                return (pos[0] + lookahead * math.sin(way), pos[1], pos[2] + lookahead * math.cos(way))
+            def clearance(keys, lookahead=LOOKAHEAD_CM):
+                end = end_of(keys, lookahead)
+                return min((math.hypot(end[0] - s[0], end[2] - s[2]) for s in sites), default=math.inf)
             def safe(keys, *, detour=False, lookahead=LOOKAHEAD_CM):
                 way = stick_heading(keys, yaw)
+                if way is None:
+                    return False
                 end = (pos[0] + lookahead * math.sin(way), pos[1], pos[2] + lookahead * math.cos(way))
                 return (mesh.clear(pos, end) is True and walk_segment(mesh, pos, end)
                         and (not (detour or escaping) or _bomb_clear(bot, snap, pos, end)))
-            if safe(held):
+            if not escaping and safe(held):
                 return action
             # Evaluate the exact eight pad directions; do not validate a
             # continuous heading and then quantize it back toward the ledge.
             options = sorted(STICK_REL, key=lambda keys: abs(R.wrap(stick_heading(keys, yaw) - heading)))
-            keys = next((keys for keys in options if safe(keys, detour=True)), ())
             short = False
-            if not keys and LOOKAHEAD_FALLBACK_CM > 0:
-                # A 150 cm lookahead can leave the mesh from a narrow walkway/railing corner while a short step is
-                # still on verified floor. Without this the guard stripped every movement for the rest of a round
-                # (live 2026-11-13: floor_safety_why "no verified floor escape direction" held the bot in place
-                # fighting for 140+ s). Never a longer step than before, so no new ledge is exposed.
-                keys = next((keys for keys in options if safe(keys, detour=True, lookahead=LOOKAHEAD_FALLBACK_CM)), ())
-                short = bool(keys)
+            if escaping and sites:
+                # While a bomb is pending the escape is a RADIAL run, not "the requested stick if it happens to be
+                # safe": live 2026-11-13 sprints crawled 130 cm in 20 s because every safe parallel step was taken
+                # instead of the one that actually leaves the blast. Pick the verified direction with the largest
+                # clearance at the step's end (still floor-proven and under _bomb_clear).
+                safe_opts = [k for k in options if safe(k, detour=True)]
+                if safe_opts:
+                    keys = max(safe_opts, key=clearance)
+                else:
+                    safe_opts = [k for k in options if LOOKAHEAD_FALLBACK_CM > 0
+                                 and safe(k, detour=True, lookahead=LOOKAHEAD_FALLBACK_CM)]
+                    keys = max(safe_opts, key=lambda k: clearance(k, LOOKAHEAD_FALLBACK_CM)) if safe_opts else ()
+                    short = bool(keys)
+            else:
+                keys = next((keys for keys in options if safe(keys, detour=True)), ())
+                short = False
+                if not keys and LOOKAHEAD_FALLBACK_CM > 0:
+                    # A 150 cm lookahead can leave the mesh from a narrow walkway/railing corner while a short step
+                    # is still on verified floor. Without this the guard stripped every movement for the rest of a
+                    # round (live 2026-11-13: floor_safety_why "no verified floor escape direction" held the bot in
+                    # place fighting for 140+ s). Never a longer step than before, so no new ledge is exposed.
+                    keys = next((keys for keys in options if safe(keys, detour=True, lookahead=LOOKAHEAD_FALLBACK_CM)), ())
+                    short = bool(keys)
             result = dict(action, hold=rest + keys)
             why = (('redirecting to verified floor and bomb clearance' if escaping else 'redirecting to verified floor')
                    if keys else 'no verified floor escape direction')

@@ -116,6 +116,14 @@ def test_safe_original_bomb_escape_is_preserved_and_floor_detour_avoids_external
     assert S._bomb_clear(b, snap, snap['player']['pos'], end(snap, out['hold']))
 
 
+def test_a_bomb_escape_runs_radially_to_the_largest_clearance():
+    # Live 2026-11-13: sprinting along a safe parallel step only gained ~130 cm in 20 s. While a bomb is pending the
+    # guard must pick the verified direction that actually leaves the blast, not merely the one that was requested.
+    b, snap = bot(), view()
+    b.stats.update(mine_escape_required=True, mine_avoid_positions=[[330., 0., 330.]])   # 130 cm to the east
+    out = S.guard(b, snap, {'hold': ('lup',)}, 100.)
+    assert out['hold'] == ('lright',)              # world left: 280 cm from it, versus 198 cm stepping north
+
 def test_identified_surrounding_remote_ring_permits_escape_without_weakening_external_clearance():
     b, snap = bot(), view()
     center = snap['player']['pos']
