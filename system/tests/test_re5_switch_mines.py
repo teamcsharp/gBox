@@ -709,6 +709,29 @@ def test_a_long_tick_gap_pauses_the_equip_clock_instead_of_failing_the_attempt()
     assert m.stats["mine_equip_failures"] == 0
 
 
+def test_failed_rearm_cannot_renew_its_own_deadline_with_every_tap():
+    m = MN.Mines({})
+    m.new_round(0.0)
+    m.state, m.t, m.gun_grid = 'rearm', 10.0, GUN['grid']
+    actions = []
+    for i in range(1, 26):
+        actions.append(m.tick(p(), held(), [], 10.0 + i * .05))
+    assert m.state == 'idle' and actions[-1] is None
+    assert 1 <= sum(bool(a and a.get('tap')) for a in actions) <= 3
+    assert m.stats['mines_placed'] == 0
+
+
+def test_enemy_closing_during_equip_gives_combat_a_retry_window():
+    m = MN.Mines({})
+    m.new_round(0)
+    m.state, m.t = 'equip', 40.0
+    assert m.tick(p(), held(), foes((100, 0)), 40.1) == {'hold': ()}
+    assert m.state == 'rearm' and m._retry_at == 40.1 + MN.RETRY_S
+    assert m.tick(p(), snap(), [], 40.2) is None and m.state == 'idle'
+    assert m.tick(p(), snap(), [], 40.3) is None  # even if the crowd briefly clears
+    assert m.stats['mines_placed'] == 0
+
+
 def test_a_bomb_in_hand_with_no_quick_grid_still_plants():
     """The equip press can leave the item's grid record outside QUICK: the hand flag alone is the plant's proof."""
     m = MN.Mines({})

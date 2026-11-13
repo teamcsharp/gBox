@@ -100,6 +100,20 @@ def test_crowd_keeps_the_shotgun_in_hand_even_when_another_shotgun_is_first(held
     assert b.stats["rampage_swaps"] == 0
 
 
+@pytest.mark.parametrize('arsenal', [False, True])
+def test_crowd_prefers_loaded_shotgun_then_holds_it_as_the_crowd_thins(monkeypatch, arsenal):
+    from gbox.mercs import weapon_swap as W
+    monkeypatch.setattr(W.PROFILES['re5'], 'enabled', arsenal)
+    b, _ = bot()
+    magnum = dict(M92F, id=0x10B, item=0x0B)
+    inv = [magnum, SHOTGUN]
+    assert b._rampage_gun(inv, crowd_count=3, now=1)[1] == 'shotgun'
+    assert b._rampage_gun(inv, crowd_count=1, now=1.8)[1] == 'shotgun'
+    assert b._rampage_gun(inv, crowd_count=1, now=3.0)[1] == 'magnum'
+    assert b._rampage_gun([magnum], crowd_count=3, now=4)[1] == 'magnum'
+    assert b._rampage_gun([magnum, dict(SHOTGUN, rounds=0)], crowd_count=3, now=5)[1] == 'magnum'
+
+
 def test_the_target_inside_is_held_and_only_a_grab_range_one_takes_over():
     b, clock = bot()
     a, c = at(300, 0), at(400, 30)

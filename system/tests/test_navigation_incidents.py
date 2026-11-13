@@ -55,6 +55,52 @@ def test_combat_and_telemetry_gaps_are_not_wall_evidence():
     assert m.changes[-1]['outcome'] == 'telemetry_gap' and m.active is None
 
 
+def churn_row(k, pos=(0, 0, 0)):
+    r = row(k*.2, pos, route=([(500, 0, 100)] if k % 2 else [(500, 0, -100)]))
+    r.update(goal={'id': 'time-bonus'}, route_endpoint=[1000, 0, 0])
+    return r
+
+
+def test_changing_waypoints_cannot_hide_a_repeated_navigation_failure():
+    m = Monitor()
+    for k in range(17):
+        m.observe(churn_row(k))
+    assert m.active['kinds'] == ['navigation_waypoint_churn_without_progress']
+    assert m.active['distance_metric'] == 'stable_final_goal_distance'
+    assert m.active['collision_confirmed'] is None and m.sequence == 1
+    for k in range(17, 22):
+        m.observe(churn_row(k))
+    assert m.sequence == 1  # waypoint changes do not close/reopen the same episode
+    for k in range(22, 28):
+        m.observe(churn_row(k, (150, 0, 0)))
+    assert m.active is None and m.changes[-1]['outcome'] == 'progress_restored'
+
+
+def test_waypoint_changes_alone_do_not_prove_a_navigation_failure():
+    for mode in ('stairs', 'forward', 'new_goal', 'new_player', 'arrived', 'no_endpoint', 'uncommanded'):
+        m = Monitor()
+        for k in range(17):
+            r = churn_row(k)
+            if mode == 'stairs': r['pos'][1] = k*5
+            elif mode == 'forward': r['pos'][0] = k*10
+            elif mode == 'new_goal': r['goal']['id'] = str(k)
+            elif mode == 'new_player': r['player_generation'] = k
+            elif mode == 'arrived': r['pos'] = list(r['route'][0])
+            elif mode == 'no_endpoint': r.pop('route_endpoint')
+            else: r['controls'] = {'keys': []}
+            m.observe(r)
+        assert not m.changes, mode
+
+
+def test_full_route_endpoint_survives_the_recorders_bounded_route_prefix():
+    from gbox.mercs.flight_recorder import FlightRecorder
+    cap = FlightRecorder(scale=.1)
+    path = [(i*1000, 0, 0) for i in range(20)]
+    cap.observe(1, {'player': {'pos': (0, 0, 0)}}, {'route': path}, {})
+    r = cap.tail[-1]
+    assert len(r['route']) == 12 and r['route_endpoint'] == [1900, 0, 0]
+
+
 def test_missing_goal_is_preserved_as_unknown_but_commanded_immobility_is_reported():
     m = Monitor(); feed(m, route=())
     assert m.active['distance_metric'] == 'unavailable'

@@ -206,6 +206,7 @@ class Mines:
 
     def new_round(self, now: float) -> None:
         self.state, self.t, self.round_t0 = "idle", now, now
+        self._rearm_tap_at = -1e9
         self.last_at, self.last_pos, self.site, self.clear_from = None, None, None, None
         self.bombs, self.blast = {}, None
         self.baseline = None
@@ -551,6 +552,7 @@ class Mines:
             return {"hold": ()}
         if busy and self.state in ("neutral", "equip"):
             self.state, self.t = "rearm", now            # held / ringed before the press: give it up, the gun back
+            self._retry_at = now + RETRY_S
             return None
         if self.state == "neutral":
             if now - self.t < NEUTRAL_S:
@@ -575,6 +577,7 @@ class Mines:
                 if why or "ground_mines" not in snap:
                     self.stats["mine_blocked_reason"] = why or "ground mine observation unavailable"
                     self.state, self.t = "rearm", now
+                    self._retry_at = now + RETRY_S       # fight before another equip/abort cycle
                     return {"hold": ()}                 # no plant while a threat closed during equip
                 self.state, self.t, self.saw_place = "place", now, False
                 self.saw_spent = False
@@ -667,8 +670,10 @@ class Mines:
                 return None
             if now - self.t < 0.3:
                 return {"hold": ()}                       # (a neutral pad before the D-pad)
-            self.t = now - REARM_S + 0.6                  # one tap, then wait for it
-            return {"tap": QUICK[gun["grid"]]}
+            if now - self.__dict__.get('_rearm_tap_at', -1e9) >= EQUIP_RETAP_S:
+                self._rearm_tap_at = now
+                return {"tap": QUICK[gun["grid"]]}
+            return {"hold": ()}                         # retry without extending the rearm deadline
         return None
 
     def _trail(self, live: list) -> bool:

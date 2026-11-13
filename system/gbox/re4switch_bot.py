@@ -327,6 +327,7 @@ class Round:
         self.live_seen = False                  # the game said in control with its clock running (game_state)
         self.phases: list = []                  # the game's phases in the order seen
         self.posted = None
+        self.native_selection = None
 
     def observe(self, snap: dict, now: float) -> None:
         game = snap.get("game")
@@ -335,6 +336,10 @@ class Round:
                 self.phases.append(game.get("phase"))
             if game.get("in_control") and game.get("clock_running"):
                 self.live_seen = True
+                stage, character = game.get('stage'), game.get('mode')
+                if self.native_selection is None and type(stage) is int and type(character) is int \
+                        and 0 <= stage < len(driver.STAGES) and 0 <= character < len(driver.CHARACTERS):
+                    self.native_selection = {'stage': stage, 'player': character}
         timer = snap.get("timer")
         if isinstance(timer, (int, float)) and not isinstance(timer, bool):
             if self.last_timer is not None and 0 < timer < self.last_timer:
@@ -377,15 +382,20 @@ class Round:
         return None
 
 
-def _boundary(rnd: Round, end: dict, snap: dict, stats: dict, at: float) -> dict:
-    pick = driver.SELECTION
+def _round_selection(rnd):
+    pick = getattr(rnd, 'native_selection', None) or driver.SELECTION
     character = driver.CHARACTERS[pick.get("player") or 0]
     stage = driver.STAGES[pick.get("stage") or 0]
+    return stage, character, 'native_mercsys' if getattr(rnd, 'native_selection', None) else 'requested'
+
+
+def _boundary(rnd: Round, end: dict, snap: dict, stats: dict, at: float) -> dict:
+    stage, character, source = _round_selection(rnd)
     witness = {**end, "playing_observed": rnd.clock_counting or rnd.player_seen,
                "player_verified": rnd.player_seen, "clock_verified": rnd.clock_counting,
                "kills": stats.get("kills_seen"), "kills_source": stats.get("kills_source"),
                "clock_addr": hex(snap["clock_addr"]) if isinstance(snap.get("clock_addr"), int) else None,
-               "hud_seen": rnd.hud_seen, "character_source": "requested", "stage_source": "requested"}
+               "hud_seen": rnd.hud_seen, "character_source": source, "stage_source": source}
     return {"round_id": rnd.id, "at": at, "map_id": MAP_ID, "role": "solo_p1", "source": "native_terminal_reader",
             "mode": "mercenaries", "stage": stage, "character": character, "witness": witness}
 
@@ -1080,8 +1090,7 @@ def _record_round(rnd: Round, end: dict, stats: dict) -> None:
     rnd.evidence_recorded = True
     stats['round_evidence_closed'] = True
     outcome = {"results": "completed", "dead": "died"}.get(end.get("screen"), "interrupted")
-    pick = driver.SELECTION
-    stage = driver.STAGES[pick.get("stage") or 0]
+    stage, character, selection_source = _round_selection(rnd)
     cap = getattr(rnd, "capture", None)
     if cap is not None:
         stats.update(cap.finish(time.time(), outcome, stage=stage))
@@ -1092,8 +1101,8 @@ def _record_round(rnd: Round, end: dict, stats: dict) -> None:
     try:
         from .mercs import lessons as lesson_store
         from .mercs.notebook import Notebook
-        pick = driver.SELECTION
         observed = dict(stats)
+        observed.update(round_stage_source=selection_source, round_character_source=selection_source)
         base = getattr(rnd, "counter_base", None)
         if isinstance(base, dict):
             for key in ROUND_COUNTERS:
@@ -1104,7 +1113,7 @@ def _record_round(rnd: Round, end: dict, stats: dict) -> None:
         observed.update(team_role="solo_p1", scoring_scope="solo",
                         source_session_id=sid, source_autoplay_job_id=jid)
         Notebook(lesson_store.ROOT.parent, MAP_ID).finish(
-            driver.STAGES[pick.get("stage") or 0], "mercenaries", driver.CHARACTERS[pick.get("player") or 0],
+            stage, "mercenaries", character,
             outcome, observed, round_id=rnd.id)
         stats["round_notebook"] = "recorded"
     except Exception as exc:                                   # noqa: BLE001 - evidence never ends a round

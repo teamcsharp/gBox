@@ -173,9 +173,14 @@ def re6_desired_index(bot, p, held, now):
 RE5_FAMILY_ORDER = ("magnum", "shotgun", "automatic")
 
 
-def re5_rampage_families(bot):
+def re5_rampage_families(bot, *, loaded_families=None, crowd_count=0, now=None):
     profile = PROFILES["re5"]
     if not profile.enabled:
         return None
-    # Magnum first by default (operator: rapid-fire magnums), shotgun for the circle.
-    return RE5_FAMILY_ORDER
+    if loaded_families is None or now is None:
+        return RE5_FAMILY_ORDER
+    family = decide(profile, loaded_families=loaded_families, crowd_count=crowd_count,
+                    now=now, state=_state(bot))
+    # Native launcher firing is not verified in this resolver. Keep the existing
+    # supported families even if an edited profile asks for another family.
+    return tuple(dict.fromkeys(((family,) if family in RE5_FAMILY_ORDER else ()) + RE5_FAMILY_ORDER))

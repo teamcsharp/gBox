@@ -29,6 +29,47 @@ def movement(row):
     return set(controls.get('keys', controls.get('hold', ())) or ())
 
 
+def final_goal(row):
+    goal = row.get('goal') or {}
+    if isinstance(goal, dict) and goal.get('id') is not None:
+        # route is truncated in the recorder. Only its separately captured full
+        # endpoint can substitute for a goal position.
+        return goal.get('pos') or row.get('route_endpoint'), goal['id']
+    target = row.get('target') or {}
+    if isinstance(target, dict) and target.get('kind') in ('bonus', 'waypoint'):
+        return target.get('pos'), target.get('id')
+    return None, None
+
+
+def waypoint_churn(rows):
+    """Repeated A/B route heads toward one final goal, with no arrival evidence."""
+    dest, key = final_goal(rows[-1])
+    if dest is None or key is None:
+        return None
+    clusters, sequence = [], []
+    owner = rows[-1].get('player'), rows[-1].get('player_generation')
+    for r in rows:
+        end, identity = final_goal(r)
+        head, _ = waypoint(r)
+        if (identity != key or end is None or math.dist(end, dest) > 50 or head is None
+                or math.dist(r['pos'], head) < 75
+                or (r.get('player'), r.get('player_generation')) != owner):
+            return None
+        index = next((i for i, p in enumerate(clusters) if math.dist(head, p) <= 50), None)
+        if index is None:
+            index = len(clusters)
+            clusters.append(head)
+        if not sequence or sequence[-1] != index:
+            sequence.append(index)
+    repeated = any(a == c and b == d and a != b for a,b,c,d in zip(
+        sequence, sequence[1:], sequence[2:], sequence[3:]))
+    # A stair ascent or a legitimate detour is movement, not a wall diagnosis.
+    if not repeated or math.dist(rows[0]['pos'], rows[-1]['pos']) >= 75 \
+            or max(r['pos'][1] for r in rows)-min(r['pos'][1] for r in rows) >= 30:
+        return None
+    return dest, len(sequence)-1, key
+
+
 class Monitor:
     """One report per episode, including a second episode soon after recovery."""
     def __init__(self):
@@ -66,6 +107,10 @@ class Monitor:
             self.close(now, 'navigation_interrupted')
             return
         dest, metric = waypoint(row)
+        if self.active and self.active.get('waypoint_switches'):
+            dest, key = final_goal(row)
+            if key != self.active.get('final_goal_id'):
+                self.close(now, 'goal_or_player_changed')
         if self.active:
             old = self.active['waypoint']
             changed = (dest is None) != (old is None) or (dest is not None and old is not None and math.dist(dest, old) > 50)
@@ -96,9 +141,14 @@ class Monitor:
             return
         # A real detour can move away from the final goal. Measure the active
         # waypoint, and reject a window spanning a changed route/goal.
+        churn = None
         if any((waypoint(r)[0] is None) != (dest is None) or
                (dest is not None and math.dist(waypoint(r)[0], dest) > 50) for r in rows):
-            return
+            churn = waypoint_churn(rows)
+            if churn is None:
+                return
+            dest, switches, final_id = churn
+            metric = 'stable_final_goal_distance'
         duration = rows[-1]['t']-rows[0]['t']
         coverage = sum((b['t']-a['t']) for a,b in zip(rows, rows[1:])
                        if movement(a) & {'lup', 'ldown', 'lleft', 'lright'}) / duration
@@ -112,7 +162,9 @@ class Monitor:
         if (distance is not None and (distance < 75 or progress >= 20)) or coverage < .8:
             return
         kinds = []
-        if travel < 30:
+        if churn:
+            kinds.append('navigation_waypoint_churn_without_progress')
+        elif travel < 30:
             kinds.append('navigation_no_progress')
             if reversals >= 4:
                 kinds.append('alternating_turn_commands_without_progress')
@@ -135,6 +187,8 @@ class Monitor:
                        'player': row.get('player'), 'position_cm': row['pos'], 'waypoint': dest,
                        'player_generation': row.get('player_generation'),
                        'goal': row.get('goal'), 'distance_metric': metric,
+                       'waypoint_switches': switches if churn else 0,
+                       'final_goal_id': final_id if churn else None,
                        'distance_at_open_cm': round(distance, 2) if distance is not None else None,
                        'goal_progress_cm': round(progress, 2) if progress is not None else None,
                        'travel_cm': round(travel, 2), 'net_displacement_cm': round(net, 2),

@@ -3332,7 +3332,7 @@ class Bot:
                 self.stats["whips"] += 1
             w["last_big"] = None
 
-    def _rampage_gun(self, inv):
+    def _rampage_gun(self, inv, *, crowd_count=None, now=None):
         """Prefer the gun already in hand within each family; avoid swapping equivalent shotguns."""
         from . import re5_weapons
         choice = getattr(self, "_choice", None) if WM_KEEP_CHOICE else None
@@ -3347,7 +3347,19 @@ class Bot:
         # The chosen family is equipped by its D-pad quick slot, which re5_switch._native_equipment
         # attaches through re5_switch_equip's native action -- so no item wheel appears either.
         from .. import weapon_swap
-        for fam in (weapon_swap.re5_rampage_families(self) or RAMPAGE_FAMILIES):   # (magnum first: the flashbang's rush wants it too)
+        available = {spec.family for s_ in inv or ()
+                     if s_.get('type') == 1 and self._loaded_gun(s_)
+                     and (s_.get('hand') or s_.get('grid') in QUICK)
+                     and (spec := re5_weapons.WEAPONS.get(s_.get('item'))) is not None}
+        default = RAMPAGE_FAMILIES
+        if crowd_count is not None and now is not None:
+            if crowd_count >= CROWD_FIRE_N:
+                self._crowd_gun_until = now + weapon_swap.PROFILES['re5'].crowd_clear_hold_s
+            if now < getattr(self, '_crowd_gun_until', -1e9):
+                default = ('shotgun', 'magnum', 'automatic')
+        families = weapon_swap.re5_rampage_families(self, loaded_families=available,
+                        crowd_count=crowd_count or 0, now=now) or default
+        for fam in families:
             candidates = []
             for s_ in inv or ():
                 spec = re5_weapons.WEAPONS.get(s_.get("item"))
@@ -3459,7 +3471,16 @@ class Bot:
             self.target_at = now
         dist = flat(tgt)
         body_err = wrap(heading(tgt["pos"][0] - px, tgt["pos"][2] - pz) - p["rot"])
-        gun, fam = self._rampage_gun(inv)
+        gun, fam = self._rampage_gun(inv, crowd_count=len(ring), now=now)
+        current_ray = snap.get('laser') or {}
+        if (gun is not None and not gun.get('hand') and held and self._loaded_gun(held)
+                and p.get('motion') in MOTION_AIM and current_ray.get('up')
+                and current_ray.get('from') and current_ray.get('at')
+                and any(self._crowd_hit(current_ray['from'], current_ray['at'], e['pos'], False, body(e))
+                        for e in ring)):
+            # Take the reachable shot already lined up. Switching families must
+            # not lower a loaded gun while a live body is on its observed ray.
+            gun, fam = self._rampage_gun([held])
         self.stats["rampage_weapon"] = fam or (f"0x{held['item']:03x}" if held else "-")
         # attacked from behind: one decisive quick turn (the gun down for it), then up and blasting
         if QUICK_TURN and dist <= BEHIND_R and abs(body_err) > RAMPAGE_BEHIND and now - self.quick_at > (QUICK_GAP_GRAB_S if dist <= GRAB_THREAT_R else QUICK_GAP_S)                 and (now - self.quick_at >= QUICK_BACK_S or dist <= GRAB_THREAT_R):
@@ -3480,7 +3501,8 @@ class Bot:
             if gun is not None and not gun.get("hand") and now - self._swap_at >= SWAP_GAP_S:
                 self._swap_at = now                      # the shotgun / magnum first (one press, the gun down)
                 self.stats["rampage_swaps"] += 1
-                self.stats["shotgun_swaps"] += 1
+                if fam == 'shotgun':
+                    self.stats["shotgun_swaps"] += 1
                 self.doing, self.why = "raise", f"rampage: the {fam} up first"
                 self.stats["idle_in_5m_s"] = round(self.stats["idle_in_5m_s"] + dt, 2)
                 return {"hold": (QUICK[gun["grid"]],)}
@@ -5801,6 +5823,8 @@ class Bot:
         """A round's own state and gauges, at the first round's start and at each replay's (dead/retry: the engine's
         marker stays, the round's statues, clock and gauges start again)."""
         self._round_t0 = now
+        self._crowd_gun_until = -1e9
+        self._arsenal = None
         self.stats["crowd_max"] = 0
         for kind in FAULT_KINDS:
             self.stats["ex_" + kind] = ""

@@ -89,6 +89,7 @@ class FlightRecorder:
                'route_requires_prompt': safe(plan.get('route_requires_prompt')),
                'controls': safe(plan.get('controls')), 'goal': safe(plan.get('operator_goal')),
                'target': safe(target), 'route': [self.point(v) for v in (plan.get('route') or [])[:12]],
+               'route_endpoint': self.point(plan['route'][-1]) if plan.get('route') else None,
                'route_source': safe(plan.get('route_source')),
                'timer': safe(snap.get('timer')), 'kills': safe(snap.get('kills')),
                'weapon': safe(snap.get('equipped_id', snap.get('weapon_class', p.get('weapon_id', held_weapon)))),

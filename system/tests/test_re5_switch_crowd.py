@@ -196,11 +196,11 @@ def test_the_crowds_gun_prefers_a_magnum_then_shotgun_then_automatic():
 
 
 @pytest.mark.parametrize("weapon", [0x0B, 0x1A, 0x1B])
-def test_the_held_magnum_fires_on_the_body_without_swapping_to_a_shotgun(weapon):
+def test_an_already_lined_up_magnum_fires_without_swapping_to_a_shotgun(weapon):
     b, clock = bot()
     held = dict(SHOTGUN, slot=2, id=0x100 | weapon, item=weapon, grid=3, hand=True)
     inv = [SHOTGUN, dict(held, slot=3, grid=1, hand=False), held]
-    act = b.tick(snap(CROWD, inv=inv))
+    act = b.tick(snap(CROWD, dot=chest(CROWD[0]), motion=26, inv=inv))
     assert "zl" in act["hold"] and not set(act["hold"]) & set(R.QUICK.values())
     clock[0] = 0.2
     act = b.tick(snap(CROWD, dot=chest(CROWD[0]), motion=26, inv=inv))

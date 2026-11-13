@@ -649,3 +649,28 @@ def test_the_bow_tap_holds_the_trigger_through_the_draw():
     sleeps.clear()
     keys.apply({"tap": "zr"})
     assert sent[0] == [{"key": "zr", "down": True}, {"key": "zr", "down": False}] and not sleeps
+
+
+def test_round_labels_follow_native_stage_and_character_after_a_controller_reload(monkeypatch):
+    monkeypatch.setattr(B.driver, 'SELECTION', {'player': 0, 'stage': 1})
+    rnd = B.Round(0)
+    s = {'game': {'phase': 'playing', 'in_control': True, 'clock_running': True,
+                  'stage': 2, 'mode': 3}, 'timer': 100,
+         'player': {'pos': (0, 0, 0), 'hp': 1000}}
+    rnd.observe(s, 1)
+    end = {'screen': 'results', 'timer': 0, 'tally_ready': True}
+    b = B._boundary(rnd, end, s, {'kills_seen': 101}, 100)
+    assert (b['stage'], b['character']) == ('Base', 'HUNK')
+    assert b['witness']['stage_source'] == b['witness']['character_source'] == 'native_mercsys'
+    # A later menu's fields cannot relabel evidence from the completed attempt.
+    rnd.observe({'game': {'phase': 'none', 'stage': 0, 'mode': 0}}, 101)
+    assert B._round_selection(rnd) == ('Base', 'HUNK', 'native_mercsys')
+
+
+def test_unavailable_native_selection_is_explicitly_requested_not_observed(monkeypatch):
+    monkeypatch.setattr(B.driver, 'SELECTION', {'player': 1, 'stage': 0})
+    for stage, character in [(None, None), (-1, 0), (0, 99), (True, 0)]:
+        rnd = B.Round(0)
+        rnd.observe({'game': {'phase': 'playing', 'in_control': True, 'clock_running': True,
+                             'stage': stage, 'mode': character}}, 1)
+        assert B._round_selection(rnd) == ('Village', 'Ada', 'requested')
