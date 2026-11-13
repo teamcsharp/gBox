@@ -718,7 +718,7 @@ def play(pad: Pad, seconds: float = 120.0) -> str:
             # Nothing here trusts `heading_deg`: presses in one direction produced +130, +21, 0 and +145 degrees, so
             # it is not a signal to servo on. Instead hill-climb on DISTANCE - turn a side, step, and keep that side
             # only if it made us closer. That is how an enemy was closed from 210 units to 12 and killed.
-            if distance <= 15.5:
+            if distance <= 10.0:      # inside the ~12-unit envelope - 15.5 was outside it
                 # SWEEP the aim cone here too. An attack only connects inside 8 degrees and heading_deg cannot be
                 # trusted to aim (presses in one direction gave +130, +21, 0 and +145 degrees), so swing three times
                 # and rotate a little each visit. This is the fix for "untouched after 8 swings".
@@ -776,6 +776,11 @@ def play(pad: Pad, seconds: float = 120.0) -> str:
                 # trimates, monofluids or difluids - and a full bag is what stopped pickups working in the first place.
                 if candidate_class.startswith("TItem") or candidate_class.startswith("TObjItem"):
                     continue
+                # Containers, capsules and traps are NOT for the catch-all: they belong to the box branch, which
+                # SWEEPS the aim cone. A single press here was preempting that and destroying nothing.
+                if ("Container" in candidate_class or "Capsule" in candidate_class
+                        or "Trap" in candidate_class):
+                    continue
                 distance_c = math.hypot(float(candidate.get("x") or 0) - x, float(candidate.get("z") or 0) - z)
                 if distance_c <= 12.0:
                     actionables.append((distance_c, candidate_class))
@@ -803,7 +808,7 @@ def play(pad: Pad, seconds: float = 120.0) -> str:
                           + (float(e.get("z") or 0) - z) ** 2)
                 bx, bz = float(box.get("x") or 0), float(box.get("z") or 0)
                 bdist = math.hypot(bx - x, bz - z)
-                if bdist <= 14.0:
+                if bdist <= 8.0:          # inside the ~12-unit attack envelope; 14 was outside it and never connected
                     # SWEEP the aim cone. The attack only connects inside an 8-degree cone and heading_deg cannot be
                     # trusted to aim, so swing a few times and rotate a little each visit - verified to break a box
                     # at heading 58 after the same sweep. A fixed heading beside a box hits nothing.
