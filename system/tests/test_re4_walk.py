@@ -26,6 +26,49 @@ def _walker(pos, rot=0.0, now=0.0, mesh=None):
 EAST = math.pi / 2                       # heading atan2(dx, dz): facing +x
 
 
+def test_shortcut_preserves_the_floor_of_an_overhead_waypoint(monkeypatch):
+    w = _walker((4500., 0., 3300.))
+    monkeypatch.setattr(W.re4_room_map, 'for_snap', lambda s: None)
+    assert w._open(w._pos(), 4700., 3300.)
+    assert not w._open(w._pos(), 4700., 3300., F.PLATFORM_Y)
+    assert w._shortcut(w._pos(), [(4500., 0., 2700.), (4700., F.PLATFORM_Y, 3300.)]) == 0
+
+
+def test_flat_proximity_does_not_complete_waypoint_on_floor_above(monkeypatch):
+    w = _walker((4500., 0., 3300.))
+    goal = (4800., F.PLATFORM_Y, 3500.)
+    pts = [(4500., F.PLATFORM_Y, 3300.), goal]
+    w._route.update(cell=(round(goal[0]/W.GOAL_CELL_MM), round(goal[1]/W.GOAL_CELL_Y_MM),
+                          round(goal[2]/W.GOAL_CELL_MM)), at=w.now, sig=w.mesh.sig, pts=pts, cut_at=w.now)
+    w._waypoint(goal)
+    assert len(w._route['pts']) == 2
+
+
+def test_route_owned_ticks_publish_the_current_action():
+    bot = re4_switch.Bot(stats={}, director=False)
+    goals = W.goals_of(bot)
+    bot.receive_map_goal({'id':'bonus-test', 'round':goals.round, 'kind':'point',
+                         'entity_id':0, 'pos':[5000., 0., 2600.], 'label':'bonus'})
+    goals.goal.update(source='time_bonus', floor_y=0.)
+    bot.stats.update(doing='fire', why='stale combat action')
+    bot.tick(_snap((1000., 0., 2600.)), now=1.)
+    assert bot.stats['doing'] == 'bonus_run'
+    assert bot.stats['why'] != 'stale combat action'
+
+
+def test_distance_keeps_normal_running_and_does_not_erase_history_on_discontinuity():
+    stats = {'rounds':1}
+    for i in range(6):
+        re4switch_bot.walk_track(stats, _snap((i*800., 0., 2600.)), i*.2)
+    assert stats['navigation_distance_m'] == 4.
+    re4switch_bot.walk_track(stats, _snap((80000., 0., 2600.)), 1.2)
+    assert stats['navigation_distance_m'] == 4.
+    assert stats['walk_discontinuities'] == 1
+    stats['rounds'] = 2
+    re4switch_bot.walk_track(stats, _snap((80000., 0., 2600.)), 1.4)
+    assert stats['navigation_distance_m'] == 0.
+
+
 def test_blocked_forward_leg_tries_two_distinct_y_presses_then_continues():
     w = _walker((0., 0., 0.))
     pos = w._pos()

@@ -160,17 +160,18 @@ class Walker:
         self.stats[key] = self.stats.get(key, 0) + n
 
     # --- the floor ---
-    def _open(self, pos, x: float, z: float) -> bool:
+    def _open(self, pos, x: float, z: float, y: float | None = None) -> bool:
         """Whether the straight way from pos to (x, z) is open floor on the mesh (the far end at its own floor height)."""
         mesh = self.mesh
         if mesh is None:
             return True
-        end = (x, pos[1], z)
+        end = (x, pos[1] if y is None else y, z)
         try:
-            tri = mesh.find(end, floor_only=True)
-            h = mesh._height(tri, x, z) if tri is not None else None
-            if h is not None:
-                end = (x, h, z)
+            if y is None:
+                tri = mesh.find(end, floor_only=True)
+                h = mesh._height(tri, x, z) if tri is not None else None
+                if h is not None:
+                    end = (x, h, z)
             return bool(mesh.floor_segment(tuple(pos), end))
         except Exception:                                  # noqa: BLE001 - the mesh never costs a tick
             return False
@@ -295,10 +296,10 @@ class Walker:
                     out = (q.portal[0] + dx / n * LINK_PUSH_MM, q.portal[2] + dz / n * LINK_PUSH_MM)
                     self.wp = out + (self.now,)
                     return out
-            elif len(pts) > 1 and d <= WP_MM:
+            elif len(pts) > 1 and d <= WP_MM and abs(point[1] - py) <= LEVEL_DY_MM:
                 nxt = pts[1]
                 nxt_pt = nxt.approach if hasattr(nxt, "approach") else nxt
-                if not LOOKAHEAD or d <= WP_NEAR_MM or self._open(pos, nxt_pt[0], nxt_pt[2]):
+                if not LOOKAHEAD or d <= WP_NEAR_MM or self._open(pos, nxt_pt[0], nxt_pt[2], nxt_pt[1]):
                     pts.pop(0)
                     continue
                 self._count("mesh_lookahead_holds")
@@ -332,9 +333,11 @@ class Walker:
         for i, point in reversed(cand[1:]):
             if any(_room_map._dist_seg(q[0], q[2], pos[0], pos[2], point[0], point[2]) < avoid_mm for q in refused):
                 continue
-            if rm is not None and rm.walk_block(pos, (point[0], pos[1], point[2]), end_r=0.0):
+            if rm is not None and rm.walk_block(pos, tuple(point[:3]), end_r=0.0):
                 continue
-            if self._open(pos, point[0], point[2]):
+            # Preserve the route's floor. Projecting an upstairs waypoint onto
+            # the floor under it skipped the stairs on Waterworld indefinitely.
+            if self._open(pos, point[0], point[2], point[1]):
                 return i
         return 0
 
@@ -368,7 +371,7 @@ class Walker:
         gx, gz = goal[0], goal[2] if len(goal) > 2 else goal[1]
         dist = math.hypot(gx - px, gz - pz)
         far = dist > DIRECT_R_MM or (link and len(goal) > 2 and abs(goal[1] - py) > LEVEL_DY_MM)
-        if not far and LOOKAHEAD and self.mesh is not None and len(goal) > 2 and not self._open(pos, gx, gz):
+        if not far and LOOKAHEAD and self.mesh is not None and len(goal) > 2 and not self._open(pos, gx, gz, goal[1]):
             far = True                                     # near, but behind a wall: the mesh's way round
             self._count("nav_near_walled")
         wp = self._waypoint(tuple(goal)) if far else None
@@ -788,6 +791,7 @@ def attach(cls):
                     re4_switch.AIM_REQUEST.clear()
                     self._aim_since = None
                     self._gun_down_telemetry(False, now)
+                    self._publish_doing()
             self.__dict__["_re4_last_act"] = (now, act)    # what he pressed this tick (plan(): the map's controls)
             return act
         wrapped._re4_walk = True

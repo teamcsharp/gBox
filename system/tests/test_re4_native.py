@@ -376,7 +376,7 @@ def test_a_flash_ring_places_every_blast_round_him_above_the_floor(monkeypatch):
     ctl = _ring_controller(monkeypatch)
     result = ctl.grenade_ring("flash", count=4, radius_cm=1000.0, inner_cm=100.0)
     assert result["state"] == "confirmed" and result["detonated"] == 4
-    assert result["inner_mm"] == 4000.0 and result["radius_mm"] == 10000.0
+    assert result["inner_mm"] == 4010.0 and result["radius_mm"] == 10000.0
     assert result["hp_before"] == 1000 and result["self_damage"] == 0
     targets = [w for w in ctl.writes if w[0] == MAILBOX + CODE.MAILBOX["target"]]
     assert len(targets) == 4 and all(struct.unpack("<Q", d)[0] == BASE + N.FLASH_BLAST for _a, d in targets)
@@ -387,7 +387,7 @@ def test_a_flash_ring_places_every_blast_round_him_above_the_floor(monkeypatch):
 def test_a_hand_ring_uses_the_hand_blast_and_the_7000_floor(monkeypatch):
     ctl = _ring_controller(monkeypatch)
     result = ctl.grenade_ring("hand", count=2, radius_cm=800.0, inner_cm=100.0)
-    assert result["state"] == "confirmed" and result["inner_mm"] == 7000.0
+    assert result["state"] == "confirmed" and result["inner_mm"] == 7010.0
     targets = [w for w in ctl.writes if w[0] == MAILBOX + CODE.MAILBOX["target"]]
     assert all(struct.unpack("<Q", d)[0] == BASE + N.HAND_BLAST for _a, d in targets)
     assert all(r["from_player_cm"] >= 700 for r in result["grenades"])
@@ -399,6 +399,15 @@ def test_hand_ring_at_exact_floor_survives_trigonometric_roundoff(monkeypatch):
     assert result['state'] == 'confirmed' and result['detonated'] == 10
     with pytest.raises(N.Unavailable, match='minimum'):
         ctl._blast_at(N.HAND_BLAST, 'hand', 1, 2, 7002.99, N.HAND_MIN_MM)
+
+
+def test_ring_reanchors_each_blast_after_player_moves(monkeypatch):
+    ctl = _ring_controller(monkeypatch)
+    positions = iter([(0., 0., 0.), (0., 0., 0.), (500., 0., 800.), (500., 0., 800.)])
+    monkeypatch.setattr(ctl, 'player_position', lambda: next(positions))
+    result = ctl.grenade_ring('hand', count=2, radius_cm=700, inner_cm=700)
+    assert result['state'] == 'confirmed'
+    assert result['grenades'][1]['pos'] == pytest.approx([500., 0., -6210.])
 
 
 def test_the_incendiary_ring_is_refused_before_any_call(monkeypatch):

@@ -1243,9 +1243,12 @@ def step(scr: dict, now: float | None = None) -> str | None:
     if where == "dead_continue":
         # "You Are Dead - Continue Yes / No", the cursor on Yes (measured frame): Yes plays the stage again. Measured
         # 2026-11-10: the frame-only playbook sat on this screen until MercMode's no-progress cut
-        key = _confirm(where, now)
-        # Cancel Continue to return to the selects when the next round needs a new cast.
-        return "b" if key and any(RANDOM_SELECTION.values()) else key
+        if any(RANDOM_SELECTION.values()):
+            # B was ignored on the live Continue screen, trapping the cycle.
+            # Move to No, then confirm only after the frame witnesses it.
+            choice = scr.get('continue_choice')
+            return 'dright' if choice == 'yes' else _confirm(where, now) if choice == 'no' else None
+        return _confirm(where, now)
     return None
 
 
@@ -1321,6 +1324,8 @@ def menu_status() -> dict:
 def next_is_move(scr: dict) -> bool:
     """Whether step(scr) would move a cursor (rather than confirm, cancel or wait)."""
     where = scr.get("where")
+    if where == 'dead_continue' and any(RANDOM_SELECTION.values()):
+        return scr.get('continue_choice') == 'yes'
     if where in CURSOR_MENUS:
         cur, tgt = scr.get("cursor"), scr.get("target")
         return isinstance(cur, int) and isinstance(tgt, int) and cur != tgt
@@ -2819,7 +2824,8 @@ class Bot:
     def _aim_core(self):
         c = self.__dict__.get("_aim_book_core")
         if c is None:
-            c = self._aim_book_core = aim_book.AimCore(combat_profile(), self.stats, lead_prior_s=AIM_LEAD_PRIOR_S)
+            c = self._aim_book_core = aim_book.AimCore(combat_profile(), self.stats,
+                lead_prior_s=AIM_LEAD_PRIOR_S, verified_only=True)
         return c
 
     def _aim_tick(self, snap, now) -> None:

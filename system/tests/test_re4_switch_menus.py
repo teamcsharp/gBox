@@ -344,7 +344,7 @@ LIVE_FRAMES = [FIXTURES / "re4sw_dead_continue.jpg", FIXTURES / "re4sw_round_hud
 @__import__("pytest").mark.skipif(not all(p.exists() for p in LIVE_FRAMES), reason="the live RE4 frames are not fetched")
 def test_the_recorded_death_and_round_frames_are_named():
     """Recorded 2026-11-10: the death frame is almost black (mean 6.5) and read as loading, so nothing answered it."""
-    assert S.classify(LIVE_FRAMES[0].read_bytes()) == {"where": "dead_continue"}
+    assert S.classify(LIVE_FRAMES[0].read_bytes())['where'] == 'dead_continue'
     assert S.classify(LIVE_FRAMES[1].read_bytes()) == {"where": "playing"}
 
 
@@ -362,6 +362,33 @@ def test_continue_is_answered_yes_and_the_stage_intro_is_armed_again():
     r = S.Reader()
     r.press_went_in("dead_continue", "a")
     assert r.stage_picked is True and r.intro_presses == 0
+
+
+def test_random_cast_death_exit_requires_witnessed_no(monkeypatch):
+    monkeypatch.setattr(D, 'RANDOM_SELECTION', {'character': True})
+    D.begin_run()
+    assert D.step({'where':'dead_continue', 'continue_choice':'yes'}, now=500.) == 'dright'
+    assert D.step({'where':'dead_continue', 'continue_choice':None}, now=501.) is None
+    scr = {'where':'dead_continue', 'continue_choice':'no'}
+    assert D.step(scr, now=502.) == 'a'
+    D.pressed(scr, 'a', now=502.)
+    assert D.step(scr, now=503.) is None
+    r = S.Reader()
+    r.continue_choice = 'no'
+    r.press_went_in('dead_continue', 'a')
+    assert r.stage_picked is False
+
+
+def test_continue_choice_is_read_from_highlight_not_assumed_input():
+    gray = np.zeros((540, 960))
+    assert S.continue_choice(gray) is None
+    gray[358:380, 735:780] = 130
+    assert S.continue_choice(gray) == 'yes'
+    gray[358:380, 735:780] = 40
+    gray[358:380, 855:890] = 100
+    assert S.continue_choice(gray) == 'no'
+    gray[358:380, 735:780] = 100
+    assert S.continue_choice(gray) is None
 
 
 

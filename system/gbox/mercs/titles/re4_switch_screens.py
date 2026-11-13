@@ -138,6 +138,21 @@ def is_dead_continue(rgb, gray) -> bool:
     return rule >= 0.9 and text >= 0.05 and red >= 0.03
 
 
+def continue_choice(gray) -> str | None:
+    """The highlighted word, measured on the live 960x540 Continue menu.
+
+    A dropped directional press must not be treated as a changed choice.
+    Ambiguous fades remain unknown and are never confirmed as No.
+    """
+    levels = [float((gray[353:385, x0:x1] > 70).mean())
+              for x0, x1 in ((730, 792), (850, 898))]
+    if levels[0] >= .02 and levels[0] > levels[1] * 2 + .01:
+        return 'yes'
+    if levels[1] >= .02 and levels[1] > levels[0] * 2 + .01:
+        return 'no'
+    return None
+
+
 # The story save list's two prompts (measured 2026-11-10 on lilspark, 960x540, the share of pixels over 150):
 # "Cancel loading? Yes / No" stacks its options mid-left over an empty panel (title 0.030, Yes 0.022, No 0.024,
 # the cursor 0.19 beside the row it is on, the one-line options row 0.000); "Load data? Yes > No" puts them on one
@@ -175,7 +190,7 @@ def classify(png: bytes) -> dict:
     if has_hud(gray):
         return {"where": "playing"}
     if is_dead_continue(rgb, gray):
-        return {"where": "dead_continue"}
+        return {"where": "dead_continue", "continue_choice": continue_choice(gray)}
     r, thumb = refs(), thumbnail(rgb)
     for name, limit in FIXED.items():
         if rmse(thumb, r["refs"][name]) <= limit:
@@ -222,11 +237,12 @@ class Reader:
         self.story_armed = False
         self.steer: str | None = None
         self.steer_moves = 0
+        self.continue_choice = None
 
     def press_went_in(self, where: str, key: str) -> None:
         if where == "round_intro" and key == "a":
             self.intro_presses += 1
-        if where == "dead_continue" and key == "a":
+        if where == "dead_continue" and key == "a" and self.continue_choice != 'no':
             self.stage_picked, self.intro_presses = True, 0     # Continue: the same stage loads again, intro and all
         if where in self.STEER_SCREENS:
             if key in self.STEER_KEYS:
@@ -248,6 +264,7 @@ class Reader:
 
     def read(self, png: bytes) -> dict:
         raw = classify(png)
+        self.continue_choice = raw.get('continue_choice')
         if raw.get("where") == "story_prompt" and raw.get("prompt") == "load" and not self.story_armed:
             raw = {"where": "unknown"}           # Load data? only ever follows the list (before the steering)
         scr = self._steered(raw)

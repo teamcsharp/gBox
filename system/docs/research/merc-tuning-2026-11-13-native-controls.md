@@ -30,3 +30,17 @@ Claims are made per dart immediately before its call. An uncertain first call ca
 ## Aim learning
 
 RE6 now keeps verified learning in separate notebooks, without importing older trigger-based biases. A native cooldown rearm confirms discharge evidence; requests alone remain unconfirmed. Only settled, measured, unconfounded and identity-matched observations may teach bounded corrections. HP changes remain correlations, not proven projectile attribution. No 20-shot-per-second or S-rank success is claimed.
+
+RE4 and RE5 now also use isolated verified notebooks. Their current hookups do not yet supply native discharge confirmation, so their trigger/HP correlations are recorded but cannot train corrections. This intentionally removes contaminated corrections while native firing evidence is developed; it is not a claim that all three titles already self-calibrate successfully.
+
+## RE4 Waterworld route and death menu
+
+Round `4827267cc2ed4e5c982645964dd182db`, session `7c2f3cf338a14b03-d2db519967ab407f`, died at 32 kills and 14,600 score. Its run map records 180.3 seconds, 148 m traveled, 109.1 seconds stationary, and 142.2 seconds pursuing a bonus. The route repeatedly jumped between ground-level approaches and a walkway 4,000 mm above the player. The preceding round died at 37 kills and 15,700 score. Neither has verified rank success.
+
+The walker's shortcut test projected route waypoints onto the player's floor, so clear ground underneath an upper walkway incorrectly allowed skipping its stairs. It also popped nearby waypoints using horizontal distance alone. Route clearance now keeps the waypoint's actual height, and proximity cannot pop an upstairs waypoint. Synthetic overlapping-floor tests exercise both failures. Route-owned ticks now publish their actual action; previously the live summary retained the last fire action during long bonus runs. The movement counter also incorrectly reset the whole round whenever a normal run moved over 500 mm in one observation; its discontinuity filter now uses elapsed time and preserves previously accumulated travel.
+
+The Continue menu was stuck on Yes while random-cast policy repeatedly sent B. Live directional input visibly selected No; A then exited. The reader now distinguishes the highlighted Yes/No words, and random-cast exits confirm only a witnessed No. Ambiguous frames do not confirm. Native first-aid receipts in this round explicitly show consumed items and HP increases; infinite health remains disabled.
+
+RE4 rings now leave a 10 mm margin beyond their minimum radius and reanchor each ripple to the current player position. The independent distance refusal remains. This addresses live partial failures rounded as `700 cm ... minimum 700 cm`; it does not replace the game-thread mine clearance checks.
+
+Validation: 168 tests passed with one asset-dependent skip across RE4 walker/native/aim/nav/menu suites; another 65 passed across walker, RE5 aim and the shared aim book. Live route, menu and ring results after activation still need observation. The recent RE6 Sherry round ended at 92 kills, 140,790 score and maximum combo 56, with death and rank unverified; it is progress in score, not the requested successful finish.

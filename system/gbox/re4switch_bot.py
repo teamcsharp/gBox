@@ -183,14 +183,20 @@ def walk_track(stats: dict, snap, now: float) -> None:
     tr = stats.get("_walk")
     if not isinstance(tr, dict) or stats.get("_walk_round") != rnd:
         stats["_walk_round"] = rnd
-        stats["_walk"] = tr = {"last": pos, "start": pos, "path": 0.0, "moved": now}
+        stats["_walk"] = tr = {"last": pos, "start": pos, "path": 0.0, "moved": now, "sample_at": now}
     step = math.dist(pos, tr["last"])
-    if step > 500.0:                       # mm: half a metre in one tick is a teleport (a round change), not walking
-        tr.update(last=pos, start=pos, path=0.0, moved=now)
+    dt = now - tr.get('sample_at', now)
+    # A normal run can travel >500 mm between observations. The old fixed
+    # cutoff reset the entire round's distance, reporting 0.8 m for a 148 m run.
+    discontinuity = dt < 0 or dt > 2.0 or step > 500.0 + max(0.0, dt) * 12000.0
+    if discontinuity:
+        tr.update(last=pos, moved=now)
+        stats['walk_discontinuities'] = stats.get('walk_discontinuities', 0) + 1
     elif step > 1.0:
         tr["path"] += step
         tr["moved"] = now
         tr["last"] = pos
+    tr['sample_at'] = now
     net = math.dist(pos, tr["start"])
     stats["walk_m"] = round(tr["path"] / 1000.0, 1)                       # the ground he covered
     stats["walk_net_m"] = round(net / 1000.0, 1)                          # how far he got from where the round began

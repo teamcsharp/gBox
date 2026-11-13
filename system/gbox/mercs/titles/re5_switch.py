@@ -5787,7 +5787,8 @@ class Bot:
     def _aim_core(self):
         c = self.__dict__.get("_aim_book_core")
         if c is None:
-            c = self._aim_book_core = aim_book.AimCore(combat_profile(), self.stats, lead_prior_s=AIM_LEAD_PRIOR_S)
+            c = self._aim_book_core = aim_book.AimCore(combat_profile(), self.stats,
+                lead_prior_s=AIM_LEAD_PRIOR_S, verified_only=True)
         return c
 
     def _aim_tick(self, snap, now) -> None:

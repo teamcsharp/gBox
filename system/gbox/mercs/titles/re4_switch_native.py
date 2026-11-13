@@ -620,15 +620,19 @@ class Controller(N.Controller):
             raise Unavailable(f"unknown grenade kind {kind!r}")
         blast, floor_mm = blasts[kind]
         count = max(1, min(int(RING_COUNT_DEFAULT if count is None else count), RING_COUNT_MAX))
-        radius_mm = max(floor_mm, float(RING_RADIUS_MM_DEFAULT if radius_cm is None else radius_cm * R.MM_PER_CM))
-        inner_mm = max(floor_mm, float(RING_INNER_MM_DEFAULT if inner_cm is None else inner_cm * R.MM_PER_CM))
+        radius_mm = max(floor_mm + SCATTER_SAFE_MM,
+                        float(RING_RADIUS_MM_DEFAULT if radius_cm is None else radius_cm * R.MM_PER_CM))
+        inner_mm = max(floor_mm + SCATTER_SAFE_MM,
+                       float(RING_INNER_MM_DEFAULT if inner_cm is None else inner_cm * R.MM_PER_CM))
         inner_mm = min(inner_mm, radius_mm)
         gap = max(0.0, float(RING_RIPPLE_MS_DEFAULT if ripple_ms is None else ripple_ms)) / 1000.0
-        px, py, pz = self.player_position()
         life_before = self.player_life()
         started = time.monotonic()
         rounds, abort = [], None
         for index in range(count):
+            # Each ripple follows the current player, not the position at the
+            # start of the ring. _blast_at still independently checks clearance.
+            px, py, pz = self.player_position()
             angle = 2.0 * math.pi * index / count
             r = radius_mm if expand is False or count == 1 else inner_mm + (radius_mm - inner_mm) * index / (count - 1)
             x, z = px + r * math.sin(angle), pz + r * math.cos(angle)
