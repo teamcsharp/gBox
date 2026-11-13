@@ -289,3 +289,61 @@ conservative native shotgun/magnum discharge witnesses, and title-local weapon
 partitions. RE5 still needs a verified emission feed; its static provenance is
 in `re5-fire-witness-20261113.md`. Trigger requests must never substitute for
 native discharge or impact evidence in the mastery database.
+
+## Current RE6 observation before the next repair batch
+
+Worker `e41fad8986bf40a5` loaded `c1a97781`; the newer deployment marker on
+disk does not establish that its running process loaded subsequent fixes.
+Session `e41fad8986bf40a5-99863222c9f348b7`, round
+`ed4b38949ac6492889ae688a344b558e`, was still playing at `1794581975.107`.
+The tactical sample showed 73 kills, 61,060 points, 379.91 seconds remaining
+and HP 600/900. Telemetry recorded ten gun trigger requests, one aim-book hit
+and one miss. This is an interim observation, not an observed result rank or
+proof that those kills came from bullets.
+
+The same sample retained 29 ring bombs across two rings, one partial ring,
+32 missed bomb deadlines and five detonation failures. Its allocation gate
+reported `uncertain native allocation; no further automatic bombs in this life`.
+Earlier at `1794581901.149`, the known bomb placed at `1794581842.362` was
+already 53.733 seconds old with only 561.5 cm clearance, below the recorded
+1100 cm detonation requirement. These measurements preserve the failure and
+allocation ambiguity; no missing actor or successful flag write proves a blast.
+The audit issued no gameplay input, and no uncertainty gate was cleared.
+The next escape/deadline repair is not active in this evidence.
+
+Durable telemetry and JPEGs are in Spark
+`gbox-data/analysis/merc-tuning-20261113/post-c1a97781-round-audit.jsonl`
+and its session-named frame files. Earlier completed RE6 attempts are retained
+in `pre-c1a97781-round-summary.json`; `pre-c1-re6-first-bomb-window.json`
+extracts the first bomb escape failure with timestamps and held controls.
+
+The next old-policy RE6 round, `3f1ddd4fb29049faad298f89c5ba52f1`
+(The Catacombs), ended as `died` at `1794582589.021`: 117 kills, 143,420
+points and 358.57 seconds left. Its 465.2 sampled seconds included 273.9
+seconds stationary (59%) and 291.9 seconds in the bomb phase. It recorded
+zero time bonuses taken and nine missed. No result rank was captured.
+
+The final native-action trace shows `cPlAction_pl_act_dying_loop` at
+`1794582571.615`, followed by neutral controls with the reason `down at 1
+health: staying down, no fight`. After `gets_up` at `1794582584.483`, the
+controller resumed raising and firing. `cEm1000ActAtkSokusiCatchHit_PL`
+appeared at `1794582586.587`, followed by `SokusiCatchFinish_PL`; the recorded
+prompt remained null while the controller continued aim/turn decisions.
+This identifies native held-action recognition and emergency response as
+remaining work, not a proven QTE fix or proof that a bomb caused the death.
+During this final sequence, the player and enemy coordinates collapse near
+the origin. The raw 380.2-meter travel and 112.4-meter maximum spawn distance
+therefore include invalid terminal travel and must not be credited as level
+exploration. The full trace is preserved in
+`post-c1a97781-3f1ddd4fb29049faad298f89c5ba52f1-audit.json` beside the JSONL.
+
+Revision `4b7b12cc20723e379762024c411a4e73e255b8cd` activated at the closed
+RE6 death boundary `1794582596.637`; the replacement service PID is 1996710
+and worker is `9723919a4aed4e08`. The first fresh session is RE5,
+`9723919a4aed4e08-5c27fd38275d4d41`, round
+`7bceb6173a6e480f81fa08ca20908eec`, observed playing at `1794582766.313`.
+The activation archive and worker source hashes distinguish this new policy
+from the old RE6 evidence above. Post-activation observations are in
+`post-4b7b12cc-round-audit.jsonl`. RE4 ladder descent and the repaired RE6
+escape priority still require fresh title-specific live evidence; activation
+alone does not establish either behavior or S-rank consistency.

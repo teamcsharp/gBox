@@ -130,7 +130,7 @@ def test_a_fence_is_jumped_with_the_action_button_and_passed_once_he_is_over():
     w = W.Walker({})
     w.observe(_snap((1500.0, 0.0, 600.0), rot=0.0, mesh=mesh), 0.0)       # below the fence, facing +z
     keys = w.approach((1500.0, 0.0, 2400.0))
-    assert w.at_link and "y" in keys and "b" not in keys and "lup" in keys
+    assert w.at_link and keys == ("y",)  # native interaction, no blind push across the fence
     w.observe(_snap((1500.0, 0.0, 600.0), rot=0.0, mesh=mesh), 0.4)
     assert "y" not in w.approach((1500.0, 0.0, 2400.0))                  # pulsed: up again
     w.observe(_snap((1500.0, 0.0, 1150.0), rot=0.0, mesh=mesh), 0.9)     # over it (before the 1 s replan)

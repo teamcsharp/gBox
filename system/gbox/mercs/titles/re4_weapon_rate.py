@@ -42,6 +42,30 @@ def observation(ctl):
     return {'state': 'unknown', 'reason': 'native publication was in flight'}
 
 
+def _publish_lease(ctl, frames):
+    """A decrement acknowledged by this native publication is not a failed write.
+
+    Only this countdown races its equality read-back. Require an advancing
+    coherent native sequence and the exact bounded range of possible consumed
+    frames; every other field retains its ordinary strict write verification.
+    """
+    before = observation(ctl)
+    try:
+        ctl.write(ctl.mailbox + C.RATE['lease'], struct.pack('<I', frames))
+    except RuntimeError as exc:
+        if frames <= 0 or str(exc) != 'memory write not confirmed by read-back':
+            raise
+        ctl.check()
+        after = observation(ctl)
+        if before.get('state') not in ('native', 'pending') or after.get('state') not in ('native', 'pending'):
+            raise
+        delta = (after['sequence']-before['sequence']) & 0xffffffff
+        remaining = after['lease_frames']
+        if not (0 < delta <= LEASE_FRAMES*2 and delta % 2 == 0
+                and max(1, frames-delta//2) <= remaining < frames):
+            raise
+
+
 def configure(ctl, multiplier, expected):
     """Caller holds the controller lock. Publish only a bounded expiring lease."""
     value = float(multiplier)
@@ -57,7 +81,7 @@ def configure(ctl, multiplier, expected):
         ctl.write(ctl.mailbox + C.RATE['desired'], struct.pack('<f', 1.0))
         ctl.write(ctl.mailbox + C.RATE['lease'], struct.pack('<I', 0))
         ctl.write(ctl.mailbox + C.RATE['player_id'], struct.pack('<I', expected[1]))
-    ctl.write(ctl.mailbox + C.RATE['lease'], struct.pack('<I', LEASE_FRAMES if value > 1 else 0))
+    _publish_lease(ctl, LEASE_FRAMES if value > 1 else 0)
     ctl.write(ctl.mailbox + C.RATE['desired'], struct.pack('<f', value))
     return observation(ctl)
 

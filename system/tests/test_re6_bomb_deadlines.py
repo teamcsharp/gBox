@@ -1,5 +1,6 @@
 import threading
 import types
+import math
 
 import pytest
 
@@ -179,10 +180,52 @@ def test_deadline_escape_moves_even_with_a_loaded_gun_and_enemy_in_exit_directio
     p.update(equipped=0, ammo=10)
     out = bot._bomb_walk(p, (0, -200), 0, 200, 0, 100, act='bomb_escape', live=s['enemies'])
     assert 'lup' in out['hold']
+    assert 'zr' not in out['hold']
+    assert bot.stats['bomb_kicks'] == 0
     assert not bot.stats.get('escape_fights')
     # The doctrine must not replace this deadline route with another item or
     # stationary fighting operation after the primary decision returns.
     assert bot._respond(s, out, 100) == out
+
+
+def test_rooftop_deadline_escape_retains_final_movement_with_close_enemies():
+    """The observed 202..949cm escape must not continually restart kicks."""
+    from tests.test_re6_fire_commitment import crowd
+    from tests.test_re6_movement_safety import square, end
+    from gbox.mercs.titles import re6_movement_safety as S
+    bot, s = crowd()
+    bot.stats.update(mine_escape_required=True, mine_avoid_positions=[[5000., 0., 5000.]])
+    s.update(navmesh=square(10000.), throwables=[dict(bomb(), pos=[5000., 0., 5000.])])
+    s['player'].update(equipped=0, ammo=10, state=0, action='cPlAction_pl_act_walk',
+                       bomb={'out': True, 'armed': True})
+    bot.push = {'h': math.pi, 'until': 200.}  # an old crowd push toward the new bomb
+    for now, clearance in ((100., 202.), (101.2, 303.), (102.9, 315.), (104.1, 366.), (115.8, 949.)):
+        bot.clock = lambda: now
+        s['player']['pos'] = (5000., 0., 5000. + clearance)
+        for i, e in enumerate(s['enemies']):
+            e['pos'] = (5000. + i * 30., 0., 5100. + clearance)
+        out = bot.tick(s)
+        assert set(out['hold']) & S.LEFT
+        assert not {'zl', 'zr'} & set(out['hold'])
+        assert S._bomb_clear(bot, s, s['player']['pos'], end(s, out['hold']))
+        assert bot._movement_guard['previous'][3] == out['hold']
+        receipt = bot.stats['bomb_escape_output']
+        assert receipt['final_hold'] == list(out['hold'])
+        assert receipt['measurement'] == 'brain_final_before_engine_transport'
+    assert bot.stats['bomb_kicks'] == 0
+    assert bot.stats.get('escape_fights', 0) == 0
+
+
+def test_bomb_side_recovery_never_presses_opposite_lateral_directions():
+    from tests.test_re6_fire_commitment import crowd
+    from gbox.mercs.titles.re6_switch_wall import stick_heading
+    bot, s = crowd()
+    bot.stats['mine_escape_required'] = True
+    bot.bomb_side_until, bot.detour = 101., 'lleft'
+    bot._open_heading = lambda *a, **kw: -3 * math.pi / 4
+    out = bot._bomb_walk(s['player'], (0, 200), 0, 200, 0, 100, act='bomb_escape', live=s['enemies'])
+    assert set(out['hold']) == {'ldown', 'lleft'}
+    assert stick_heading(out['hold'], 0.) is not None
 
 
 def test_ring_escape_anchor_does_not_flip_when_nearest_bomb_changes():

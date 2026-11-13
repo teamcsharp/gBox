@@ -132,3 +132,51 @@ the waypoint while turning. Earlier manual-ring evidence showed initial motion
 away followed by a return into the ring, so successful escape is not claimed.
 The run now prioritizes remaining time bonuses over distant enemy hunting;
 nearby emergency responses still take precedence.
+
+## Validate the floor before activating a mine
+
+Round `443f46cf24f54548a8078df81609c1ae` in Experimental Facility exposed a
+separate placement defect. Receipt `711d15c82644400fbb2dd4cb99a446e8` requested
+mine generation611 at Y=-474.883cm; native grounding placed it at
+Y=-1929.005cm, 14.54m below that floor. After the same-floor mines triggered,
+the lower mine remained a live hazard at263cm horizontal clearance. It prolonged
+blocked escape; the earlier blocked escape began before this ring.
+
+The former sequence activated/configured each mine before native ground
+projection0x793AB0. The pinned function casts from100cm above the request to
+a deep downward bound. It changes only Y on a collision hit, and native W0
+retains that hit result through RET despite the export's inferred void type.
+The complete264-byte function is checked with SHA-256
+`9e9c111b224aa84d19a69bdaff46128beb6bf69ca50d6dfefb4cdfa246dab347`.
+Its detached-object branch has no activation dependency. The actual reset
+virtual0x60CC80 clears activation without changing either position.
+
+Placement now resets and grounds every requested member while inactive, then
+requires a real native hit, finite coordinates, unchanged horizontal position,
+and at most61cm vertical difference from the requested floor. This is a
+conservative placement policy matching the escape floor lookup tolerance,
+not an assertion about blast height. No member is configured or armed unless
+all requested points pass. The former unbounded post-activation raycast is
+removed. Before each activation, the actor must still be inactive, detached,
+owned by the same player and generation, with its validated position intact.
+Both primary and proximity volumes still must be observed enabled for an
+arming receipt; no contact or explosion flag is manufactured.
+
+A rejected batch reports zero placed/armed mines and publishes no hazard.
+Its inactive allocations are retained in a bounded pool of at most eight,
+scoped to the exact player life, so repeated floor refusals do not allocate
+more mines. Reuse checks allocation identity before and after reading state;
+active, attached, recycled, foreign, or uncertain units are never reused.
+Unknown partial activations remain uncertain and are not replayed.
+
+Six offline Unicorn cases passed on Spark using the existing local ELF at
+two load bases. Actual native instructions preserve hit/miss results, reproduce
+the14.54m projection, and leave activation clear. Only quaternion accessors
+and the collision service are stubbed, so these prove the call contract,
+not live map collision accuracy. Focused controller, tactic, escape and
+retirement regressions also pass, including the captured lower-floor defect,
+whole-ring refusal, bounded reuse, generation races and round expiry.
+The reordered placement has not yet been deployed or live-validated; existing
+blast clearance remains unchanged. No S-rank or successful escape guarantee
+is inferred from these offline checks. Game binaries and decompiler exports
+remain in Spark's local library and are not bundled with these tests.

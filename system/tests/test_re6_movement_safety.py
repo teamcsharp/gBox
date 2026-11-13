@@ -155,3 +155,21 @@ def test_external_bomb_margin_honors_larger_configured_clearance():
     b.stats.update(mine_avoid_positions=[[0., 0., 0.]], remote_mines={'detonate_safe_cm': 1500.})
     assert not S._bomb_clear(b, {}, (1550., 0., 0.), (1400., 0., 0.))
     assert S._bomb_clear(b, {}, (1400., 0., 0.), (1450., 0., 0.))
+
+
+def test_deadline_final_move_checks_bomb_clearance_even_on_open_floor():
+    b, snap = bot(), view(square(2000.), (1000., 0., 1000.))
+    b.stats.update(mine_escape_required=True, mine_avoid_positions=[[1000., 0., 1200.]])
+    out = S.guard(b, snap, {'hold': ('lup',)}, 100.)
+    assert out['hold'] != ('lup',)
+    assert snap['navmesh'].clear(snap['player']['pos'], end(snap, out['hold'])) is True
+    assert S._bomb_clear(b, snap, snap['player']['pos'], end(snap, out['hold']))
+
+
+def test_deadline_escape_waits_for_fresh_camera_even_on_open_floor():
+    b, snap = bot(lock_write_at=100.), view(square(2000.), (1000., 0., 1000.))
+    b.stats.update(mine_escape_required=True, mine_avoid_positions=[[1000., 0., 800.]])
+    action = {'hold': ('lup',)}
+    assert S.guard(b, snap, action, 100.)['hold'] == ()
+    assert 'bomb escape' in b.stats['floor_safety_last']['reason']
+    assert S.guard(b, snap, action, 100.1) == action
