@@ -3,6 +3,7 @@ import math
 import pytest
 
 from gbox.mercs.titles import re6_switch as R
+from gbox.mercs.re6_traversal import TRAVERSAL_ACTIONS
 
 
 def setup(monkeypatch, doing="walk", hold=("lup",)):
@@ -189,3 +190,71 @@ def test_the_stick_is_turned_before_a_wall_on_the_nav_mesh():
     snap["player"]["pos"] = (200.0, 0.0, 100.0)                        # open floor ahead: untouched
     assert W.mesh_guard(bot, snap, {"hold": ("lup",)}) == {"hold": ("lup",)}
     assert W.mesh_guard(bot, snap, {"hold": ("lup", "zl")}) == {"hold": ("lup", "zl")}   # aiming: never steered
+
+
+def boundary(state):
+    state['navmesh'] = R.NavMesh(
+        [(0., 0., 0.), (400., 0., 0.), (400., 0., 400.), (0., 0., 400.)],
+        [(0, 1, 2), (0, 2, 3)], [[1], [0]], 'traversal_boundary')
+    state['camera'] = {'yaw': 0.}
+    state['player']['pos'] = (200., 0., 330.)
+
+
+@pytest.mark.parametrize('native_action', sorted(TRAVERSAL_ACTIONS))
+@pytest.mark.parametrize('native_turns', [False, True])
+def test_complete_tick_preserves_active_native_traversal_at_floor_boundary(monkeypatch, native_action, native_turns):
+    bot, clock, state = setup(monkeypatch)
+    boundary(state)
+    state['player']['action'] = native_action
+    # Climbing can make only vertical progress for longer than the ordinary
+    # stand timeout, and native animation can rapidly realign the character.
+    for i in range(math.ceil((R.STAND_MAX_S + 1.) / .08) + 1):
+        clock[0] = i * .08
+        state['player']['pos'] = (200., i * 5., 330.)
+        state['player']['rot'] = R.wrap(i * math.radians(20.)) if native_turns else 0.
+        out = bot.tick(state)
+        assert out['hold'] == ('lup',)
+        assert bot._movement_guard['previous'][3] == out['hold']
+        assert bot._movement_guard['previous'][2] is False
+    assert not bot.stats.get('mesh_steers')
+    assert not bot.stats.get('movement_blocks')
+    assert not bot.stats.get('floor_safety_blocks')
+    assert not bot.stats.get('stand_breaks') and not bot.stats.get('whips')
+    # The exemption ends on the native exit; walking cannot use it to step
+    # off the same boundary, even though this actor was just traversing.
+    state['player']['action'] = 'cPlAction_pl_act_walk'
+    state['player']['pos'] = (200., 0., 330.)
+    clock[0] += .08
+    assert bot.tick(state)['hold'] != ('lup',)
+
+
+def test_active_traversal_interrupts_existing_wall_recovery_before_it_rewrites_input(monkeypatch):
+    bot, clock, state = setup(monkeypatch)
+    for i in range(8):
+        clock[0] = i * .08
+        bot.tick(state)
+    assert bot._movement_guard['recovery'] is not None
+    boundary(state)
+    state['player']['action'] = 'cSmVLadderEventCh_Climb'
+    clock[0] += .08
+    assert bot.tick(state)['hold'] == ('lup',)
+    assert bot._movement_guard['recovery'] is None
+    assert bot._movement_guard['effort'] == 0.
+    assert bot.stats['navigation_obstruction_context']['outcome'] == 'recovery_interrupted'
+
+
+@pytest.mark.parametrize('native_action', [None, 'cSmVLadderEventCh_Climb_unknown', 'cPlAction_pl_act_walk'])
+def test_unknown_or_inactive_traversal_does_not_bypass_boundary_guards(monkeypatch, native_action):
+    bot, _, state = setup(monkeypatch)
+    boundary(state)
+    state['player']['action'] = native_action
+    assert bot.tick(state)['hold'] != ('lup',)
+
+
+def test_complete_tick_preserves_mandatory_qte_stick_at_boundary(monkeypatch):
+    bot, _, state = setup(monkeypatch)
+    boundary(state)
+    action = {'hold': ('lup', 'lleft', 'a')}
+    monkeypatch.setattr(bot, '_tick', lambda s, now: bot._go('prompt', 'prompt_stick', action, 'native QTE'))
+    assert bot.tick(state) == action
+    assert not bot.stats.get('mesh_steers') and not bot.stats.get('floor_safety_blocks')

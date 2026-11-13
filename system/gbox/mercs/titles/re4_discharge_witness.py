@@ -5,6 +5,8 @@ b0a100[2] -> 3355e0, then r3=0 through b0a168[0] -> 336510.
 The magnum handler 3270f0 dispatches through b09ce8[2] -> 3274d0,
 then b09d68[0] -> 328190. Both fire00 functions call 33b770 before
 publishing r3=1. The current handler pointer is the native 1265a28 global.
+Killer7 class6 uses 31cc60 -> b09758[2] -> 31cfe0 -> b097c8[0]
+-> 31ddd0, which also emits through 33b770 before object state3 and r3=1.
 
 Only an observed same-owner 0->1 transition is accepted. Host polling can
 miss fast cycles; a missing observation remains unconfirmed, never invented.
@@ -17,8 +19,10 @@ import struct
 from ..native.re4_82c2a04a import code as C
 
 HANDLER = 0x1265A28
-HANDLERS = {0x3351A0: 'shotgun', 0x3270F0: 'magnum'}
-CLASSES = {'shotgun': {7, 8, 33}, 'magnum': {5, 6, 15}}
+HANDLERS = {0x3351A0: 'shotgun', 0x3270F0: 'magnum', 0x31CC60: 'magnum'}
+# 31cc60 also handles other guns. Only the measured Killer7 class is admitted;
+# sharing a fire routine does not establish another weapon's identity policy.
+CLASSES = {0x3351A0: {7, 8, 33}, 0x3270F0: {5, 6, 15}, 0x31CC60: {6}}
 PLAYER_CLASSES = tuple(C.TICK_BY_CLASS)
 MAX_AGE = .25
 
@@ -80,7 +84,7 @@ def read(memory, base, snap, now):
         vt, flags, pid, wep, obj, oid, item, state, cls, equipped, handler, routine, player_class = a
         family = HANDLERS.get(handler)
         if (player_class is None or flags & 0x201 != 1 or player.get('id') != pid
-                or family is None or cls not in CLASSES[family] or W.CLASS_OF.get(item) != cls or equipped != item
+                or family is None or cls not in CLASSES[handler] or W.CLASS_OF.get(item) != cls or equipped != item
                 or (snap.get('aim') or {}).get('obj') != obj):
             return None
         return {'identity': (p, pid, wep, obj, oid, item, cls, handler), 'routine': routine,
