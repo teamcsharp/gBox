@@ -1,6 +1,6 @@
-"""One cancellable RE5 flash ring; native waits never own the combat thread.
+"""One cancellable RE5 flash batch; native waits never own the combat thread.
 
-Only flash rings are admitted here. Explosive movement/clearance needs a separate
+Only flash rings and scatters are admitted. Explosive clearance needs a separate
 contract. Receipts return to the originating round on its combat thread.
 """
 from __future__ import annotations
@@ -14,11 +14,12 @@ import uuid
 from .follow_report_delivery import _write
 
 
-COUNTERS = ('rings_attempted', 'rings_deployed', 'ring_defends', 'ring_launcher_fallback')
+COUNTERS = ('rings_attempted', 'rings_deployed', 'ring_defends', 'ring_launcher_fallback',
+            'scatters_fired', 'scatter_rounds', 'scatter_failures')
 OUTPUTS = frozenset(COUNTERS + ('ring_last_at', 'ring_error', 'ring_first_failure', 'ring_defend_shell_refused',
     'ring_defend_kind', 'ring_kind_fired', 'ring_launcher_fallback_note', 'ring_last_detonated',
     'ring_last_failure', 'ring_pending', 'native_flash_confirmed_at', 'flash_stamp_at', 'flash_reason_last',
-    'flash_reasons', 'flash_paths'))
+    'flash_reasons', 'flash_paths', 'scatter_last_at', 'scatter_last_failure', 'scatter_pending'))
 ROOT = Path(__file__).resolve().parents[2] / 'gbox-data' / 'mercs' / 'native-ring-receipts'
 
 
@@ -73,7 +74,7 @@ class Flight:
                 for name, count in value.items():
                     delta = count - (before.get(key) or {}).get(name, 0)
                     dst[name] = dst.get(name, 0) + delta
-            elif key in ('native_flash_confirmed_at', 'flash_stamp_at', 'ring_last_at'):
+            elif key in ('native_flash_confirmed_at', 'flash_stamp_at', 'ring_last_at', 'scatter_last_at'):
                 stats[key] = max(stats.get(key) or 0, value)
             elif key not in before or value != before[key]:
                 stats[key] = value
@@ -83,7 +84,7 @@ class Flight:
         return {**job['decision'], 'attempted': True, 'fired': result.get('state') == 'confirmed',
                 'receipt': result, 'background': True}
 
-    def submit(self, snap, stats, decision, now, run):
+    def submit(self, snap, stats, decision, now, run, *, operation='ring'):
         owner = identity(snap, stats)
         if self.closed or self.job is not None or not owner[0] or any(type(v) is not int for v in owner[1:]):
             return {'fire': False, 'reason': 'flash ring needs an idle worker and a verified round/player identity'}
@@ -93,7 +94,7 @@ class Flight:
                'cancel': threading.Event(), 'done': threading.Event()}
         job['record'] = {'schema': 'gbox.mercs.native-ring/1', 'id': uuid.uuid4().hex,
                          'identity': list(owner), 'session': stats.get('source_session_id'),
-                         'requested_at': now, 'decision': dict(decision), 'state': 'requested'}
+                         'requested_at': now, 'operation': operation, 'decision': dict(decision), 'state': 'requested'}
         self.job = job
         deadline = time.monotonic() + 8.0
 
@@ -121,7 +122,7 @@ class Flight:
 
         stats['ring_async_pending'] = True
         stats['ring_async_requested_at'] = now
-        stats['ring_last_at'] = now
+        stats[operation + '_last_at'] = now
         stats['ring_last_reason'] = decision['reason'][:200]
         try:
             threading.Thread(target=work, name='mercs-re5-flash-ring', daemon=True).start()

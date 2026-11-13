@@ -154,11 +154,12 @@ def test_evidence_failure_prevents_native_publication(monkeypatch):
     assert not result['fired'] and 'disk full' in result['receipt']['reason'] and not calls
 
 
-def test_flash_completion_keeps_combat_and_engine_cancels_on_terminal(tmp_path, monkeypatch):
+@pytest.mark.parametrize('receipt', [{'kind':'flash'}, {'kind':'random','kinds':['flash']}])
+def test_flash_completion_keeps_combat_and_engine_cancels_on_terminal(tmp_path, monkeypatch, receipt):
     from test_engine_round_rotation import run_sequence
     observed, closed = [], []
     def step(*args):
-        return {'fired': True, 'receipt': {'state': 'confirmed', 'kind': 'flash'}}
+        return {'fired': True, 'receipt': {'state': 'confirmed', **receipt}}
     step.observe = lambda snap, stats, playing: observed.append(playing)
     step.close = lambda: closed.append(True)
     monkeypatch.setattr(G, 'control', lambda *a, **k: step)
@@ -166,3 +167,54 @@ def test_flash_completion_keeps_combat_and_engine_cancels_on_terminal(tmp_path, 
         [{'where': 'playing', 'round': 1}, {'where': 'playing', 'round': 1}, {'where': 'dead', 'round': 1}])
     assert not st.get('ring_blast_backsteps') and 'ring_blast_until' not in st
     assert False in observed and closed == [True]
+
+
+def test_scatter_uses_the_same_nonblocking_flight_and_keeps_separate_counters(monkeypatch):
+    ctl = ring_controller()
+    ctl.async_flash_ring = True
+    flight = A.Flight()
+    monkeypatch.setattr(A, 'Flight', lambda: flight)
+    monkeypatch.setattr(G, 'decide', lambda *a, **k: {'fire':False,'reason':'ring cooldown'})
+    monkeypatch.setattr(G, 'decide_scatter', lambda *a, **k:
+                        {'fire':True,'reason':'nearby attack','count':2,'flash':True,'toward':[(2000,0)]})
+    step = G.control(None, {'map_id':'010018100CD46000'}, ring=ctl)
+    holds, st = [], stats()
+    assert step(scene(), st, 10, holds.append)['pending']
+    job = flight.job
+    assert job['done'].wait(3)
+    result = step(scene(), st, 10.5, holds.append)
+    assert result['fired'] and result['receipt']['kinds'] == ['flash']
+    assert st['scatters_fired'] == 1 and st['scatter_rounds'] == 2 and not st.get('rings_deployed')
+    assert 'ring_last_at' not in st and st['scatter_last_at'] == 10 and holds == []
+    assert job['record']['operation'] == 'scatter'
+
+
+def test_scatter_checks_lifecycle_and_cancellation_before_publication():
+    ctl = ring_controller()
+    with pytest.raises(N.Unavailable, match='lifecycle'):
+        ctl.grenade_scatter(expected=(ctl.player,ctl.generation+1))
+    with pytest.raises(N.Unavailable, match='cancelled'):
+        ctl.grenade_scatter(allowed=lambda:False)
+    assert not ctl.spawns
+    result = ctl.grenade_scatter(count=6,gap_ms=(0,0),allowed=lambda:len(ctl.spawns)<3)
+    assert result['state'] == 'uncertain' and result['detonated'] == 2
+    assert result['unconfirmed_projectile']['stage'] == 'spawn_returned'
+
+
+def test_background_scatter_reanchors_clearance_as_player_moves():
+    import math
+    import struct
+    ctl = ring_controller()
+    original = ctl._ring_one
+    positions = []
+    def one(x,y,z,*a,**kw):
+        px,py,pz = struct.unpack('<3f',ctl.rd(ctl.player+N.R.P_POS,12))
+        positions.append((px,py,pz,x,y,z))
+        out = original(x,y,z,*a,**kw)
+        ctl.put(ctl.player+N.R.P_POS,struct.pack('<3f',px+400,py,pz))
+        return out
+    ctl._ring_one = one
+    receipt = ctl.grenade_scatter(count=3,gap_ms=(0,0),allowed=lambda:True,toward=[(3000,0)])
+    assert receipt['state'] == 'confirmed' and len(positions) == 3
+    assert positions[-1][0] == positions[0][0]+800
+    assert all(math.hypot(x-px,z-pz)>=N.flash_place_min_cm() for px,py,pz,x,y,z in positions)

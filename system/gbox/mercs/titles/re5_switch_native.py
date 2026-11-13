@@ -638,7 +638,7 @@ class Controller(N.Controller):
                     "verified": False, **receipt}
 
     def grenade_scatter(self, kind="random", *, count=None, toward=None, spread_deg=None, min_cm=None, max_cm=None,
-                        gap_ms=None, safe_cm=None, rng=None, kinds=None):
+                        gap_ms=None, safe_cm=None, rng=None, kinds=None, expected=None, allowed=None, wait_for_lock=True):
         """A scatter barrage: `count` grenades set off at points of a cone from him toward the threats.
 
         The operator (2026-11-10 ~07:00): "i want the bot able to spray a scatter shot of grenades from his postion at
@@ -682,8 +682,16 @@ class Controller(N.Controller):
         floor_cm = min(flash_floor if k == "flash" else explosive_floor for k in draw)
         probe = kind != "random" and kind not in RING_VERIFIED_KINDS
         self.ready()
-        with self.lock:
+        with ring_lock(self.lock, wait_for_lock):
             player, generation = self.ready()
+            if expected is not None and tuple(expected) != (player, generation):
+                raise Unavailable('flash scatter player lifecycle changed before execution')
+            def guard():
+                if allowed is not None and not allowed():
+                    raise Unavailable('flash scatter cancelled before the next native operation')
+                if self.ready() != (player, generation):
+                    raise Unavailable('flash scatter player lifecycle changed during execution')
+            guard()
             self.sp = self.q(self.base + R.S_PLAYER)
             self.player, self.generation = player, generation
             self.original = self.q(player)
@@ -701,10 +709,22 @@ class Controller(N.Controller):
             hp_before = struct.unpack("<h", self.rd(self.player + R.P_HP, 2))[0]
             started = time.monotonic()
             rounds, abort = [], None
+            self.ring_projectile_pending = None
             try:
                 self.attach()
                 for i in range(count):
-                    self.check()
+                    try:
+                        guard()
+                        self.check()
+                        if allowed is not None:
+                            # Combat continues during a background burst. Use his
+                            # live position and face the originally observed crowd.
+                            px, py, pz = struct.unpack('<3f', self.rd(self.player + R.P_POS, 12))
+                            if points:
+                                axis = R.heading(cx - px, cz - pz)
+                    except (Unavailable, AllocationLost) as exc:
+                        abort = str(exc)
+                        break
                     this = rng.choice(draw) if kind == "random" else kind
                     # + SCATTER_SAFE_CM: the point is built with sin/cos, so the *measured* distance must stay past
                     # the floor the receipt reports, not exactly on it.
@@ -715,7 +735,7 @@ class Controller(N.Controller):
                     ang = axis + rng.uniform(-spread, spread)
                     x, z = px + d * math.sin(ang), pz + d * math.cos(ang)
                     try:
-                        row = self._ring_one(x, py + SCATTER_CHEST_CM, z, i, this)
+                        row = self._ring_one(x, py + SCATTER_CHEST_CM, z, i, this, guard=guard)
                     except (Unavailable, AllocationLost) as exc:
                         abort = str(exc)
                         break
@@ -728,8 +748,9 @@ class Controller(N.Controller):
             finally:
                 self.detach_completed()
             try:
+                self.check()
                 hp_after = struct.unpack("<h", self.rd(self.player + R.P_HP, 2))[0]
-            except (OSError, struct.error):
+            except (OSError, struct.error, Unavailable):
                 hp_after = None
             receipt = {"op": "grenade_scatter", "kind": kind, "requested": count, "detonated": len(rounds),
                        "kinds": sorted({r["kind"] for r in rounds}),
@@ -740,6 +761,7 @@ class Controller(N.Controller):
                        "hp_before": hp_before, "hp_after": hp_after,
                        "self_damage": (hp_before - hp_after) if isinstance(hp_after, int) else None,
                        "player_generation": self.generation,
+                       'unconfirmed_projectile': self.ring_projectile_pending,
                        "elapsed_ms": round(1000 * (time.monotonic() - started), 1)}
             if len(rounds) == count and abort is None:
                 effect = "native_flash_scatter" if kind == "random" else f"native_{kind}_scatter"
@@ -747,7 +769,8 @@ class Controller(N.Controller):
             if abort is not None:
                 self.failed, self.recoverable = True, True
             receipt["reason"] = abort or "the barrage did not complete"
-            return {"state": "failed" if not rounds else "uncertain", "verified": False, **receipt}
+            return {"state": "uncertain" if rounds or self.ring_projectile_pending else "failed",
+                    "verified": False, **receipt}
 
     def current_weapon(self):
         player, _ = self.ready()

@@ -651,6 +651,12 @@ def control(ad, prof, *, ring=None):
         stats["scatter_decision"] = (decision["reason"] if not decision["fire"] else "fire: " + decision["reason"])[:200]
         if not decision["fire"]:
             return decision
+        if flight is not None:
+            if stats.get('bot_grenade_state') == 'requested':
+                return {'fire': False, 'reason': 'a native flash request is already pending'}
+            return flight.submit(snap, stats, decision, now,
+                lambda d, s, t, guard: fire_scatter(ad, d, s, t, ring=ring, units=units,
+                                                   native_guard=guard, flash_only=True), operation='scatter')
         if hold is not None and hold(set()) is False:
             return {**decision, "fire": False, "reason": "the bot's keys did not release before the barrage"}
         try:
@@ -658,7 +664,7 @@ def control(ad, prof, *, ring=None):
         except Exception as exc:                         # noqa: BLE001 - a barrage never ends the round
             stats["scatter_error"] = f"{type(exc).__name__}: {exc}"[:200]
             return {**decision, "fire": False, "reason": stats["scatter_error"]}
-        return {**decision, "fired": True, "receipt": receipt}
+        return {**decision, "fired": receipt.get('state') == 'confirmed', "receipt": receipt}
 
     if flight is not None:
         step.observe = flight.observe
@@ -802,7 +808,8 @@ def decide_scatter(snap: dict, stats: dict, now: float, policy_: dict | None = N
     return {**out, "reason": f"nothing tough: {len(rows)} within {policy_['reach_cm']:.0f} cm"}
 
 
-def fire_scatter(ad, decision: dict, stats: dict, now: float, *, ring=None, units: float = 1.0) -> dict:
+def fire_scatter(ad, decision: dict, stats: dict, now: float, *, ring=None, units: float = 1.0,
+                 native_guard=None, flash_only=False) -> dict:
     """The native barrage once, with the stats. Never raises for a game-side refusal."""
     target = ring or controller(ad)
     stats["scatter_last_at"] = now
@@ -818,6 +825,11 @@ def fire_scatter(ad, decision: dict, stats: dict, now: float, *, ring=None, unit
                "safe_cm": decision.get("safe_cm")}
     if decision.get("narrowed") and decision.get("kinds"):
         options["kinds"] = tuple(decision["kinds"])
+    if flash_only:
+        if decision.get('flash_ok') is False or ('kinds' in options and 'flash' not in options['kinds']):
+            return {'state': 'refused', 'reason': 'background scatter requires an allowed verified flash'}
+        options['kinds'] = ('flash',)
+    options.update(native_guard or {})
     try:
         receipt = target.grenade_scatter("random", **options)
     except Exception as exc:                             # noqa: BLE001

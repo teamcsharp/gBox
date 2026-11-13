@@ -769,7 +769,9 @@ def play_round(prof, m, send, stopped, stats: dict, lessons=None, sleep=time.sle
                 except Exception as exc:             # noqa: BLE001 - a ring never ends the round
                     stats["ring_error"] = f"{type(exc).__name__}: {exc}"[:200]
                 else:
-                    if ring_out.get("fired") and (ring_out.get('receipt') or {}).get('kind') != 'flash':
+                    receipt = ring_out.get('receipt') or {}
+                    flash_only = receipt.get('kind') == 'flash' or receipt.get('kinds') == ['flash']
+                    if ring_out.get("fired") and not flash_only:
                         # Operator 2026-11-11 17:44: "grenades are bad for you ... they should definitely distance
                         # themselves from the explosives that they're throwing in order to survive." The ring's own
                         # blast is walked out of, not stood in (the driver's own inputs: the left stick back).
