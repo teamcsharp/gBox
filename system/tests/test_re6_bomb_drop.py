@@ -148,6 +148,7 @@ def drop_bot(enemies, mind=None):
     bridge, mind = NativeBridge(), mind or DropMind()
     bot = R.Bot(stats={}, clock=lambda: clock[0], equip=bridge, mind=mind)
     snap = R.snapshot(round_guest(enemies=enemies))
+    snap.pop('throwables', None)  # wheel/position script supplies no native actor census
     snap["player"].update(equipped=0, bomb={"count": 5, "out": False, "armed": False},
                           guns={0x107: 0, 0x104: 1}, gun_ammo={0: 7, 1: 8})
     bot.held = lambda p, now: False
@@ -218,6 +219,9 @@ def drive(bot, bridge, clock, snap, seconds):
     """The hook's equip answered at once (the bridge's last target in his hand), `seconds` of ticks."""
     acts = []
     for _ in range(int(seconds / 0.05)):
+        plan = (bot.nade or {}).get('throw_plan')
+        if plan and snap.get('camera'):
+            snap['camera']['target'] = plan['aim']
         clock[0] += 0.05
         acts.append(bot.tick(snap))
         if bridge.targets:

@@ -80,6 +80,7 @@ Where (measured live 2026-10-27 in a private Citron NEO session on the Spark; do
 """
 from __future__ import annotations
 
+import math
 import struct
 import time
 import threading
@@ -567,12 +568,14 @@ def _unit_class(m, base: int, u: int) -> str | None:
     return _UNIT_NAMES[key]
 
 
-def placed_bombs(m, base: int, player: int, lines=BOMB_LINES) -> list[dict]:
+def placed_bombs(m, base: int, player: int, lines=BOMB_LINES, *, complete=False) -> list[dict]:
     """His remote bombs lying out: the uWp1097 units on sUnit's lines (BOMB_LINES, then every line when none is there)
     owned by `player` - [{unit, generation, action, pos}]."""
     out: list = []
     su = R.u64(m, base + R.S_UNIT)
     if not R.ptr_ok(su):
+        if complete:
+            raise ValueError('unit inventory unavailable; bomb clearance is unknown')
         return out
     for group in (tuple(lines), tuple(i for i in range(R.N_LINES) if i not in lines)):
         for line in group:
@@ -584,7 +587,9 @@ def placed_bombs(m, base: int, player: int, lines=BOMB_LINES) -> list[dict]:
                                 "action": _unit_class(m, base, act) if R.ptr_ok(act) else None,
                                 "pos": struct.unpack("<3f", m.rd(u + R.P_POS, 12))})
                 u, n = R.u64(m, u + R.UNIT_NEXT), n + 1
-        if out:
+            if complete and u:
+                raise ValueError('unit inventory incomplete; bomb clearance is unknown')
+        if out and not complete:
             break
     return out
 
@@ -619,7 +624,10 @@ def detonate(ad, snap=None, unit=None, wait_s: float = 0.0, clock=time.monotonic
         return out | {"reason": "the player changed since the snapshot"}
     if struct.unpack("<h", g.ad.read_memory(player + R.P_HP, 2))[0] <= 0:
         return out | {"reason": "he is not alive"}
-    bombs = placed_bombs(g.m, g.base, player)
+    try:
+        bombs = placed_bombs(g.m, g.base, player, complete=True)
+    except (ValueError, OSError, struct.error) as exc:
+        return out | {'reason': str(exc)[:200], 'clearance_verified': False}
     if unit is not None and all(b["unit"] != unit for b in bombs):
         return out | {"reason": "that bomb is not one of his lying placed", "bombs": len(bombs)}
     if not bombs:
@@ -629,6 +637,38 @@ def detonate(ad, snap=None, unit=None, wait_s: float = 0.0, clock=time.monotonic
     out["armed_before"] = bool(before & ARMED_BIT)
     if not before & ARMED_BIT:
         return out | {"reason": "not armed: the game set them off already", "armed_after": False}
+    # Every detonation entry point (bot, UI and MCP) shares this final native
+    # read. Ring centres and caller snapshots cannot prove clearance from all
+    # actual bombs; unknown data never authorizes the flag.
+    safe_cm = max(R.BOMB_SELF_R, R.BOMB_RADIUS_MAX + R.BOMB_MARGIN_CM)
+    try:
+        distances = []
+        for bomb in bombs:
+            u = bomb['unit']
+            if bomb.get('action') != 'cWpAction_wp_act_setting':
+                raise ValueError('a remote bomb is not settled; clearance is unknown')
+            if R.u64(g.m, u + U_OWNER) != player or struct.unpack('<I', g.ad.read_memory(u + U_GENERATION, 4))[0] != bomb['generation']:
+                raise ValueError('bomb allocation changed during clearance check')
+            at = struct.unpack('<3f', g.ad.read_memory(u + R.P_POS, 12))
+            here = struct.unpack('<3f', g.ad.read_memory(player + R.P_POS, 12))
+            if not all(math.isfinite(v) for v in (*at, *here)):
+                raise ValueError('bomb or player position is unreadable')
+            distances.append(math.hypot(here[0]-at[0], here[2]-at[2]))
+        out.update(clearance_cm=round(min(distances), 1), required_clearance_cm=safe_cm,
+                   clearance_source='fresh native positions of every owned bomb; horizontal distance')
+        if min(distances) < safe_cm:
+            return out | {'reason': 'retreat farther before detonating remote bombs', 'clearance_verified': False}
+        if g.ad.read_memory(player + R.P_STATE, 1)[0] in R.HELD_STATES:
+            raise ValueError('player is held; detonation deferred until escape')
+        if R.u64(g.m, sp + R.P_FIRST) != player or (p.get('generation') is not None and
+                struct.unpack('<I', g.ad.read_memory(player + U_GENERATION, 4))[0] != p['generation']):
+            raise ValueError('player changed during clearance check')
+        before = g.ad.read_memory(addr, 1)[0]
+        if not before & ARMED_BIT:
+            return out | {'reason': 'bombs already triggered during clearance check', 'armed_after': False}
+        out['clearance_verified'] = True
+    except (ValueError, OSError, struct.error) as exc:
+        return out | {'reason': str(exc)[:200], 'clearance_verified': False}
     try:
         g.ad.write_memory(addr, bytes([before & ~ARMED_BIT & 0xFF]))
     except RuntimeError as exc:                              # another bit of the byte moved between write and read
@@ -1059,9 +1099,16 @@ def _complete_struggle(ad, g: RE6Switch, player: int) -> int:
             continue
         try:
             ad.write_memory(addr, data)
-        except RuntimeError:                                 # the game took it from there (granted, the unit reset)
-            pass
-        n += 1
+        except RuntimeError as exc:
+            g.state['qte_write_error'] = str(exc)[:160]
+        try:
+            granted = bytes(ad.read_memory(addr, len(data))) == data
+        except (ValueError, OSError, RuntimeError):
+            granted = False
+        if granted:
+            n += 1
+        else:
+            g.state['qte_unconfirmed_writes'] = g.state.get('qte_unconfirmed_writes', 0) + 1
     return n
 
 

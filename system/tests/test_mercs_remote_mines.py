@@ -103,8 +103,9 @@ def test_the_rule_drops_a_ring_then_detonates_the_set_through_the_flag(monkeypat
     # the player is still on the centre: the flag waits for the distance (operator 2026-11-11 17:50)
     held = step(snap(), live, 160.5, lambda keys: True)
     assert held["fire"] is False and "nearest lying ring" in held["reason"]
-    # 400 cm clear of the ring: the fourth ring makes the set due and the next tick detonates by the flag
-    done = step(snap((0.0, 0.0, 400.0)), live, 161.0, lambda keys: True)
+    # Clearance is outside the blast margin plus ring radius, not just 3.5 m from its centre.
+    assert not step(snap((0.0, 0.0, 400.0)), live, 161.0, lambda keys: True)['fire']
+    done = step(snap((0.0, 0.0, 1400.0)), live, 162.0, lambda keys: True)
     assert done["op"] == "bomb_detonate" and done["fired"] is True
     assert calls[-1] == ("detonate",)
     assert live["mine_rings_since_detonate"] == 0 and live["mine_flag_detonations"] == 1

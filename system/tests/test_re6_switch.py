@@ -437,8 +437,16 @@ def test_driver_screen_calls_a_stopped_clock_loading_and_hands_menus_back():
 # --- the brain -------------------------------------------------------------------------------------------------------
 
 def run(bot, snap, clock, ticks, dt=0.05):
+    """Static scene with a camera that follows requested throwable aim.
+
+    Unresponsive-camera tests call tick directly instead. No firearm ray or
+    projectile is synthesized here.
+    """
     out = []
     for _ in range(ticks):
+        n = bot.nade or getattr(bot, '_bomb_throw_plan', None) or {}
+        if n.get('throw_plan') and snap.get('camera'):
+            snap['camera']['target'] = n['throw_plan']['aim']
         clock[0] += dt
         out.append(bot.tick(snap))
     return out
@@ -446,7 +454,11 @@ def run(bot, snap, clock, ticks, dt=0.05):
 
 def brain(snap_guest):
     clock = [0.0]
-    return R.Bot(stats={}, clock=lambda: clock[0]), clock, R.snapshot(snap_guest)
+    snap = R.snapshot(snap_guest)
+    # These scenarios mutate the wheel/bomb position directly; they do not
+    # maintain a native throwable pool. That observation is unknown here.
+    snap.pop('throwables', None)
+    return R.Bot(stats={}, clock=lambda: clock[0]), clock, snap
 
 
 def test_legacy_flash_directive_cannot_substitute_an_inventory_throw():
@@ -494,8 +506,11 @@ def test_at_a_stand_it_throws_a_remote_bomb_and_sets_it_off_when_they_are_on_it(
     assert bot.bomb_at == (0.0, R.BOMB_AHEAD) and all("ldown" in a["hold"] for a in acts)   # 3 m: inside, walking out
     snap["player"]["pos"] = (0.0, 0.0, R.BOMB_AHEAD - bot.book.safe - 80.0)   # the rule's distance and then some
     acts = run(bot, snap, clock, int(R.BOMB_AIM_S / 0.05) + 3)
-    assert {"hold": ("zl", "zr")} in acts and bot.bomb_phase in ("det", "det_wait")
-    assert bot.stats["bomb_det_cm"] == [round(bot.book.safe + 80)]
+    assert {"hold": ("zl", "zr")} not in acts and bot.bomb_phase == "wait"
+    assert 'native clearance' in bot.stats['bomb_mind_reason']
+    # An externally observed explosion can still teach the blast ledger; a
+    # bot without a native clearance controller must never press a detonator.
+    bot._bomb_went_off(snap['player'], clock[0])
     snap["player"].update(bomb={"count": 5, "out": False}, equipped=0)        # the blast; the game gave the gun back
     for e in snap["enemies"]:
         e["hp"] = 0                                                           # it took them all
@@ -531,7 +546,7 @@ def test_after_a_bomb_he_walks_off_it_and_never_sets_it_off_near_himself():
     assert any("lleft" in h for h in holds) and any("lright" in h for h in holds)   # stuck: side steps, both ways
     snap["player"]["pos"] = (0.0, 0.0, R.BOMB_AHEAD - R.BOMB_SELF_R - 50.0)   # clear of it now: set off
     acts = run(bot, snap, clock, int(R.BOMB_AIM_S / 0.05) + 3)
-    assert {"hold": ("zl", "zr")} in acts and bot.stats["bomb_det_cm"] == [R.BOMB_SELF_R + 50]
+    assert {"hold": ("zl", "zr")} not in acts
     assert bot.stats["bomb_escapes"] == 1
 
 
@@ -566,7 +581,8 @@ def test_drift_into_blast_radius_during_det_aim_holds_the_trigger_not_fires():
     # Start the det_aim phase: two zombies on the bomb trigger detonation
     acts = run(bot, snap, clock, 3)
     # He should be in det_aim now (ZL held, aiming at the bomb)
-    assert bot.bomb_phase == "det_aim", f"phase={bot.bomb_phase}"
+    assert bot.bomb_phase == "wait", f"phase={bot.bomb_phase}"
+    bot.bomb_phase = 'det_aim'  # legacy queued intent must also be cancelled on drift
     # Now he drifts back into the blast radius during the aim hold
     snap["player"]["pos"] = (0.0, 0.0, R.BOMB_AHEAD - 200.0)  # 2 m from bomb, well inside safe
     acts = run(bot, snap, clock, int(R.BOMB_AIM_S / 0.05) + 3)
@@ -589,6 +605,7 @@ def test_the_placed_bombs_own_spot_is_used_when_its_unit_is_found():
     bot, clock, _ = brain(g)
     snap["player"].update(equipped=R.BOMB_INDEX, bomb={"count": 5, "out": True})
     snap["bomb_pos"] = R.placed_bomb(g, BASE)
+    snap.pop('throwables', None)  # this legacy fixture does not give the unit an owner
     assert snap["bomb_pos"] == (30.0, 0.0, 60.0) and p
     bot.bomb_at, bot.bomb_since, bot.bomb_phase, bot.bomb_from = (0.0, 0.0), clock[0], "wait", (0.0, 0.0)
     bot.held = lambda p, now: False
@@ -670,7 +687,8 @@ def test_the_bomb_walk_heads_away_from_the_bomb_and_a_blast_that_hurts_him_is_co
     act = run(bot, snap, clock, 1)[0]
     assert act["hold"] == ("lright",)                                         # +x is the screen's left: away is right
     bot, clock, snap = bomb_out(((0.0, 0.0, 300.0, 700),) * 2, me=(0.0, 0.0, R.BOMB_AHEAD - R.BOMB_SELF_R - 10.0))
-    run(bot, snap, clock, int(R.BOMB_AIM_S / 0.05) + 3)                       # set off from 7.1 m
+    run(bot, snap, clock, int(R.BOMB_AIM_S / 0.05) + 3)
+    bot._bomb_went_off(snap['player'], clock[0])  # external blast; policy forbids this distance
     snap["player"].update(bomb={"count": 5, "out": False}, equipped=0, hp=600)   # the blast took 300 of his health
     run(bot, snap, clock, int(R.BOMB_LEARN_S / 0.05) + 2)
     assert bot.stats["bombs_detonated"] == 1 and bot.stats["bomb_self_hits"] == 1   # nobody near him to blame
@@ -678,7 +696,8 @@ def test_the_bomb_walk_heads_away_from_the_bomb_and_a_blast_that_hurts_him_is_co
 
 
 def blast(bot, clock, snap, me_z, zombies, hp_after=None, real=True):
-    """A bomb read at (0, 300) set off with him at (0, me_z); zombies [(z, hurt)] beside it; his health after."""
+    """Observe an external blast; this fixture never authorizes unsafe detonation."""
+    snap.pop('throwables', None)
     snap["player"].update(equipped=R.BOMB_INDEX, bomb={"count": 5, "out": True}, pos=(0.0, 0.0, me_z), hp=900)
     snap["enemies"] = [{"slot": i, "ptr": 0x9000 + i, "pos": (0.0, 0.0, z), "hp": 700, "hp_max": 700}
                        for i, (z, _hurt) in enumerate(zombies)]
@@ -686,6 +705,7 @@ def blast(bot, clock, snap, me_z, zombies, hp_after=None, real=True):
         snap["bomb_pos"] = (0.0, 0.0, R.BOMB_AHEAD)
     bot.bomb_at, bot.bomb_since, bot.bomb_from, bot.bomb_phase = (0.0, R.BOMB_AHEAD), clock[0] - 20, (0.0, 0.0), "wait"
     run(bot, snap, clock, int(R.BOMB_AIM_S / 0.05) + 3)
+    bot._bomb_went_off(snap['player'], clock[0])
     snap["player"].update(bomb={"count": 5, "out": False}, equipped=0, hp=hp_after or 900)
     snap.pop("bomb_pos", None)
     for e, (_z, hurt) in zip(snap["enemies"], zombies):
@@ -699,10 +719,10 @@ def test_the_blasts_reach_is_learned_kept_and_respected(tmp_path):
     bot = R.Bot(stats={}, clock=lambda: clock[0], learn_dir=tmp_path)
     bot.held = lambda p, now: False
     snap = R.snapshot(round_guest(enemies=()))
-    assert bot.book.radius == R.BOMB_RADIUS_CM and bot.book.safe == max(R.BOMB_SELF_R, R.BOMB_RADIUS_CM + 200)
+    assert bot.book.radius == R.BOMB_RADIUS_CM and bot.book.safe >= R.BOMB_RADIUS_MAX + R.BOMB_MARGIN_CM
     blast(bot, clock, snap, R.BOMB_AHEAD - 900.0, [(300.0 + 650.0, True), (300.0 + 1100.0, False)])   # hurt at 6.5 m
     assert bot.stats["bomb_blast_log"][-1]["hit_cm"] == [650] and bot.book.radius == 650
-    assert bot.book.safe == 850 and bot.stats["bomb_self_hits"] == 0
+    assert bot.book.safe >= R.BOMB_RADIUS_MAX + R.BOMB_MARGIN_CM and bot.stats["bomb_self_hits"] == 0
     kept = R.Bot(stats={}, clock=lambda: clock[0], learn_dir=tmp_path)       # the next session: the same reach
     assert kept.book.radius == 650 and (tmp_path / R.BOMB_BOOK_FILE).exists()
     kept.held = lambda p, now: False
@@ -738,7 +758,7 @@ def test_a_blast_that_hurts_him_inside_its_reach_is_a_self_hit_and_teaches_the_r
     blast(bot, clock, snap, R.BOMB_AHEAD - 750.0, [(300.0 + 200.0, True)], hp_after=700)
     rec = bot.stats["bomb_blast_log"][-1]
     assert rec["self_hit"] and rec["hp_lost"] == 200 and bot.stats["bomb_self_hits"] == 1
-    assert bot.book.radius == 750 > rec_before and bot.book.safe == 950
+    assert bot.book.radius == 750 > rec_before and bot.book.safe >= R.BOMB_RADIUS_MAX + R.BOMB_MARGIN_CM
     # one at his elbow when his health fell outside the reach: the zombie takes the blame, not booked as his
     bot2 = R.Bot(stats={}, clock=lambda: clock[0])
     bot2.held = lambda p, now: False
@@ -751,6 +771,7 @@ def test_a_blast_that_hurts_him_inside_its_reach_is_a_self_hit_and_teaches_the_r
     run(bot2, snap, clock, int(R.BOMB_AIM_S / 0.05) + 3)                      # set off as that one came
     snap["enemies"][1]["pos"] = (0.0, 0.0, me_z + 150.0)                      # it reached his elbow meanwhile
     run(bot2, snap, clock, 1)
+    bot2._bomb_went_off(snap['player'], clock[0])
     snap["player"].update(bomb={"count": 5, "out": False}, equipped=0, hp=800)
     snap.pop("bomb_pos", None)
     snap["enemies"][0]["hp"] = 100
@@ -770,12 +791,13 @@ def test_readying_a_bomb_is_given_up_when_one_comes_close():
     assert bot.bomb_phase is None and bot.stats["bomb_aborts"] == 1 and bot.doing == "crowd"
 
 
-def test_clear_of_the_bomb_he_sets_it_off_as_they_come_and_faces_it_only_briefly_with_nobody_near():
-    far = (0.0, 0.0, R.BOMB_AHEAD - 900.0)                                    # 9 m from it
+def test_no_detonator_fallback_and_only_a_bounded_look_when_the_bomb_is_clear():
+    safe = R.BOMB_RADIUS_MAX + R.BOMB_MARGIN_CM + 200.
+    far = (0.0, 0.0, R.BOMB_AHEAD - safe)
     bot, clock, snap = bomb_out(((0.0, 0.0, far[2] + 350.0, 700),), me=far)  # one coming at 3.5 m, none on the bomb
     acts = run(bot, snap, clock, int(R.BOMB_AIM_S / 0.05) + 3)
-    assert {"hold": ("zl", "zr")} in acts                                     # set off now: the gun comes back
-    bot, clock, snap = bomb_out(((0.0, 0.0, 3000.0, 700),), me=(-900.0, 0.0, R.BOMB_AHEAD))   # it 9 m to his right
+    assert {"hold": ("zl", "zr")} not in acts
+    bot, clock, snap = bomb_out(((0.0, 0.0, 3000.0, 700),), me=(-safe, 0.0, R.BOMB_AHEAD))
     acts = run(bot, snap, clock, 30)
     faced = [a for a in acts if a.get("hold") and set(a["hold"]) <= {"rleft", "rright"} and a["hold"]]
     assert 0 < len(faced) * 0.05 <= R.BOMB_FACE_MAX_S + 0.05 and bot.stats["bomb_face_s"] <= R.BOMB_FACE_MAX_S + 0.1
@@ -1137,15 +1159,16 @@ def test_a_bomb_only_healthy_with_nobody_near_and_three_coming_at_most_every_bom
     run(bot, snap, clock, 2)
     assert bot.bomb_phase is None
     bot.bomb_last = clock[0] - R.BOMB_GAP_S - 1                               # past the gap: now
+    bot._burst().end('fixture_burst_complete')
     run(bot, snap, clock, 1)
     assert bot.bomb_phase == "equip"
 
 
-def test_clear_of_it_the_bomb_goes_off_with_one_within_three_metres_of_it():
+def test_without_native_clearance_one_enemy_on_the_bomb_does_not_trigger_it():
     far = (0.0, 0.0, R.BOMB_AHEAD - 900.0)
     bot, clock, snap = bomb_out(((0.0, 0.0, R.BOMB_AHEAD + 250.0, 700),), me=far)   # one 2.5 m past the bomb
     acts = run(bot, snap, clock, int(R.BOMB_AIM_S / 0.05) + 3)
-    assert {"hold": ("zl", "zr")} in acts
+    assert {"hold": ("zl", "zr")} not in acts
 
 
 def test_the_way_out_is_the_widest_gap_and_the_stick_follows_the_camera():
@@ -3508,7 +3531,8 @@ def test_one_closing_in_while_he_aims_is_kicked_before_it_can_grab():
     assert bot.aim_since is not None                                   # aiming at the far one
     snap["enemies"].append({"slot": 1, "ptr": 99, "pos": (20.0, 0.0, 90.0), "hp": 700, "hp_max": 700})
     act = run(bot, snap, clock, 1)[0]
-    assert act == {"tap": "zr"} and bot.stats["cc_kicks"] == 1 and bot.aim_since is None   # the gun down, a kick
+    assert 'zl' in act.get('hold', ()) and bot.stats['cc_kicks'] == 0
+    assert bot.aim_since is not None  # closing range must not restart the raise/fire loop
 
 
 def test_warm_probe_names_stable_native_menus_and_waits_for_an_open_title():

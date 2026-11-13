@@ -72,6 +72,7 @@ class GameAdapter(Adapter):
 
 def test_detonate_clears_only_the_armed_bit_and_names_his_placed_bombs():
     g, p, units = bomb_guest(bombs=2)
+    g.f32(p + R.P_POS, 0.0, 0.0, -2000.0)
     ad = Adapter(g)
     out = M.detonate(ad)
     assert out["verified"] and out["count"] == 2 and out["detonated"] == units
@@ -83,6 +84,7 @@ def test_detonate_clears_only_the_armed_bit_and_names_his_placed_bombs():
 
 def test_detonate_waits_for_the_games_own_blast():
     g, p, units = bomb_guest()
+    g.f32(p + R.P_POS, 0.0, 0.0, -2000.0)
     ad = GameAdapter(g, p, units)
     out = M.detonate(ad, wait_s=0.2)
     assert out["verified"] and out["went_off"] == units and out["pending"] == []
@@ -133,6 +135,7 @@ def test_settle_remote_puts_the_games_own_zero_back_only_with_nothing_out():
 def test_run_routes_the_detonate_and_bomb_mind_ops(monkeypatch):
     monkeypatch.setattr(R, "BOMB_MIND", True)
     g, p, units = bomb_guest()
+    g.f32(p + R.P_POS, 0.0, 0.0, -2000.0)
     ad = GameAdapter(g, p, units)
     out = M.run(ad, "remote_detonate")
     assert out["verified"] and out["count"] == 1 and out["went_off"] == units
@@ -190,6 +193,7 @@ def mind_bot(enemies, ok=True):
     bridge, mind = NativeBridge(), FakeMind(ok)
     bot = R.Bot(stats={}, clock=lambda: clock[0], equip=bridge, mind=mind)
     snap = R.snapshot(round_guest(enemies=enemies))
+    snap.pop('throwables', None)  # this scripted fixture updates wheel state, not native actors
     snap["player"].update(equipped=R.BOMB_INDEX, bomb={"count": 5, "out": True, "armed": True},
                           guns={0x107: 0, 0x104: 1}, gun_ammo={0: 7, 1: 8})
     bot.held = lambda p, now: False
@@ -228,24 +232,67 @@ def test_never_inside_the_learned_reach_whatever_is_on_it(monkeypatch):
     assert mind.calls == []
 
 
-def test_a_hook_that_fails_falls_back_to_the_detonator_press(monkeypatch):
+def test_a_refused_flag_never_falls_back_to_the_detonator_press(monkeypatch):
     monkeypatch.setattr(R, "BOMB_MIND", True)
     bot, bridge, mind, clock, snap = mind_bot(((40.0, 0.0, R.BOMB_AHEAD + 30.0, 700),), ok=False)
     snap["player"].update(equipped=0, pos=(0.0, 0.0, R.BOMB_AHEAD - bot.book.safe - 100.0))
     run(bot, snap, clock, 1)
-    assert bot.stats["bomb_mind_failures"] == 1 and "flag" in bot.stats["bomb_mind_reason"]
-    assert bot.bomb_phase == "det_aim"                                        # ZL + ZR with the remote, for a while
+    assert bot.stats["bomb_mind_failures"] == 1 and "no detonator-input fallback" in bot.stats["bomb_mind_reason"]
+    assert bot.bomb_phase == "wait"
+    assert bot._bomb_press(R.BOMB_INDEX, clock[0], detonate=True) is None
     assert bot.mind_fail_until > clock[0]
 
 
-def test_a_hook_blast_that_never_shows_is_a_failure_and_the_press_follows(monkeypatch):
+def test_an_unconfirmed_blast_never_uses_a_detonator_press(monkeypatch):
     monkeypatch.setattr(R, "BOMB_MIND", True)
     bot, bridge, mind, clock, snap = mind_bot(((40.0, 0.0, R.BOMB_AHEAD + 30.0, 700),))
     snap["player"].update(equipped=0, pos=(0.0, 0.0, R.BOMB_AHEAD - bot.book.safe - 100.0))
     run(bot, snap, clock, 1)
     assert bot.bomb_phase == "mind"
     run(bot, snap, clock, int(R.MIND_CONFIRM_S / 0.05) + 2)                  # still armed, still out
-    assert bot.stats["bomb_mind_failures"] == 1 and bot.bomb_phase in ("det_aim", "det", "det_wait", "wait")
+    assert bot.stats["bomb_mind_failures"] == 1 and bot.bomb_phase == 'wait'
+
+
+@pytest.mark.parametrize('distance,accepted', [(1099,False),(1100,True),(1300,True)])
+def test_every_remote_flag_request_checks_native_clearance(distance, accepted):
+    g,p,units=bomb_guest()
+    g.f32(p+R.P_POS, 0, 0, 300-distance)
+    ad=Adapter(g)
+    result=M.detonate(ad)
+    assert result['verified'] is accepted
+    assert bool(ad.writes) is accepted
+    assert result['required_clearance_cm']==1100
+
+
+def test_stale_safe_snapshot_and_vertical_separation_do_not_authorize_detonation():
+    g,p,units=bomb_guest()
+    old=R.snapshot(g)
+    old['player']['pos']=(0,0,-5000)
+    g.f32(p+R.P_POS,0,5000,300)
+    ad=Adapter(g)
+    result=M.detonate(ad,old)
+    assert not result['verified'] and not ad.writes and result['clearance_cm']==0
+
+
+def test_one_close_bomb_on_another_line_blocks_all_bombs():
+    g,p,units=bomb_guest()
+    g.f32(p+R.P_POS,0,0,-2000)
+    u=g.unit(14,M.REMOTE_BOMB_CLASS,size=0x4000)
+    g.q(u+M.U_OWNER,p)
+    g.put(u+M.U_GENERATION,struct.pack('<I',99))
+    g.q(u+M.U_ACTION,g.obj('cWpAction_wp_act_setting',0x100))
+    g.f32(u+R.P_POS,0,0,-1900)
+    ad=Adapter(g)
+    assert not M.detonate(ad)['verified'] and not ad.writes
+
+
+def test_missing_or_nonfinite_native_position_does_not_clear_flag():
+    g,p,units=bomb_guest()
+    g.f32(p+R.P_POS,0,0,-2000)
+    g.f32(units[0]+R.P_POS,float('nan'),0,300)
+    ad=Adapter(g)
+    result=M.detonate(ad)
+    assert not result['verified'] and not ad.writes
 
 
 def test_the_remote_bomb_in_hand_unasked_is_placed_not_put_away(monkeypatch):
@@ -271,6 +318,17 @@ def test_with_the_hook_bound_no_dpad_key_ever_leaves_the_bot():
     assert bot.stats["wheel_presses_blocked"] == 2 and bot.stats["wheel_presses"] == 0
 
 
+def track_throw(bot, snap, clock, ticks):
+    """The camera responds to the requested aim; fixed-camera fixtures cannot throw accurately."""
+    acts = []
+    for _ in range(ticks):
+        plan = (bot.nade or {}).get('throw_plan')
+        if plan:
+            snap['camera']['target'] = plan['aim']
+        acts.extend(run(bot, snap, clock, 1))
+    return acts
+
+
 def test_a_grenade_at_one_in_range_and_thrown_on_the_move_away_from_the_pursuers(monkeypatch):
     # (the throw's mechanics with fire-first off: since 2026-11-10 14:30 the gun answers the one at 3 m first, below)
     monkeypatch.setattr(R, "NADES", True)
@@ -286,7 +344,7 @@ def test_a_grenade_at_one_in_range_and_thrown_on_the_move_away_from_the_pursuers
     run(bot, snap, clock, 2)
     assert bot.nade is not None and bot.nade["kind"] == "frag" and 9 in bridge.targets   # by the hook
     snap["player"]["equipped"] = 9
-    acts = run(bot, snap, clock, int((R.NADE_FACE_S + R.NADE_AIM_S + R.NADE_THROW_S) / 0.05) + 4)
+    acts = track_throw(bot, snap, clock, int((R.NADE_FACE_S + R.NADE_AIM_S + R.NADE_THROW_S) / 0.05) + 4)
     thrown = [a for a in acts if {"zl", "zr"} <= set(a.get("hold") or ())]
     assert thrown and all("ldown" in a["hold"] for a in thrown)               # backing away from the one at 3 m
     assert bot.stats["nade_flee_throws"] == 1 and bot.stats["frags"] >= 1   # (the in-hand burst may add more)
@@ -365,7 +423,7 @@ def test_coach_5482_7_the_pack_gets_the_ring_and_the_grenades_never_the_pillar(m
     assert -math.radians(150) <= rel <= math.radians(20)                     # at the pack (ahead / to his right)
     assert set(bridge.targets) <= {9, 10, 11}                                 # equipped by the hook ...
     snap["player"]["equipped"] = bot.nade["index"]
-    acts += run(bot, snap, clock, int((R.NADE_FACE_S + R.NADE_AIM_S + R.NADE_THROW_S + 0.4) / 0.05))
+    acts += track_throw(bot, snap, clock, int((R.NADE_FACE_S + R.NADE_AIM_S + R.NADE_THROW_S + 0.4) / 0.05))
     assert any({"zl", "zr"} <= set(a.get("hold") or ()) for a in acts)        # ... and thrown
     assert all(not ({a.get("tap")} | set(a.get("hold") or ())) & R.DPAD_KEYS for a in acts)   # never the wheel
     assert not any("rleft" in (a.get("hold") or ()) for a in acts)            # never turned to the pillar side
