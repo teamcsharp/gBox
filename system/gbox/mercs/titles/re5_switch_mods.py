@@ -452,7 +452,7 @@ def _mine_block(t: bytearray) -> bool:
             changed_grids[index] = quick_free[0]
         else:
             choices = [k for grid,k in occupied.items() if grid in QUICK_GRIDS and not hands[k]
-                       and ids[k] not in KNIFE_IDS]
+                       and ids[k] not in KNIFE_IDS and ids[k] not in R.HEAL_IDS]
             destination = grids[index] if grids[index] < 9 else next(iter(free),None)
             if not choices or destination is None:
                 return False

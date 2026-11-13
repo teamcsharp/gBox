@@ -92,12 +92,17 @@ class FlightRecorder:
                'route_source': safe(plan.get('route_source')),
                'timer': safe(snap.get('timer')), 'kills': safe(snap.get('kills')),
                'weapon': safe(snap.get('equipped_id', snap.get('weapon_class', p.get('weapon_id', held_weapon)))),
+               'inventory': [{k: safe(i.get(k)) for k in ('id', 'item', 'slot', 'grid', 'hand', 'rounds', 'object')}
+                             for i in (snap.get('inventory') or ())[:24] if isinstance(i, dict)]
+                            if isinstance(snap.get('inventory'), list) else None,
                'aim': safe(snap.get('aim')), 'aim_plan': safe(plan.get('aim')),
                'laser': safe(snap.get('laser')), 'camera': safe(snap.get('camera', snap.get('aim_cam'))),
                'native_action': safe(p.get('action', p.get('motion'))), 'fire_cooldown_s': safe(p.get('fire_cooldown_s')),
                'throwables': safe(snap.get('throwables')),
                'diagnostics': {k: safe(stats[k]) for k in (
                    'decision_stages_ms', 'decision_work_ms', 'decision_work_p95_ms',
+                   'snapshot_stages_json', 'heal_inventory_read', 'heal_inventory_slots', 'heal_quick_slots',
+                   'heal_status', 'heal_unavailable_reason', 'native_equip',
                    'aim_diag', 'aim_errdeg', 'laser_gate', 'sight_block_last', 'nav_status',
                    'target_feedback_target', 'target_feedback_yaw_deg', 'target_feedback_pitch_deg',
                    'target_feedback_gate', 'target_feedback_ram', 'target_feedback_block_why',

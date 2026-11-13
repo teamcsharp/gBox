@@ -1778,7 +1778,7 @@ def heading(dx: float, dz: float) -> float:
     return math.atan2(dx, dz)
 
 
-_UNIT_CENSUS = {"at": -1e9, "n": None}
+CENSUS_NODES, CENSUS_BUDGET_S = 8, .002
 BONUS_SCAN_NODES = 64
 BONUS_SCAN_BUDGET_S = .005
 
@@ -1865,25 +1865,53 @@ def time_bonuses(m, base: int, now: float | None = None, *, identity=None):
         return None  # unknown this tick; never synthesize an empty census
 
 
-def unit_enemies_alive(m, base: int, now: float | None = None):
-    """The game's own count: uEm units alive on sUnit's enemy line (ENEMY_LINE), read at most every CENSUS_S."""
+def unit_enemies_alive(m, base: int, now: float | None = None, *, identity=None):
+    """Diagnostic census in short slices; never delay fighting to count a whole list.
+
+    Values describe a completed traversal, not an atomic live total. Partial or
+    broken lists are unknown and cannot publish a falsely small enemy count.
+    """
     now = time.monotonic() if now is None else now
-    if now - _UNIT_CENSUS["at"] < CENSUS_S:
-        return _UNIT_CENSUS["n"]
-    _UNIT_CENSUS["at"] = now
-    n = None
+    started = time.perf_counter()
+    st = getattr(m, '_re5_enemy_census', None)
     try:
         su = u64(m, base + S_UNIT)
-        if ptr_ok(su):
-            u, k, n = u64(m, su + UNIT_LINES + LINE_STRIDE * ENEMY_LINE), 0, 0
-            while ptr_ok(u) and k < 256:
-                if (enemy_class(m, u) or "").startswith("uEm") and struct.unpack("<h", m.rd(u + E_HP, 2))[0] > 0:
-                    n += 1
-                u, k = u64(m, u + UNIT_NEXT), k + 1
-    except (ValueError, OSError, struct.error):
-        n = None
-    _UNIT_CENSUS["n"] = n
-    return n
+        if not ptr_ok(su):
+            m._re5_enemy_census = None
+            return None
+        key = (base, su, identity)
+        if st is None or st['identity'] != key:
+            st = m._re5_enemy_census = {'identity':key, 'n':None, 'next_at':now, 'scan':None,
+                                       'complete_at':None, 'status':'unobserved'}
+        if st['scan'] is None:
+            if now < st['next_at']:
+                return st['n']
+            st['scan'] = {'unit':u64(m, su + UNIT_LINES + LINE_STRIDE*ENEMY_LINE), 'seen':set(), 'n':0}
+        scan, work = st['scan'], 0
+        while ptr_ok(scan['unit']) and work < CENSUS_NODES:
+            if work and time.perf_counter()-started >= CENSUS_BUDGET_S:
+                break
+            u = scan['unit']
+            if u in scan['seen'] or len(scan['seen']) >= 256:
+                raise ValueError('enemy census cycle or node limit')
+            scan['seen'].add(u)
+            name = enemy_class(m, u)
+            if name is None:
+                raise ValueError('enemy census class unreadable')
+            if name.startswith('uEm') and struct.unpack('<h',m.rd(u+E_HP,2))[0] > 0:
+                scan['n'] += 1
+            scan['unit'] = u64(m, u+UNIT_NEXT)
+            work += 1
+        st.update(work=work, nodes=len(scan['seen']), read_ms=round(1000*(time.perf_counter()-started),2))
+        if not ptr_ok(scan['unit']):
+            st.update(n=scan['n'], scan=None, complete_at=now, next_at=now+CENSUS_S, status='complete', error=None)
+        else:
+            st['status'] = 'scanning'
+        return st['n']
+    except (ValueError, OSError, struct.error) as exc:
+        if st is not None:
+            st.update(n=None, scan=None, status='incomplete', error=str(exc)[:120], next_at=now+CENSUS_S)
+        return None
 
 
 def game_sys(m, base: int) -> int:
@@ -2028,7 +2056,11 @@ def snapshot(m) -> dict:
                     snap["continue_ready"] = _i32(m, over + CONTINUE_INPUT) == CONTINUE_TAKES_INPUT if over else None
                 except (ValueError, OSError):
                     snap["continue_cursor"] = snap["continue_ready"] = None
-    snap["unit_enemies_alive"] = unit_enemies_alive(m, base)
+    player = snap.get('player') or {}
+    snap["unit_enemies_alive"] = unit_enemies_alive(m, base, identity=(player.get('ptr'), player.get('generation')))
+    census = getattr(m, '_re5_enemy_census', None) or {}
+    snap['enemy_census'] = {k:census.get(k) for k in ('status','read_ms','work','nodes','error')}
+    snap['enemy_census']['age_s'] = max(0,time.monotonic()-census['complete_at']) if census.get('complete_at') is not None else None
     stage('enemy_count')
     se = u64(m, base + S_ENEMY)
     ppos = (snap.get("player") or {}).get("pos")
@@ -6179,6 +6211,8 @@ class Bot:
             return None
         item = next((s for s in inv if s["id"] in HEAL_IDS and s["rounds"] > 0 and s["grid"] in QUICK), None)
         if item is None:
+            available = any(s['id'] in HEAL_IDS and s['rounds'] > 0 for s in inv)
+            self.stats['heal_unavailable_reason'] = 'heals outside quick slots' if available else 'no usable healing items'
             # Critical HP with no heals left: retreat away from the nearest threat instead of fighting on
             # (the "low health with no tablet or heal" damage cluster: the bot aimed or fired at <=30% HP
             # with an empty heal supply and died; the retreat gives the gun-down time and the distance).
@@ -6194,11 +6228,12 @@ class Bot:
                 self.escape_at = now
                 self.round_escapes += 1
                 self.stats["escapes"] += 1
-                self.stats["heal_status"] = f"critical retreat at {hp / hp_max:.0%} (no heals)"
+                self.stats["heal_status"] = f"critical retreat at {hp / hp_max:.0%} ({self.stats['heal_unavailable_reason']})"
                 err = wrap(away - p["rot"])
                 return {"hold": RUN + self._turn(err, TURN_TOL)}
             return None
         gun = next((s for s in inv if s["hand"] and s["type"] == 1 and s["item"] not in THROWN), None)
+        self.stats.pop('heal_unavailable_reason', None)
         self._gun_down()
         self.healing = {"player": p.get("ptr"), "id": item["id"], "hp": hp, "at": now, "uses": 0, "last_use": -1e9,
                         "count": sum(s["rounds"] for s in inv if s["id"] == item["id"]), "equips": 1, "equip_at": now,
@@ -9006,11 +9041,19 @@ class RE5Switch(Driver):
     def progress(self, snap: dict) -> dict:
         import json
         scan = snap.get('bonus_scan') or {}
+        census = snap.get('enemy_census') or {}
+        inv = snap.get('inventory')
+        heals = [s for s in inv or () if s.get('id') in HEAL_IDS and (s.get('rounds') or 0) > 0]
         return {"timer": snap.get("timer"), "combo": snap.get("combo"), "score": snap.get("score"),
                 "kills": snap.get("kills"), "max_combo": snap.get("max_combo"),
                 'bonus_scan_status':scan.get('status'), 'bonus_scan_read_ms':scan.get('read_ms'),
                 'bonus_scan_nodes':scan.get('nodes'), 'bonus_scan_error':scan.get('error'),
                 'snapshot_stages_json':json.dumps(snap.get('snapshot_stages_ms') or {}, separators=(',', ':')),
+                'heal_inventory_read':isinstance(inv, list),
+                'heal_inventory_slots':len(heals) if isinstance(inv, list) else None,
+                'heal_quick_slots':sum(s.get('grid') in QUICK for s in heals) if isinstance(inv, list) else None,
+                'enemy_census_status':census.get('status'), 'enemy_census_age_s':census.get('age_s'),
+                'enemy_census_read_ms':census.get('read_ms'), 'enemy_census_error':census.get('error'),
                 "mercenaries_phase": snap.get("mercenaries_phase"), "mode": "no_mercy"}
 
 

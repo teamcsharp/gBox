@@ -597,7 +597,7 @@ def test_critical_hp_with_no_heals_retreats_instead_of_fighting():
     assert "lup" in act["hold"] or "ldown" in act["hold"]               # running (the escape), not aiming
     assert "zl" not in act["hold"] and "zr" not in act["hold"]          # the gun stays down
     assert b.escape is not None                                         # the escape state is set
-    assert "no heals" in str(b.stats.get("heal_status", ""))
+    assert b.stats.get('heal_unavailable_reason') == 'no usable healing items'
     assert b.stats["escapes"] == 1
 
 
