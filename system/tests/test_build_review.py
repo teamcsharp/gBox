@@ -96,9 +96,23 @@ def test_review_cleanup_handles_multiple_selected_pcs_and_offline_wait(tmp_path)
     assert folder.exists()
 
 
-def test_full_cast_request_does_not_silently_become_one_player():
-    game={'game_id':'002b9dca58a18ea1','title':'Grand Theft Auto - Liberty City Stories (USA)','platform':'ps2'}
-    result=CS.plan(game,[],'SA2',slots='all')
+@pytest.mark.parametrize('has_donor', [False, True])
+def test_full_cast_request_does_not_silently_become_one_player(monkeypatch, has_donor):
+    from gbox import char_coverage as CC
+    # LCS now supports a combined pedestrian cast (758d3f9e). Pin the
+    # capability this safety test covers, independent of a title gaining a writer.
+    writer='gbox.fixture_single_slot'
+    monkeypatch.setattr(CC, 'writer_for', lambda game: {'writer':writer,'routed':True})
+    assert CS.strategy(writer)[0]=='single'
+    game={'game_id':'0'*16,'title':'Single-slot writer fixture','platform':'ps2'}
+    slots=[{'slot':'player','name':'Player','kind':'player'},
+           {'slot':'enemy:1','name':'Enemy','kind':'enemy'}]
+    chars=[{'slug':'sonic','name':'Sonic','kind':'character','model':'model.glb',
+            'rig':{'roles':{'hip':'root'}},'stats':{'triangles':10},
+            'source':{'game_id':'1'*16,'game_title':'Sonic Adventure 2 (USA)','platform':'dreamcast'}}] if has_donor else []
+    if has_donor:
+        assert CS.resolve_source('SA2',chars)['entries']==chars
+    result=CS.plan(game,chars,'SA2',slots='all',slot_list=slots)
     assert result['status']=='unsupported_cast' and result['mod'] is None and result['assignments']==[]
     assert 'whole-cast' in result['message']
 
