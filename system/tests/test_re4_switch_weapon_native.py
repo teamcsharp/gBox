@@ -191,3 +191,93 @@ def test_zero_current_object_is_unknown_for_controls_status():
     obj = E.active(ctl)['object']
     ad.write_memory(obj + R.OBJ_ITEM, bytes(2))
     assert E.current_weapon(ctl) is None
+
+
+def native_round(ctl, phases=('results', 'intro', 'playing'), start=10.):
+    for i, phase in enumerate(phases):
+        E.observe_round(ctl, dict(mercenaries=True, phase=phase, kills=0, score=0,
+            in_control=phase == 'playing', clock_running=phase == 'playing', clock=120., stage=2, mode=1), start+i)
+
+
+def restore_native_handgun(ad, ctl):
+    ad.write_memory(ITEM, struct.pack('<H', 0x27))
+    ad.write_memory(BASE + W.ITEM_MGR + W.M_EQUIPPED_ID, struct.pack('<H', 0x27))
+    ad.write_memory(BASE + W.GAME_OBJ + W.G_CLASS, bytes((W.CLASS_OF[0x27], 0)))
+    ctl.equipment_quiescent = lambda: True
+
+
+def test_reused_player_slot_can_recover_only_after_complete_native_round_boundary():
+    ad, ctl = uncertain_equip()
+    original = dict(ctl.weapon_uncertain)
+    restore_native_handgun(ad, ctl)
+    native_round(ctl)
+    before = len(ctl.calls)
+    assert ctl.equip_primary(0x2C)['verified']
+    assert ctl.weapon_resolution['resolved'] == 'new_native_round'
+    assert ctl.weapon_resolution['error'] == original['error']
+    assert ctl.weapon_resolution['item'] == 0x2A  # history is not rewritten as the new shotgun
+    assert ctl.weapon_resolution['boundary']['selection'] == (2, 1)
+    assert [c[0] for c in ctl.calls[before:]] == [E.SELECT, E.REFRESH]
+
+
+@pytest.mark.parametrize('phases', [('playing',), ('results','playing'), ('intro','playing'),
+    ('playing','intro','playing'), ('results','playing','intro','playing'), ('case','intro','playing')])
+def test_incomplete_or_out_of_order_boundary_cannot_unlock_equipment(phases):
+    ad, ctl = uncertain_equip(); restore_native_handgun(ad, ctl)
+    native_round(ctl, phases)
+    before = len(ctl.calls)
+    with pytest.raises(Uncertain):
+        ctl.equip_primary(0x2C)
+    assert len(ctl.calls) == before
+
+
+@pytest.mark.parametrize('fault', ['busy', 'incoherent', 'pending', 'legacy'])
+def test_round_boundary_does_not_bypass_native_completion_or_actual_identity(fault):
+    ad, ctl = uncertain_equip(); restore_native_handgun(ad, ctl)
+    native_round(ctl)
+    if fault == 'busy': ctl.equipment_quiescent = lambda: False
+    if fault == 'incoherent': ad.write_memory(E.active(ctl)['object'] + R.OBJ_ITEM, bytes(2))
+    if fault == 'pending': ctl.weapon_uncertain['stage'] = 'refresh_pending'
+    if fault == 'legacy': ctl.weapon_uncertain.pop('native_round')
+    before = len(ctl.calls)
+    with pytest.raises(Uncertain): ctl.equip_primary(0x2C)
+    assert len(ctl.calls) == before
+
+
+def test_boundary_credit_cannot_resolve_a_new_failure_in_the_same_round():
+    ad, ctl = uncertain_equip(); restore_native_handgun(ad, ctl); native_round(ctl)
+    real = ctl.call
+    ctl.call = lambda off, *args, **kw: real(off, *args, **kw) if off == E.SELECT else None
+    with pytest.raises(Uncertain): ctl.equip_primary(0x2C)
+    restore_native_handgun(ad, ctl)
+    before = len(ctl.calls)
+    with pytest.raises(Uncertain): ctl.equip_primary(0x2A)
+    assert ctl.weapon_uncertain['native_round'] == 1 and len(ctl.calls) == before
+
+
+@pytest.mark.parametrize('fault', ['old_intro','reordered','nonzero','selection','not_mercs'])
+def test_invalid_native_observations_cannot_create_a_boundary(fault):
+    from types import SimpleNamespace
+    ctl = SimpleNamespace()
+    game = dict(mercenaries=True, phase='results', kills=0, score=0, stage=2, mode=1,
+                clock=120., clock_running=True, in_control=True)
+    E.observe_round(ctl, game, 1.)
+    E.observe_round(ctl, dict(game, phase='intro', kills=1 if fault == 'nonzero' else 0,
+                            mercenaries=fault != 'not_mercs'), .5 if fault == 'reordered' else 2.)
+    E.observe_round(ctl, dict(game, phase='playing', stage=0 if fault == 'selection' else 2),
+                    40. if fault == 'old_intro' else 3.)
+    assert ctl.weapon_round_witness['generation'] == 0
+
+
+def test_late_refresh_cannot_attribute_its_failure_to_the_following_round():
+    ad = Ad(); _armoury(ad); ctl = ad.native
+    real = ctl.call
+    def call(off, *args, **kw):
+        result = real(off, *args, **kw)
+        if off == E.REFRESH: native_round(ctl)
+        return result
+    ctl.call = call
+    with pytest.raises(Unavailable, match='changed'):
+        ctl.equip_primary(0x2A)
+    assert ctl.weapon_uncertain['native_round'] == 0
+    assert ctl.weapon_round_witness['generation'] == 1

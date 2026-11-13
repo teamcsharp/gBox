@@ -120,3 +120,13 @@ Navigation reports now catch an A/B/A/B waypoint cycle toward the same final goa
 ## Native RE4 round labels
 
 The round recorder now captures stage and character from the first valid live MercSys sample, retaining that identity through menus and later changes to the queued selection. Reports and scheduler boundaries distinguish `native_mercsys` from the explicit `requested` fallback. This prevents a controller reload from labeling an ongoing Base attempt as queued Castle. Validation: 59 RE4 bot and boundary-wiring tests passed. A final 109-test run also passed after adding round-local resets for RE5 crowd-selection hysteresis.
+
+## RE4 equipment recovery across native rounds
+
+RE4 can reuse its player pointer and slot ID in the next attempt. An uncertain equipment refresh therefore remained blocked despite a completed call and a new native round. The controller now retains a terminal-to-intro-to-playing witness across bot reloads. Only a completed refresh, quiescent mailbox, coherent observed equipment and a later witnessed native round can clear that block; the original uncertain receipt is retained. Pending calls, legacy receipts without an epoch, menu transitions and capture-ID changes cannot unlock it. This permits another round's attempt; it does not establish that the original weapon swap worked.
+
+## Direct RE5 mines and the five-mine request
+
+The operator requests mines without equipping or animation, including a five-mine ring while escaping after a nitrogen blast. The existing direct-mine prototype passed a relative DTI where the native factory requires an absolute address. It now relocates that argument with the module base. The default ring contains five mines at 152.4 cm; explicit legacy eight-mine research requests remain supported. Native mine arming, retained weapon and continued movement still require live acceptance. Availability remains unverified until that evidence exists. Combined validation: 107 tests passed, two skipped across native equipment, proximity mines, intervention requests and live controls.
+
+The latest request prioritizes unlocking the actual launcher effects, especially the 360-degree nitrogen ring across titles. Existing flash fallback is not nitrogen. RE5 has nitrogen ammunition; older comments claiming otherwise are incorrect. RE6's existing shell prototype uses a thrown-grenade initializer with fields beyond the shell class's declared allocation size and cannot be treated as a valid launcher implementation. Trace the native launcher lifecycle before enabling it.

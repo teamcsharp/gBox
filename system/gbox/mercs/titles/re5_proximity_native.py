@@ -10,7 +10,8 @@ import struct
 import time
 
 DTI, VTABLE, ITEM = 0x1D715A8, 0x1C5E478, 0x10A
-RADIUS_CM, RING_COUNT = 152.4, 8
+RADIUS_CM, RING_COUNT = 152.4, 5
+COUNTS = (1, RING_COUNT, 8)  # retain the earlier eight-mine research request
 LIVE_VERIFIED = False
 FUNCTIONS = {
     0x7E51A0: bytes.fromhex('f30f1ef8fd7b01a9fd430091f30300aa'),
@@ -21,8 +22,8 @@ FUNCTIONS = {
 
 
 def points(center, count):
-    if count not in (1, RING_COUNT):
-        raise ValueError('one mine or the eight-mine ring')
+    if type(count) is not int or count not in COUNTS:
+        raise ValueError('one mine, five mines, or the legacy eight-mine ring')
     if len(center) != 3 or not all(math.isfinite(v) for v in center):
         raise ValueError('invalid mine center')
     if count == 1:
@@ -37,8 +38,8 @@ def place(ctl, count=1, *, allow_unverified=False, allowed=None):
     from .re5_switch_native import Unavailable, Uncertain, AllocationLost
     if not LIVE_VERIFIED and not allow_unverified:
         raise Unavailable('RE5 direct proximity-mine placement is awaiting live validation')
-    if type(count) is not int or count not in (1, RING_COUNT):
-        raise ValueError('one mine or the eight-mine ring')
+    if type(count) is not int or count not in COUNTS:
+        raise ValueError('one mine, five mines, or the legacy eight-mine ring')
     ctl.ready()
     with ctl.lock:
         player, generation = ctl.ready()
@@ -91,7 +92,7 @@ def place(ctl, count=1, *, allow_unverified=False, allowed=None):
             ctl.attach()
             for i in range(count):
                 current()
-                unit = ctl.call(0x118E820, player, generation, DTI, timeout=2.5)
+                unit = ctl.call(0x118E820, player, generation, ctl.base + DTI, timeout=2.5)
                 if not R.ptr_ok(unit):
                     raise Unavailable('native proximity-mine factory refused allocation')
                 row = {'index': i, 'unit': unit, 'generation': ctl.q(unit + 0x1A00)}

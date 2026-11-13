@@ -73,6 +73,20 @@ def test_twenty_clicks_remain_distinct_and_complete_once(queue):
     assert all(r['state'] == 'confirmed' for r in q.status('sid')['requests'])
 
 
+def test_five_mines_are_an_explicit_idempotent_ring_request(queue):
+    q, _ = queue
+    caps = ['proximity_mine_drop', 'proximity_mine_ring']
+    q.claim('sid', 'life-1', caps, options={'proximity_mines': {'available': True, 'count': 5, 'radius_cm': 152.4}})
+    rid = str(uuid.uuid4())
+    row = q.post('sid', caps[1], rid, 'viewer', {'count': 5})
+    assert row['args'] == {'count': 5}
+    assert q.post('sid', caps[1], rid, 'viewer', {'count': 5}) == row
+    for count in (True, 0, 2, 6, 100, 5.0):
+        with pytest.raises(ValueError): q.post('sid', caps[1], str(uuid.uuid4()), 'viewer', {'count': count})
+    with pytest.raises(ValueError): q.post('sid', caps[0], str(uuid.uuid4()), 'viewer', {'count': 5})
+    with pytest.raises(ValueError): q.post('sid', caps[1], rid, 'viewer', {'count': 8})
+
+
 def test_weapon_requests_keep_arguments_and_cannot_reuse_an_id_for_another_weapon(queue):
     q, _ = queue
     options = {'weapons':[{'item':25,'weapon':'Hydra'}, {'item':27,'weapon':'S&W M500'}]}

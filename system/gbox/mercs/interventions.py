@@ -111,9 +111,12 @@ class Queue:
             if not isinstance(args, dict) or set(args) != {'enabled'} or type(args['enabled']) is not bool:
                 raise ValueError('infinite ammo needs an explicit boolean enabled value')
         elif op in ('proximity_mine_drop', 'proximity_mine_ring'):
-            if not isinstance(args, dict) or set(args) - {'allow_unverified'} or (
+            if not isinstance(args, dict) or set(args) - {'allow_unverified', 'count'} or (
                     'allow_unverified' in args and type(args['allow_unverified']) is not bool):
                 raise ValueError('invalid proximity mine arguments')
+            if 'count' in args and (type(args['count']) is not int or args['count'] not in (1, 5, 8)
+                                   or op == 'proximity_mine_drop' and args['count'] != 1):
+                raise ValueError('invalid proximity mine count')
         elif op == 'grenade_ring':
             args = dict(args)
             kind = args.setdefault('kind', 'flash')
@@ -309,9 +312,9 @@ def install(app, store, auth):
         options = {'weapons': weapons, 'current_weapon': current}
         if mines is not None:
             if not isinstance(mines, dict) or type(mines.get('available')) is not bool \
-                    or mines.get('radius_cm') != 152.4 or type(mines.get('count')) is not int or mines['count'] != 8:
+                    or mines.get('radius_cm') != 152.4 or type(mines.get('count')) is not int or mines['count'] not in (5, 8):
                 raise HTTPException(422, 'invalid proximity mine status')
-            options['proximity_mines'] = {'available': mines['available'], 'radius_cm': 152.4, 'count': 8,
+            options['proximity_mines'] = {'available': mines['available'], 'radius_cm': 152.4, 'count': mines['count'],
                                           'reason': str(mines.get('reason') or '')[:300]}
         if kinds is not None:
             if (not isinstance(kinds, list) or len(kinds) > len(GRENADE_RING_KINDS) or any(
@@ -620,7 +623,7 @@ def _worker_loop(sid, server, headers, ad, stats_of, alive, event, game=None):
                                         return (alive() and row['expires'] > time.time() and
                                                 row['epoch'] == context(full=False)['epoch'] and
                                                 (stats or {}).get('round_evidence_id') == round_id)
-                                    result = ctl.proximity_mines(8 if row['op'] == 'proximity_mine_ring' else 1,
+                                    result = ctl.proximity_mines(row['args'].get('count', 5 if row['op'] == 'proximity_mine_ring' else 1),
                                         allow_unverified=row['args'].get('allow_unverified') is True,
                                         allowed=allowed_mines)
                                     if stats is not None:

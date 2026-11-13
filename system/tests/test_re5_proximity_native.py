@@ -25,6 +25,7 @@ def mine_controller(monkeypatch):
     def call(off, *args, **_):
         ctl.native_calls.append((off, args))
         if off == 0x118E820:
+            assert args == (ctl.player, ctl.generation, ctl.base + M.DTI)
             unit = 0x230000000 + len(ctl.units) * 0x10000
             ctl.units.append(unit)
             for at, value in ((unit, ctl.base + M.VTABLE), (unit + 0x1A00, len(ctl.units)),
@@ -53,11 +54,12 @@ def test_default_refuses_unverified_before_any_write(monkeypatch):
     assert not ctl.writes and not ctl.native_calls
 
 
-def test_eight_mine_ring_fixed_radius_native_arming_no_weapon_or_input_writes(monkeypatch):
+@pytest.mark.parametrize('count', [5, 8])
+def test_mine_ring_fixed_radius_native_arming_no_weapon_or_input_writes(monkeypatch, count):
     ctl = mine_controller(monkeypatch)
-    out = M.place(ctl, 8, allow_unverified=True)
+    out = M.place(ctl, count, allow_unverified=True)
     assert out['state'] == 'confirmed' and not out['verified']
-    assert out['placed'] == out['armed'] == 8 and out['triggered'] == 0
+    assert out['placed'] == out['armed'] == count and out['triggered'] == 0
     assert out['weapon_unchanged'] and not out['inventory_consumed']
     assert out['center'] == [100, 200, 300]
     for row in out['mines']:

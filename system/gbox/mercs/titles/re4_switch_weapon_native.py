@@ -28,6 +28,42 @@ ASSET_TABLES = {0: (0xB288C0, 0xB14D30), 2: (0xB288B8, 0xB14EB8),
                 5: (0xB288D8, 0xB151C8)}
 
 
+def observe_round(ctl, game, now):
+    """Retain native terminal -> reset intro -> live evidence on the controller.
+
+    RE4 reuses player pointer/slot zero between attempts. A bot restart, its
+    capture UUID, a menu, or a clock gain is not a new native player life.
+    This observer never clears a receipt or publishes an equipment call.
+    """
+    if ctl is None or not isinstance(game, dict) or not game.get('mercenaries'):
+        return
+    state = getattr(ctl, 'weapon_round_witness', None)
+    if state is None:
+        state = ctl.weapon_round_witness = {'generation': 0, 'seen': -math.inf}
+    if not math.isfinite(now) or now <= state['seen']:
+        return
+    state['seen'] = now
+    phase = game.get('phase')
+    if phase in ('dead', 'results'):
+        state.update(terminal=now, intro=None)
+    elif phase == 'intro' and game.get('kills') == 0 and game.get('score') == 0:
+        if 0 < now - state.get('terminal', -math.inf) <= 600:
+            if state.get('intro') is None:
+                state.update(intro=now, selection=(game.get('stage'), game.get('mode')))
+    elif phase == 'playing':
+        intro = state.get('intro')
+        if intro is not None and 0 < now - intro <= 30 and game.get('in_control') \
+                and game.get('clock_running') and (game.get('clock') or 0) > 0 \
+                and state.get('selection') == (game.get('stage'), game.get('mode')):
+            state['generation'] += 1
+            state['boundary'] = {'terminal_at': state['terminal'], 'intro_at': intro, 'playing_at': now,
+                                 'selection': state['selection']}
+        # Playing with an incomplete witness consumes it too. A later intro
+        # cannot reuse a terminal observation from before this gameplay.
+        state.pop('terminal', None)
+        state.pop('intro', None)
+
+
 def asset_index(character, cls, variant):
     """The pinned loader's table index (00495040, including its jump table)."""
     if character in (2, 3, 4):
@@ -120,9 +156,14 @@ def reconcile(ctl, life, held, current, rows):
     if isinstance(receipt, dict) and callable(quiet) and quiet() and coherent:
         new_life = tuple(receipt['life']) != tuple(life)
         confirmed_late = receipt.get('stage') == 'refresh_returned' and held['id'] == receipt.get('item')
-        if new_life or confirmed_late:
-            ctl.weapon_resolution = dict(receipt, resolved='new_native_life' if new_life else 'late_object',
-                                         resolved_life=life, resolved_item=held['id'])
+        witness = getattr(ctl, 'weapon_round_witness', {})
+        new_round = (receipt.get('stage') == 'refresh_returned'
+                     and type(receipt.get('native_round')) is int
+                     and witness.get('generation', 0) > receipt['native_round'])
+        if new_life or confirmed_late or new_round:
+            reason = 'new_native_life' if new_life else 'late_object' if confirmed_late else 'new_native_round'
+            ctl.weapon_resolution = dict(receipt, resolved=reason, resolved_life=life,
+                                         resolved_item=held['id'], boundary=witness.get('boundary'))
             ctl.weapon_uncertain = None
             return
     detail = f"; first failure at {receipt.get('stage')}: {receipt.get('error')}" if isinstance(receipt, dict) else ''
@@ -154,10 +195,12 @@ def replace(ctl, item, *, expected=None, allowed=None):
         raise ValueError('unknown RE4 weapon')
     with ctl.lock:
         life = ctl.ready()
+        native_round = getattr(ctl, 'weapon_round_witness', {}).get('generation', 0)
         if expected is not None and life != expected:
             raise Unavailable('requested player changed')
         def guard():
-            if (allowed is not None and not allowed()) or ctl.ready() != life:
+            if (allowed is not None and not allowed()) or ctl.ready() != life \
+                    or getattr(ctl, 'weapon_round_witness', {}).get('generation', 0) != native_round:
                 raise Unavailable('weapon handover cancelled or player changed')
             game = R.game_state(ctl, ctl.base) or {}
             if game.get('phase') != 'playing' or not game.get('in_control'):
@@ -249,6 +292,7 @@ def replace(ctl, item, *, expected=None, allowed=None):
         except Exception as exc:
             if published:
                 ctl.weapon_uncertain = {'life': life, 'item': item, 'stage': stage,
+                                        'native_round': native_round,
                                         'error': f'{type(exc).__name__}: {exc}'[:240]}
             else:
                 ctl.write(slot, old)

@@ -537,6 +537,8 @@ def play(ad, send, stopped, sleep=time.sleep, stats: dict | None = None, *, cloc
             where = screen.get("where")
             # --- where the game is, from its own state (re4_switch.game_state), the frame as the cross-check
             gs = _game(m, stats) if m is not None else None
+            from .mercs.titles import re4_switch_weapon_native
+            re4_switch_weapon_native.observe_round(getattr(ad, '_re4_switch_harness', None), gs, time.monotonic())
             phase = gs.get("phase") if gs else None
             live = bool(gs) and phase in ("playing", "grabbed") and bool(gs.get("clock_running"))
             ram_round = (bool(gs) and phase in driver.ROUND_PHASES and (live or where in FRAME_UNSURE)
