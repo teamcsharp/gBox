@@ -354,6 +354,39 @@ def run(mode: str, args) -> int:
                     f"(this room is outside {name}'s frame) - moving directly, without a route")
                 router = None
 
+    if mode == "climb":
+        # Follow rising ground: the forest has a basin the character slides into, and a 2D motion cannot walk up the
+        # cliff to the doors. Probing every key and taking the one that raises y climbed from y 6.9 to 22.7 live.
+        target_y = float(args.to_height)
+        for step in range(int(args.max_steps)):
+            player = (world.observe(player_only=True) or {}).get("player") or {}
+            if player.get("y") is None or float(player["y"]) >= target_y:
+                log(f"climbed to y {float(player.get('y') or 0):.1f} at "
+                    f"({float(player.get('x') or 0):.0f},{float(player.get('z') or 0):.0f})")
+                break
+            best = None
+            for key in B.DIRECTIONS:
+                before = ((world.observe(player_only=True) or {}).get("player") or {})
+                world.act(B.press(key, "climb probe"), time.monotonic() + 3.0)
+                clock.sleep(0.08)
+                after = ((world.observe(player_only=True) or {}).get("player") or {})
+                dy = float(after.get("y") or 0) - float(before.get("y") or 0)
+                if best is None or dy > best[0]:
+                    best = (dy, key)
+            if best is None or best[0] < 0.2:
+                log(f"no higher ground from y {float(player.get('y') or 0):.1f}")
+                break
+            for _ in range(2):
+                world.act(B.press(best[1], "climb"), time.monotonic() + 3.0)
+                clock.sleep(0.06)
+            if step % 3 == 0:
+                player = (world.observe(player_only=True) or {}).get("player") or {}
+                log(f"  climb: y {float(player.get('y') or 0):.1f} "
+                    f"at ({float(player.get('x') or 0):.0f},{float(player.get('z') or 0):.0f})")
+        world.release()
+        release_ownership()
+        return 0
+
     if mode == "walk":
         target = tuple(args.to) if args.to is not None else (0.0, 0.0)
         # No policy: the objective is the point. The same bounded tick still issues the action, so the walk cannot
@@ -522,6 +555,22 @@ class _FixedTarget:
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(description="bounded PSO controller")
     sub = parser.add_subparsers(dest="mode", required=True)
+    climb = sub.add_parser("climb", help="follow rising ground until the character reaches a height")
+    climb.add_argument("--to-height", type=float, default=21.0)
+    climb.add_argument("--max-steps", type=int, default=24)
+    climb.add_argument("--session", default="")
+    climb.add_argument("--assisted", action="store_true")
+    climb.add_argument("--no-calibrate", action="store_true")
+    climb.add_argument("--calibration-ttl", type=float, default=900.0)
+    climb.add_argument("--motion", default="commit", choices=("hill", "wall", "commit", "vector", "relative"))
+    climb.add_argument("--seconds", type=float, default=300.0)
+    climb.add_argument("--map", default="")
+    climb.add_argument("--map-name", default="")
+    climb.add_argument("--carve", action="store_true", default=False)
+    climb.add_argument("--no-carve", dest="carve", action="store_false")
+    climb.add_argument("--carve-radius", type=float, default=8.0)
+    climb.add_argument("--trace-spacing", type=float, default=8.0)
+
     walk = sub.add_parser("walk", help="drive to one coordinate with bounded controller input")
     walk.add_argument("--to", type=float, nargs=2, metavar=("X", "Z"),
                       help="target coordinate (omit when replaying --route-file)")

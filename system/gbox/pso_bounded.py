@@ -613,6 +613,7 @@ class HillClimbMotion:
         self.last_key = None
         self.last_pos = None
         self.last_dir = None
+        self.turns = 0
         self.gains = {key: 0.0 for key in self.keys}
         self.misses = 0
         self.switches = 0
@@ -811,6 +812,7 @@ class CommitMotion:
         self.probe_from = (0.0, 0.0)
         self.probe_target = (0.0, 0.0)
         self.probes = 0
+        self.turns = 0
         self.last_aim = None
         self.last_ok = False
         self.last_dir = None
@@ -893,6 +895,14 @@ class CommitMotion:
         elif self.remaining <= 0 or self.key is None:
             self.key = self._best(aim)
             self.remaining = self.commit
+            # If nothing measured points at the target, turn instead of walking the least-bad way. Taps rotate the
+            # follow camera (measured: 125-180 degrees per tap), so a turn re-deals the four directions; the learned
+            # map is cleared so the next taps measure the new frame.
+            alignment = self._alignment(self.key, aim)
+            if alignment < 0.5 and len(self.dirs) >= 3:
+                self.dirs.clear()
+                self.key = "left"
+                self.turns += 1
         self.remaining -= 1
         self.last_key = self.key
         self.last_pos = here
@@ -901,6 +911,13 @@ class CommitMotion:
         self.last_aim = (float(target[0]), float(target[1])) if self.steps >= self.slide_until else None
         return press(self.key, f"tap {self.key} ({distance:.0f} units toward {reason or 'target'}, "
                               f"slide {self.slides})")
+
+    def _alignment(self, key: str, aim: tuple) -> float:
+        direction = self.dirs.get(key)
+        if direction is None:
+            return -1.0
+        ax, az = _unit(aim[0], aim[1])
+        return direction[0] * ax + direction[1] * az
 
     def _best(self, aim: tuple) -> str:
         # A key with no learned direction is tried first. Measured at (-128,250) in Forest 1: the aim was 329 units east,
@@ -1197,12 +1214,14 @@ class ProgressionPolicy:
 
     def __init__(self, *, engage: float = 40.0, reach: float = 400.0, press_range: float = 14.0,
                  attack_range: float = 20.0, avoid_s: float = 30.0, optional_limit: int = 3,
+                 height_reach: float = 5.0,
                  switch_demote_s: float = 60.0, door_state: dict | None = None) -> None:
         self.engage = float(engage)
         self.reach = float(reach)
         self.press_range = float(press_range)
         self.attack_range = float(attack_range)
         self.avoid_s = float(avoid_s)
+        self.height_reach = float(height_reach)
         self.optional_limit = int(optional_limit)
         self.switch_demote_s = float(switch_demote_s)
         self.optional_streak = 0
@@ -1216,6 +1235,7 @@ class ProgressionPolicy:
         player = snap.get("player") or {}
         px, pz = float(player.get("x") or 0), float(player.get("z") or 0)
         candidates = []
+        player_y = player.get("y")
         for kind in ("enemy", "gate", "object", "other"):
             for entity in (snap.get("entities") or {}).get(kind, []):
                 if entity.get("x") is None or entity.get("z") is None:
@@ -1226,6 +1246,12 @@ class ProgressionPolicy:
                     continue
                 ptr = str(entity.get("ptr") or "")
                 hp = entity.get("hp")
+                # The forest has floors: the west basin sits 12 units below the doors that lead on, and a 2D motion
+                # cannot walk up a cliff. An objective more than height_reach away vertically is not reachable by
+                # walking (measured: 90 s of walking at a wall underneath the doors).
+                if player_y is not None and entity.get("y") is not None:
+                    if abs(float(entity["y"]) - float(player_y)) > self.height_reach:
+                        continue
                 if "Warp" in cls and not cls.startswith("TObjCityDoor"):
                     # `TObjCityDoor_Warp` is a city door, not a pad: the bot reached 9 units from one at (254,25) and
                     # pressing A did nothing, twice, while the real pad is the TObject at (360,26) - two verified
