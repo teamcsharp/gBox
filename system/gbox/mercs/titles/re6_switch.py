@@ -1236,7 +1236,7 @@ def _screen_impl(m, merc=None, now: float | None = None) -> dict:
             where, cursor, target = "main_menu", _i32(m, ui["uIdStartUp00"] + MENU_CURSOR), MAIN_PLAY_GAME
         elif "uIdTitle00" in ui and getattr(m, "mercs_split_screen", False) is True                 and snap.get("mercenaries_mode") == "no_mercy":
             # split screen's lobby (a live run 2026-10-27, real frames): after the stage select, "THE MERCENARIES NO
-            # MERCY Ã‚Â· <stage>", Player 1 joined, Player 2's slot "Press -/+ to join", A starts the game. Its own unit is
+            # MERCY Ãƒâ€šÃ‚Â· <stage>", Player 1 joined, Player 2's slot "Press -/+ to join", A starts the game. Its own unit is
             # not named yet; the title unit stays listed under it, and a real title never has the No Mercy mode set
             where = "split_lobby"
         elif "uIdTitle00" in ui:
@@ -4603,7 +4603,7 @@ class Bot:
         if any(now - t <= 1.5 and isinstance(h, (int, float)) and isinstance(hp_now, (int, float))
                and h > hp_now for t, h, _ in self.hp_hist):
             self._burst().end('damage_response')  # emergency flash/heal may interrupt the commitment
-        # #5056: just took HP loss with no enemy within HAZARD_CONTACT_R Ã¢â‚¬â€ the damage came from a ranged enemy
+        # #5056: just took HP loss with no enemy within HAZARD_CONTACT_R ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â the damage came from a ranged enemy
         # (or a hazard), not a melee attacker. Break out of the current decision mode (cc_kick, quick_turn,
         # bonus_run, etc.) and turn to fight the ranged enemy or move to safety, rather than continuing the
         # current action that left the bot exposed.
@@ -5702,7 +5702,7 @@ class Bot:
     def _prompt(self, p, snap, now) -> dict | None:
         """A shown prompt's button, pressed at once and again every PROMPT_REPEAT_S while it stays. None: no prompt to
         take this tick. A flanking crowd (4+ within CC_CROWD_R) defers the press: lowering the gun to take a prompt
-        in a surround is the crowd_gun_down trigger (cluster b294c62b554c77fd) Ã¢â‚¬â€ the bot waits for the crowd to
+        in a surround is the crowd_gun_down trigger (cluster b294c62b554c77fd) ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â the bot waits for the crowd to
         thin before pressing, matching the crowd_hold convention used by the other decision paths."""
         shown = getattr(self, "_prompt_shown", None) or []
         if not PROMPTS or not shown:
@@ -5719,7 +5719,7 @@ class Bot:
             if (key is None or (prompt_skipped(q) and not heal)
                     or (key != 'stick' and now - live["at"] < PROMPT_REPEAT_S)):
                 continue
-            # crowd guard: 4+ live enemies on his level within CC_CROWD_R Ã¢â€ â€™ defer the press (gun stays up)
+            # crowd guard: 4+ live enemies on his level within CC_CROWD_R ÃƒÂ¢Ã¢â‚¬Â Ã¢â‚¬â„¢ defer the press (gun stays up)
             n = sum(1 for e in (snap.get("enemies") or ()) if (e.get("hp") or 0) > 0
                     and abs(e["pos"][1] - p["pos"][1]) <= MAX_DY
                     and math.hypot(e["pos"][0] - px, e["pos"][2] - pz) <= CC_CROWD_R)
@@ -7354,6 +7354,15 @@ class Bot:
         a set-off under way with him inside the rule's distance is called off. None: clear of it."""
         if not BOMBS or not self._bomb_out(p):
             return None
+        # Observability for the escape (the counters alone never explained why a set stayed pending): how far the
+        # current sprint actually runs and the best clearance this set has reached.
+        set_key = self.stats.get('mine_oldest_placed_at')
+        if getattr(self, '_clear_best_key', None) != set_key:
+            self._clear_best_key = set_key
+            self.stats['mine_escape_best_clear_cm'] = 0
+        _clear = self.stats.get('mine_clearance_cm')
+        if isinstance(_clear, (int, float)) and _clear > (self.stats.get('mine_escape_best_clear_cm') or 0):
+            self.stats['mine_escape_best_clear_cm'] = round(_clear)
         px, _, pz = p["pos"]
         known = [at for at in self.stats.get('mine_avoid_positions', [])
                  if isinstance(at, (list, tuple)) and len(at) == 3 and all(math.isfinite(v) for v in at)]
@@ -7516,8 +7525,13 @@ class Bot:
             cache['at'] = now
         for w in cache['path'] or ():
             if math.hypot(w[0] - px, w[2] - pz) >= 80.:
+                h = heading(w[0] - px, w[2] - pz)
+                goal = cache['goal']
                 stats['escape_route_used'] = stats.get('escape_route_used', 0) + 1
-                return heading(w[0] - px, w[2] - pz)
+                stats['escape_route_goal_cm'] = round(math.hypot(goal[0] - px, goal[2] - pz))
+                stats['escape_route_path_n'] = len(cache['path'] or ())
+                stats['escape_route_heading_deg'] = round(math.degrees(h))
+                return h
         return None
 
     def _bomb_walk(self, p, at, yaw, me, on, now, act="bomb_walk", why=None, live=()) -> dict | None:
@@ -7562,6 +7576,19 @@ class Bot:
         if route_heading is not None:
             way = route_heading
         self._escape_heading = route_heading
+        if deadline_escape:
+            started = self.stats.get('mine_escape_started_at')
+            window = (int((now - started) // ESCAPE_CYCLE_S)
+                      if isinstance(started, (int, float)) and math.isfinite(started) else 0)
+            sp = getattr(self, '_sprint', None)
+            if (sp is None or sp.get('window') != window
+                    or sp.get('set') != self.stats.get('mine_oldest_placed_at')):
+                self._sprint = {'window': window, 'set': self.stats.get('mine_oldest_placed_at'),
+                                'x': p['pos'][0], 'z': p['pos'][2], 'best': 0.0}
+            sp = self._sprint
+            sp['best'] = max(sp['best'], math.hypot(p['pos'][0] - sp['x'], p['pos'][2] - sp['z']))
+            self.stats['escape_sprint_cm'] = round(sp['best'])
+            self.stats['escape_sprint_window'] = window
         stunned = self.flashed if now < self.fever_until else set()   # (flashed: walked through, kicked)
         if not deadline_escape and any(math.hypot(e["pos"][0] - px, e["pos"][2] - pz) <= ESCAPE_FIGHT_R
                and e.get("ptr", e.get("slot")) not in stunned
