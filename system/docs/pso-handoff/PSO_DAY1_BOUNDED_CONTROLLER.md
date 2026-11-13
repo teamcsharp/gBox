@@ -606,3 +606,25 @@ which a tap moved the character 8 units immediately. Cause unknown; candidates a
 input and a wedged virtual pad. It is written down here because a silent input drop makes everything else look like
 bad navigation.
 
+
+
+## 18. The "frozen character" was window focus
+
+Two sessions ended with a character that ignored **every** input - movement taps, a 0.3 s hold, a turn, A, B, Start -
+while the game itself ran normally (frame counter 94016 -> 94035 -> 94054, ~32 fps), reads worked, and the session
+reported `PLAYING` with `send_input` supported. Both times the only recovery was a session restart, and both times the
+restart "fixed" it, which made it look like a gBox fault.
+
+It is not. The bot's input goes through the app's input queue into the adapter's **keyboard** path, and Dolphin only
+accepts keyboard input while its window is foreground. The evidence: with the queue still wedged, the first thing tried
+was `SetForegroundWindow` on the emulator window (`Dolphin 2609 | JIT64 SC | Vulkan | HLE | Phantasy Star Online
+Episode I & II Plus (GPOE8P)`) - and the very next tap moved the character 6.4 units. The "frozen" spot at
+`(286.7, 537.0)` is now walkable: a 40 s run went from `(250,519)` to within 5.9 units of it in 96 ticks, moving the
+whole way.
+
+`SessionWorld.focus()` runs before **every** input batch: it finds the emulator window once (`Dolphin`/`Phantasy` in
+the title, not `python.exe`), restores it if minimised, and calls `SetForegroundWindow` when it is not already
+foreground. The adapter sets `Dolphin.Input.BackgroundInput`, but that covers the pad, not the keyboard. Losing focus
+was invisible from inside the bot: reads and the frame counter were healthy, only the effect of input was missing - the
+operator's PowerShell windows taking focus did it.
+

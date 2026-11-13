@@ -30,6 +30,7 @@ from __future__ import annotations
 
 import json
 import math
+import os
 import time
 from collections import deque
 from dataclasses import dataclass
@@ -1192,9 +1193,15 @@ class SessionWorld:
     to make the hold depend on job latency and to leave keys held when a release was lost.
     """
 
+    # The emulator window has to be foreground for the keyboard input path to reach the game. Measured after two
+    # "frozen character" sessions in which every key - movement, A, B, Start - did nothing while the frame counter ran
+    # at 32 fps: with the Dolphin window brought to the foreground the same tap moved the character 6.4 units
+    # immediately. The adapter sets Dolphin.Input.BackgroundInput, but that covers the pad, not the keyboard.
+    EMULATOR_TITLE_PARTS = ("Dolphin", "Phantasy")
+
     def __init__(self, sid: str, call: Callable, *, worker: str | None = None, poll_s: float = 0.05,
                  sleep: Callable[[float], None] = time.sleep, fast_input: bool = True,
-                 settle_s: float = 0.12) -> None:
+                 settle_s: float = 0.12, keep_focus: bool = True) -> None:
         self.sid = sid
         self.call = call
         self.worker = worker or sid.split("-")[0]
@@ -1208,6 +1215,9 @@ class SessionWorld:
         self.sent = 0
         self.fast_sent = 0
         self.job_sent = 0
+        self.keep_focus = bool(keep_focus)
+        self._hwnd = None
+        self.focus_calls = 0
 
     def observe(self, player_only: bool = False) -> dict:
         args = {"player_only": True} if player_only else {}
@@ -1240,7 +1250,43 @@ class SessionWorld:
     def release(self) -> None:
         self._apply(RELEASE.events(), time.monotonic() + 2.0)
 
+    def focus(self) -> bool:
+        """Bring the emulator window to the foreground. True when it is (or became) the focused window."""
+        if not self.keep_focus or os.name != "nt":
+            return True
+        try:
+            import ctypes
+            from ctypes import wintypes
+            user32 = ctypes.WinDLL("user32", use_last_error=True)
+            if self._hwnd is None:
+                found: list = []
+
+                @ctypes.WINFUNCTYPE(ctypes.c_bool, wintypes.HWND, wintypes.LPARAM)
+                def callback(hwnd, lparam):
+                    length = user32.GetWindowTextLengthW(hwnd)
+                    if length:
+                        buffer = ctypes.create_unicode_buffer(length + 1)
+                        user32.GetWindowTextW(hwnd, buffer, length + 1)
+                        title = buffer.value
+                        if any(part in title for part in self.EMULATOR_TITLE_PARTS) and "python.exe" not in title:
+                            found.append(hwnd)
+                    return True
+
+                user32.EnumWindows(callback, 0)
+                self._hwnd = found[0] if found else 0
+            if not self._hwnd:
+                return False
+            if user32.GetForegroundWindow() == self._hwnd:
+                return True
+            user32.ShowWindow(self._hwnd, 9)                 # SW_RESTORE: an iconic window cannot take focus
+            user32.SetForegroundWindow(self._hwnd)
+            self.focus_calls += 1
+            return user32.GetForegroundWindow() == self._hwnd
+        except Exception:                                     # noqa: BLE001 - input must never fail on a focus call
+            return False
+
     def _apply(self, events: list, deadline: float) -> str:
+        self.focus()
         if self.fast_input:
             queued = self.call(f"/api/sessions/{self.sid}/input", {"events": events}, "POST", 10)
             if isinstance(queued, dict) and "queued" in queued:
