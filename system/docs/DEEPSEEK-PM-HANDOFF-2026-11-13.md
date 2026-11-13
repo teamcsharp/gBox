@@ -216,7 +216,7 @@ native mailbox/build/player life and both collision volumes. Only confirmed
 inactive, detached actors are reusable. In round6a33 nine mines had armed at the
 midround check: four distance singles plus a five-mine ring; native trigger and
 retirement evidence exists. At least76 hit-ring floor refusals included14 ray
-misses and62 results outside61cm floor tolerance, some3–11m below the player.
+misses and62 results outside61cm floor tolerance, some3â€“11m below the player.
 Keep the floor checks. Provisional escape sites are not armed mines.
 
 `c2d71665e` repairs consumed distance on such a refusal: preserve travel already
@@ -303,3 +303,68 @@ Known test limits: asset-dependent tests need Spark-owned inputs. An existing
 PS3 mine-retreat guard test and four old weapon-control expectations failed on
 their unchanged baselines; they were not repaired in this batch. Do not claim
 the entire repository suite passes. No game assets were added by this handoff.
+
+## DeepSeek PM round 1 (2026-11-13 12:00-12:20): fight-and-combo fixes, deployed
+
+The operator's live complaint was "the bot is aiming but not shooting" and "they are standing still, losing the
+combo". Two measured causes, both fixed and hot-reloaded into the live worker (bot modules only, no game restart).
+
+### Cause 1: every placed remote bomb froze combat
+
+`mine_escape_required` made the bot walk until it was **1100 cm** clear of every armed bomb with the gun down.
+In No Mercy rooms that distance is unreachable, so `act=bomb_escape` ran for minutes: shots frozen at 76-128,
+`mine_deadline_misses` 42-47, and the automated follow report `7830be87` recorded the operator's rule breaking
+outright: "COMBO LOST 24 -> 0 ... Doing: bomb / inside the bomb clearance margin (75 of 1200 cm): out first" with
+six zombies within 4.6 m.
+
+- `4d0f114cf` Keep fighting from a timed-out remote-bomb escape: after `ESCAPE_TIMEOUT_S` (12 s from the
+  earliest armed placement) the pure-movement monopoly ends - the retreat route is kept and the normal
+  aim/LOS/fire gates run (`escape_timeouts`). The blast rule is untouched: detonation still needs the live
+  all-bomb clearance, and a missed deadline still lands in `mine_deadline_incidents`.
+- `2b682d249` Chain travel bombs behind an escaped bomb: a bomb at least `TRAIL_CHAIN_CM` (5.1 m) behind him
+  counts as escaped, so the next 20 ft travel drop can chain while it lies there (the lane had starved to one
+  bomb in a 4-minute round because any live bomb blocked it). Nearer bombs, an unknown census, an allocation in
+  progress and emergency rings still block; detonation reads every actual bomb.
+
+### Cause 2: the gun-up laser wait forbade firing
+
+`t_raise` 26.4 s against `t_fire` 11.5 s for 84 shots; `reraise` 28 in one round. Each raise with no laser ray
+read inside `LASER_WAIT_S` (0.7 s) returned "the gun comes up (no laser yet)" and could not pull the trigger at
+any range - that is the point-blank aiming-without-shooting the operator photographed.
+
+- `0ccdd4979` Fire the proven close shot during the laser wait: inside 5 m, with the same +-8 deg/+-10 deg cone
+  and `is_blocked` test the geometry gate already applies, the shot fires at the end of `READY_S` instead
+  (`raise_geometry_fires`). `forget()` now clears the negative unit cache too.
+- `61818afe5` Let a mesh-proven line fire before the laser wait ends: the same band `_aim` accepts
+  (`dist <= ENGAGE_R and (dist <= GEOM_CLOSE_R or _mesh_clear)`) now releases the shot at the raise's end.
+- `2cb8b9b60` Hide a control the worker does not advertise: the RE5-only "Mine ring - 5 ft" / "Drop mine"
+  buttons no longer sit dead in the RE6 topbar (the operator clicked one: "this button isnt working"). RE6 does
+  not advertise `proximity_mines`; its working ring control is the flash grenade ring, and its remote bombs are
+  bot-driven. A native RE6 remote-bomb manual ring (five armed bombs on a 5 ft circle + flash + escape) still
+  needs building: `re6_switch_native.Controller.drop_bomb_ring`/`bomb_ring_now` exist, the interventions
+  capability/dispatch and a `titles/re6_mine_escape.py` do not, and those are not hot-reloadable modules.
+
+### Live evidence after the first hot reload (RE6 No Mercy, new code confirmed by the new counters)
+
+- 46 s window: kills 16 -> 36 (~26/min), shots 37 -> 66, hits 23 -> 44 (72%), combo 13 -> 33 with **0 combo
+  breaks** (the round before the fixes had 15-27 breaks), `raise_geometry_fires` 22 -> 38, `escape_timeouts` 1.
+- Captured frames: `.scratch-ds-pm/re6-combat-combo34.jpg` (034 COMBO, 37 kills, firing into the crowd).
+- Round `f0bcbada` (first full round on the partially-fixed code) ended **died**: score 187520, 152 kills,
+  max combo 49, accuracy 48.7%. Round `4ac2f50a` (old code) was 385990, 280 kills, combo 68, 46.1%. Single
+  rounds are not comparable (stage, weapons, deaths); do not claim an S-rank trajectory from either.
+
+### Still open, in priority order
+
+1. Verify the chained travel bombs and the mesh-proven fast path live (deploy pending hot reload; the boundary
+   watcher only reloads at a finalized terminal/menu with round evidence closed).
+2. Raise/reraise dead time is still large (one round measured `reraise` 81 / 86 s and `t_raise` ~44% of decision
+   time). Next candidates from the audit: do not `_gun_down` for `nohit_blocks` while the measured ray is on the
+   body; stop the miss-streak quick attack -> gun-down pump.
+3. Survive: one round died. Death cause extraction (damage runs / `death_log`) is still not in the round report
+   for a died round - fix the report path, then work the first cause.
+4. RE6 native manual remote-bomb ring + the interventions capability/dispatch (needs a service restart; the
+   2 h restart floor and `deploy-restart-pending` from stale non-bot share files apply).
+5. Bonus route learning (time bonus to time bonus) is untouched; the bot's travel is still mostly in-place
+   fighting, so `mine_travel_cm` rarely reaches the 20 ft interval.
+6. Hermes review gate is responsive (no `last_error`): 1520 reviewed, 325 merged, 2312 pending, 7 retry; the
+   backlog is not assimilation and gameplay acceptance is still separate.
