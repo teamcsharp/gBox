@@ -68,3 +68,27 @@ equip/throw regressions cover initial witness changes, failed writers and native
 consumption of the pending byte. This fixes a definite false-lock path in the
 source; the old receipt did not retain enough detail to prove this was the
 specific cause of round `4d2c`'s original failure.
+
+## Next-round grenade supply
+
+The fresh cb7 round `fb229d3ded7641e28f0bf669ae3a2220` made no ordinary
+throw attempts. Its 295 read-only native samples contained mines, guns, ammo
+and heals, but no type-1 WP06/WP07/WP08 grenades. The template composer selected
+an existing grenade before an empty or ammo record when preparing mines,
+removing the very item the throw policy needed. Native movement mines do not
+require equipping or deleting those grenades.
+
+The full-template mine path now preserves existing grenades. It uses an empty
+record or ammunition for the mine, retains guns/heals/knives, and adds a hand or
+incendiary grenade when no damaging throwable remains. The round's existing
+random seed selects that added kind. A free inventory grid is preferred; only
+with infinite ammo enabled may the grenade replace an ammo record. A full
+protected inventory reports missing grenade supply separately from mine
+availability. Existing flash grenades remain available. All changes are to
+verified Mercenaries templates for native construction at the next round start;
+no live item records or object pointers are synthesized. This supplies a
+throwable, not proof of a successful throw or grenade swarm.
+
+The supply, composition, mine and modifier checks passed 80 tests. They cover
+all 54 synthetic costume descriptors, exact restoration, protected full
+inventories, non-overlapping grids and preservation of existing grenades.

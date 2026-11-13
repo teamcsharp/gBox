@@ -20,7 +20,8 @@ def test_re5_camera_weapon_motion_and_aim_feedback_are_preserved():
             'inventory': [{'hand': False, 'item': 2}, {'hand': True, 'item': 11}],
             'aim_cam': {'pitch': .3, 'heading': -.2}, 'laser': {'up': False}}
     stats = {'target_feedback_yaw_deg': 22., 'target_feedback_write_failures': 3,
-             'target_feedback_gate': 'no current laser', 'throw_equip_blocked_count': 1,
+             'target_feedback_gate': 'no current laser', 'bonus_priority': 'time bonuses before combo',
+             'throw_equip_blocked_count': 1,
              'throw_equip_blocked_items': '0x106',
              'throw_equip_refusal': {'owner': ['round', 10, 20], 'item': 262,
                                      'reason': 'previous_request_unconfirmed'}}

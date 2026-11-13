@@ -269,11 +269,12 @@ def mine_loadout(g: RE5Switch, on: bool) -> dict:
         g.state["mine_loadout"] = bool(on)
         res = compose_templates(g)
         at = [g.base + off + MINE_SLOT * TEMPLATE_REC for off in CHRIS_TEMPLATES]
-        done = [hex(off) for off, a in zip(CHRIS_TEMPLATES, at) if g.u32(a) == want]
+        done = [hex(off) for off, a in zip(CHRIS_TEMPLATES, at)
+                if (_quick_mine(g.rd(g.base+off, TEMPLATE_REC*TEMPLATE_RECS)) if on else g.u32(a) == want)]
         return {"mine_loadout": bool(on), "verified": bool(res["verified"]), "blocks": done,
                 "template_blocks": res["blocks"], "missing_mine_blocks": res.get("missing_mine_blocks", []),
                 "effective": "the next round's start",
-                "note": "every character's grenades as the proximity bomb" if on else "the game's grenades back"}
+                "note": "quick-slot mines alongside preserved grenades, effective next round" if on else "the game's items back"}
     blocks, ok = [], True
     for off in CHRIS_TEMPLATES:
         if not chris_block(g, off):
@@ -371,7 +372,7 @@ def compose_templates(g: RE5Switch) -> dict:
     import random
     orig = _tpl_orig(g)
     override, draw, repl = g.state.get("weapon_override"), g.state.get("loadout"), g.state.get("replace")
-    writes, records, ok, missing = 0, 0, True, []
+    writes, records, ok, missing, missing_grenades = 0, 0, True, [], []
     for ptr, raw in orig.items():
         t = bytearray(raw)
         used: list = []
@@ -404,12 +405,17 @@ def compose_templates(g: RE5Switch) -> dict:
             records += int(_mine_block(t))
             if not _quick_mine(t):
                 missing.append(hex(ptr-g.base))
+            records += int(_grenade_block(t, rng, replace_ammo=g.state.get('infinite_ammo') is True))
+            if not _has_damage_grenade(t):
+                missing_grenades.append(hex(ptr-g.base))
         if g.rd(ptr, len(t)) != bytes(t):
             ok = g.wr(ptr, bytes(t)) and ok
             ok = ok and g.rd(ptr, len(t)) == bytes(t)
             writes += 1
     return {"verified": bool(ok and not missing), "blocks": len(orig), "blocks_written": writes, "records_changed": records,
             "missing_mine_blocks": missing,
+            "missing_grenade_blocks": missing_grenades,
+            "grenade_supply_verified": bool(ok and not missing_grenades) if g.state.get('mine_loadout') else None,
             "effective_next_round": True,
             "note": "takes effect at the next round start (the game copies the template into the inventory then)"}
 
@@ -427,7 +433,7 @@ def _quick_mine(t) -> bool:
 
 
 def _mine_block(t: bytearray) -> bool:
-    """Put a usable stack on a quick slot without deleting a gun, knife or healing item.
+    """Put a usable stack on a quick slot without deleting a gun, grenade, knife or healing item.
 
     Grenade-free costumes use an empty grid record, then an ammo record if full.
     A non-quick mine swaps grid positions with an unequipped quick-slot item;
@@ -441,7 +447,7 @@ def _mine_block(t: bytearray) -> bool:
     if len(occupied) != sum(bool(ids[k]) and grids[k] < 9 for k in range(TEMPLATE_RECS)):
         return False                                       # never bless an already overlapping inventory
     free = sorted(set(range(9))-occupied.keys(),key=lambda grid:(grid not in QUICK_GRIDS,grid))
-    index = next((ids.index(w) for w in (MINE_ID,GRENADE_ID,0x107,0x108) if w in ids),None)
+    index = ids.index(MINE_ID) if MINE_ID in ids else None
     if index is None:
         index = next((k for k in range(TEMPLATE_RECS) if free and ids[k] == 0 and grids[k] < 9 and not hands[k]),None)
         if index is not None:
@@ -475,6 +481,47 @@ def _mine_block(t: bytearray) -> bool:
         return False
     t[:] = candidate
     return bytes(t) != before
+
+
+def _has_damage_grenade(t) -> bool:
+    occupied = [struct.unpack_from('<I', t, k*TEMPLATE_REC+REC_GRID)[0] for k in range(TEMPLATE_RECS)
+                if struct.unpack_from('<I', t, k*TEMPLATE_REC+REC_ID)[0]
+                and struct.unpack_from('<I', t, k*TEMPLATE_REC+REC_GRID)[0] < 9]
+    if len(occupied) != len(set(occupied)):
+        return False
+    return any(struct.unpack_from('<I', t, k*TEMPLATE_REC+REC_ID)[0] in (GRENADE_ID, 0x107)
+               and struct.unpack_from('<I', t, k*TEMPLATE_REC+REC_GRID)[0] < 9
+               and struct.unpack_from('<i', t, k*TEMPLATE_REC+REC_COUNT)[0] > 0
+               for k in range(TEMPLATE_RECS))
+
+
+def _grenade_block(t, rng, *, replace_ammo=False) -> bool:
+    """Keep a throwable beside the mine; native inventory is built next round.
+
+    Preserve every existing grenade, gun, heal and knife. Prefer an empty usable
+    grid; only redundant ammunition may be replaced when infinite ammo is on.
+    A full protected inventory remains unchanged and reports missing supply.
+    """
+    if _has_damage_grenade(t):
+        return False
+    ids = [struct.unpack_from('<I', t, k*TEMPLATE_REC+REC_ID)[0] for k in range(TEMPLATE_RECS)]
+    grids = [struct.unpack_from('<I', t, k*TEMPLATE_REC+REC_GRID)[0] for k in range(TEMPLATE_RECS)]
+    hands = [struct.unpack_from('<I', t, k*TEMPLATE_REC+REC_HAND)[0] for k in range(TEMPLATE_RECS)]
+    occupied = [grids[k] for k in range(TEMPLATE_RECS) if ids[k] and grids[k] < 9]
+    if len(occupied) != len(set(occupied)):
+        return False
+    free = sorted(set(range(9))-set(occupied), key=lambda grid: (grid not in QUICK_GRIDS, grid))
+    index = next((k for k in range(TEMPLATE_RECS) if free and not ids[k] and grids[k] < 9 and not hands[k]), None)
+    grid = free[0] if index is not None else None
+    if index is None and replace_ammo:
+        index = next((k for k in range(TEMPLATE_RECS) if ids[k] >> 8 == 2 and grids[k] < 9 and not hands[k]), None)
+        grid = grids[index] if index is not None else None
+    if index is None:
+        return False
+    at = index*TEMPLATE_REC
+    struct.pack_into('<Ii', t, at+REC_ID, rng.choice((GRENADE_ID, 0x107)), 5)
+    struct.pack_into('<III', t, at+REC_GRID, grid, 0, 0)
+    return True
 
 
 def _rampage_block(t: bytearray) -> bool:
@@ -1184,7 +1231,9 @@ def _prepare_mine_supply(ad, snap, now) -> dict:
         result = result | {"blocks_written":0}
     return {"status":"ready_next_round" if result.get("verified") else "template_coverage_incomplete",
             "verified":bool(result.get("verified")),"writes":result.get("blocks_written",0),
-            "template_blocks":result.get("blocks",0),"missing_blocks":result.get("missing_mine_blocks",[])}
+            "template_blocks":result.get("blocks",0),"missing_blocks":result.get("missing_mine_blocks",[]),
+            "grenade_supply_verified":result.get('grenade_supply_verified'),
+            "missing_grenade_blocks":result.get('missing_grenade_blocks',[])}
 
 
 def _maintain_mines(ad, snap) -> dict:
