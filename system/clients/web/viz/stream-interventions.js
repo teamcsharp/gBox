@@ -174,19 +174,23 @@
   function compactIcon(kind){return '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">'+(compactIcons[kind]||compactIcons.launcher)+'</svg>';}
   function bindFirstAid(button,{api,firstAid,sid,enabled=()=>true,iconOnly=false,
       schedule=(fn,ms)=>root.setTimeout(fn,ms),cancel=id=>root.clearTimeout(id),
-      operation='first_aid_now',label='First aid',description='Use a first aid spray',supported=()=>true}={}) {
-    let dead=false,busy=false,timer=null,last='',bound=null,available=false;
+      operation='first_aid_now',label='First aid',description='Use a first aid spray',supported=()=>true,
+      show=report=>report?.capabilities?.includes(operation)}={}) {
+    let dead=false,busy=false,timer=null,last='',bound=null,available=false,shown=true;
     const selected=()=>typeof sid==='function'?sid():sid;
-    function paint(){if(iconOnly)button.innerHTML=compactIcon(operation);else button.textContent=label;button.disabled=busy||!available||!enabled();
+    function paint(){if(iconOnly)button.innerHTML=compactIcon(operation);else button.textContent=label;
+      // A control this title's worker does not advertise is not shown at all (an RE5-only proximity
+      // mine button must not sit dead in the RE6 topbar - operator 2026-11-13: "this button isnt working").
+      button.hidden=!shown; button.disabled=busy||!shown||!available||!enabled();
       button.title=last||description;button.setAttribute('aria-label',description);}
     async function poll(){timer=null;const session=selected();if(dead)return;
       if(session!==bound){bound=session;available=false;last='';paint();}
       if(session)try{const report=await api(`/api/sessions/${encodeURIComponent(session)}/interventions`);
-        if(!dead&&session===selected()){available=report.available===true&&report.capabilities?.includes(operation)&&supported(report);paint();}}
+        if(!dead&&session===selected()){shown=!!show(report);available=report.available===true&&report.capabilities?.includes(operation)&&supported(report);paint();}}
       catch{if(!dead){available=false;paint();}}
       if(!dead)timer=schedule(poll,3000);
     }
-    async function click(event){event?.preventDefault();event?.stopPropagation();if(dead||busy||!available||bound!==selected()||!enabled())return;
+    async function click(event){event?.preventDefault();event?.stopPropagation();if(dead||busy||!shown||!available||bound!==selected()||!enabled())return;
       busy=true;paint();try{await firstAid(selected());}catch(error){last=error.message||String(error);}
       finally{busy=false;if(!dead)paint();}}
     button.addEventListener('click',click);paint();poll();
@@ -195,7 +199,7 @@
   function bindProximityMine(button,{ring=false,action,...options}={}) {
     return bindFirstAid(button,{...options,firstAid:action,
       operation:ring?'proximity_mine_ring':'proximity_mine_drop',label:ring?'Mine ring · 5 ft':'Drop mine',
-      description:ring?'Flashbang, deploy five armed mines five feet away, and escape':'Drop an armed RE5 proximity mine without changing weapons',
+      description:ring?'Flashbang, deploy five armed mines five feet away, and escape':'Drop an armed proximity mine without changing weapons',
       supported:report=>report.options?.proximity_mines?.available===true});
   }
   function bindMineDetonate(button,{action,...options}={}) {
