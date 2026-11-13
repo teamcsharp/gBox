@@ -41,10 +41,41 @@
       .slice(0, 240);
     if (!pool.length) return `<p class="pso-empty">Nothing matches that search.</p>`;
     return `<div class="pso-gal">` + pool.map(r =>
-      `<button type="button" class="pso-tile" data-pso-give="${ESC(r.code)}" `
+      `<button type="button" class="pso-tile" data-pso-give="${ESC(r.code)}"${pinAttrs("give", r.code, r.name)} `
       + `title="Give ${ESC(r.name)} — ${ESC(stats(r))}">`
       + `<b>${ESC(r.name)}</b><small>${ESC(stats(r) || r.cat || "")}</small></button>`).join("") + `</div>`;
   }
+
+  // ---- pins: a control the operator marked important, kept at the top of the panel --------------------------
+  const PIN_KEY = "gbox.pso.pins";
+  const pinId = p => `${p.kind}:${p.arg || ""}`;
+  function pins() {
+    try {
+      const raw = (root.localStorage && root.localStorage.getItem(PIN_KEY)) || "[]";
+      const list = JSON.parse(raw);
+      return Array.isArray(list) ? list.filter(p => p && typeof p.kind === "string") : [];
+    } catch { return []; }
+  }
+  function savePins(list) {
+    try { root.localStorage && root.localStorage.setItem(PIN_KEY, JSON.stringify(list.slice(0, 12))); } catch {}
+    return pins();
+  }
+  function togglePin(entry) {
+    const list = pins(), id = pinId(entry);
+    const at = list.findIndex(p => pinId(p) === id);
+    if (at >= 0) list.splice(at, 1); else list.push({ kind: entry.kind, arg: entry.arg || "", label: entry.label || "" });
+    return savePins(list);
+  }
+  function pinnedHTML() {
+    const list = pins();
+    if (!list.length) return "";
+    return `<div class="pso-pinned"><h4>Pinned</h4><p>` + list.map(p =>
+      `<button type="button" class="pso-chip" data-pso-pin-act="${ESC(p.kind)}" data-pso-pin-arg="${ESC(p.arg || "")}" `
+      + `title="Pinned — click to use, right-click to unpin">${ESC(p.label || pinId(p))}</button>`).join(" ") + `</p></div>`;
+  }
+  // the attributes that make any control pinnable
+  const pinAttrs = (kind, arg, label) =>
+    ` data-pso-pin-kind="${ESC(kind)}" data-pso-pin-arg="${ESC(arg || "")}" data-pso-pin-label="${ESC(label || "")}"`;
 
   function html(view = {}, state = {}) {
     const rows = view.items || [];
@@ -59,6 +90,7 @@
       + `<p class="bl-target">${ESC(view.title || "Phantasy Star Online")}`
       + (room ? ` · room ${ESC(room)}` : "") + ` · ${enemies} enem${enemies === 1 ? "y" : "ies"}</p>`
       + `<p class="${state.ok && state.message ? "bl-ok" : "bl-msg"}" role="status">${ESC(state.message || (locked ? "Working…" : ""))}</p>`
+      + pinnedHTML()
       + `<button type="button" data-pso-refresh${dis}>Refresh</button>`
       + `<h4>Weapon in hand</h4>`
       + (current ? `<p class="bl-target">Now: <b>${ESC(current.name || current.code)}</b> · ${ESC(stats(current))}</p>` : "")
@@ -76,11 +108,11 @@
       + `<button type="button" data-pso-emu="menu"${dis}>Emulator menu</button></p>`
       + `<p class="bl-note">These are the emulator's own controls, mirrored here so the top bar can stay clear.</p>`
       + `<h4>Paralyze the room</h4>`
-      + `<p><button type="button" data-pso-paralyze${dis || (enemies ? "" : " disabled")}>Freeze ${enemies} enem${enemies === 1 ? "y" : "ies"} for training</button></p>`
+      + `<p><button type="button" data-pso-paralyze${pinAttrs("paralyze", "", "Paralyze room")}${dis || (enemies ? "" : " disabled")}>Freeze ${enemies} enem${enemies === 1 ? "y" : "ies"} for training</button></p>`
       + `<p class="bl-note">${enemies ? "Holds each enemy at its own position so it cannot travel, and reports whether it actually froze." : "No enemies here — walk into a room with enemies first."}</p>`
       + `<h4>Drops</h4>`
-      + `<p><button type="button" data-pso-drops="floor"${dis}>Floor rares</button> `
-      + `<button type="button" data-pso-drops="enemy"${dis}>Enemy drops</button></p>`
+      + `<p><button type="button" data-pso-drops="floor"${pinAttrs("drops", "floor", "Floor rares")}${dis}>Floor rares</button> `
+      + `<button type="button" data-pso-drops="enemy"${pinAttrs("drops", "enemy", "Enemy drops")}${dis}>Enemy drops</button></p>`
       + `<h4>Give an item</h4>`
       + `<input type="search" data-pso-search value="${ESC(state.q || "")}" placeholder="Search ${rows.length} items by name…"${dis}>`
       + `<select data-pso-cat${dis}>` + cats.map(c =>
@@ -89,7 +121,11 @@
       + `<p class="bl-note">Click a tile to give that item. Weapons arrive ground to their own maximum.</p>`;
   }
 
-  const CSS = `#bot-logic-panel .pso-gal{display:grid;grid-template-columns:1fr 1fr;gap:4px;max-height:38vh;overflow:auto;margin:4px 0}
+  const CSS = `#bot-logic-panel .pso-pinned{border-bottom:1px dashed #444;padding-bottom:4px;margin-bottom:4px}
+#bot-logic-panel .pso-chip{border:1px solid #ffd166;border-radius:10px;background:#1c1c24;color:#ffd166;
+  font:11px system-ui;padding:1px 7px;margin:1px 2px;cursor:pointer}
+#bot-logic-panel .pso-chip:hover{background:#2a2a36}
+#bot-logic-panel .pso-gal{display:grid;grid-template-columns:1fr 1fr;gap:4px;max-height:38vh;overflow:auto;margin:4px 0}
 #bot-logic-panel .pso-tile{display:flex;flex-direction:column;gap:1px;text-align:left;padding:4px 5px;background:#18181d;
   border:1px solid #444;border-radius:4px;color:#eee;cursor:pointer;font:11px system-ui;line-height:1.25}
 #bot-logic-panel .pso-tile:hover{border-color:#ffd166;background:#20202a}
@@ -101,7 +137,7 @@
 #bot-logic-panel input[type=search]{width:100%;box-sizing:border-box;background:#18181d;color:#fff;
   border:1px solid #666;border-radius:3px;padding:2px 4px;margin:0 0 4px}`;
 
-  const api = { html, CSS, weaponOptions, gallery, stats, byPower };
+  const api = { html, CSS, weaponOptions, gallery, stats, byPower, pins, togglePin, pinId, pinnedHTML };
   root.GBoxPsoControls = api;
   if (typeof module === "object" && module.exports) module.exports = api;
 })(globalThis);

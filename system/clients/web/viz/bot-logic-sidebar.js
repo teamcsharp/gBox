@@ -144,13 +144,21 @@
         if (data.psoCat !== undefined) psoAct(s => { s.cat = value; return Promise.resolve(); }, true);
       });
       panel.addEventListener("input", e => { const n = e.target?.dataset?.bl; const o = n && panel.querySelector(`[data-bl-out="${n}"]`); if (o) o.textContent = e.target.value; });
+      // right-click a control to pin it to the top of the panel, or unpin it
+      panel.addEventListener("contextmenu", e => {
+        const el = e.target?.closest?.("[data-pso-pin-kind]");
+        if (!el || target?.title !== "pso" || !PSO) return;
+        e.preventDefault();
+        PSO.togglePin({ kind: el.dataset.psoPinKind, arg: el.dataset.psoPinArg, label: el.dataset.psoPinLabel });
+        paint();
+      });
       panel.addEventListener("click", e => {
         const data = e.target?.dataset || {};
         if (data.blScope !== target?.scope) return;
         if ("blReset" in data) reset(data.blScope);
         if ("blRefresh" in data) refresh();
         if ("blMine" in data) placeMines(data.blMine, data.blScope);
-        const pd = e.target?.closest?.("[data-pso-refresh],[data-pso-paralyze],[data-pso-drops],[data-pso-give],[data-pso-equip],[data-pso-cat],[data-pso-search],[data-pso-emu]")?.dataset;
+        const pd = e.target?.closest?.("[data-pso-refresh],[data-pso-paralyze],[data-pso-drops],[data-pso-give],[data-pso-equip],[data-pso-cat],[data-pso-search],[data-pso-emu],[data-pso-pin-act]")?.dataset;
         if (pd && target?.title === "pso") {
           if ("psoRefresh" in pd) refresh();
           if ("psoParalyze" in pd) psoAct(s => psoJob(target, s, "pso_paralyze", { seconds: 8.0 }).then(r => {
@@ -158,7 +166,18 @@
               : (r.note || "No enemies here."); s.ok = !!r.frozen; }));
           if ("psoDrops" in pd) psoAct(s => psoJob(target, s, "pso_drops", { op: pd.psoDrops === "floor" ? "floor_rares" : "enemy_drops" })
             .then(() => { s.message = "Drops applied."; s.ok = true; }));
-          if ("psoEmu" in pd) psoAct(s => api(`/api/sessions/${encodeURIComponent(target.sid)}/rpc`,
+          if (pd && "psoPinAct" in pd) {
+          const kind = pd.psoPinAct, arg = pd.psoPinArg || "";
+          if (kind === "paralyze") psoAct(s2 => psoJob(target, s2, "pso_paralyze", { seconds: 8.0 })
+            .then(r => { s2.message = r.targets ? `Froze ${r.targets} (drift ${r.max_drift}${r.frozen ? ", confirmed" : ", NOT confirmed"})` : (r.note || "No enemies."); s2.ok = !!r.frozen; }));
+          if (kind === "drops") psoAct(s2 => psoJob(target, s2, "pso_drops", { op: arg === "floor" ? "floor_rares" : "enemy_drops" })
+            .then(() => { s2.message = "Drops applied."; s2.ok = true; }));
+          if (kind === "give") psoAct(s2 => psoJob(target, s2, "pso_inventory", { op: "give", code: arg, count: 1 })
+            .then(() => { s2.message = "Item given."; s2.ok = true; }).then(() => psoRefresh(target, s2)));
+          if (kind === "equip") psoAct(s2 => psoJob(target, s2, "pso_inventory", { op: "equip", code: arg })
+            .then(() => { s2.message = "Weapon equipped."; s2.ok = true; }).then(() => psoRefresh(target, s2)));
+        }
+        if ("psoEmu" in pd) psoAct(s => api(`/api/sessions/${encodeURIComponent(target.sid)}/rpc`,
             { op: pd.psoEmu, args: {} }, "POST").then(r => {
             s.message = `${pd.psoEmu.replace("_", " ")}: ${r && Object.keys(r).length ? "done" : "sent"}`; s.ok = true;
           }));
