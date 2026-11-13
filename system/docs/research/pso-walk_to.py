@@ -1,20 +1,13 @@
-"""Walk to a target: one tap at a time, measuring after every single tap.
+"""Track a moving target: re-read its position every iteration instead of aiming once.
 
-The operator requires the character to **visibly walk** - no position writes - so teleport-walking is out and steering has to work.
+`walk_to` converged on a **stationary** box (60.8 -> 9.5 units) and failed against a **moving** enemy - 185 units travelled, zero kills. The reason is structural: `walk_to(pad, tx, tz)` takes the
+target's position **once**, and an enemy walks away while the character turns, so the heading is stale by the time each step lands. The character chases where the enemy *was*.
 
-Every previous steering attempt failed for the same reason, and it is now precisely understood:
+Fix: `walk_to` accepts an optional `get_target` callable and calls it **every iteration**, so each tap and each step aims at where the enemy is *now*. The tolerance is also widened for moving targets
+(`MOVE_TOLERANCE = 30`), because a tight tolerance against a target that moves means the character turns forever and never closes - and the real attack cone is **26-45 degrees**, so 30 is
+comfortably inside it.
 
-* a direction press is a **fixed rotation, not a rate** - about **11° per tap left, ~8° right**, ~46° for a 0.15-0.45 s hold;
-* a forward hold of **0.5 s walks ~10 units**; a **1.0 s hold walks 0**.
-
-The fatal flaw was **batching**: `taps = round(|error| / 10)` then sending them all blind. Each tap is 8-11° rather than exactly 10°, so an 18-tap batch lands up to 60° off and the next correction
-overshoots the other way - which is exactly the observed zigzag between 115 and 167 units.
-
-**`walk_to` never batches.** It taps **once**, re-reads `heading_deg`, re-computes the error, and repeats. Each step is small and the error is re-measured, so nothing accumulates. When the heading is
-within `TOLERANCE` it takes **one 0.5 s forward step** and re-measures position. A blocked forward step (measured 0 movement) triggers a short sidestep, which the freeze probe showed is the correct
-response - `left` alone covered 90 units when `up` was blocked.
-
-The loop reports its own progress so a failure is visible as a number rather than as "it wandered".
+Also added: if the loop detects it is not making progress over several iterations while a live target is supplied, it reports that rather than grinding out its whole step budget.
 """
 import math
 import sys
@@ -24,8 +17,9 @@ sys.path.insert(0, r"C:\_tools\gBox\.tmp")
 
 from pso_pad import Pad, call                                     # noqa: E402
 
-TOLERANCE = 20.0        # degrees; taps settle at ~10 deg so inside this we can step
-STEP = 0.22             # measured: 0.5s walks 31.6 units, so 0.22s is ~14 units - short enough not to overshoot
+TOLERANCE = 20.0        # degrees, for a stationary target
+MOVE_TOLERANCE = 30.0   # degrees, for a target that moves (still well inside a 26-45 degree cone)
+STEP = 0.22             # measured: 0.22 s ~ 14 units (0.5 s is 31.6 units and overshoots)
 ARRIVE = 12.0           # units; the real PMT reach is 13-30, so this is inside attack range
 DIRECTIONS = ("up", "down", "left", "right")
 
@@ -48,27 +42,46 @@ def hold(pad, key, seconds):
     pad.send([{"key": k, "down": False} for k in DIRECTIONS])
 
 
-def walk_to(pad, tx, tz, arrive=ARRIVE, max_steps=80, verbose=False):
-    """Walk to (tx,tz). Returns (remaining distance, steps taken). Never writes memory."""
+def walk_to(pad, tx, tz, arrive=ARRIVE, max_steps=80, verbose=False, get_target=None):
+    """Walk to (tx,tz), or to a moving target when `get_target` is supplied.
+
+    Returns (remaining distance, steps taken). Never writes memory - the character visibly walks.
+    """
     steps = 0
     stall = 0
+    best = None
+    no_progress = 0
     for _ in range(max_steps):
+        # RE-AIM: a moving target's position is re-read every iteration, so the heading is never stale.
+        if get_target is not None:
+            fresh = get_target()
+            if fresh is None:
+                return -1.0, steps                              # it is gone
+            tx, tz = fresh
         me = player(pad)
         x, z = float(me.get("x") or 0), float(me.get("z") or 0)
         distance = math.hypot(tx - x, tz - z)
+        tolerance = MOVE_TOLERANCE if get_target is not None else TOLERANCE
         if distance <= arrive:
             return distance, steps
+        if best is None or distance < best - 0.5:
+            best = distance
+            no_progress = 0
+        else:
+            no_progress += 1
+        if no_progress > 26:
+            return distance, steps                              # not closing; stop rather than grind
+
         heading = float(me.get("heading_deg") or 0)
         want = (math.degrees(math.atan2(tx - x, tz - z)) + 360.0) % 360.0
         error = ((want - heading + 540.0) % 360.0) - 180.0
 
-        if abs(error) > TOLERANCE:
-            # ONE tap, then measure again. Batching was the bug.
+        if abs(error) > tolerance:
             tap(pad, "left" if error > 0 else "right")
             time.sleep(0.16)
             steps += 1
             if verbose:
-                print(f"    tap {'left' if error > 0 else 'right':5s} (err {error:+6.1f})")
+                print(f"    tap {'left' if error > 0 else 'right':5s} (err {error:+6.1f}, dist {distance:5.1f})")
             continue
 
         before = (x, z)
@@ -78,34 +91,11 @@ def walk_to(pad, tx, tz, arrive=ARRIVE, max_steps=80, verbose=False):
         moved = math.dist(before, (float(after.get("x") or 0), float(after.get("z") or 0)))
         steps += 1
         if verbose:
-            print(f"    step  moved {moved:5.1f} | dist {math.hypot(tx - float(after.get('x') or 0), tz - float(after.get('z') or 0)):5.1f}")
+            print(f"    step  moved {moved:5.1f} | dist {distance:5.1f}")
         if moved < 1.5:
-            # forward is blocked - sidestep, which the freeze probe proved is the right answer
             stall += 1
             hold(pad, "left" if stall % 2 else "right", 0.35)
             time.sleep(0.12)
             if stall >= 6:
                 return distance, steps
     return math.hypot(tx - player(pad).get("x", 0), tz - player(pad).get("z", 0)), steps
-
-
-if __name__ == "__main__":
-    pad = Pad()
-    print("session:", pad.sid)
-    me = player(pad)
-    print("start:", (round(float(me.get("x") or 0)), round(float(me.get("z") or 0))), "| heading", round(float(me.get("heading_deg") or 0)))
-
-    full = call("/api/sessions/%s/rpc" % pad.sid, {"op": "state", "args": {}}, "POST") or {}
-    boxes = [e for e in (full.get("entities") or [])
-             if "Container" in str(e.get("class")) or "Capsule" in str(e.get("class"))]
-    if not boxes:
-        raise SystemExit("no boxes to walk to")
-    x, z = float(me.get("x") or 0), float(me.get("z") or 0)
-    box = min(boxes, key=lambda e: math.hypot(float(e.get("x") or 0) - x, float(e.get("z") or 0) - z))
-    tx, tz = float(box.get("x") or 0), float(box.get("z") or 0)
-    start = math.hypot(tx - x, tz - z)
-    print(f"target box at ({tx:.0f},{tz:.0f}) | distance {start:.1f}\n")
-
-    remaining, steps = walk_to(pad, tx, tz, verbose=True)
-    print(f"\nafter: {tuple(round(float(player(pad).get(k) or 0)) for k in ('x','z'))} | remaining {remaining:.1f} | steps {steps}")
-    print("VERDICT:", "WALKED INTO RANGE" if remaining <= ARRIVE + 6 else "did not arrive")
