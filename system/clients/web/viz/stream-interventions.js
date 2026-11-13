@@ -101,9 +101,13 @@
                    schedule = root.setTimeout.bind(root), cancel = root.clearTimeout.bind(root)}) {
     const pending = new Map(); let timer = null, dead = false, polling = false;
     function message(row) {
-      const weapon = row.op === 'equip_primary', ring = row.op === 'grenade_ring', ammo = row.op === 'set_infinite_ammo', aid = row.op === 'first_aid_now', mine = row.op?.startsWith('proximity_mine_');
+      const weapon = row.op === 'equip_primary', ring = row.op === 'grenade_ring', ammo = row.op === 'set_infinite_ammo', aid = row.op === 'first_aid_now', mine = row.op?.startsWith('proximity_mine_'), remote = row.op === 'remote_mines';
       if (row.state === 'confirmed') {
         if (row.op === 'detonate_mines') return `Mine darts entering explosion: ${row.result?.initiated ?? 0}/${row.result?.requested ?? 0}.`;
+        if (remote) {
+          if (row.result?.op === 'bomb_detonate') return `Remote bombs set off: ${row.result?.count ?? row.result?.detonated ?? 0} (native flag readback).`;
+          return `Armed remote bombs: ${row.result?.placed ?? 0}/${row.result?.requested ?? 0}; the bot escapes and detonates them.`;
+        }
         if (mine) return `${row.result?.flash_detonated ? 'Flashbang ring detonated. ' : ''}Armed mines: ${row.result?.armed ?? 0}/${row.result?.requested ?? 0}; already triggered: ${row.result?.triggered ?? 0}.`;
         if (aid) return row.result?.consumed ? 'First aid spray used.' : (row.result?.reason || 'First aid checked.');
         if (ammo) return typeof row.result?.enabled==='boolean' ? `Infinite ammo ${row.result.enabled?'on':'off'} confirmed.` : 'Infinite ammo change reported; waiting for live state.';
@@ -114,7 +118,7 @@
         if (ring) return `${ringKindLabel(row.result?.kind)} ring detonated (${row.result?.detonated ?? row.result?.requested ?? ''} grenades).`;
         return 'Flashbang detonated.';
       }
-      const what = row.op==='detonate_mines' ? 'Mine detonation' : mine ? 'Proximity mines' : weapon ? 'Weapon selection' : ring ? 'Grenade ring' : ammo ? 'Infinite ammo' : aid ? 'First aid' : 'Flashbang';
+      const what = row.op==='detonate_mines' ? 'Mine detonation' : remote ? 'Remote mines' : mine ? 'Proximity mines' : weapon ? 'Weapon selection' : ring ? 'Grenade ring' : ammo ? 'Infinite ammo' : aid ? 'First aid' : 'Flashbang';
       return `${what} ${row.state}: ${row.result?.reason || row.reason || 'no confirmed effect'}`;
     }
     function wake() { if (!dead && !timer && pending.size) timer = schedule(poll, 100); }
@@ -155,6 +159,7 @@
       detonateMines:sid=>send(sid,'detonate_mines'),
       proximityMineDrop:sid=>send(sid,'proximity_mine_drop'), proximityMineRing:sid=>send(sid,'proximity_mine_ring'),
       grenadeRing:(sid,kind,extra)=>send(sid,'grenade_ring',{kind:kind||'flash',...(extra||{})}),
+      remoteMines:(sid,args)=>send(sid,'remote_mines',args||{action:'ring'}),
       setInfiniteAmmo:(sid,enabled)=>{if(typeof enabled!=='boolean')return Promise.reject(Error('Infinite ammo needs an explicit on/off value.'));return send(sid,'set_infinite_ammo',{enabled});},
       poll, dispose() { dead=true; if(timer)cancel(timer); pending.clear(); }};
   }
@@ -163,6 +168,7 @@
     proximity_mine_drop:'<path d="M12 2v7m-3-3 3 3 3-3M5 19h14M7 16h10l2 3v2H5v-2z"/>',
     proximity_mine_ring:'<circle cx="12" cy="12" r="2"/><path d="M7 5a9 9 0 0 1 10 0M20 10a9 9 0 0 1-3 9M7 19a9 9 0 0 1-3-9"/><circle cx="12" cy="3" r="1.5"/><circle cx="20.6" cy="9.2" r="1.5"/><circle cx="17.3" cy="19.3" r="1.5"/><circle cx="6.7" cy="19.3" r="1.5"/><circle cx="3.4" cy="9.2" r="1.5"/>',
     detonate_mines:'<path d="m12 2 2 6 6-2-3 6 5 3-7 1-3 6-2-7-7-3 6-2z"/>',
+    remote_mines:'<circle cx="12" cy="12" r="2"/><path d="M7 5a9 9 0 0 1 10 0M20 10a9 9 0 0 1-3 9M7 19a9 9 0 0 1-3-9"/><circle cx="12" cy="3" r="1.5"/><circle cx="20.6" cy="9.2" r="1.5"/><circle cx="17.3" cy="19.3" r="1.5"/><circle cx="6.7" cy="19.3" r="1.5"/><circle cx="3.4" cy="9.2" r="1.5"/>',
     flash:'<path d="m13 2-8 11h6l-1 9 9-13h-7z"/>',
     hand:'<circle cx="12" cy="14" r="7"/><path d="M9 7V3h6v4m-1-4 4-1"/>',
     incendiary:'<path d="M12 2c2 7 7 7 7 13a7 7 0 0 1-14 0c0-3 2-5 4-7 0 4 2 5 2 5s3-5 1-11Z"/>',
@@ -201,6 +207,16 @@
       operation:ring?'proximity_mine_ring':'proximity_mine_drop',label:ring?'Mine ring · 5 ft':'Drop mine',
       description:ring?'Flashbang, deploy five armed mines five feet away, and escape':'Drop an armed proximity mine without changing weapons',
       supported:report=>report.options?.proximity_mines?.available===true});
+  }
+  // RE6 has no proximity mines: it places ARMED NATIVE REMOTE BOMBS out of the player's body instead
+  // (gbox/mercs/re6_remote_control.py / re6_switch_native.drop_bomb_ring, op remote_mines). The bot's own deadline
+  // controller then escapes and sets the whole set off through the native flag, so this is the operator's manual
+  // version of the ring the bot already drops - the topbar control the operator called "isnt working" on RE6.
+  function bindRemoteMines(button,{action,count=5,radius_cm=152.4,...options}={}) {
+    return bindFirstAid(button,{...options,firstAid:sid=>action(sid,{action:'ring',count,radius_cm}),
+      operation:'remote_mines',label:'Remote mine ring · 5 ft',
+      description:`Deploy ${count} armed native remote bombs five feet around him; the bot escapes and detonates them`,
+      supported:report=>report?.capabilities?.includes('remote_mines')===true});
   }
   function bindMineDetonate(button,{action,...options}={}) {
     return bindFirstAid(button,{...options,firstAid:action,operation:'detonate_mines',
@@ -774,7 +790,7 @@
         finally { opening=false; }
       };
     }
-    let flashControl,weaponControl,ringControl,aidControl,mineDropControl,mineRingControl,mineDetonateControl,iconPanel;
+    let flashControl,weaponControl,ringControl,aidControl,mineDropControl,mineRingControl,mineDetonateControl,remoteMineControl,iconPanel;
     const client = create({...options, notify(text,row) {
       if(row.op==='flash_now')flashControl?.receipt(text,row);
       else if(row.op==='equip_primary')weaponControl?.receipt(text,row);
@@ -783,6 +799,7 @@
       else if(row.op==='detonate_mines')mineDetonateControl?.receipt(text,row);
       else if(row.op==='proximity_mine_drop')mineDropControl?.receipt(text,row);
       else if(row.op==='proximity_mine_ring')mineRingControl?.receipt(text,row);
+      else if(row.op==='remote_mines')remoteMineControl?.receipt(text,row);
       else {status.textContent=text; options.notify?.(text,row);}
       options.onReceipt?.(row);
     }});
@@ -801,6 +818,9 @@
         ring,sid:selected,enabled:()=>!disposed});
       if(ring)mineRingControl=control;else mineDropControl=control;
     }
+    // RE6's native remote-bomb ring (op remote_mines): hidden on every title whose worker does not advertise it.
+    const remoteMine=doc.createElement('button');remoteMine.type='button';bar.insertBefore(remoteMine,status);
+    remoteMineControl=bindRemoteMines(remoteMine,{api:options.api,action:client.remoteMines,sid:selected,enabled:()=>!disposed});
     // The grenade ring sits beside the flash button, with its own small type chooser.
     const ring = doc.createElement('button'); ring.type='button'; ring.innerHTML=ringIcon;
     const ringKind = doc.createElement('button'); ringKind.type='button'; ringKind.className='ring-kind';
@@ -808,8 +828,8 @@
     ringControl=bindRing(ring,{api:options.api,ring:client.grenadeRing,sid:selected,enabled:()=>!disposed,kindButton:ringKind});
     const swapButton = doc.createElement('button'); swapButton.type='button'; bar.insertBefore(swapButton,status);
     const swapControl=bindModelSwap(swapButton,{api:options.api,sid:selected,enabled:()=>!disposed,status});
-    return {dispose() {disposed=true;iconPanel.dispose();flashControl.dispose();weaponControl.dispose();ringControl.dispose();aidControl.dispose();mineDropControl.dispose();mineRingControl.dispose();mineDetonateControl.dispose();swapControl.dispose();client.dispose();sidebar?.dispose();if(activeSidebar===sidebar)activeSidebar=null;bar.remove();}, client, swapControl};
+    return {dispose() {disposed=true;iconPanel.dispose();flashControl.dispose();weaponControl.dispose();ringControl.dispose();aidControl.dispose();mineDropControl.dispose();mineRingControl.dispose();mineDetonateControl.dispose();remoteMineControl.dispose();swapControl.dispose();client.dispose();sidebar?.dispose();if(activeSidebar===sidebar)activeSidebar=null;bar.remove();}, client, swapControl};
   }
-  const out = {create,mount,bindFlash,bindFirstAid,bindProximityMine,bindMineDetonate,bindWeapon,bindRing,bindIconPanel,bindReplayGesture,createRoundControls,bindModelSwap,swapText,stageWeights,roundReport,ammoView,createAmmoControl,sortedWeapons,RING_KINDS,ringKindLabel,readRingKind,ringKindOptions}; root.GBoxStreamInterventions=out;
+  const out = {create,mount,bindFlash,bindFirstAid,bindProximityMine,bindRemoteMines,bindMineDetonate,bindWeapon,bindRing,bindIconPanel,bindReplayGesture,createRoundControls,bindModelSwap,swapText,stageWeights,roundReport,ammoView,createAmmoControl,sortedWeapons,RING_KINDS,ringKindLabel,readRingKind,ringKindOptions}; root.GBoxStreamInterventions=out;
   if(typeof module==='object' && module.exports)module.exports=out;
 })(typeof globalThis==='object'?globalThis:this);
