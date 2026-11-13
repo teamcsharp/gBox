@@ -842,6 +842,12 @@ def play(pad: Pad, seconds: float = 120.0) -> str:
             # the chosen target, which then failed the range gate so the loop did NOTHING - while a switch 124
             # units away stood untouched. That is the "walks right up to switches and does not flip them" fault.
             if idist <= 400.0:
+                # DEMOTE SWITCHES WHILE A DOOR IS WAITING. Only the pressed switch used to be suppressed, so with three
+                # door keys the bot cycled between them and never reached the door any of them opened. While a press
+                # is recent, doors outrank switches; after the window, switches return to the front.
+                recent_press = max(PRESSED_SWITCHES.values()) if PRESSED_SWITCHES else 0.0
+                if rank == 1 and (time.time() - recent_press) < 60.0:
+                    rank = 3
                 interact.append((rank, idist, candidate))
         if interact and not engaged:
             interact.sort(key=lambda t: (t[0], t[1]))
