@@ -694,3 +694,16 @@ budget walking.
 
 Killing it did not set a stage flag (`bits []`), so enemies are not the dependency for the floor's switches in Forest 1.
 
+**And the bot did it itself, in a normal-play run, with the ledger as evidence** (`play-20261113-132815.jsonl`):
+
+```
+seq 137  combo  enemies_delta [{'class': 'TObjEneBeast', 'delta': -21.0, 'died': False, 'hp': [60, 39], 'ptr': '80DBAC60'}]
+seq 141  combo  enemies_delta [{'class': 'TObjEneBeast', 'delta': -39.0, 'died': True,  'hp': [39, 0],  'ptr': '80DBAC60'}]
+seq 181  explore entity vanished ['80DBAC60']
+```
+
+Run stats: `combos {"attempts": 7, "hits": 2, "whiffs": 0}` - a 60 hp enemy killed in seven attack presses, with both
+HP drops and the death recorded as persistent evidence. The tuning that made it work is exactly what the manual
+measurement said: attack inside **20** units rather than 30, and do not abandon the target after two whiffs (the
+measured pattern is two misses then a hit, so `whiff_limit` is 6).
+

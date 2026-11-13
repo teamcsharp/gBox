@@ -1041,7 +1041,7 @@ class ProgressionPolicy:
     """
 
     def __init__(self, *, engage: float = 40.0, reach: float = 400.0, press_range: float = 14.0,
-                 attack_range: float = 30.0, avoid_s: float = 30.0, optional_limit: int = 3,
+                 attack_range: float = 20.0, avoid_s: float = 30.0, optional_limit: int = 3,
                  switch_demote_s: float = 60.0, door_state: dict | None = None) -> None:
         self.engage = float(engage)
         self.reach = float(reach)
@@ -1138,7 +1138,7 @@ class ComboSequencer:
     """
 
     def __init__(self, *, keys=("a", "a", "a"), gap_s: float = 0.45, grace_s: float = 0.9,
-                 whiff_limit: int = 3) -> None:
+                 whiff_limit: int = 6) -> None:
         self.keys = tuple(keys)
         self.gap_s = float(gap_s)
         self.grace_s = float(grace_s)
