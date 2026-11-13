@@ -550,3 +550,31 @@ The laser fence at `(498, -261)` is **not** closed by this: the switch at `(592,
 cross the fence's latitude in `play-20261113-115117.jsonl` - but the path went from `(489, -279)` to `(472, -249)`, around
 the fence's west end, so a crossing of the fence itself is not proven. It stays open as a question.
 
+
+
+## 16. The area offset: why rooms 4 and 8 were unmapped, and the offset that fixes them
+
+The collision mesh holds several areas' geometry in **one file frame**, while the game reports **world** coordinates.
+Each area differs from the file by a constant translation, so a route for room 4 was being computed from a point ~300
+units outside the mesh - which is what "no map coverage here" was measuring.
+
+The offset can be **solved from evidence already recorded**: every consecutive pair of player positions in the traces and
+ledgers is a step the character actually walked, so under the right translation both ends and the midpoint must land on
+walkable cells. Searching translations on a 5-unit lattice:
+
+| room | steps tested | offset | steps fully walkable |
+|---|---|---|---|
+| 4 | 112 | **(-450, 325)** | **100.0%** |
+| 8 | 136 | **(-450, 325)** | **99.3%** |
+| 10 | - | (0, 0) | (it is inside the file's frame already) |
+
+Rooms 4 and 8 share one translation, which is what makes it an **area** offset rather than a per-room curiosity. It is
+stored in `D:\gBox\pso-ds\area-offsets.json` and the runner looks it up by the current room, wraps the router in
+`OffsetRouter` (query into the file's frame, waypoints back out) and logs
+`room 4 sits at file offset (-450, 325): routing in the mesh's frame`.
+
+First offline check with the offset applied: room 4 now produces routes at all (before, every query snapped to a cell
+300 units away), e.g. `(575,-199) -> (470,-564)` in 178 waypoints / 552 units. The routes are longer than the straight
+line - the 5-unit grid erosion plus a translation that may be a cell or two off - so the offset is a first solution, not
+a finished one; a finer search on the (dx, dz) lattice is the next step.
+

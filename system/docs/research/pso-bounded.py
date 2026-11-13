@@ -153,6 +153,26 @@ def simplify_trace(points: list, spacing: float = 8.0) -> list:
     return kept
 
 
+class OffsetRouter:
+    """Route in the collision mesh's frame while the game reports world coordinates.
+
+    A collision file holds several areas' geometry in one frame; each area's world position differs from it by a
+    constant. Measured for Forest 1: rooms 4 and 8 sit at world = file + (450, -325), which no route could cross before
+    because the query point was 300 units outside the mesh. This wrapper maps the query into the file's frame and the
+    waypoints back out.
+    """
+
+    def __init__(self, router, offset) -> None:
+        self.router = router
+        self.offset = (float(offset[0]), float(offset[1]))
+        self.safe = getattr(router, "safe", set())
+
+    def route(self, start, goal):
+        dx, dz = self.offset
+        points = self.router.route((start[0] + dx, start[1] + dz), (goal[0] + dx, goal[1] + dz))
+        return [(x - dx, z - dz) for x, z in (points or [])]
+
+
 class TraceRouter:
     """A router that replays one recorded path: the operator's demonstration, verbatim.
 
@@ -303,8 +323,22 @@ def run(mode: str, args) -> int:
         # while rooms 2, 4, 5, 8, 11 are 190-460 units outside it - a route there snaps to a cell across the level and
         # the follower walks into walls. When there is no coverage at the character, say so and move directly instead.
         here = (world.observe() or {}).get("player") or {}
+        offset = (0.0, 0.0)
         if here.get("x") is not None:
-            nearest = min(math.dist((float(here["x"]), float(here["z"])), cell) for cell in cells)
+            room = str(here.get("room"))
+            offsets_path = pathlib.Path(r"D:\gBox\pso-ds\area-offsets.json")
+            try:
+                table = json.loads(offsets_path.read_text(encoding="utf-8"))
+                per_file = table.get(name) or {}
+                if room in per_file:
+                    offset = (float(per_file[room][0]), float(per_file[room][1]))
+            except (OSError, ValueError, KeyError, TypeError):
+                offset = (0.0, 0.0)
+            if offset != (0.0, 0.0):
+                router = OffsetRouter(router, offset)
+                log(f"room {room} sits at file offset {tuple(int(v) for v in offset)}: routing in the mesh's frame")
+            nearest = min(math.dist((float(here["x"]) + offset[0], float(here["z"]) + offset[1]), cell)
+                          for cell in cells)
             if nearest > 30.0:
                 log(f"no map coverage here: nearest grid cell is {nearest:.0f} units away "
                     f"(this room is outside {name}'s frame) - moving directly, without a route")
