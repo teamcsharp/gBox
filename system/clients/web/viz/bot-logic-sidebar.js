@@ -150,7 +150,7 @@
         if ("blReset" in data) reset(data.blScope);
         if ("blRefresh" in data) refresh();
         if ("blMine" in data) placeMines(data.blMine, data.blScope);
-        const pd = e.target?.closest?.("[data-pso-refresh],[data-pso-paralyze],[data-pso-drops],[data-pso-give],[data-pso-equip],[data-pso-cat],[data-pso-search]")?.dataset;
+        const pd = e.target?.closest?.("[data-pso-refresh],[data-pso-paralyze],[data-pso-drops],[data-pso-give],[data-pso-equip],[data-pso-cat],[data-pso-search],[data-pso-emu]")?.dataset;
         if (pd && target?.title === "pso") {
           if ("psoRefresh" in pd) refresh();
           if ("psoParalyze" in pd) psoAct(s => psoJob(target, s, "pso_paralyze", { seconds: 8.0 }).then(r => {
@@ -158,6 +158,10 @@
               : (r.note || "No enemies here."); s.ok = !!r.frozen; }));
           if ("psoDrops" in pd) psoAct(s => psoJob(target, s, "pso_drops", { op: pd.psoDrops === "floor" ? "floor_rares" : "enemy_drops" })
             .then(() => { s.message = "Drops applied."; s.ok = true; }));
+          if ("psoEmu" in pd) psoAct(s => api(`/api/sessions/${encodeURIComponent(target.sid)}/rpc`,
+            { op: pd.psoEmu, args: {} }, "POST").then(r => {
+            s.message = `${pd.psoEmu.replace("_", " ")}: ${r && Object.keys(r).length ? "done" : "sent"}`; s.ok = true;
+          }));
           if ("psoGive" in pd) psoAct(s => psoJob(target, s, "pso_inventory", { op: "give", code: pd.psoGive, count: 1 })
             .then(() => { s.message = "Item given."; s.ok = true; }).then(() => psoRefresh(target, s)));
         }

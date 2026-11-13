@@ -65,6 +65,16 @@
       + `<select data-pso-equip${dis} aria-label="Equip a weapon" title="Every weapon with its real stats">`
       + weaponOptions(rows, current && current.code) + `</select>`
       + `<p class="bl-note">Stats are the item's own: ATP range, ATA, and the grind ceiling the game allows (per weapon — not always +99).</p>`
+      + `<h4>Emulator</h4>`
+      + `<p class="pso-emu">`
+      + `<button type="button" data-pso-emu="pause"${dis}>Pause</button> `
+      + `<button type="button" data-pso-emu="resume"${dis}>Resume</button> `
+      + `<button type="button" data-pso-emu="reset"${dis}>Reset</button></p>`
+      + `<p class="pso-emu">`
+      + `<button type="button" data-pso-emu="fast_forward"${dis}>Fast-forward on</button> `
+      + `<button type="button" data-pso-emu="normal_speed"${dis}>Normal speed</button> `
+      + `<button type="button" data-pso-emu="menu"${dis}>Emulator menu</button></p>`
+      + `<p class="bl-note">These are the emulator's own controls, mirrored here so the top bar can stay clear.</p>`
       + `<h4>Paralyze the room</h4>`
       + `<p><button type="button" data-pso-paralyze${dis || (enemies ? "" : " disabled")}>Freeze ${enemies} enem${enemies === 1 ? "y" : "ies"} for training</button></p>`
       + `<p class="bl-note">${enemies ? "Holds each enemy at its own position so it cannot travel, and reports whether it actually froze." : "No enemies here — walk into a room with enemies first."}</p>`
@@ -86,6 +96,8 @@
 #bot-logic-panel .pso-tile b{font-weight:600;color:#fff}
 #bot-logic-panel .pso-tile small{color:#9ab}
 #bot-logic-panel .pso-empty{color:#aaa}
+#bot-logic-panel .pso-emu{margin:2px 0 4px}
+#bot-logic-panel .pso-emu button{min-width:0}
 #bot-logic-panel input[type=search]{width:100%;box-sizing:border-box;background:#18181d;color:#fff;
   border:1px solid #666;border-radius:3px;padding:2px 4px;margin:0 0 4px}`;
 
