@@ -123,6 +123,11 @@ CPUCore_0 inside the model skinning loop `main+0x4EC530`, at offsets
 `0x4EC67C` and `0x4EC5FC`. Both sessions detached successfully; the process
 was verified sleeping with `TracerPid: 0`, not left debugger-stopped.
 
+The session records `cpu_backend=nce` and `address_mode=direct`. The read-only
+signature scan found main at `0x3CA7C04000`; the debugger's actual instructions
+at the sampled PC match the pinned ELF skinning instructions at that offset.
+These observations identify guest-native execution, not a host JIT routine.
+
 Offline instructions establish that caller `0x4EC39C` loads the loop count
 as an unsigned halfword from the mesh header at `+0x42`, then calls at
 `0x4EC3AC`. The callee copies that count into `w22` at `0x4EC560` and advances
@@ -134,9 +139,19 @@ not established that REFRESH itself hung, that a particular donor caused it,
 or that the gun-rate guard caused it. No asset was quarantined and no loop
 bound or game memory was patched on this evidence.
 
+The closed session used overlay `recovery-re4-fit-v4-20261110` (22 files), with
+HUNK on Base. An offline audit of all nine modified UDAS packs parsed 244 BIN
+models. Every model's byte weight count at `+0x28` matched its halfword count
+at `+0x42`, and all were below 256. Those on-disk headers therefore do not
+select the stalled large-count skinning path. The HUNK pack `pl06.udas` hashed
+to `23f02629d763b5b03adfc68582452473567ed205655891f3efe041bb4a8368ed`.
+This validates those count fields, not every runtime object or resource
+lifetime. The metadata-only audit remains on Spark.
+
 Spark-only archives, relative to `/home/ehm_eckx/gBox/system`:
 
 - `gbox-data/mercs/analysis/re4-c1-native-cadence-20261113.json`
 - `gbox-data/mercs/analysis/re4-c1-freeze-native-20261113.json`
 - `gbox-data/mercs/analysis/re4-c1-freeze-gdb-20261113.txt`
 - `gbox-data/mercs/analysis/re4-c1-freeze-gdb-registers-20261113.txt`
+- `gbox-data/mercs/analysis/re4-c1-model-build-audit-20261113.json`
