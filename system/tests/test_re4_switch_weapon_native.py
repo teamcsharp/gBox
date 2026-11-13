@@ -70,3 +70,61 @@ def test_zero_object_item_never_licenses_an_unidentified_weapon_write(fault):
     with pytest.raises(Unavailable, match='coherent recovery'):
         ctl.equip_primary(0x21 if fault == 'same_class' else 0x2A)
     assert not ad.writes and not ctl.calls
+
+
+def asset_guest(character=5):
+    ad = Ad(); _armoury(ad); ctl = ad.native
+    ad.write_memory(BASE + W.GAME_OBJ + W.G_CHARACTER, bytes([character]))
+    for got, table in E.ASSET_TABLES.values():
+        ad.put(BASE + got, struct.pack('<Q', BASE + table))
+        ad.put(BASE + table, bytes(8 * W.N_CLASSES))
+    # Verified campaign shotgun resource IDs from this executable's data table.
+    row = bytes.fromhex('4500460000000000')
+    ad.write_memory(BASE + E.ASSET_TABLES[0][1] + 7 * 8, row)
+    ad.writes.clear()
+    return ad, ctl, row
+
+
+def test_wesker_shotgun_loads_resources_before_native_refresh_and_verifies_object():
+    ad, ctl, resource = asset_guest()
+    refresh = ctl.call
+    def call(off, *args, **kw):
+        if off == E.REFRESH:
+            # The actual native loader returns early when this entry is empty.
+            assert ctl.rd(BASE + E.ASSET_TABLES[5][1] + 7 * 8, 8) == resource
+        return refresh(off, *args, **kw)
+    ctl.call = call
+    result = ctl.equip_primary(0x2C)
+    assert result['verified'] and result['assets']['source'] == 'native_campaign_fallback'
+    assert E.active(ctl)['item'] == 0x2C
+
+
+@pytest.mark.parametrize('fault', ['pointer', 'partial_row', 'missing_campaign'])
+def test_unidentified_asset_data_never_publishes_a_native_equip(fault):
+    ad, ctl, resource = asset_guest()
+    got, table = E.ASSET_TABLES[5]
+    if fault == 'pointer':
+        ad.write_memory(BASE + got, struct.pack('<Q', BASE + table + 8))
+    elif fault == 'partial_row':
+        ad.write_memory(BASE + table + 7 * 8 + 2, b'\x01\0')
+    else:
+        ad.write_memory(BASE + E.ASSET_TABLES[0][1] + 7 * 8, bytes(8))
+    ad.writes.clear()
+    with pytest.raises(Unavailable, match='resource'):
+        ctl.equip_primary(0x2C)
+    assert not ad.writes and not ctl.calls
+
+
+def test_existing_character_resources_are_preserved():
+    ad, ctl, _ = asset_guest()
+    at = BASE + E.ASSET_TABLES[5][1] + 7 * 8
+    original = bytes.fromhex('fc00fd0000000000')
+    ad.write_memory(at, original); ad.writes.clear()
+    result = E.prepare_assets(ctl, {'class': 7, 'variant': 0})
+    assert result['source'] == 'native_character' and not ad.writes
+
+
+@pytest.mark.parametrize('character,cls,variant,want', [(5,10,0,5), (5,19,0,4),
+    (4,19,0,23), (2,19,0,19), (0,10,2,32), (0,9,1,21), (5,7,0,7)])
+def test_character_asset_remapping_matches_native_loader(character, cls, variant, want):
+    assert E.asset_index(character, cls, variant) == want

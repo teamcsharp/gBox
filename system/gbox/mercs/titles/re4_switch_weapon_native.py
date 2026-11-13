@@ -20,6 +20,67 @@ SELECT_HEAD = bytes.fromhex('ffc300d1f44f01a9fd7b02a9fd830091f30301aaf40300aab30
 # bow, PRL). Those remain selectable; random draws use the separate policy.
 WEAPONS = frozenset(W.CLASS_OF) - {0x01, 0x02, 0x0E, 0x38, 0x08, 0x09, 0x0A, 0x10, 0x28, 0x47}
 
+# 00495040 chooses these writable resource tables by G_CHARACTER. Empty
+# character rows return without loading anything, even after G_CLASS changes.
+# Each row contains the game's model/behavior resource IDs, not host assets.
+ASSET_TABLES = {0: (0xB288C0, 0xB14D30), 2: (0xB288B8, 0xB14EB8),
+                3: (0xB288C8, 0xB15040), 4: (0xB288D0, 0xB15350),
+                5: (0xB288D8, 0xB151C8)}
+
+
+def asset_index(character, cls, variant):
+    """The pinned loader's table index (00495040, including its jump table)."""
+    if character in (2, 3, 4):
+        if 0 <= cls - 0x13 < 14 and (0x3059 >> (cls - 0x13)) & 1:
+            return 0x17 if character == 4 else 0x13
+        return cls
+    if character == 5:
+        if cls <= 0x20 and (0x182C80000 >> cls) & 1:
+            return 4
+        return 5 if cls == 10 else cls
+    if 0 <= cls - 0x16 < 11 and (0x60B >> (cls - 0x16)) & 1:
+        return 0x13
+    if cls == 3 and variant == 2:
+        return 0x12
+    if cls == 11 and variant > 1:
+        return 0x14
+    return {(10, 1): 0x1F, (10, 2): 0x20, (9, 1): 0x15, (9, 2): 0x18,
+            (14, 1): 0x19, (46, 1): 0x2F, (13, 2): 0x1E}.get((cls, variant), cls)
+
+
+def prepare_assets(ctl, row):
+    """Fill only a completely empty character row from a verified campaign row.
+
+    Native refresh still loads/constructs the object, which must independently
+    confirm the requested item. Existing character-specific resources stay intact.
+    """
+    from .re4_switch_native import Unavailable
+    character = ctl.rd(ctl.base + W.GAME_OBJ + W.G_CHARACTER, 1)[0]
+    if character not in ASSET_TABLES:
+        raise Unavailable('unsupported character weapon resource table')
+    if character == 0:
+        return {'source': 'native_character'}
+    got, table = ASSET_TABLES[character]
+    source_got, source_table = ASSET_TABLES[0]
+    if ctl.q(ctl.base + got) != ctl.base + table or ctl.q(ctl.base + source_got) != ctl.base + source_table:
+        raise Unavailable('native weapon resource table pointer changed')
+    index = asset_index(character, row['class'], row['variant'])
+    source_index = asset_index(0, row['class'], row['variant'])
+    if not 0 <= index < W.N_CLASSES or not 0 <= source_index < W.N_CLASSES:
+        raise Unavailable('weapon resource index is out of range')
+    at = ctl.base + table + index * 8
+    before = ctl.rd(at, 8)
+    if struct.unpack_from('<H', before)[0]:
+        return {'source': 'native_character', 'character': character, 'index': index}
+    resource = ctl.rd(ctl.base + source_table + source_index * 8, 8)
+    if any(before) or not all(struct.unpack('<HH', resource[:4])) or any(resource[4:]):
+        raise Unavailable('empty weapon resource row has no verified campaign fallback')
+    ctl.write(at, resource)
+    if ctl.rd(at, 8) != resource:
+        raise Unavailable('campaign weapon resource row did not read back')
+    return {'source': 'native_campaign_fallback', 'character': character, 'index': index,
+            'resources': list(struct.unpack('<HH', resource[:4]))}
+
 
 def active(ctl):
     wep = ctl.q(ctl.player + R.PL_WEP)
@@ -107,6 +168,7 @@ def replace(ctl, item, *, expected=None, allowed=None):
                 raise Unavailable('weapon changed while lowering')
         guard()
         ctl.ensure_attached()
+        assets = prepare_assets(ctl, rows[item])
         slot = held['addr']
         lv = W.max_levels(item) or {'packed': 0, 'capacity': 0}
         cap = rows[item]['capacity'][lv['capacity']]
@@ -144,7 +206,7 @@ def replace(ctl, item, *, expected=None, allowed=None):
             return {'state': 'confirmed', 'verified': True, 'op': 'equip_primary',
                     'item': item, 'weapon': W.name(item), 'player': life[0],
                     'player_generation': life[1], 'weapon_generation': got['object'],
-                    'weapon_object_item': got['item'], 'loaded': loaded}
+                    'weapon_object_item': got['item'], 'loaded': loaded, 'assets': assets}
         except Exception:
             if published:
                 ctl.weapon_uncertain = True  # no replay/rollback after native teardown may have begun

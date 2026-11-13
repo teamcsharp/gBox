@@ -13,6 +13,9 @@ def controller(ad, base, player, item):
     ad.put(obj, bytes(0x500))
     ad.put(base + E.REFRESH, E.REFRESH_HEAD)
     ad.put(base + E.SELECT, E.SELECT_HEAD)
+    for got, table in E.ASSET_TABLES.values():
+        ad.put(base + got, struct.pack('<Q', base + table))
+        ad.put(base + table, b''.join(struct.pack('<HHI', 100+i, 200+i, 0) for i in range(W.N_CLASSES)))
     ad.write_memory(player + R.PL_WEP, struct.pack('<Q', wep))
     ad.write_memory(wep + R.WEP_OBJ, struct.pack('<Q', obj))
     ad.write_memory(obj + R.OBJ_ITEM, ad.read_memory(item, 2))
