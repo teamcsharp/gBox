@@ -220,7 +220,7 @@ native mailbox/build/player life and both collision volumes. Only confirmed
 inactive, detached actors are reusable. In round6a33 nine mines had armed at the
 midround check: four distance singles plus a five-mine ring; native trigger and
 retirement evidence exists. At least76 hit-ring floor refusals included14 ray
-misses and62 results outside61cm floor tolerance, some3ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã¢â‚¬Å“11m below the player.
+misses and62 results outside61cm floor tolerance, some3ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã¢â‚¬Â¦ÃƒÂ¢Ã¢â€šÂ¬Ã…â€œ11m below the player.
 Keep the floor checks. Provisional escape sites are not armed mines.
 
 `c2d71665e` repairs consumed distance on such a refusal: preserve travel already
@@ -554,14 +554,14 @@ same worker modules serve every title).
 
 ## DeepSeek PM round 3 (2026-11-13 12:57 onward): the operator's mine-ring button, and what the reels show
 
-### The "Mine ring Ã‚Â· 5 ft" button on RE6 is fixed in the client (no restart)
+### The "Mine ring Ãƒâ€šÃ‚Â· 5 ft" button on RE6 is fixed in the client (no restart)
 
 The root cause was not a missing backend: RE6 already exposes the interventions op **`remote_mines`** ->
 `re6_switch_native.bomb_ring_now` / `Controller.drop_bomb_ring` (armed native remote bombs ejected from the body,
 no throw/animation, placements recorded for the deadline controller). What never existed was any UI control that
 sent it; the topbar icon the operator pressed was the RE5 proximity-mine lane, which RE6 does not advertise.
 
-- `95c958138` adds a **"Remote mine ring Ã‚Â· 5 ft"** topbar control, shown only where the worker advertises
+- `95c958138` adds a **"Remote mine ring Ãƒâ€šÃ‚Â· 5 ft"** topbar control, shown only where the worker advertises
   `remote_mines` (hidden on RE5/RE4 and on any title without the lane). Each click posts
   `{op:'remote_mines', args:{action:'ring', count:5, radius_cm:152.4}}`; the bot's own deadline controller then
   escapes the blast distance and sets the set off through the native flag. It sits beside the existing grenade-ring
@@ -676,3 +676,34 @@ queued verification round was consumed and the operator's settings are preserved
 short-step fallback live on RE6 (expect `floor_safety_why` "(short verified step)" instead of stripped movement),
 attribute the next death from `death_cause`, click the manual remote-mine ring once on RE6, and continue the
 still-unproven 5 s detonation deadline, bonus routing and S-rank work.
+
+### Round 5: manual ring verified, escape made radial, sets now clear and detonate
+
+**Manual remote-mine ring works end-to-end on RE6** (the control from round 3, the native lane was already
+server-side): a real click posted `{op:'remote_mines', args:{action:'ring', count:5, radius_cm:152.4}}`, the
+worker's native controller placed **5 armed remote bombs in 83.8 ms** (units with `armed:true`, `placed_at`,
+`detonate_deadline_at`, radius 152.4 cm) and the receipt came back `uncertain` with `placed:5` - the honest state
+(`drop_bomb_ring` has no separate verified flag; the panel wording added earlier reports the landed count).
+The bot then escaped the live set: `mine_escape_required` true, clearance 136.7 cm, and later
+`mine_flag_detonations` 1 with `bomb_self_hits` 0. So the operator's button now does what it says.
+
+**Escape made radial (`35404053c`).** The sprint cycle repeated its fast clear (3.57 s, flag detonation), but the
+next set's "sprint" gained only ~130 cm in 20 s: the guard kept accepting the requested stick whenever it was
+floor-safe, so it walked parallel to the blast. While a bomb is pending the guard now evaluates all eight verified
+pad directions and takes the one with the **largest clearance at the step's end** (still floor-proven and under
+`_bomb_clear`); the short 60 cm fallback uses the same radial choice.
+
+Live after reload of `35404053c` (RE6, Leon / High Seas Fortress): clearance climbed 60 -> 305 -> 388 cm during
+sprints instead of crawling, kills 50 with the combo reaching 25 at one point, one set cleared after
+`mine_escape_clear_s_last` **124.67 s** and detonated, `bomb_self_hits` 0, `deaths` 0. Movement stays alive
+(`floor_safety_why` mostly "redirecting to verified floor and bomb clearance"). So sets do eventually clear and
+detonate now; the 5 s deadline is met for easy sets and missed for sets dropped against a wall - truthful
+`mine_deadline_misses` remain.
+
+**Death evidence upgraded**: the watcher now saves the whole telemetry payload plus a `death_cause` summary at
+each death (nested `death_log` never reaches the mirror). No RE6 death has yet occurred with that code loaded;
+earlier RE6 deaths (13:37, 13:45) predate it.
+
+**State**: MercMode rotation restored (`queue: []`, 5/5/5); Hermes review gate still responsive (enabled, no
+`last_error`). Open: close the long-tail escape sets (a planned navmesh route to a far point is the real fix),
+attribute the next RE6 death, and the unproven bonus routing and S-rank/five-star goal.
