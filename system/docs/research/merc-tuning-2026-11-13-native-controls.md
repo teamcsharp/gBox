@@ -474,3 +474,11 @@ followed by a title switch to RE5. Every completed attempt counted, including
 deaths. Across 1,309.6 sampled seconds, 78.6% were stationary and 58.6% were
 bomb phases; the bot made 282 kills and collected zero time bonuses. This is
 the measured baseline, not S-rank success.
+
+Integration against the collaborator's `c3f98f62` main passed 149 checks with
+six native-asset skips and exposed one existing PS3-specific regression:
+`test_retreat_passes_verified_route_and_retains_missing_actor_hazard`.
+The exact pre-change `re5_ps3.Bot._mine_retreat` method also fails it. That
+method unconditionally holds position inside `MINE_ESCAPE_CM`, even after
+finding a supported departure. It is separate from the Switch escape repair
+and remains an explicit follow-up; the combined run is not reported as green.
