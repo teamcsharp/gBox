@@ -641,11 +641,17 @@ def control(ad, prof, *, ring=None):
             re5_reactions.consume(event, stats, 'native flash requires a living player and supported clearance')
             return None
         decision.update(re5_reactions.decision(event))
+        decision = roulette.coalesce(snap, stats, now, decision, policy_, scatter_policy(title_mod, stats),
+                                     lambda: ring or controller(ad), background=True)
         result = flight.submit(snap, stats, decision, now,
             lambda d, s, t, guard: fire(ad, d, s, t, ring=ring, native_guard=guard, flash_only=True))
         if result.get('pending'):
+            roulette.submitted(stats, now, decision, result)
             re5_reactions.consume(event, stats, 'submitted')
             stats['reactive_ring_requests'] = int(stats.get('reactive_ring_requests') or 0) + 1
+        else:
+            roulette.finish(snap, stats, now, decision, {'state': 'refused', 'native_not_submitted': True,
+                                                       'reason': result.get('reason')})
         return result
 
     def step(snap: dict, stats: dict, now: float, hold=None) -> dict:
@@ -669,6 +675,8 @@ def control(ad, prof, *, ring=None):
             # allocation, player-life and blast-clearance checks still apply.
             decision = {**decision, **event, 'fire': True, 'flash_ok': True,
                         'reactive': True, 'ripple_ms': 0.0}
+            decision = roulette.coalesce(view, stats, now, decision, policy_, scatter_policy(title_mod, stats),
+                                         lambda: ring or controller(ad))
         elif reactions is not None and policy_['enabled'] and decision['radius_cm'] <= policy_['max_radius_cm']:
             from .titles.re4_traversal import claim_ring
             traversal = claim_ring(snap, stats, now)
