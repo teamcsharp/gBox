@@ -51,7 +51,7 @@ def test_firing_is_preserved_while_unsafe_backstep_is_redirected():
 
 
 def test_no_safe_floor_direction_stops_movement_but_retains_gunfire():
-    b, snap = bot(), view(square(100.), (50., 0., 50.))
+    b, snap = bot(), view(square(40.), (20., 0., 20.))     # even a 60 cm step leaves this floor everywhere
     out = S.guard(b, snap, {'hold': ('lup', 'b', 'rleft', 'zl', 'zr')}, 100.)
     assert out['hold'] == ('zl', 'zr')
     assert 'no verified floor' in b.stats['floor_safety_last']['reason']
@@ -181,6 +181,21 @@ def test_a_nearby_bomb_in_a_dead_end_no_longer_freezes_the_walk():
     assert S._bomb_clear(b, {}, (0., 0., 0.), (0., 0., -150.))       # ends 277 cm away: above the floor
     assert not S._bomb_clear(b, {}, (0., 0., 0.), (0., 0., -220.))   # ends 207 cm away: inside the floor
 
+
+def test_no_150cm_floor_step_retries_a_short_verified_step(monkeypatch):
+    # Live 2026-11-13: on a narrow walkway corner every 150 cm lookahead left the floor mesh, so the guard stripped
+    # movement for the rest of the round ("no verified floor escape direction") while the bot stood and fought.
+    import gbox.mercs.titles.re6_movement_safety as S
+    b, snap = bot(), view()
+    class Narrow:
+        name, V, T, grid = 'narrow', [], [], {}
+        def clear(self, a, d):
+            return math.hypot(d[0] - a[0], d[2] - a[2]) <= 100.
+    snap['navmesh'] = Narrow()
+    monkeypatch.setattr(S, 'walk_segment', lambda mesh, a, b: True)
+    out = S.guard(b, snap, {'hold': ('lup',)}, 100.)
+    assert set(out['hold']) & S.LEFT                      # a short verified step, not a stripped movement
+    assert 'short verified step' in b.stats['floor_safety_why']
 
 def test_already_safe_external_bomb_keeps_margin_along_whole_detour_segment():
     b = bot()

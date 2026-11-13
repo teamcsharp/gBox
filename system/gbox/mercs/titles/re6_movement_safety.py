@@ -14,6 +14,9 @@ from .re6_switch_wall import STICK_REL, stick_heading
 from ..re6_traversal import TRAVERSAL_ACTIONS
 
 LOOKAHEAD_CM = 150.
+#: When no 150 cm step is on verified floor, retry the same eight pad directions with this shorter step (see
+#: guard()): a narrow catwalk corner can leave the 150 cm lookahead off-mesh while 60 cm is still solid floor.
+LOOKAHEAD_FALLBACK_CM = 60.
 #: A bomb inside the planning margin used to forbid ANY step with a component toward it ("never decrease
 #: clearance"), which froze the bot outright when the only walkable floor out of a spot ran past a bomb:
 #: live 2026-11-13, a single trail bomb at 427 cm held it in place for 183 s with floor_safety_why
@@ -154,9 +157,9 @@ def guard(bot, snap, action, now):
             heading = stick_heading(held, yaw)
             if heading is None:
                 return action
-            def safe(keys, *, detour=False):
+            def safe(keys, *, detour=False, lookahead=LOOKAHEAD_CM):
                 way = stick_heading(keys, yaw)
-                end = (pos[0] + LOOKAHEAD_CM * math.sin(way), pos[1], pos[2] + LOOKAHEAD_CM * math.cos(way))
+                end = (pos[0] + lookahead * math.sin(way), pos[1], pos[2] + lookahead * math.cos(way))
                 return (mesh.clear(pos, end) is True and walk_segment(mesh, pos, end)
                         and (not (detour or escaping) or _bomb_clear(bot, snap, pos, end)))
             if safe(held):
@@ -165,8 +168,19 @@ def guard(bot, snap, action, now):
             # continuous heading and then quantize it back toward the ledge.
             options = sorted(STICK_REL, key=lambda keys: abs(R.wrap(stick_heading(keys, yaw) - heading)))
             keys = next((keys for keys in options if safe(keys, detour=True)), ())
+            short = False
+            if not keys and LOOKAHEAD_FALLBACK_CM > 0:
+                # A 150 cm lookahead can leave the mesh from a narrow walkway/railing corner while a short step is
+                # still on verified floor. Without this the guard stripped every movement for the rest of a round
+                # (live 2026-11-13: floor_safety_why "no verified floor escape direction" held the bot in place
+                # fighting for 140+ s). Never a longer step than before, so no new ledge is exposed.
+                keys = next((keys for keys in options if safe(keys, detour=True, lookahead=LOOKAHEAD_FALLBACK_CM)), ())
+                short = bool(keys)
             result = dict(action, hold=rest + keys)
-            why = ('redirecting to verified floor and bomb clearance' if escaping else 'redirecting to verified floor') if keys else 'no verified floor escape direction'
+            why = (('redirecting to verified floor and bomb clearance' if escaping else 'redirecting to verified floor')
+                   if keys else 'no verified floor escape direction')
+            if short:
+                why += ' (short verified step)'
     bot.stats['floor_safety_blocks'] = int(bot.stats.get('floor_safety_blocks', 0)) + 1
     # The telemetry mirror keeps scalars only; this scalar carries the why (and the directive of the applied hold)
     # to the live panel and the round audit instead of the nested floor_safety_last object.
