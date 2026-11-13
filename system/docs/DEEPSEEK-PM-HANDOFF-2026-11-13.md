@@ -220,7 +220,7 @@ native mailbox/build/player life and both collision volumes. Only confirmed
 inactive, detached actors are reusable. In round6a33 nine mines had armed at the
 midround check: four distance singles plus a five-mine ring; native trigger and
 retirement evidence exists. At least76 hit-ring floor refusals included14 ray
-misses and62 results outside61cm floor tolerance, some3ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â€šÂ¬Ã…â€œ11m below the player.
+misses and62 results outside61cm floor tolerance, some3ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã¢â‚¬Å“11m below the player.
 Keep the floor checks. Provisional escape sites are not armed mines.
 
 `c2d71665e` repairs consumed distance on such a refusal: preserve travel already
@@ -554,14 +554,14 @@ same worker modules serve every title).
 
 ## DeepSeek PM round 3 (2026-11-13 12:57 onward): the operator's mine-ring button, and what the reels show
 
-### The "Mine ring Â· 5 ft" button on RE6 is fixed in the client (no restart)
+### The "Mine ring Ã‚Â· 5 ft" button on RE6 is fixed in the client (no restart)
 
 The root cause was not a missing backend: RE6 already exposes the interventions op **`remote_mines`** ->
 `re6_switch_native.bomb_ring_now` / `Controller.drop_bomb_ring` (armed native remote bombs ejected from the body,
 no throw/animation, placements recorded for the deadline controller). What never existed was any UI control that
 sent it; the topbar icon the operator pressed was the RE5 proximity-mine lane, which RE6 does not advertise.
 
-- `95c958138` adds a **"Remote mine ring Â· 5 ft"** topbar control, shown only where the worker advertises
+- `95c958138` adds a **"Remote mine ring Ã‚Â· 5 ft"** topbar control, shown only where the worker advertises
   `remote_mines` (hidden on RE5/RE4 and on any title without the lane). Each click posts
   `{op:'remote_mines', args:{action:'ring', count:5, radius_cm:152.4}}`; the bot's own deadline controller then
   escapes the blast distance and sets the set off through the native flag. It sits beside the existing grenade-ring
@@ -648,3 +648,31 @@ the verification round.
   still the real fix).
 - Manual remote-mine ring control landed in round 3 (`95c958138`, `43f7dfa7f`) and needs a live click on RE6.
 - Bonus routing and the S-rank/five-star goal remain unproven.
+
+### Round-4 live verification and the second freeze cause
+
+After `725d073ea` (movement may cross the planning margin, never within 250 cm) and `52381ff3e` (escape cycles
+ESCAPE_SPRINT_S 6 s sprint / 18 s fight instead of one 12 s window) were loaded, the first armed set behaved:
+
+- `mine_escapes_cleared` 1, `mine_escape_clear_s_last` **6.22 s**, `mine_flag_detonations` 1 - a sprint covered
+  the 1150 cm and the native flag set the set off. `floor_safety_why` moved from "no verified floor escape
+  direction" to "redirecting to verified floor and bomb clearance" while sprinting.
+
+The second set then exposed another freeze, not a bomb-rule one: `floor_safety_why` "no verified floor escape
+direction" 636 times in 143 s. On that walkway corner every 150 cm lookahead left the floor mesh, so the guard
+stripped all movement and the bot stood fighting with the armed set pending. `cacc9b9db` retries the same eight
+pad directions at `LOOKAHEAD_FALLBACK_CM` (60 cm) when no 150 cm step is proven - never a longer step, still
+mesh-proven and still under the bomb clearance rule, labelled "(short verified step)" in `floor_safety_why`. A
+surface where even 60 cm leaves the floor still strips movement (the test uses a 40 cm platform).
+
+Tests: 24 movement-safety and 106 in the related movement/bomb/escape/travel/fire/navigation suites. All three
+commits are pushed; the fallback was hot-reloaded at an RE5 title screen ("reloaded 1 of 1 autobot(s) back in
+0.7 s; reloaded re6_remote_control, re6_movement_safety, re6_switch"). One service relaunch (new
+`gbox.service` PID) was used earlier because the bot-only reload kept finding no finalized boundary while a game
+was running; no game was running at that moment and the operator had authorized relaunch.
+
+MercMode is back on its own rotation with `queue: []` (5/5/5; next round RE6 "Liquid Fire" with Carla), so the
+queued verification round was consumed and the operator's settings are preserved. Remaining: verify the
+short-step fallback live on RE6 (expect `floor_safety_why` "(short verified step)" instead of stripped movement),
+attribute the next death from `death_cause`, click the manual remote-mine ring once on RE6, and continue the
+still-unproven 5 s detonation deadline, bonus routing and S-rank work.
