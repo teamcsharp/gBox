@@ -652,8 +652,20 @@ def steer_to(pad: Pad, tx: float, tz: float) -> float:
         want = (math.degrees(math.atan2(tx - x, tz - z)) + 360.0) % 360.0
         error = ((want - heading + 540.0) % 360.0) - 180.0
     if abs(error) < 35:
+        before = (x, z)
         hold(pad, "up", WALK_BURST)
         time.sleep(0.15)
+        after_player = (state(pad).get("player") or {})
+        after = (float(after_player.get("x") or 0), float(after_player.get("z") or 0))
+        if math.dist(before, after) < 1.5:
+            # FORWARD IS BLOCKED. The probe showed the other three directions are wide open (left alone covered 90
+            # units), so turn ~90 degrees with counted taps and take a sideways step instead of grinding into it.
+            for _ in range(9):
+                tap(pad, "left")
+                time.sleep(0.1)
+            time.sleep(0.15)
+            hold(pad, "up", WALK_BURST)
+            time.sleep(0.15)
     return math.hypot(tx - x, tz - z)
 
 
