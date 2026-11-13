@@ -2,7 +2,7 @@
 //
 // Installed into the never-executed zero padding at main+0x655880 (scripts/verify_re4_caves.py proves it: 1920
 // bytes on a fresh 64-byte line, no branch or literal into it). It is reached through DATA only: the controller
-// clones the player object's vtable, points slot +0xA0 (the player per-frame virtual, main+0x312600,
+// clones the player object's vtable, points slot +0xA0 (the player per-frame virtual,
 // called by the player update at main+0x311400) at this code, and stores the clone's address into player+0. The clone also carries
 // the mailbox pointer at entry 32 (offset 0x100), so this code never hardcodes private storage.
 //
@@ -45,8 +45,8 @@
     str     w9, [x20, #0x00]
 .Loriginal:
     mov     x0, x19
-    adrp    x9, #0x312000                 // main+0x312600, the player tick callback
-    add     x9, x9, #0x600
+    ldr     x9, [x19]                    // each character keeps its own original callback
+    ldr     x9, [x9, #0x108]             // pinned original stored after the mailbox pointer
     ldp     x19, x20, [sp, #0x10]
     ldp     x21, x22, [sp, #0x20]
     ldp     x29, x30, [sp], #0x40

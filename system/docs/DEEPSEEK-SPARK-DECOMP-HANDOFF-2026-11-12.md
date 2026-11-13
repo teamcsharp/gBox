@@ -1,6 +1,6 @@
 # DeepSeek takeover: RE4/5/6 MercMode, Spark decompilation and live replacement
 
-Prepared 2026-11-12 America/Chicago (latest live check 2026-11-13 00:22 UTC).
+Prepared 2026-11-12 America/Chicago (continuing live checks on 2026-11-13 UTC).
 Workspace: `C:\_tools\gBox`. HEAD at preparation: `f8b13f2742481ccd20ae87c329fe76f6cea824e8`.
 
 **Current ownership: Codex continues implementation, testing, deployment and live validation.** The operator
@@ -60,6 +60,22 @@ is the stated longer-term goal: retain level-loader, collision, navigation, spaw
 
 ## Current implementation checkpoint (continuing, not a completed handoff)
 
+The user subsequently required analysis of **every attempt**, including the shooting/navigation leading up to defeat:
+wall shooting, facing into walls, poor turning, stairs oscillation, exploration of the level and collection of every time
+bonus. RE4's direct playbook currently bypasses the engine RunCapture integration; wire it into durable per-round
+evidence, keep pre-defeat input/target/aim/position history, and distinguish observed bonus pickups from merely arriving
+at a bonus waypoint. Diagnose measured failures rather than inferring a killer from the nearest enemy.
+
+New RE5 requirement: drop **proximity mines without equipping them or interrupting running/fleeing**, and support a
+ring at **five feet (152.4 cm)** from one execution-time player center. Both individual drops and the ring must be
+available to MCP and MercMode sidebar/topbar controls. This is a native RE5 factory/arming task, not the inherited
+RE6 remote-bomb routine. Verify placement, grounding, arming and unchanged equipped weapon before enabling automatic
+fleeing drops. Work on this requirement remains pending.
+
+Commits `64d5ebaf` and merge `2ca68a0f` were pushed to main and deployed with the normal backup-preserving script.
+The user explicitly approved restarting Spark's backend between rounds; it restarted at 2026-11-13 02:16:49 UTC.
+The new Spark worker is `650d21b6b9ab43a0`; the i9 PSO session was left alone.
+
 Local code now includes separate default-five title counts, every completed attempt counting (including quick deaths),
 preserved cold next-round donor promises, RE4/5 native-character randomization, first-death lessons with duplicate
 suppression, RE4 pitch stabilization when yaw is already aligned, shorter fire input holds, persistent per-round weapon
@@ -67,9 +83,13 @@ selection with bounded retries, crowd shotgun selection and exclusive Mine Throw
 10 m defense radius, failed equip does not fire the wrong weapon or consume its 90-second cooldown, and success
 restores the previous weapon. Actual projectile/effect observations still require live verification.
 
-Native research found **player update `0x311400` explicitly calls vtable slot `+0xA0`**, whose pinned callback is
-`0x312600`. The old `+0x20` transform trigger produced zero ticks live. The new dispatcher uses `+0xA0`, preserves
-player tracking while its clone is installed, and is serialized across automatic healing and manual blasts.
+Native research found **player update `0x311400` explicitly calls vtable slot `+0xA0`**. The old `+0x20` transform
+trigger produced zero ticks live. Base player callbacks use `0x312600`, but Krauser (`0xB098B0`) overrides it with
+`0x31EB60`; another class uses `0x312EB0`. The initial Leon-only pin refused Krauser in live validation. The correction
+pins all seven tables sharing the measured common player update entries and tail-calls each class's own original.
+Clones now occupy distinct guarded slots in the proven private data page, after the blast scratch area. Reusing one
+RX clone for different characters caused the live ring refusal `native code padding is occupied`; distinct data clones
+avoid overwriting executed code. The correction also removes inherited RE6-only weapon/mine controls from RE4.
 
 The actual item-use function is `0x297AB0(cItemMgr*, cItem*)`; manager is `main+0x124D918`, item records are 14 bytes,
 and First Aid Spray is ID 5. It adds 2400 HP up to the maximum, consumes one item, and clears the slot if empty.
@@ -77,7 +97,10 @@ Recipient is manager `+0x1A` (distinct from inventory owner `+0x1B`). The new `f
 identity, active Mercenaries state, inventory allocation/slot/type/owner/count, and living damaged HP on the game thread.
 It temporarily selects the player recipient, calls native use, restores recipient, and retains one spray in reserve.
 Automatic low-health use replaces the old threshold direct-HP write; explicit Unlimited life remains a separate mod.
-The new First aid button uses durable intervention receipts. No live native-heal success is claimed yet.
+The new First aid button uses durable intervention receipts. **Live native healing confirmed** in session
+`650d21b6b9ab43a0-d69079c3f6f14613`: eight automatic native uses, last receipt HP 1230 -> 1680, native result 1,
+one spray remaining after use and stock maintained at two. `unlimited_health=false`, `life_kept=0`.
+RE4 native dispatcher/controller/item tests pass (84 tests after class-specific clone correction).
 
 Ghidra title routing no longer chooses RE5 first for every session. Queries pin the correct executable path and SHA.
 The resumable exporter records every discovered function, checkpoints success/error/timeout separately, verifies

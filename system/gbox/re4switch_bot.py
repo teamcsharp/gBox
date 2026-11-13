@@ -784,7 +784,7 @@ def _maintain_mods(ad, snap: dict, stats: dict) -> None:
     # the cached state) and heals proves it acted - both were invisible, so a heal that never ran looked like a heal that
     # ran and never triggered.
     for key in ("motion_rate_kind", "motion_rate_class", "motion_rate_routine", "aim_ram_writes", "aim_sway_zeroed",
-                "heal_below", "heals"):
+                "heal_below", "heals", "first_aid_stock", "first_aid_last", "round_weapon", "crowd_weapon"):
         if st.get(key) is not None:
             stats[key] = st[key]
     # Whether the bow's 40x motion write is ON, and why it was refused: the state keeps it under st["motion_rate"]

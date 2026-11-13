@@ -5,19 +5,25 @@ with capstone; the checked-in bytes are what the controller installs.
 
 The dispatcher is the RE4 harness's only guest-side code (E0(c)): it runs from the vetted zero padding at
 `main+0x655880`, invoked through the player object's cloned vtable (slot +0xA0, the player per-frame virtual), and
-tail-calls the original `main+0x312600` every time so the game is unaffected while it is attached. The final `ret`
+tail-calls that character's original virtual every time so the game is unaffected while it is attached. The final `ret`
 (after the tail `br`) is the harness's own self-test target: a mailbox call to it proves the whole path without
 running any game code (checkpoint E6's no-op).
 """
 
 CAVE_AT, CAVE_SIZE = 0x655880, 0x780          # scripts/verify_re4_caves.py: 1920 bytes, 64-byte line, unused
 CAVE_END = CAVE_AT + CAVE_SIZE                # 0x656000, the RX page boundary
-ORIGINAL_TICK = 0x312600                 # the player per-frame virtual (all unit class vtables)
+ORIGINAL_TICK = 0x312600                 # base player callback; Krauser and another player class override it
+TICK_BY_CLASS = {0xB068A0: 0x312600, 0xB069C0: 0x312EB0, 0xB06B78: 0x312600,
+                 0xB097E8: 0x312600, 0xB098B0: 0x31EB60, 0xB09A60: 0x312600, 0xB0C0A0: 0x312600}
 SLOT_TICK = 0xA0                         # its vtable slot
 CLONE_ENTRIES = 32                            # copied from the live player vtable (256 bytes)
 CLONE_MAILBOX_OFF = 0x100                     # entry 32 carries the mailbox pointer (the dispatcher reads it here)
-CLONE_SIZE = CLONE_MAILBOX_OFF + 8
-CLONE_AT = CAVE_AT + 0x180                    # 64-byte aligned, clear of the 0x88-byte dispatcher
+CLONE_ORIGINAL_OFF = 0x108
+CLONE_SIZE = CLONE_ORIGINAL_OFF + 8
+CLONE_AT = CAVE_AT + 0x180                    # legacy RX reservation; clones now use private data below
+CLONE_DATA_OFF = 0x600                        # after scratch [0x100,0x500), in the proven private 4 KiB page
+CLONE_CLASSES = tuple(sorted(TICK_BY_CLASS))
+assert CLONE_DATA_OFF + len(CLONE_CLASSES) * CLONE_SIZE <= 0x1000
 SELFTEST_AT = CAVE_AT + 0x84                  # the dispatcher's own `ret`: the no-op call target
 MAILBOX_SIZE = 0x80
 MAILBOX = {"state": 0x00, "target": 0x08, "args": 0x10, "result": 0x48, "generation": 0x50, "ticks": 0x58}
@@ -25,14 +31,8 @@ STATE = {"idle": 0, "requested": 1, "running": 2, "done": 3}
 
 DISPATCH = (
     CAVE_AT, "dispatch", 136,
-    "bb20ad8f21ebc7e170c8a4d38045deeabab674b5b5b623b5b730a9eb0118db8c",
-    bytes.fromhex(
-        "fd7bbca9fd030091f35301a9f55b02a9f30300aa740240f9948240f9740200b4"
-        "892e40f929050091892e00f9890240b93f050071a101005449008052890200b9"
-        "880640f9e80000b4800641a9820e42a9841643a9861e44a900013fd6802600f9"
-        "69008052890200b9e00313aae9e5ffb029011891f35341a9f55b42a9fd7bc4a8"
-        "20011fd6c0035fd6"
-    ),
+    "ccc0910b831abe9286f80b7aea07774757e165c6e400f9322fd9148869d87f3f",
+    bytes.fromhex("fd7bbca9fd030091f35301a9f55b02a9f30300aa740240f9948240f9740200b4892e40f929050091892e00f9890240b93f050071a101005449008052890200b9880640f9e80000b4800641a9820e42a9841643a9861e44a900013fd6802600f969008052890200b9e00313aa690240f9298540f9f35341a9f55b42a9fd7bc4a820011fd6c0035fd6"),
 )
 
 IMAGES = {"dispatch": DISPATCH[4]}

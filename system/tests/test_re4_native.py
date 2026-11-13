@@ -21,7 +21,7 @@ PLAYER = 0x200000000
 MAILBOX = 0x900000000
 PLAYER_VT = BASE + 0xB0C0A0
 CAVE = BASE + CODE.CAVE_AT
-CLONE = BASE + CODE.CLONE_AT
+CLONE = MAILBOX + CODE.CLONE_DATA_OFF + CODE.CLONE_CLASSES.index(0xB0C0A0) * CODE.CLONE_SIZE
 
 
 def put(mem, at, data):
@@ -56,6 +56,7 @@ def fake_controller(monkeypatch, *, mailbox=MAILBOX, complete=True, fail_at=None
     ctl.w = lambda at: struct.unpack("<I", read(at, 4))[0]
     ctl.ad = types.SimpleNamespace(address_mode="direct", paused=False,
                                    write_memory=ad_write, read_memory=read, _guest=lambda: (4242, 1))
+    ctl.ad._re4_switch_harness = ctl
 
     # the unit itself
     unit = bytearray(0x400)
@@ -132,13 +133,13 @@ def test_install_outside_the_cave_is_refused(monkeypatch):
 def test_attach_installs_dispatch_and_clone_and_writes_only_the_vtable_pointer(monkeypatch):
     ctl = fake_controller(monkeypatch)
     ctl.attach()
-    assert [at for at, _data in ctl.installed] == [CAVE, CLONE, BASE + CODE.FIRST_AID_AT]
+    assert [at for at, _data in ctl.installed] == [CAVE, BASE + CODE.FIRST_AID_AT]
     assert ctl.installed[0][1] == CODE.IMAGES["dispatch"]
-    clone = ctl.installed[1][1]
+    clone = get(ctl.mem, CLONE, CODE.CLONE_SIZE)
     assert len(clone) == CODE.CLONE_SIZE
     assert struct.unpack_from("<Q", clone, CODE.SLOT_TICK)[0] == CAVE
     assert struct.unpack_from("<Q", clone, CODE.CLONE_MAILBOX_OFF)[0] == MAILBOX
-    assert len(ctl.writes) == 1 and ctl.writes[0] == (PLAYER, struct.pack("<Q", CLONE))
+    assert len(ctl.writes) == 2 and ctl.writes[-1] == (PLAYER, struct.pack("<Q", CLONE))
     assert ctl.q(PLAYER) == CLONE and ctl.attached()
 
     ctl.detach()
@@ -150,7 +151,7 @@ def test_attaching_again_is_a_no_op(monkeypatch):
     ctl = fake_controller(monkeypatch)
     ctl.attach()
     ctl.attach()
-    assert len(ctl.installed) == 3 and len(ctl.writes) == 1
+    assert len(ctl.installed) == 2 and len(ctl.writes) == 2
 
 
 def test_snapshot_retains_only_the_attached_player_generation(monkeypatch):
@@ -177,6 +178,54 @@ def test_attach_refuses_a_player_whose_tick_slot_is_not_pinned(monkeypatch):
     with pytest.raises(N.Unavailable, match="tick slot"):
         ctl.attach()
     assert ctl.writes == []
+
+
+@pytest.mark.parametrize("player_class, original", sorted(CODE.TICK_BY_CLASS.items()))
+def test_every_pinned_player_class_keeps_its_own_tick(monkeypatch, player_class, original):
+    ctl = fake_controller(monkeypatch)
+    table = bytearray(get(ctl.mem, PLAYER_VT, CODE.CLONE_ENTRIES * 8))
+    struct.pack_into("<Q", table, CODE.SLOT_TICK, BASE + original)
+    put(ctl.mem, BASE + player_class, table)
+    put(ctl.mem, PLAYER, struct.pack("<Q", BASE + player_class))
+    ctl.attach()
+    assert ctl.q(ctl.clone_address + CODE.CLONE_ORIGINAL_OFF) == BASE + original
+    assert ctl.q(ctl.clone_address + CODE.SLOT_TICK) == CAVE
+
+
+def test_foreign_re6_controls_are_not_offered_by_re4(monkeypatch):
+    ctl = fake_controller(monkeypatch)
+    for name in ("weapon_choices", "current_weapon", "equip_primary", "ammo_status", "set_infinite_ammo", "drop_bomb"):
+        assert getattr(ctl, name) is None
+
+
+def test_ring_health_does_not_include_adjacent_max_health(monkeypatch):
+    ctl = fake_controller(monkeypatch)
+    put(ctl.mem, BASE + R.PLAYER_LIFE, struct.pack("<HH", 1230, 1680))
+    assert ctl.player_life() == 1230
+
+
+def test_character_change_reuses_code_and_keeps_separate_data_clones(monkeypatch):
+    ctl = fake_controller(monkeypatch)
+    ctl.attach()
+    old_clone = ctl.clone_address
+    previous_bytes = ctl.rd(old_clone, CODE.CLONE_SIZE)
+    new_class = 0xB098B0
+    next_player = PLAYER + 0x1000
+    table = bytearray(get(ctl.mem, PLAYER_VT, CODE.CLONE_ENTRIES * 8))
+    struct.pack_into("<Q", table, CODE.SLOT_TICK, BASE + CODE.TICK_BY_CLASS[new_class])
+    put(ctl.mem, BASE + new_class, table)
+    unit = bytearray(ctl.rd(PLAYER, 0x400))
+    struct.pack_into("<Q", unit, 0, BASE + new_class)
+    struct.pack_into("<I", unit, R.U_ID, 99)
+    put(ctl.mem, next_player, unit)
+    put(ctl.mem, BASE + R.S_PLAYER, struct.pack("<Q", next_player))
+    ctl.ready()
+    ctl.attach()
+    assert ctl.player == next_player and ctl.player_id == 99
+    assert ctl.clone_address != old_clone and ctl.rd(old_clone, CODE.CLONE_SIZE) == previous_bytes
+    assert ctl.q(PLAYER) == PLAYER_VT
+    assert ctl.q(next_player) == ctl.clone_address
+    assert len(ctl.installed) == 2
 
 
 def test_attach_refuses_a_cave_that_is_not_empty(monkeypatch):

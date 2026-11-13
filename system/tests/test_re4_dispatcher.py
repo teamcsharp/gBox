@@ -2,7 +2,7 @@
 
 The dispatcher is the only guest-side code the RE4 harness installs. It is reached through data (the player
 object's cloned vtable at slot +0xA0), reads the mailbox pointer from the clone, performs one native call per
-request and tail-calls the game's own transform every entry. These tests decode the pinned image, reproduce it from
+request and tail-calls the character's original virtual every entry. These tests decode the pinned image, reproduce it from
 `dispatch.S` (keystone), and execute it on a synthetic memory map (unicorn) - no game.
 """
 import gc
@@ -29,7 +29,7 @@ SUM_STUB = struct.pack("<3I", 0x8B010009, 0x8B020120, 0xD65F03C0)        # x0 = 
 RET_STUB = struct.pack("<I", 0xD65F03C0)
 
 UNIT, CLONE, MAILBOX, STACK, RETURN = 0x800000, 0x800100, 0x900000, 0x700000, 0x500000
-MAPS = (0x310000, 0x500000, 0x655000, 0x700000, 0x800000, 0x900000, 0xA00000)
+MAPS = (0x310000, 0x320000, 0x500000, 0x655000, 0x700000, 0x800000, 0x900000, 0xA00000)
 
 
 def test_the_fake_stubs_are_what_they_claim():
@@ -58,15 +58,11 @@ def test_the_tail_call_lands_on_the_original_tick():
     assert insns[-1].mnemonic == "ret" and insns[-2].mnemonic == "br"
     tail = None
     for index, ins in enumerate(insns):
-        if ins.mnemonic == "adrp" and "x9" in ins.op_str:
+        if ins.mnemonic == "ldr" and ins.op_str == "x9, [x19]":
             nxt = insns[index + 1]
-            if nxt.mnemonic == "add" and nxt.op_str.startswith("x9, x9, #"):
-                tail = ins.op_str.rsplit("#", 1)[1] + " + " + nxt.op_str.rsplit("#", 1)[1]
-    assert tail is not None
-    page = int(tail.split(" + ")[0], 0)
-    off = int(tail.split(" + ")[1], 0)
-    assert page + off == C.ORIGINAL_TICK
-    assert C.ORIGINAL_TICK == 0x312600
+            if nxt.mnemonic == "ldr" and nxt.op_str == "x9, [x9, #0x108]":
+                tail = C.CLONE_ORIGINAL_OFF
+    assert tail == C.CLONE_ORIGINAL_OFF
 
 
 def test_the_pinned_image_reproduces_from_source():
@@ -74,7 +70,7 @@ def test_the_pinned_image_reproduces_from_source():
     report = B.check()
     assert report["ok"], report["problems"]
     assert report["size"] == C.DISPATCH[2] and report["sha256"] == C.DISPATCH[3]
-    assert report["tail_call"] == C.ORIGINAL_TICK
+    assert report["tail_call"] == C.CLONE_ORIGINAL_OFF
 
 
 # ---- the dispatcher on a synthetic memory map -------------------------------------------------------------------------
@@ -92,6 +88,7 @@ def machine(mailbox=True):
     mu.mem_write(RETURN, RET_STUB)
     mu.mem_write(UNIT, struct.pack("<Q", CLONE))
     mu.mem_write(CLONE + C.CLONE_MAILBOX_OFF, struct.pack("<Q", MAILBOX if mailbox else 0))
+    mu.mem_write(CLONE + C.CLONE_ORIGINAL_OFF, struct.pack("<Q", C.ORIGINAL_TICK))
     mu.reg_write(UC_ARM64_REG_SP, STACK + 0x8000)
     mu.reg_write(UC_ARM64_REG_LR, RETURN)
     _ENGINES.append(mu)
@@ -122,6 +119,17 @@ def test_an_idle_entry_ticks_and_runs_the_original():
     words = mailbox_words(mu)
     assert words["state"] == C.STATE["idle"] and words["ticks"] == 1
     assert struct.unpack("<Q", mu.mem_read(UNIT + 0x20, 8))[0] == UNIT       # the original got the unit in x0
+
+
+@pytest.mark.parametrize("target", sorted(set(C.TICK_BY_CLASS.values())))
+def test_character_specific_original_is_preserved(target):
+    mu = machine()
+    mu.mem_write(target, ORIGINAL_STUB)
+    mu.mem_write(CLONE + C.CLONE_ORIGINAL_OFF, struct.pack("<Q", target))
+    publish(mu, 0xA00000, (7, 8, 9))
+    enter(mu)
+    assert mailbox_words(mu)["result"] == 24
+    assert struct.unpack("<Q", mu.mem_read(UNIT + 0x20, 8))[0] == UNIT
 
 
 def test_a_request_calls_the_target_with_the_arguments_and_stores_the_result():

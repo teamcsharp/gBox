@@ -1,8 +1,8 @@
 """RE4 Switch (82C2A04A21D3E0B850F273D4149C9003) native call harness.
 
 The harness never rewrites an executed instruction and never changes a branch: it clones the player unit's vtable
-into the vetted zero padding at `main+0x655880`, points that clone's slot `+0xA0` (the player per-frame
-virtual, `main+0x312600`, shared by every measured unit class) at the dispatcher, and stores the clone's address into
+into its proven private data page, points that clone's slot `+0xA0` (the player per-frame
+virtual, preserving that character's original callback) at the dispatcher, and stores the clone's address into
 the player object's vtable pointer (`+0`). That single aligned 8-byte store is the whole trigger; the restore puts
 the original pointer back. The dispatcher (`native/re4_82c2a04a/dispatch.S`) tail-calls the original tick every
 entry, so the game runs normally while the harness is attached.
@@ -156,6 +156,9 @@ def is_code_address(base: int, at: int) -> bool:
 
 
 class Controller(N.Controller):
+    # These RE6 operations are not implementations for RE4. Do not advertise inherited foreign-title controls.
+    weapon_choices = current_weapon = equip_primary = ammo_status = set_infinite_ammo = drop_bomb = None
+
     def __init__(self, ad, *, mailbox: int | None = None):
         if os.name != "posix" or os.uname().machine.lower() not in ("aarch64", "arm64") or \
                 getattr(ad, "address_mode", None) != "direct":
@@ -197,7 +200,7 @@ class Controller(N.Controller):
             raise Unavailable("the player unit changed")
         vt = unit.get("vtable")
         if self.attached():
-            if vt != self.base + CLONE_AT:
+            if vt != self.clone_address:
                 raise Unavailable("the harness clone is not on the player")
         elif self.player_class is not None and vt != self.base + self.player_class:
             raise Unavailable("the player's vtable changed while the harness is detached")
@@ -248,24 +251,28 @@ class Controller(N.Controller):
         self.check_build()
         if getattr(self.ad, "paused", False):
             raise Unavailable("session is paused")
-        if self.attached():
-            # While attached the unit carries the clone; identify it by its own id instead of its class vtable.
-            unit = R.read_unit(self, self.player)
-            if unit is None or unit.get("id") != self.player_id:
-                raise Unavailable("the player unit changed while the harness is attached")
-            return self.player, self.player_id
         unit = R.player_unit(self, self.base)
         if unit is None or not R.ptr_ok(unit.get("ptr")):
             raise Unavailable("no player unit in a live Mercenaries round")
-        cls = unit["vtable"] - self.base
+        cls = unit.get("class", unit["vtable"] - self.base)
         if not (R.PLAYER_VTABLE_RANGE[0] <= cls < R.PLAYER_VTABLE_RANGE[1]) or cls % 8:
             raise Unavailable(f"the player's class {cls:#x} is not a unit class this harness supports")
+        if self.player is not None and unit["ptr"] != self.player and self.attached():
+            previous = R.read_unit(self, self.player)
+            if previous is not None and previous.get("id") == self.player_id:
+                self.detach()                            # release a still-owned old unit before binding its successor
         self.player, self.player_class, self.player_id = unit["ptr"], cls, unit.get("id")
         return self.player, self.player_id
 
+    @property
+    def clone_address(self):
+        if self.mailbox is None or getattr(self, "player_class", None) not in CODE.CLONE_CLASSES:
+            return None
+        return self.mailbox + CODE.CLONE_DATA_OFF + CODE.CLONE_CLASSES.index(self.player_class) * CLONE_SIZE
+
     def attached(self) -> bool:
         return self.player is not None and self.original is not None and \
-            self.q(self.player) == self.base + CLONE_AT
+            self.clone_address is not None and self.q(self.player) == self.clone_address
 
     def ensure_attached(self):
         """Attach the harness on demand (RE5/RE6 attach inside every native op; RE4's ring/flash refused instead).
@@ -288,7 +295,9 @@ class Controller(N.Controller):
         if vt != self.base + self.player_class:
             raise Unavailable("the player's vtable changed while binding")
         entries = self.rd(vt, CODE.CLONE_ENTRIES * 8)
-        if len(entries) != CODE.CLONE_ENTRIES * 8 or self.q(vt + SLOT_TICK) != self.base + ORIGINAL_TICK:
+        original_tick = CODE.TICK_BY_CLASS.get(self.player_class)
+        if original_tick is None or len(entries) != CODE.CLONE_ENTRIES * 8 \
+                or self.q(vt + SLOT_TICK) != self.base + original_tick:
             raise Unavailable("the player's tick slot is not the pinned original")
         if self.mailbox is None:
             raise Unavailable("no proven private storage for the harness mailbox (E3's three-load watch is pending)")
@@ -297,12 +306,21 @@ class Controller(N.Controller):
         clone = bytearray(entries)
         struct.pack_into("<Q", clone, SLOT_TICK, self.base + CAVE_AT)
         clone.extend(struct.pack("<Q", self.mailbox))
-        assets = ((self.base + CAVE_AT, verify_dispatch()), (self.base + CLONE_AT, bytes(clone)),
+        clone.extend(struct.pack("<Q", self.base + original_tick))
+        assets = ((self.base + CAVE_AT, verify_dispatch()),
                   (self.base + CODE.FIRST_AID_AT, verify_dispatch(CODE.FIRST_AID)))
+        clone_at = self.clone_address
+        before = self.rd(clone_at, len(clone))
+        if before != clone and any(before):
+            raise Unavailable("private player clone storage is occupied")
         if any(self.rd(at, len(data)) != data for at, data in assets):
             self.stopped(lambda: [self.install(at, data) for at, data in assets])
+        if before != clone:
+            self.write(clone_at, bytes(clone))
+            if self.rd(clone_at, len(clone)) != clone:
+                raise Uncertain("private player clone did not read back")
         self.original = vt
-        self.write(self.player, struct.pack("<Q", self.base + CLONE_AT))
+        self.write(self.player, struct.pack("<Q", clone_at))
         if not self.attached():
             raise Uncertain("the player's vtable did not take the clone")
         self.failed = False
@@ -311,7 +329,7 @@ class Controller(N.Controller):
         """Put the original vtable pointer back (the clone in the cave is only ever read)."""
         if self.player is None or self.original is None:
             return
-        if self.q(self.player) == self.base + CLONE_AT:
+        if self.q(self.player) == self.clone_address:
             self.write(self.player, struct.pack("<Q", self.original))
         if self.q(self.player) != self.original:
             raise Uncertain("the player's vtable was not restored")
@@ -350,7 +368,7 @@ class Controller(N.Controller):
             self.failed = True
             self._retire()
             raise Uncertain("the mailbox generation changed under the call; the result is not trusted")
-        if self.q(self.player + 0) != self.base + CLONE_AT:
+        if self.q(self.player) != self.clone_address:
             raise Uncertain("the player's vtable changed during the call")
         return self.q(self.mailbox + MAILBOX["result"])
 
@@ -430,7 +448,7 @@ class Controller(N.Controller):
         if not R.PLAYER_LIFE:
             return None
         try:
-            value = self.w(self.base + R.PLAYER_LIFE)
+            value = struct.unpack("<H", self.rd(self.base + R.PLAYER_LIFE, 2))[0]
         except (OSError, ValueError):
             return None
         return value if R.LIFE_SANE[0] <= value < R.LIFE_SANE[1] else None

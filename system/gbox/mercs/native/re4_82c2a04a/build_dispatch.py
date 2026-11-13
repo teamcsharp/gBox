@@ -3,7 +3,7 @@
     python -m gbox.mercs.native.re4_82c2a04a.build_dispatch [out-dir]
 
 Assembles `dispatch.S` with keystone at the cave address, checks the bytes against the pinned image and its sha256,
-and disassembles them with capstone for the report (the tail call to `main+0x312600` included). Keystone and capstone
+and disassembles them with capstone for the report (the per-character callback load included). Keystone and capstone
 are research/build dependencies: nothing in the gbox runtime imports them. A changed source must be rebuilt here and
 re-pinned in `code.py` - the checked-in bytes are what the controller installs.
 """
@@ -55,14 +55,14 @@ def check() -> dict:
         if len(insns) * 4 != len(image):
             problems.append("capstone cannot decode every word")
         for index, ins in enumerate(insns):
-            if ins.mnemonic == "adrp" and "x9" in ins.op_str and index + 1 < len(insns):
+            if ins.mnemonic == "ldr" and ins.op_str == "x9, [x19]" and index + 1 < len(insns):
                 nxt = insns[index + 1]
-                if nxt.mnemonic == "add" and nxt.op_str.startswith("x9, x9, #"):
-                    tail = int(nxt.op_str.rsplit("#", 1)[1], 0) + (ins.operands[1].imm if ins.operands else 0)
+                if nxt.mnemonic == "ldr" and nxt.op_str == "x9, [x9, #0x108]":
+                    tail = C.CLONE_ORIGINAL_OFF
     except ImportError:                                   # capstone is in the runtime requirements, but stay usable
         pass
-    if tail != C.ORIGINAL_TICK:
-        problems.append(f"the tail call resolves to {tail if tail is None else hex(tail)}, not the original tick")
+    if tail != C.CLONE_ORIGINAL_OFF:
+        problems.append("the tail call does not load the pinned per-character original from the clone")
     return {"image": image, "size": len(image), "sha256": hashlib.sha256(image).hexdigest(),
             "tail_call": tail, "problems": problems, "ok": not problems}
 
