@@ -112,10 +112,12 @@ def guard(bot, snap, action, now):
     rest = tuple(k for k in held if k not in MOVEMENT)
     heading_written = getattr(bot, '_floor_heading_written_at', None) == now
     heading_written = heading_written or getattr(bot, 'lock_write_at', None) == now
+    escaping = bool(bot.stats.get('mine_escape_required'))
     if heading_written:
-        if _all_headings_on_floor(mesh, pos):
+        if not escaping and _all_headings_on_floor(mesh, pos):
             return action
-        why = 'native camera changed; floor boundary requires a fresh heading'
+        why = ('native camera changed; bomb escape requires a fresh heading' if escaping else
+               'native camera changed; floor boundary requires a fresh heading')
         result = dict(action, hold=rest)
     else:
         yaw = (snap.get('camera') or {}).get('yaw', p.get('rot'))
@@ -128,7 +130,8 @@ def guard(bot, snap, action, now):
             def safe(keys, *, detour=False):
                 way = stick_heading(keys, yaw)
                 end = (pos[0] + LOOKAHEAD_CM * math.sin(way), pos[1], pos[2] + LOOKAHEAD_CM * math.cos(way))
-                return mesh.clear(pos, end) is True and (not detour or _bomb_clear(bot, snap, pos, end))
+                return (mesh.clear(pos, end) is True
+                        and (not (detour or escaping) or _bomb_clear(bot, snap, pos, end)))
             if safe(held):
                 return action
             # Evaluate the exact eight pad directions; do not validate a
@@ -136,7 +139,7 @@ def guard(bot, snap, action, now):
             options = sorted(STICK_REL, key=lambda keys: abs(R.wrap(stick_heading(keys, yaw) - heading)))
             keys = next((keys for keys in options if safe(keys, detour=True)), ())
             result = dict(action, hold=rest + keys)
-            why = 'redirecting to verified floor' if keys else 'no verified floor escape direction'
+            why = ('redirecting to verified floor and bomb clearance' if escaping else 'redirecting to verified floor') if keys else 'no verified floor escape direction'
     bot.stats['floor_safety_blocks'] = int(bot.stats.get('floor_safety_blocks', 0)) + 1
     bot.stats['floor_safety_last'] = dict(at=now, mesh=getattr(mesh, 'name', None), pos=list(pos),
                                         requested_hold=list(held), applied_hold=list(result['hold']), reason=why,

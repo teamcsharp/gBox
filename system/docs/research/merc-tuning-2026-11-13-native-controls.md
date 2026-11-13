@@ -289,3 +289,30 @@ conservative native shotgun/magnum discharge witnesses, and title-local weapon
 partitions. RE5 still needs a verified emission feed; its static provenance is
 in `re5-fire-witness-20261113.md`. Trigger requests must never substitute for
 native discharge or impact evidence in the mastery database.
+
+## Current RE6 observation before the next repair batch
+
+Worker `e41fad8986bf40a5` loaded `c1a97781`; the newer deployment marker on
+disk does not establish that its running process loaded subsequent fixes.
+Session `e41fad8986bf40a5-99863222c9f348b7`, round
+`ed4b38949ac6492889ae688a344b558e`, was still playing at `1794581975.107`.
+The tactical sample showed 73 kills, 61,060 points, 379.91 seconds remaining
+and HP 600/900. Telemetry recorded ten gun trigger requests, one aim-book hit
+and one miss. This is an interim observation, not an observed result rank or
+proof that those kills came from bullets.
+
+The same sample retained 29 ring bombs across two rings, one partial ring,
+32 missed bomb deadlines and five detonation failures. Its allocation gate
+reported `uncertain native allocation; no further automatic bombs in this life`.
+Earlier at `1794581901.149`, the known bomb placed at `1794581842.362` was
+already 53.733 seconds old with only 561.5 cm clearance, below the recorded
+1100 cm detonation requirement. These measurements preserve the failure and
+allocation ambiguity; no missing actor or successful flag write proves a blast.
+The audit issued no gameplay input, and no uncertainty gate was cleared.
+The next escape/deadline repair is not active in this evidence.
+
+Durable telemetry and JPEGs are in Spark
+`gbox-data/analysis/merc-tuning-20261113/post-c1a97781-round-audit.jsonl`
+and its session-named frame files. Earlier completed RE6 attempts are retained
+in `pre-c1a97781-round-summary.json`; `pre-c1-re6-first-bomb-window.json`
+extracts the first bomb escape failure with timestamps and held controls.

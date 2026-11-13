@@ -3365,6 +3365,7 @@ class Bot:
                 self.stats["native_equip_kind"] = result.get("kind", -1)
                 self.stats["native_equip_index"] = result.get("index", -1)
         out = self._tick(snap, now)
+        escape_requested = tuple(out.get('hold') or ()) if self.stats.get('mine_escape_required') else None
         out = self._respond(snap, out, now)                        # under threat: a flash, a bomb or fire - never nothing
         out = self._detonator_away(snap, out, now)                 # never the detonator in hand outside a throw
         if UNIVERSAL_CORE:
@@ -3394,6 +3395,17 @@ class Bot:
             out = self._go("nade", "gun_back", self._equip_keys(snap['player'], self._gun_index(snap['player'])), f"an item in hand (slot {eq}): the gun back first")
         from . import re6_movement_safety
         out = re6_movement_safety.guard(self, snap, out, now)       # final pad: no late rewrite may step off the floor
+        if escape_requested is not None:
+            self.stats['bomb_escape_output'] = dict(
+                at=now, measurement='brain_final_before_engine_transport',
+                requested_hold=list(escape_requested), final_hold=list(out.get('hold') or ()),
+                final_tap=out.get('tap'), act=self.stats.get('act'), why=self.why,
+                native_action=(snap.get('player') or {}).get('action'),
+                clearance_cm=self.stats.get('mine_clearance_cm'),
+                floor_guard=self.stats.get('floor_safety_last')
+                if (self.stats.get('floor_safety_last') or {}).get('at') == now else None)
+        else:
+            self.stats.pop('bomb_escape_output', None)
         re6_switch_wall.feedback(self, snap, out, now)
         try:
             self._look_tick(snap, now)
@@ -7371,10 +7383,13 @@ class Bot:
         BOMB_STUCK_S (a wall behind), a side step for BOMB_SIDE_S, the side swapped each time. None: one within
         ESCAPE_FIGHT_R in the way out - the crowd between him and safe ground is fought first."""
         px, _, pz = p["pos"]
-        pushing = self.push is not None and now <= self.push["until"]
+        deadline_escape = act == 'bomb_escape' and self.stats.get('mine_escape_required')
+        # A pre-placement crowd push may lead back toward the new bomb. Rank
+        # the escape from its current position instead; the final floor guard
+        # checks the actual pad direction against every outstanding bomb.
+        pushing = not deadline_escape and self.push is not None and now <= self.push["until"]
         way = self.push["h"] if pushing else self._open_heading(p, live, avoid=at)
         stunned = self.flashed if now < self.fever_until else set()   # (flashed: walked through, kicked)
-        deadline_escape = act == 'bomb_escape' and self.stats.get('mine_escape_required')
         if not deadline_escape and any(math.hypot(e["pos"][0] - px, e["pos"][2] - pz) <= ESCAPE_FIGHT_R
                and e.get("ptr", e.get("slot")) not in stunned
                and abs(wrap(heading(e["pos"][0] - px, e["pos"][2] - pz) - way)) <= math.radians(60) for e in live):
@@ -7393,7 +7408,9 @@ class Bot:
             self.bomb_walk = (now, (px, pz))
         keys = self._stick(way, yaw)
         if now < self.bomb_side_until and self.detour not in keys:
-            keys = keys + (self.detour,)
+            # Replacing the lateral component avoids lleft+lright cancelling
+            # the recovery stick, as recorded in Rooftop round 1b34a4cf.
+            keys = tuple(k for k in keys if k not in ('lleft', 'lright')) + (self.detour,)
         why = why or f"walking off the bomb: {me:.0f} cm from it, {on} on it"
         d_near = min((math.hypot(e["pos"][0] - px, e["pos"][2] - pz) for e in live), default=math.inf)
         eq = p.get('equipped')
@@ -7406,7 +7423,9 @@ class Bot:
             self._cc_gun_until = now + .9
             self.stats['bomb_escape_fight_ticks'] = self.stats.get('bomb_escape_fight_ticks', 0) + 1
             return None
-        if d_near <= BOMB_FIGHT_R and now - self.melee_at >= CC_KICK_GAP_S:   # one on him: a kick as he goes
+        if not deadline_escape and d_near <= BOMB_FIGHT_R and now - self.melee_at >= CC_KICK_GAP_S:
+            # A kick locks native locomotion. Repeating it while escaping a
+            # timed remote bomb consumed most of the audited Rooftop round.
             self.melee_at = now
             self.stats["melee"] += 1
             self.stats["bomb_kicks"] += 1

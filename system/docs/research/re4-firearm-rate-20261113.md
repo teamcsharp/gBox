@@ -82,3 +82,61 @@ Status distinguishes `gun_rate_configured_x`, `gun_rate_applied_x`,
 `gun_rate_observation`. Scaled frames and routine observations are never
 discharge/hit evidence. Live post-activation pump/recoil cadence remains to
 be measured; offline instruction tests alone do not prove gameplay cadence.
+
+## Fresh-process observations and readback repair
+
+Round `b96ab13521f44b0ba3753d1bd5afbe7b` ran on worker `e41fad8986bf40a5`
+after backend `c1a97781`. The guard recorded 172 scaled frames and seven
+restorations. The host also reported `memory write not confirmed by read-back`:
+the native update can consume the countdown between its publication and the
+adapter's equality check. A successful countdown write must not cause the
+three-second error backoff to outlast its 60-update lease.
+
+Only this countdown now accepts an already-consumed publication. It requires
+the exact adapter equality error, unchanged controller ownership, coherent
+before/after native sequence readings, bounded forward sequence progress,
+and a remaining positive lease consistent with at most those native updates.
+A missing write, expired lease, identity change or unrelated failure still
+fails. Tests execute the actual authored ARM64 guard between publication and
+readback, including sequence wraparound.
+
+The native discharge reader also accepts the currently attached controller's
+private player vtable clone after checking its process, build, player,
+original class and exact clone identity. Previously its original-vtable-only
+test excluded the very player carrying the gun-rate/defense hook. This does
+not broaden discharge proof: the same-owner native post-emission step edge
+is still required, and explosion-confounded damage does not train aim.
+
+Focused validation: 232 tests passed across `test_re4_discharge_witness.py`,
+`test_re4_weapon_rate.py`, `test_re4_native.py` and
+`test_re4_switch_bow_rate.py`. The live sample contained no measured firing
+cycle suitable for a post-fix cadence claim. Eighteen of the round's twenty
+observed kills were attributed to rings; those are not a firearm accuracy
+measurement.
+
+## Separate stalled-round investigation
+
+The same round stopped advancing its clock, player position and callback
+counter with item54 (Mine Thrower) selected. The equipment refresh mailbox
+had already completed. Two bounded read-only debugger captures found
+CPUCore_0 inside the model skinning loop `main+0x4EC530`, at offsets
+`0x4EC67C` and `0x4EC5FC`. Both sessions detached successfully; the process
+was verified sleeping with `TracerPid: 0`, not left debugger-stopped.
+
+Offline instructions establish that caller `0x4EC39C` loads the loop count
+as an unsigned halfword from the mesh header at `+0x42`, then calls at
+`0x4EC3AC`. The callee copies that count into `w22` at `0x4EC560` and advances
+12-byte weight records until its outer index equals it. The saved thread
+instead held `x22=0x5511FBD8` and outer index `x24=3198906`; this is inconsistent
+with an intact call from that 16-bit count. The location of the stall is
+proved, but the source of the corrupted runtime state is unresolved. It is
+not established that REFRESH itself hung, that a particular donor caused it,
+or that the gun-rate guard caused it. No asset was quarantined and no loop
+bound or game memory was patched on this evidence.
+
+Spark-only archives, relative to `/home/ehm_eckx/gBox/system`:
+
+- `gbox-data/mercs/analysis/re4-c1-native-cadence-20261113.json`
+- `gbox-data/mercs/analysis/re4-c1-freeze-native-20261113.json`
+- `gbox-data/mercs/analysis/re4-c1-freeze-gdb-20261113.txt`
+- `gbox-data/mercs/analysis/re4-c1-freeze-gdb-registers-20261113.txt`

@@ -148,3 +148,58 @@ def test_missing_read_resets_edge_history():
     m.put(P+0x117,'<B',1);s['fire_witness']=D.read(m,BASE,s,10.05)
     D.observe(bot,s,10.05,Core())
     assert not bot.stats.get('native_discharge_observations')
+
+
+def hooked_world():
+    m,s=world()
+    clone=BASE+0x1700730
+    ctl=SimpleNamespace(base=BASE,player=P,player_id=2,original=BASE+D.PLAYER_CLASSES[0],
+        clone_address=clone,attached=lambda:True,check=lambda:None)
+    m.ad=SimpleNamespace(_re4_switch_harness=ctl)
+    m.put(P,'<Q',clone)
+    return m,s,ctl
+
+
+def test_owned_rate_hook_clone_retains_actual_discharge_evidence():
+    m,s,ctl=hooked_world()
+    before=D.read(m,BASE,s,10.)
+    assert before is not None
+    m.put(P+0x117,'<B',1)
+    after=D.read(m,BASE,s,10.05)
+    assert D.edge(before,after,10.05)
+    assert after['identity']==before['identity']
+
+
+@pytest.mark.parametrize('field,value',[
+    ('base',BASE+0x1000),('player',P+0x1000),('player_id',3),
+    ('original',BASE+0x1110),('clone_address',BASE+0x1700738),('attached',lambda:False),
+])
+def test_unknown_or_predecessor_clone_never_authorizes_discharge(field,value):
+    m,s,ctl=hooked_world();setattr(ctl,field,value)
+    assert D.read(m,BASE,s,10.) is None
+
+
+def test_clone_without_this_reader_controller_is_unknown():
+    m,s,_=hooked_world();del m.ad
+    assert D.read(m,BASE,s,10.) is None
+
+
+def test_clone_process_change_and_torn_original_class_are_unknown():
+    m,s,ctl=hooked_world()
+    def changed_process():raise RuntimeError('emulator process changed')
+    ctl.check=changed_process
+    assert D.read(m,BASE,s,10.) is None
+    ctl.check=lambda:None
+    rd=m.rd
+    def changed_original(at,n):
+        data=rd(at,n)
+        if at==BASE+D.HANDLER:ctl.original=BASE+D.PLAYER_CLASSES[1]
+        return data
+    m.rd=changed_original
+    assert D.read(m,BASE,s,10.) is None
+
+
+@pytest.mark.parametrize('cls',D.PLAYER_CLASSES)
+def test_known_character_vtables_share_the_verified_weapon_emission_handler(cls):
+    m,s=world('magnum');m.put(P,'<Q',BASE+cls)
+    assert D.read(m,BASE,s,10.)['family']=='magnum'

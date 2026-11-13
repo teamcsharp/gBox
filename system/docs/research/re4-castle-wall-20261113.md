@@ -50,3 +50,52 @@ Evidence on Spark: `gbox-data/analysis/merc-tuning-20261113/` contains
 Waterworld meshes and the captured coordinates, plus synthetic walls, ledges,
 stationary pressure, real movement, lifecycle changes and native traversal.
 Live effectiveness still requires observation after the root agent's deployment.
+
+## Base portal initiation and interrupted round b96ab135
+
+After activation of `c1a97781`, session `e41fad8986bf40a5-d56f40bae064467a`
+recorded Base round `b96ab13521f44b0ba3753d1bd5afbe7b`. Three `r403` ladder
+portals were refused after four to five seconds. Incidents 0001 and 0002 retain
+accepted Y pulses, alternating left/right controls, positions and local geometry.
+This was not an absent interaction-button command.
+
+Offline replay against the shipped SAT/AEV data reproduced the final guard's
+reversal at `(41900, 20536.1, 15012.1)` mm, yaw `-2.20474267`, and
+`(51545.9, 20536.1, 26070.7)` mm, yaw `0.584307015`. The old walker aimed
+1.5 m beyond the portal while still up to 1.2 m from its approach. At the first
+position the actual probe brushed a wall at 182 mm clearance (300 mm required);
+at the second its endpoint had no floor. The guard correctly refused those
+directions, but the conflicting approach repeatedly turned back into them.
+The exported first ladder approach itself is only 180 mm from the SAT railing.
+
+The repair chooses a stand point on the approach floor with continuous floor
+and SAT body clearance, aligns before each short step, then faces the portal
+and pulses Y without translation. Fresh actor/round/mesh-owned approach commands
+prevent an earlier recovery turn from replacing that stationary interaction.
+Every actual forward step still passes the ordinary floor and collision checks.
+Approach and interaction attempts are bounded; a native traversal already in
+progress is allowed to finish before another prompt attempt. `walk_portal`
+records the state, timestamp, stand point, portal and remaining distance.
+
+Validation: 148 tests passed across portal approach, walker, movement safety,
+bonus routing, doors, native traversal and navigation. The two measured poses
+reach stationary Y in the offline movement replay without stepping through
+the gap. **Live ladder descent remains unverified.** A button request or safe
+approach does not establish that the game accepted the traversal.
+
+The same round later stopped advancing its clock after the first Mine Thrower
+equip: timer 157.91 seconds, score 20,410 and 20 kills stayed unchanged. It ended
+at `1794581550.87` with outcome **interrupted**, not a completed win or death.
+The 674.5-second record contains 641.9 seconds stationary, including a 596.7-second
+stretch; final HP was 1680. Eight ordinary trigger requests and three unconfirmed
+aim-book attempts do not prove marksmanship; the telemetry attributed 18 kills
+to rings. The frozen interval must not count as successful survival. The equip
+freeze is a separate investigation from portal initiation.
+
+Durable evidence stays on Spark under `gbox-data/analysis/merc-tuning-20261113/`:
+`re4-b96-offline-crossing-replay.json`, `re4-b96-frozen-live.json` and its JPEG,
+`post-c1a97781-b96-termination.json`, and `post-c1a97781-round-audit.jsonl`.
+The complete run is
+`gbox-data/mercs/round_maps/010099A00BC1E000/Base/20261113-084116-b96ab135.json`;
+the incident reports are in the same title's `unknown/navigation_incidents`
+directory, named with the full round ID and `-0001.json` / `-0002.json`.
