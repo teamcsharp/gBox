@@ -9,6 +9,7 @@ from __future__ import annotations
 import math
 
 from .re6_floor import floor_at
+from .re6_walk_floor import triangle_walkable_all_directions, walk_segment
 from .re6_switch_wall import STICK_REL, stick_heading
 from ..re6_traversal import TRAVERSAL_ACTIONS
 
@@ -42,6 +43,8 @@ def _all_headings_on_floor(mesh, pos):
         if k in seen:
             continue
         seen.add(k)
+        if not triangle_walkable_all_directions(mesh, k):
+            return False
         triangle = mesh.T[k]
         for i in range(3):
             a, b = triangle[i], triangle[(i + 1) % 3]
@@ -130,7 +133,7 @@ def guard(bot, snap, action, now):
             def safe(keys, *, detour=False):
                 way = stick_heading(keys, yaw)
                 end = (pos[0] + LOOKAHEAD_CM * math.sin(way), pos[1], pos[2] + LOOKAHEAD_CM * math.cos(way))
-                return (mesh.clear(pos, end) is True
+                return (mesh.clear(pos, end) is True and walk_segment(mesh, pos, end)
                         and (not (detour or escaping) or _bomb_clear(bot, snap, pos, end)))
             if safe(held):
                 return action
