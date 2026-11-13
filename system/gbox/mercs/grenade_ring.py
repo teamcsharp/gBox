@@ -587,6 +587,8 @@ def control(ad, prof, *, ring=None):
     except Exception:                                    # noqa: BLE001 - a title without its own module: defaults
         title_mod = None
     title = (prof or {}).get("map_id")
+    from .crowd_roulette import Roulette
+    roulette = Roulette(title)
     try:
         units = float((prof or {}).get("units_per_cm") or 1.0)
     except (TypeError, ValueError):
@@ -607,9 +609,14 @@ def control(ad, prof, *, ring=None):
 
     def react(snap, stats, now):
         """Before prompt handling: fresh RE5 hit/QTE edges never wait for the periodic timer."""
+        roulette.observe(snap, stats, now)
         event = re5_reactions.observe(snap, stats, now)
         result = flight.poll(snap, stats)
         if result is not None:
+            if result.get('receipt') is not None:
+                roulette.finish(snap, stats, now, result, result['receipt'])
+            elif not result.get('pending'):
+                roulette.retire(stats, now, result.get('reason') or 'native flash receipt retired')
             if result.get('reactive') and result.get('receipt') is not None:
                 receipt = result['receipt']
                 stats['reactive_ring_receipt'] = {k: receipt.get(k) for k in
@@ -642,6 +649,7 @@ def control(ad, prof, *, ring=None):
         return result
 
     def step(snap: dict, stats: dict, now: float, hold=None) -> dict:
+        roulette.observe(snap, stats, now)
         if re5_reactions is not None:
             result = react(snap, stats, now)
             if result is not None:
@@ -666,6 +674,14 @@ def control(ad, prof, *, ring=None):
             traversal = claim_ring(snap, stats, now)
             if traversal is not None:
                 decision.update(traversal)
+        periodic = roulette.decide(view, stats, now, decision, policy_, scatter_policy(title_mod, stats),
+                                   lambda: ring or controller(ad), background=flight is not None)
+        if periodic is not None:
+            if periodic.get('roulette_wait'):
+                return periodic
+            decision = periodic
+            if decision['roulette']['operation'] == 'scatter':
+                return scatter_step(view, stats, now, hold, selected=decision, raw_snap=snap)
         stats["ring_decision"] = (decision["reason"] if not decision["fire"] else "fire: " + decision["reason"])[:200]
         # The kind is recorded with the ATTEMPT, not only with the receipt: a session that rotates or ends mid-fire used
         # to leave ring_kind_fired empty while rings_attempted had counted the attempt, so the operator's 360 ring
@@ -678,10 +694,19 @@ def control(ad, prof, *, ring=None):
             return decision
         if flight is not None:
             if stats.get('bot_grenade_state') == 'requested':
+                roulette.finish(snap, stats, now, decision,
+                                {'state': 'refused', 'reason': 'a native flash request is already pending'})
                 return {'fire': False, 'reason': 'a native flash request is already pending'}
-            return flight.submit(snap, stats, decision, now,
+            result = flight.submit(snap, stats, decision, now,
                 lambda d, s, t, guard: fire(ad, d, s, t, ring=ring, native_guard=guard, flash_only=True))
+            if result.get('pending'):
+                roulette.submitted(stats, now, decision, result)
+            else:
+                roulette.finish(snap, stats, now, decision, {'state': 'refused', 'reason': result.get('reason')})
+            return result
         if hold is not None and hold(set()) is False:
+            roulette.finish(snap, stats, now, decision,
+                            {'state': 'refused', 'reason': "the bot's keys did not release before the ring"})
             if decision.get('traversal'):
                 stats['traversal_ring_receipt'] = {'state': 'refused', 'verified': False, 'kind': 'hand',
                     'requested': decision['count'], 'detonated': 0, 'event': decision.get('traversal_event'),
@@ -691,12 +716,14 @@ def control(ad, prof, *, ring=None):
             receipt = fire(ad, decision, stats, now, ring=ring)
         except Exception as exc:                         # noqa: BLE001 - a ring never ends the round
             stats["ring_error"] = f"{type(exc).__name__}: {exc}"[:200]
+            roulette.finish(snap, stats, now, decision, {'state': 'failed', 'reason': stats['ring_error']})
             if decision.get('traversal'):
                 stats['traversal_ring_receipt'] = {'state': 'uncertain', 'verified': False, 'kind': 'hand',
                     'requested': decision['count'], 'event': decision.get('traversal_event'),
                     'reason': stats['ring_error']}
             return {**decision, "fire": False, "reason": stats["ring_error"]}
         decision = {**decision, "attempted": True, "fired": receipt.get('state') == 'confirmed', "receipt": receipt}
+        roulette.finish(snap, stats, now, decision, receipt)
         if decision.get('reactive'):
             stats['reactive_ring_receipt'] = {k: receipt.get(k) for k in
                 ('state', 'verified', 'kind', 'requested', 'detonated', 'reason', 'self_damage')}
@@ -709,26 +736,38 @@ def control(ad, prof, *, ring=None):
         stats["ring_last_reason"] = decision["reason"][:200]
         return decision
 
-    def scatter_step(snap, stats, now, hold=None) -> dict:
+    def scatter_step(snap, stats, now, hold=None, *, selected=None, raw_snap=None) -> dict:
         sp = scatter_policy(title_mod, stats)
         observe_scatter(stats, snap, now, sp)
-        decision = decide_scatter(snap, stats, now, sp, title=title)
+        decision = selected if selected is not None else decide_scatter(snap, stats, now, sp, title=title)
+        raw_snap = raw_snap if raw_snap is not None else snap
         stats["scatter_decision"] = (decision["reason"] if not decision["fire"] else "fire: " + decision["reason"])[:200]
         if not decision["fire"]:
             return decision
         if flight is not None:
             if stats.get('bot_grenade_state') == 'requested':
+                roulette.finish(raw_snap, stats, now, decision,
+                                {'state': 'refused', 'reason': 'a native flash request is already pending'})
                 return {'fire': False, 'reason': 'a native flash request is already pending'}
-            return flight.submit(snap, stats, decision, now,
+            result = flight.submit(raw_snap, stats, decision, now,
                 lambda d, s, t, guard: fire_scatter(ad, d, s, t, ring=ring, units=units,
                                                    native_guard=guard, flash_only=True), operation='scatter')
+            if result.get('pending'):
+                roulette.submitted(stats, now, decision, result)
+            else:
+                roulette.finish(raw_snap, stats, now, decision, {'state': 'refused', 'reason': result.get('reason')})
+            return result
         if hold is not None and hold(set()) is False:
+            roulette.finish(raw_snap, stats, now, decision,
+                            {'state': 'refused', 'reason': "the bot's keys did not release before the barrage"})
             return {**decision, "fire": False, "reason": "the bot's keys did not release before the barrage"}
         try:
             receipt = fire_scatter(ad, decision, stats, now, ring=ring, units=units)
         except Exception as exc:                         # noqa: BLE001 - a barrage never ends the round
             stats["scatter_error"] = f"{type(exc).__name__}: {exc}"[:200]
+            roulette.finish(raw_snap, stats, now, decision, {'state': 'failed', 'reason': stats['scatter_error']})
             return {**decision, "fire": False, "reason": stats["scatter_error"]}
+        roulette.finish(raw_snap, stats, now, decision, receipt)
         return {**decision, "fired": receipt.get('state') == 'confirmed', "receipt": receipt}
 
     if flight is not None:

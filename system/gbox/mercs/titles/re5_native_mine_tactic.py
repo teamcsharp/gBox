@@ -35,6 +35,7 @@ class Cadence:
         self.distance, self.last_request = 0., -math.inf
         self.event_id = None
         self.traversal_id = None
+        self.roulette_id = None
 
     def observe(self, snap, stats, now, enabled=True):
         from . import re5_switch as R
@@ -59,6 +60,7 @@ class Cadence:
             event = stats.get('automine_event') or {}
             self.event_id = event.get('id')
             self.traversal_id = (stats.get('traversal_mine_event') or {}).get('id')
+            self.roulette_id = (stats.get('crowd_roulette_mine_event') or {}).get('id')
         stats.update(automine_enabled=bool(enabled), automine_distance_cm=round(self.distance, 1),
                      automine_interval_ft=20)
 
@@ -76,6 +78,13 @@ class Cadence:
                 and landing.get('kind') == 'traversal' and position(landing.get('pos'))
                 and type(landing.get('at')) in (int, float) and 0 <= now-landing['at'] <= EVENT_FRESH_S):
             return 'traversal', landing['id']
+        from ..crowd_roulette import FOLLOWUP_S
+        roulette = stats.get('crowd_roulette_mine_event') or {}
+        if (tuple(roulette.get('owner') or ()) == self.owner and roulette.get('id') is not None
+                and roulette['id'] != self.roulette_id and roulette.get('kind') == 'roulette_flash'
+                and roulette.get('count') in (1, 5) and position(roulette.get('pos'))
+                and type(roulette.get('at')) in (int, float) and 0 <= now-roulette['at'] < FOLLOWUP_S):
+            return 'roulette_flash', roulette['id']
         if self.distance >= DISTANCE_CM and (snap.get('player') or {}).get('motion') in TRAVEL_MOTIONS:
             return 'distance', None
         return None
@@ -86,6 +95,8 @@ class Cadence:
         if demand[1] is not None:
             if demand[0] == 'traversal':
                 self.traversal_id = demand[1]
+            elif demand[0] == 'roulette_flash':
+                self.roulette_id = demand[1]
             else:
                 self.event_id = demand[1]
 
@@ -213,6 +224,7 @@ class Flight:
             return False
         owner = self.owner
         landing = None
+        event_key = 'traversal_mine_event'
         remaining = DEADLINE_S
         if reason == 'traversal':
             from .re5_traversal import EVENT_FRESH_S
@@ -225,6 +237,18 @@ class Flight:
             landing = {k: event.get(k) for k in ('id', 'at', 'kind')}
             landing.update(owner=list(event['owner']), pos=list(event['pos']))
             remaining = EVENT_FRESH_S-(now-event['at'])
+        elif reason == 'roulette_flash':
+            from ..crowd_roulette import FOLLOWUP_S
+            event_key = 'crowd_roulette_mine_event'
+            event = stats.get(event_key) or {}
+            if (event.get('kind') != reason or tuple(event.get('owner') or ()) != owner
+                    or event.get('id') is None or not position(event.get('pos'))
+                    or tuple(event['pos']) != center or event.get('count') != count
+                    or type(event.get('at')) not in (int, float) or not 0 <= now-event['at'] < FOLLOWUP_S):
+                return False
+            landing = {k: event.get(k) for k in ('id', 'at', 'kind', 'count')}
+            landing.update(owner=list(event['owner']), pos=list(event['pos']))
+            remaining = FOLLOWUP_S-(now-event['at'])
         rid = uuid.uuid4().hex
         job = {'id': rid, 'owner': owner, 'cancel': threading.Event(), 'done': threading.Event(),
                'path': ROOT / (rid + '.json'), 'requested': count, 'center': center, 'reason': reason}
@@ -235,6 +259,8 @@ class Flight:
             event = stats.get('traversal_mine_event') or {}
             record['traversal'] = {k: event.get(k) for k in ('id','at','pos','traversal',
                 'entered_at','native_action','completed_action','completion_flag_seen','evidence')}
+        elif reason == 'roulette_flash':
+            record['roulette'] = dict(landing)
         started = time.monotonic()
         deadline, landing_deadline = started + DEADLINE_S, started + remaining
         landing_deployed = threading.Event()
@@ -245,7 +271,7 @@ class Flight:
                     and self.live and self.owner == owner and stamp < deadline
                     and (landing is None or landing_deployed.is_set()
                          or stamp < landing_deadline
-                         and all((stats.get('traversal_mine_event') or {}).get(k) == v
+                         and all((stats.get(event_key) or {}).get(k) == v
                                  for k, v in landing.items()))
                     and 0 <= stamp - self.seen <= OBSERVER_FRESH_S
                     and stats.get('round_evidence_id') == owner[0]

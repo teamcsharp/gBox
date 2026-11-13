@@ -859,6 +859,10 @@ class Mines:
             self.stats['mine_landing_last'] = dict(self.stats['native_mine_last'],
                 at=now, center=packet.get('center'), confirmed_armed=len(confirmed))
             self.stats['mine_landing_drops'] = self.stats.get('mine_landing_drops', 0) + len(confirmed)
+        elif packet.get('reason') == 'roulette_flash':
+            self.stats['crowd_roulette_mine_status'] = 'executed' if complete else 'unconfirmed'
+            self.stats['crowd_roulette_mine_receipt'] = dict(self.stats['native_mine_last'],
+                requested=expected, confirmed_armed=len(confirmed), at=now)
         if not complete:
             self.stats['mine_unconfirmed'] += 1
             self._retry_at = now + RETRY_S
@@ -897,10 +901,12 @@ class Mines:
         if demand is None:
             return
         landing = demand[0] == 'traversal'
-        event = self.stats.get('traversal_mine_event' if landing else 'automine_event') or {}
+        roulette = demand[0] == 'roulette_flash'
+        event = self.stats.get('traversal_mine_event' if landing else
+                              'crowd_roulette_mine_event' if roulette else 'automine_event') or {}
         reaction = demand[0] in ('hit', 'qte')
-        count = 5 if reaction and (demand[0] == 'hit' or (event.get('damage') or 0) > 0) else 1
-        center = tuple(event['pos']) if (reaction or landing) and native.position(event.get('pos')) else None
+        count = event['count'] if roulette else 5 if reaction and (demand[0] == 'hit' or (event.get('damage') or 0) > 0) else 1
+        center = tuple(event['pos']) if (reaction or landing or roulette) and native.position(event.get('pos')) else None
         if landing and center is None:
             self.stats['mine_blocked_reason'] = 'traversal landing position unavailable'
             return
@@ -933,6 +939,9 @@ class Mines:
             if landing:
                 self.stats['mine_landing_requests'] = self.stats.get('mine_landing_requests', 0) + 1
                 self.stats['mine_landing_evidence'] = dict(event)
+            elif roulette:
+                self.stats['crowd_roulette_mine_status'] = 'submitted'
+                self.stats['crowd_roulette_mine_request_id'] = flight.job['id']
             self.stats['mine_status'] = 'native mine requested; movement and combat continue'
             if count == 5:
                 from .re5_proximity_native import points
