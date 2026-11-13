@@ -460,3 +460,31 @@ a simplified waypoint route. Its first version latched onto a resting stick beca
 compared against a normalised 0.55 deadzone; it now requires a **button press** to identify the pad and normalises the
 axes.
 
+
+
+## 12. Why the taught route does not transfer: the keys move every load
+
+This is the answer to the operator's central complaint ("I have taught you fifty times and you meander when I hand you
+the controls"). The level's **geometry** is stable but the **switch and door-key placements are re-randomised on every
+load**. Measured between the session the operator demonstrated in and a fresh one, comparing every gate by class and
+rounded position (`layout-compare-20261113-113739.json` in the ledger directory):
+
+| element | same position in both loads | only in the old load | only in the new load |
+|---|---|---|---|
+| doors (`TObjDoor`) | 5 | 0 | 4 |
+| switches (`TObjDoorKey`, `TLazerFenceSw`) | **2 of 9** | **7** | **4** |
+
+The only switches that stayed put were two laser-fence switches (`(-400, 541)` and `(592, -163)`). Every door key moved.
+So a demonstrated route that says *"press the key at (-127, 71), then walk through the door at (-134, 272)"* cannot be
+replayed on the next load: **there is no key at (-127, 71) any more** - the keys are at (-190, -435) or (567, -311) in
+that load. The bot walks to where the previous load's key was, finds nothing, re-plans, and wanders. It is not
+mis-executing the demonstrated route; it is executing a route for a different level.
+
+What that requires, and what this round started:
+
+* **a search behaviour** - sweep the current room's safe cells instead of walking to the nearest switch within 400 units;
+* **layout fingerprints** - hash the loaded room's gate positions and key the learned knowledge on the variant, so a
+  repeat load is recognised instead of re-searched;
+* **the operator's own demonstrations as the route source**, recorded through `pso-controller.py` (which also writes
+  the operator flag so the bot stands down while they drive).
+
