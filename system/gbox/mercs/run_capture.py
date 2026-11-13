@@ -40,6 +40,7 @@ import threading
 import time
 import uuid
 from pathlib import Path
+from .flight_recorder import FlightRecorder
 
 FORMAT = "gbox.run_map/1"
 SAMPLE_S = 0.2            # 5 samples a second
@@ -57,8 +58,7 @@ MAX_RUNS = 4000           # doing changes
 MAX_BONUSES = 96
 WHY_CHARS = 80
 LABELLED_STILLS = 6       # the SVG names the longest standstills only (every one gets its ring)
-MIN_SAMPLES = 10          # a round shorter than 2 s gets no map
-MAX_KEEP = 200            # run maps kept per stage folder
+MAX_KEEP = 0              # every attempt retained; explicit positive override may limit local map history
 EXTENT_MAX = 40000        # cells kept in a stage's extent
 FLOOR_TRIS_MAX = 30000
 THREADED = True           # finish() writes on its own thread (tests: False, on the caller's)
@@ -196,7 +196,8 @@ class RunCapture:
     prompt presses, finish() once at the round's end."""
 
     def __init__(self, root, title: str, round_id: str | None = None, provenance: dict | None = None,
-                 clock=time.time, cell: float = CELL, sample_s: float = SAMPLE_S, threaded: bool | None = None):
+                 clock=time.time, cell: float = CELL, sample_s: float = SAMPLE_S, threaded: bool | None = None,
+                 position_scale_to_cm: float = 1.0):
         self.root = Path(root) if root is not None else None      # <data>/mercs/round_maps
         self.title = slug(title)
         self.round_id = round_id or uuid.uuid4().hex
@@ -228,6 +229,8 @@ class RunCapture:
         self._take_sum = 0
         self.thread = None
         self.status: dict = {}
+        self.flight = FlightRecorder(float(position_scale_to_cm))
+        self._finished = None
 
     # --- the bot loop's side: appends only -------------------------------------------------------------------------
     def observe(self, now: float, where: str, snap: dict, bot=None, stats: dict | None = None) -> bool:
@@ -239,6 +242,28 @@ class RunCapture:
             return False
 
     def _observe(self, now, where, snap, bot, stats) -> bool:
+        if self._finished is not None:
+            return False
+        if where in ("playing", "dead"):
+            from .tactical import take_plan
+            plan = take_plan(bot) if bot is not None else {}
+            plan.setdefault("phase", getattr(bot, "doing", None))
+            plan.setdefault("note", getattr(bot, "why", None))
+            self.flight.observe(now, snap, plan, stats,
+                                force=where == "dead")
+        if self.flight.scale != 1:
+            # The RE4 reader uses millimetres; run maps and their extent use cm.
+            snap = dict(snap)
+            for key in ("player",):
+                if isinstance(snap.get(key), dict):
+                    snap[key] = dict(snap[key], pos=self.flight.point(snap[key].get("pos")))
+            for key in ("enemies", "bonuses"):
+                if isinstance(snap.get(key), (list, tuple)):
+                    snap[key] = [dict(e, pos=self.flight.point(e.get("pos"))) for e in snap[key] if isinstance(e, dict)]
+            # A mm mesh must not be merged into a cm extent. Observed geometry
+            # remains valid; the source route is in the flight evidence.
+            snap.pop("nav", None)
+            snap.pop("navmesh", None)
         if where not in ("playing", "dead") or now - self.last_t < self.sample_s * 0.95:
             return False
         p = snap.get("player")
@@ -252,14 +277,15 @@ class RunCapture:
         hp, hp_max = _num(p.get("hp")), _num(p.get("hp_max"))
         head = _num(p.get("rot", p.get("facing")))
         row = [round(now, 2), round(x, 1), round(z, 1), round(y, 1)]
-        if len(self.route) >= MAX_SAMPLES:                  # bounded: the end keeps moving, nothing more is kept
+        capped = len(self.route) >= MAX_SAMPLES
+        if capped:
             self.route[-1], self.hp[-1] = row, hp
             self.heading[-1] = round(head, 2) if head is not None else None
             self.dropped["samples"] += 1
-            return True
-        self.route.append(row)
-        self.hp.append(int(hp) if hp is not None else None)
-        self.heading.append(round(head, 2) if head is not None else None)
+        else:
+            self.route.append(row)
+            self.hp.append(int(hp) if hp is not None else None)
+            self.heading.append(round(head, 2) if head is not None else None)
         if hp_max is not None and hp_max > 0:
             self.hp_max = int(hp_max)
         i = len(self.route) - 1
@@ -290,10 +316,10 @@ class RunCapture:
         hit = hp is not None and self._last_hp is not None and p.get("ptr") == self._ptr and hp < self._last_hp
         live = [e for e in snap.get("enemies") or () if isinstance(e, dict) and _xyz(e.get("pos")) is not None
                 and (_num(e.get("hp")) is None or e["hp"] > 0) and (_num(e.get("hp_max")) is None or e["hp_max"] > 1)]             if hit or i % ENEMY_EVERY == 0 else ()           # the enemies only when this sample keeps them
-        if i % ENEMY_EVERY == 0:
+        if not capped and i % ENEMY_EVERY == 0:
             near = sorted(live, key=lambda e: math.hypot(e["pos"][0] - x, e["pos"][2] - z))[:ENEMY_MAX]
             self.enemies.append([i, [[round(e["pos"][0]), round(e["pos"][2])] + self._kind(e) for e in near]])
-        if i % CLOCK_EVERY == 0:
+        if not capped and i % CLOCK_EVERY == 0:
             self.clock_rows.append([i, _num(snap.get("timer")), _num(snap.get("score")), _num(snap.get("combo")),
                                     _num(snap.get("kills"))])
         # his health: a fall is a hit (with who stood near), zero a death
@@ -303,7 +329,8 @@ class RunCapture:
             near = [(d, e) for d, e in near if d <= ATTACKER_R][:3]
             self.event(now, "hit", x, z, loss=int(self._last_hp - hp), hp=int(hp),
                        dist=round(near[0][0]) if near else None,
-                       attackers=[[round(e["pos"][0]), round(e["pos"][2]), round(d)] for d, e in near],
+                       nearby_enemies=[[round(e["pos"][0]), round(e["pos"][2]), round(d)] for d, e in near],
+                       damage_source="unknown",
                        doing=doing, why=self.doing[-1][3] if self.doing else None)
         dead = where == "dead" or (hp is not None and hp <= 0)
         if dead and not self._dead:
@@ -399,10 +426,14 @@ class RunCapture:
     # --- the round's end -------------------------------------------------------------------------------------------
     def finish(self, now: float, outcome: str | None, stage: str | None = None) -> dict:
         """The round is over: its exploration numbers now (flat, for the curriculum row) and the files on a writer
-        thread. {} when the round was too short for a map."""
+        thread. Short and empty attempts retain an explicit evidence record."""
         try:
-            if len(self.route) < MIN_SAMPLES or self.root is None:
+            if self._finished is not None:
+                return dict(self._finished)
+            if self.root is None:
                 return {}
+            if self.started is None:
+                self.started = now
             if not self.stage and isinstance(stage, str) and stage.strip() and stage.strip().lower() != "unknown":
                 self.stage = stage.strip()[:60]
             room = slug(self.stage)
@@ -417,11 +448,13 @@ class RunCapture:
                 self.thread.start()
             else:
                 self._write(snapshot, room, stem)
-            return {"round_map_file": rel, "round_map_stage": self.stage or "unknown",
-                    "explore_seconds": ex["seconds"], "explore_distance_m": ex["distance_m"],
-                    "explore_cells": ex["cells"], "explore_start_area_s": ex["start_area_s"],
-                    "explore_start_area_share": ex["start_area_share"],
-                    "explore_max_from_spawn_m": ex["max_from_spawn_m"], "explore_samples": len(self.route)}
+            self._finished = {"round_map_file": rel, "round_map_stage": self.stage or "unknown",
+                    "round_navigation_findings": list(self.flight.findings),
+                    "explore_seconds": ex.get("seconds", 0), "explore_distance_m": ex.get("distance_m", 0),
+                    "explore_cells": ex.get("cells", 0), "explore_start_area_s": ex.get("start_area_s", 0),
+                    "explore_start_area_share": ex.get("start_area_share"),
+                    "explore_max_from_spawn_m": ex.get("max_from_spawn_m"), "explore_samples": len(self.route)}
+            return dict(self._finished)
         except Exception as exc:                            # noqa: BLE001 - a lost map never costs the round its row
             self.status["finish_error"] = f"{type(exc).__name__}: {exc}"[:160]
             return {"round_map_error": self.status["finish_error"]}
@@ -442,6 +475,7 @@ class RunCapture:
                 "route": [list(r) for r in self.route], "hp": list(self.hp), "heading": list(self.heading),
                 "doing": [list(r) for r in self.doing], "enemies": [list(r) for r in self.enemies], "kinds": list(self.kinds),
                 "clock": [list(r) for r in self.clock_rows], "bonuses": bonuses, "events": list(self.events),
+                "flight": self.flight.snapshot(), "evidence_state": "observed" if self.route else "no_player_samples",
                 "truncated": {k: v for k, v in self.dropped.items() if v},
                 "_mesh": self.mesh}
 
@@ -462,7 +496,7 @@ class RunCapture:
             _atomic(path, json.dumps(rec, separators=(",", ":"), allow_nan=False))
             _atomic(folder / f"{stem}.svg", svg(rec, extent))
             self.status.update(written=str(path), coverage=rec["exploration"]["coverage"].get("value"))
-            for old in sorted(folder.glob("*.json"))[:-MAX_KEEP]:
+            for old in (sorted(folder.glob("*.json"))[:-MAX_KEEP] if MAX_KEEP > 0 else ()):
                 old.unlink(missing_ok=True)
                 old.with_suffix(".svg").unlink(missing_ok=True)
         except Exception as exc:                            # noqa: BLE001

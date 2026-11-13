@@ -50,13 +50,25 @@ def test_no_nav_or_no_player_marks_nothing():
     assert not b.stats.get("bonus_error")
 
 
-def test_a_completed_bonus_is_counted_as_taken_for_the_reviewer():
-    """The run reviewer reads bonuses_taken / bonus_s from the stats (gbox.mercs.round_reports' checkpoints group); a
-    marked bonus that has since completed is one he actually took."""
+def test_arrival_is_not_misreported_as_collecting_a_bonus():
     b = D.Bot(stats={}, director=False)
     s = snap_at(VILLAGE_FIRST)
     assert B.bonus_goal(b, s, 10.0) is True
     re4_walk.goals_of(b).goal["state"] = "completed"
     B.bonus_goal(b, s, 20.0)                  # the next tick sees it completed and takes the next nearest
-    assert b.stats["bonuses_taken"] == 1
-    assert b.stats["bonus_s"] >= 30
+    assert b.stats["bonus_approaches"] == 1
+    assert b.stats["bonus_unconfirmed"] == 1
+    assert not b.stats.get("bonuses_taken") and not b.stats.get("bonus_s")
+
+
+def test_native_bonus_preserves_the_upper_floor_height():
+    from types import SimpleNamespace
+    b = D.Bot(stats={}, director=False)
+    s = snap_at((0, 0, 0))
+    s["nav"] = SimpleNamespace(bonuses=[{"source": "upper", "stand": [2000, 4500, 3000], "seconds": 30}])
+    assert B.bonus_goal(b, s, 10)
+    assert re4_walk.goals_of(b).goal["floor_y"] == 4500
+    g = re4_walk.goals_of(b)
+    s["player"]["pos"] = [2000, 0, 3000]
+    assert g.resolve(s, g.received_at + 1) is not None
+    assert g.goal["state"] == "active", "standing underneath is not arrival on the upper floor"

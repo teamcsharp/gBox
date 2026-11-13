@@ -11,6 +11,35 @@ quick-death exemptions from round counting, and shared enemy-class replacements 
 
 ## Start here
 
+Continuation update, 2026-11-13 UTC: the operator explicitly approved restarting the backend **between rounds**;
+one activation was performed at 02:16:49 UTC. `a5eb6469` fixes RE4 character-specific callbacks and private vtable
+clones (84 native tests); it is pushed, awaiting activation with the next recorder changes. Native first aid was
+observed consuming an item and raising HP 1230 to 1680, with stock retained, on the running older build. Do not
+confuse that receipt with verification on every character. The hand-ring failure after changing character is the
+clone issue addressed by a5eb6469 and still needs a fresh-session live test.
+
+The latest navigation requirement is **every attempt**, including short deaths: retain the final minute at 5 Hz,
+the whole-round decision timeline at 1 Hz, targets/controls/aim/route/HP and honest damage context. RE4 previously
+skipped the engine's run recorder. The new integration records interrupted attempts too, normalizes RE4 mm to cm,
+and preserves final evidence after route saturation. Bonus endpoint arrival was falsely counted as collection;
+it now records an unconfirmed approach. Native bonus destinations preserve their known upper-floor height and
+cannot complete while standing underneath. Actual bonus activation/clock confirmation remains to implement.
+
+The latest RE5 request, in the operator's words: "drop and place mines without even swapping weapons ... spring
+mines around them as they are running and fleeing ... ring of mines 5 feet from them ... via mcp ... sidebar /
+topbar". This means **native proximity mines**, a **152.4 cm horizontal ring**, unchanged equipped weapon and
+uninterrupted movement. Existing input-driven planting and inherited RE6 remote bombs do not meet it. Native
+research on Spark: `~/gBox_alt/analysis/merc-full/re5-mine-research-20261113/{native,mine}.txt`. DTI `1D715A8`,
+uWp0a vtable `1C5E478`, initializer `81F460`, update `81F700`, reset `8209F0`, native configure `60D6D0`; all offsets
+are main-relative for EBFFDB22. Ghidra's RE5 program is rebased +100000: subtract that from its printed addresses.
+Arming depends on native resources and proximity volume `+28C8`, timer `+2890`, active `+27B9`; these are research
+findings, **not yet a validated direct-placement implementation**. Preserve that distinction in dispatch.
+
+Full discovered-function exports on Spark: RE4 `re4-c8e8f22f-20261113` 9552 successful / 3 errors; RE5
+`re5-674c8828-20261113` 20176 successful / 1 error / 1 timeout after a retry. RE6 isolated analysis remains running
+in `re6-441516ee-20261113`. Existing RE5 analysis missed several native virtual functions, now probed separately;
+"all discovered functions attempted" is not a claim of fully reconstructed source or complete function discovery.
+
 1. Read the operator requirements and clarifications below before dispatching work.
 2. Preserve the dirty working tree. Review the in-progress local changes before editing or deploying them.
 3. Inspect current Spark jobs, Ghidra program ownership and MercMode state. Do not launch competing analysis against

@@ -104,15 +104,15 @@ def bonus_goal(bot, snap, now) -> bool:
     try:
         goals = re4_walk.goals_of(bot)
         terminal = getattr(re4_walk.map_goals, "TERMINAL", ())
-        # A bonus we marked that has since COMPLETED is one he actually took: count it under the reviewer's own names
-        # (round_reports' checkpoints group: bonuses_taken, bonus_s) so the objectives show up in the round report.
+        # Reaching a route endpoint proves approach only. It does not prove
+        # the game's time bonus was activated or the clock increased.
         prev = bot.__dict__.get("_bonus_prev")
         if isinstance(prev, dict) and goals.goal and goals.goal.get("id") == prev.get("id") \
                 and goals.goal.get("state") == "completed":
             stats = getattr(bot, "stats", None)
             if isinstance(stats, dict):
-                stats["bonuses_taken"] = stats.get("bonuses_taken", 0) + 1
-                stats["bonus_s"] = stats.get("bonus_s", 0) + int(prev.get("seconds") or 0)
+                stats["bonus_approaches"] = stats.get("bonus_approaches", 0) + 1
+                stats["bonus_unconfirmed"] = stats.get("bonus_unconfirmed", 0) + 1
             bot.__dict__["_bonus_prev"] = None
         if goals.goal is not None and goals.goal.get("state") not in terminal:
             return False                                  # his own mark, or a bonus still on its way
@@ -140,6 +140,10 @@ def bonus_goal(bot, snap, now) -> bool:
         bot.receive_map_goal({"id": bid, "round": goals.round, "kind": "point", "entity_id": 0,
                               "pos": [float(at[0]), float(at[1]), float(at[2])],
                               "label": f"time bonus +{row.get('seconds') or '?'}s"})
+        # Native stage data supplies a real 3D approach. A map click's inferred
+        # floor is inappropriate here, especially for stairs and upper floors.
+        if goals.goal is not None and goals.goal.get("id") == bid:
+            goals.goal["floor_y"] = float(at[1])
         issued.add(bid)
         bot.__dict__["_bonus_prev"] = {"id": bid, "seconds": row.get("seconds")}
         stats = getattr(bot, "stats", None)
@@ -475,263 +479,278 @@ def play(ad, send, stopped, sleep=time.sleep, stats: dict | None = None, *, cloc
     screen = {"where": None}
     last_phase, off_round = None, 0
     checker = CrossCheck(stats, clock)
-    while not stopped():
-        if max_seconds is not None and clock() - started > max_seconds:
-            break
-        ticks += 1
-        # the RAM fight reads the frame every FRAME_EVERY ticks only (the round's own state is in RAM; the frame is
-        # there to see the menus come back), everything else every tick
-        fresh = not (in_round and stats.get("fight") == "ram" and ticks % FRAME_EVERY)
-        if fresh:
-            try:
-                frame = ad.get_frame()
-            except Exception:                                # noqa: BLE001 - a missing frame is not a screen
-                sleep(0.5)
+    try:
+        while not stopped():
+            if max_seconds is not None and clock() - started > max_seconds:
+                break
+            ticks += 1
+            # the RAM fight reads the frame every FRAME_EVERY ticks only (the round's own state is in RAM; the frame is
+            # there to see the menus come back), everything else every tick
+            fresh = not (in_round and stats.get("fight") == "ram" and ticks % FRAME_EVERY)
+            if fresh:
+                try:
+                    frame = ad.get_frame()
+                except Exception:                                # noqa: BLE001 - a missing frame is not a screen
+                    sleep(0.5)
+                    continue
+                screen = reader.read(frame)
+            where = screen.get("where")
+            # --- where the game is, from its own state (re4_switch.game_state), the frame as the cross-check
+            gs = _game(m, stats) if m is not None else None
+            phase = gs.get("phase") if gs else None
+            live = bool(gs) and phase in ("playing", "grabbed") and bool(gs.get("clock_running"))
+            ram_round = bool(gs) and phase in driver.ROUND_PHASES and (live or where in FRAME_UNSURE)
+            if fresh:
+                checker.check(gs, where)
+            stats["frame_screen"], stats["state_source"] = where, "ram" if gs is not None else "frame"
+            if ram_round:
+                stats["screen"] = driver.PHASE_SCREEN.get(phase) or phase
+                if not in_round or (phase == "intro" and last_phase not in (None, "intro")):
+                    # a round's scenario task runs (its intro, or a round already under way when the bot came in): the
+                    # round starts here, and no entry press is guessed - the Bot pages the intro while the game says so
+                    if in_round:
+                        round_ended()                            # a replay's intro (Continue: Yes) without a menu between
+                    if rnd is not None and rnd.posted is None:
+                        _record_round(rnd, {"screen": "interrupted"}, stats)
+                    in_round, rnd = True, _new_round(stats, clock())
+                    round_started()
+                    stats["rounds"] += 1
+                    stats["stage_seen"] = True
+                    stats.setdefault("walk_s", round(clock() - started, 1))
+                last_phase = phase
+                last_action = clock()                            # a round is progress: the menus' stall clock waits
+                snap = _snapshot(m, stats)
+                if snap is not None:
+                    snap.setdefault("game", gs)                  # (a snapshot whose own state read failed: this tick's)
+                    last_snap = snap
+                    _maintain_mods(ad, snap, stats)
+                    if rnd is not None:
+                        rnd.observe(snap, clock())
+                        if live and where == "playing":
+                            rnd.hud_seen = True
+                        if rnd.terminal(snap, clock()) is not None:
+                            _capture_round(rnd, snap, bot, stats, clock())
+                        _report(rnd, snap, stats, clock(), round_boundary, keys)
+                if bot is not None and snap is not None:
+                    stats["fight"] = "ram"
+                    bonus_goal(bot, snap, clock())            # the nearest time bonus as a point goal (BONUS_ROUTE)
+                    keys.apply(bot.tick(snap, now=clock()),
+                               tap_hold=BOW_TAP_HOLD_S if is_bow(snap) else GUN_TAP_HOLD_S)
+                    _capture_round(rnd, snap, bot, stats, clock())
+                    re4_walk.publish(pub, snap, bot, stats["screen"])
+                else:
+                    keys.release()
+                    re4_walk.publish(pub, None, None, stats["screen"])
+                off_round = 0
+                sleep(FIGHT_TICK_S)
                 continue
-            screen = reader.read(frame)
-        where = screen.get("where")
-        # --- where the game is, from its own state (re4_switch.game_state), the frame as the cross-check
-        gs = _game(m, stats) if m is not None else None
-        phase = gs.get("phase") if gs else None
-        live = bool(gs) and phase in ("playing", "grabbed") and bool(gs.get("clock_running"))
-        ram_round = bool(gs) and phase in driver.ROUND_PHASES and (live or where in FRAME_UNSURE)
-        if fresh:
-            checker.check(gs, where)
-        stats["frame_screen"], stats["state_source"] = where, "ram" if gs is not None else "frame"
-        if ram_round:
-            stats["screen"] = driver.PHASE_SCREEN.get(phase) or phase
-            if not in_round or (phase == "intro" and last_phase not in (None, "intro")):
-                # a round's scenario task runs (its intro, or a round already under way when the bot came in): the
-                # round starts here, and no entry press is guessed - the Bot pages the intro while the game says so
-                if in_round:
-                    round_ended()                            # a replay's intro (Continue: Yes) without a menu between
-                in_round, rnd = True, _new_round(stats, clock())
-                round_started()
-                stats["rounds"] += 1
-                stats["stage_seen"] = True
-                stats.setdefault("walk_s", round(clock() - started, 1))
+            if in_round and gs is not None:
+                keys.release()                                   # the game says the round is over (or a menu is named):
+                off_round += 1                                   # ROUND_END_TICKS reads in a row end it (one torn read
+                if off_round >= ROUND_END_TICKS:                 # never splits a round in two)
+                    in_round = False
+                    round_ended()
             last_phase = phase
-            last_action = clock()                            # a round is progress: the menus' stall clock waits
-            snap = _snapshot(m, stats)
+            if gs is not None and where in ("playing", "round_intro"):
+                where = "unknown"                                # no round runs: the HUD test or the reader's intro guess
+            stats["screen"] = where                              # is a load, a fade or the intro's camera, not play
+            if where != "playing" or not in_round:
+                re4_walk.publish(pub, None, None, where or "unknown")
+            sig = (where, screen.get("cursor"), screen.get("moved"))
+            if where is not None and sig != last_sig:
+                # a change of named screen is progress, and so is a cursor (or a select screen's steering) that moved on
+                # the same one - CURSOR_PROGRESS_MAX times: a cursor moving forever without the screen changing is a stall
+                same_screen = last_sig is not None and last_sig[0] == where
+                cursor_steps = cursor_steps + 1 if same_screen else 0
+                if not same_screen or cursor_steps <= CURSOR_PROGRESS_MAX:
+                    stats["stall_steps"] = 0
+                    last_action = clock()
+                last_sig = sig
+            # a still picture before a stage is a trapped menu, whatever the classifier calls it: the save list itself is
+            # "unknown" once it darkens its background, and skipping those left the bot on "Cancel loading? Yes/No" with No
+            # selected for minutes at mean 19.4 (2026-11-07). The escape is a fixed sequence, one press per failure to
+            # change the picture, and it restarts as soon as the picture moves.
+            if not stats["stage_seen"] and clock() - last_action > still_s:
+                step = min(stats["stall_steps"], len(STALL_ESCAPE) - 1)
+                _press(send, STALL_ESCAPE[step], sleep=sleep)
+                stats["presses"] += 1
+                stats["stall_steps"] += 1
+                if step == 0:
+                    stats["story_recoveries"] += 1
+                last_action = clock()
+                sleep(0.6)
+                continue
+            stats["stage_seen"] = stats["stage_seen"] or where == "select_stage"
+            if where in ("main_menu", "extras_menu", "mercs_title", "select_player", "select_stage") \
+                    and not stats.get("pre_round_done"):
+                # the saved RE4 mods into this boot before its round is built (the loadouts, the weapon tables)
+                stats["pre_round_done"] = True
+                try:
+                    from .mercs.titles import re4_switch_mods
+                    stats["pre_round"] = re4_switch_mods.pre_round(ad, m)
+                except Exception as exc:                         # noqa: BLE001 - a mod never costs the walk
+                    stats["pre_round_error"] = f"{type(exc).__name__}: {exc}"[:160]
+            if where in ("story", "story_prompt", "title", "main_menu", "extras_menu"):
+                # back before the stage select: no dark picture is a round until a stage is picked again (live 2026-11-10
+                # 23:26: after Yes on Cancel loading? the black was taken for a round and its three entry A presses went
+                # into the main menu's LOAD - the walk's press log, runner line 337 - for the whole turn)
+                stats["stage_seen"] = False
+
+            # --- menus: the same route the driver walks, one press at a time
+            if where not in ("unknown", "playing"):
+                if in_round:
+                    keys.release()
+                    round_ended()
+                in_round = False
+                if where == 'select_player' and stats.pop('selection_redraw_pending', False):
+                    stats['next_selection'] = driver.next_selection()
+                target = (driver.EXTRAS_ROW if where == "main_menu"
+                          else driver.MERCENARIES_ROW if where == "extras_menu" else None)
+                scr = {**screen, "target": target, "reader": reader}
+                pace.observe(scr, clock())
+                walk.screen(where)
+                walk_stats()
+                if where == "title" and seen_menu:
+                    stats["title_returns"] = stats.get("title_returns", 0) + (prev_where != "title")
+                if where == "dead_continue" and prev_where != "dead_continue":
+                    stats["deaths"] = stats.get("deaths", 0) + 1     # the walk answers Continue: Yes (re4_switch.step)
+                    if bot is not None and hasattr(bot, "record_death"):
+                        bot.record_death(clock())
+                    # What killed him. This posted hp=None, so a death reached the round report with no health and no
+                    # position (ten Krauser/Waterworld rounds read outcome=died with round_threat_hits=0 - no damage
+                    # counted - and nothing to say why), which is exactly the "instant kill or slow bleed?" question. The
+                    # last snapshot has both: his life and how close the nearest live Ganado was.
+                    _dsnap = last_snap or {}
+                    _dpl = _dsnap.get("player") or {}
+                    _dp = _dpl.get("pos")
+                    _dnear = None
+                    if _dp:
+                        _dds = [math.dist(_dp, e["pos"]) for e in (_dsnap.get("enemies") or ())
+                                if e.get("pos") and (e.get("hp") or 0) > 0]
+                        _dnear = round(min(_dds) / 1000.0, 1) if _dds else None
+                    stats["death_hp"] = _dpl.get("hp")
+                    stats["death_hp_max"] = _dpl.get("hp_max")
+                    stats["death_nearest_m"] = _dnear
+                    if rnd is not None and rnd.posted is None and rnd.player_seen:
+                        # the round's end, witnessed by the game's own death screen (mercmode.accept_boundary)
+                        _post(rnd, {"screen": "dead", "death_screen": True, "hp": _dpl.get("hp"),
+                                    "nearest_m": _dnear}, _dsnap, stats, clock(), round_boundary, keys)
+                seen_menu = seen_menu or where in driver.CURSOR_MENUS
+                prev_where = where
+                # moves on a short cadence once the last one showed; a confirm once its screen has settled (and, on a
+                # cursor menu, two reads agree it is on the target); the driver's per-screen gap keeps a second A off a
+                # screen that is fading out (it would land on the next screen's default row)
+                if pace.ready(scr, clock()):
+                    key = driver.step(scr, clock())               # the driver's per-screen gaps on this run's clock
+                    if key:
+                        _press(send, key, sleep=sleep)
+                        driver.pressed(scr, key, clock())
+                        missed = pace.misses
+                        pace.pressed(scr, key, clock())
+                        walk.press(where, key)
+                        if pace.misses > missed:
+                            walk.miss(where)                      # the game dropped the last one (pressed again)
+                        stats["presses"] += 1
+                        stats["menu_presses"] = stats.get("menu_presses", 0) + 1
+                        last_step = clock()
+                sleep(MENU_POLL_S)
+                continue
+
+            # --- unknown / the HUD: in the stage (the classifier cannot read a live round's picture, only its HUD)
+            if not in_round:
+                walk.screen(where or "unknown")                  # a load or a fade on the walk's timeline
+            if not stats["stage_seen"] and where != "playing":
+                sleep(0.4)
+                continue                       # a screen nobody can classify before a stage: do not press into the dark
+            if gs is not None:
+                # the game's state is read and no round runs: an unnamed picture is the stage's load, a fade or a screen
+                # the reader does not know - never a round, however long it lasts, and nothing is pressed into it
+                unknown_since = None
+                stats["waits_no_round"] = stats.get("waits_no_round", 0) + 1
+                sleep(MENU_POLL_S)
+                continue
+            unknown_since = (unknown_since or clock()) if where == "unknown" else None
+            if not in_round and where == "unknown" \
+                    and getattr(reader, "intro_presses", 0) < getattr(reader, "INTRO_MAX_PRESSES", 0) \
+                    and clock() - unknown_since < UNKNOWN_ROUND_S:
+                # the fade after the stage's confirm is not the round: the reader names the intro once the load's black
+                # has shown (and the walk pages it), the HUD names the round; only an unnamed picture that lasts
+                # UNKNOWN_ROUND_S (no black seen, no HUD read) is taken for the round
+                sleep(MENU_POLL_S)
+                continue
+            if not in_round:
+                in_round = True
+                stats["rounds"] += 1
+                stats.setdefault("walk_s", round(clock() - started, 1))     # the boot's walk to its first round
+                if rnd is not None and rnd.posted is None:
+                    _record_round(rnd, {"screen": "interrupted"}, stats)
+                rnd = _new_round(stats, clock())
+                round_started()
+                if where != "playing":                           # the HUD is up: the clock already runs, no entry presses
+                    for _ in range(ROUND_ENTRY_PRESSES):
+                        if stopped():
+                            break
+                        _press(send, "a", sleep=sleep)
+                        stats["presses"] += 1
+                        sleep(0.8)
+                    continue
+            if where == "playing" and rnd is not None:
+                rnd.hud_seen = True
+
+            snap = _snapshot(m, stats) if m is not None else None
             if snap is not None:
-                snap.setdefault("game", gs)                  # (a snapshot whose own state read failed: this tick's)
                 last_snap = snap
+            if snap is not None:
                 _maintain_mods(ad, snap, stats)
-                if rnd is not None:
-                    rnd.observe(snap, clock())
-                    if live and where == "playing":
-                        rnd.hud_seen = True
-                    _report(rnd, snap, stats, clock(), round_boundary, keys)
-            if bot is not None and snap is not None:
+            if rnd is not None and snap is not None:
+                rnd.observe(snap, clock())
+                _report(rnd, snap, stats, clock(), round_boundary, keys)
+            p = (snap or {}).get("player")
+            if bot is not None and p and p.get("pos") is not None:
+                # --- the fight, from RAM
                 stats["fight"] = "ram"
-                bonus_goal(bot, snap, clock())            # the nearest time bonus as a point goal (BONUS_ROUTE)
+                if ring_step is not None:                    # the ring takes its own tick: keys released first
+                    try:
+                        ring_out = ring_step(snap, stats, clock(), lambda _keys: (keys.release() or True))
+                    except Exception as exc:                 # noqa: BLE001 - a ring never ends the round
+                        stats["ring_error"] = f"{type(exc).__name__}: {exc}"[:160]
+                    else:
+                        # The engine publishes these for the Switch titles; this driver is RE4's own loop, so without them
+                        # the operator's panel and the round reads showed no ring at all (live 2026-11-11: RE4 rounds 9-17
+                        # with empty ring_armed / ring_decision while the ring step was wired and running).
+                        stats["ring_armed"] = True
+                        stats["ring_decision"] = str(ring_out.get("reason") or "")[:200]
+                        if ring_out.get("fired"):
+                            re4_walk.publish(pub, snap, bot, "playing")
+                            sleep(BOW_FIGHT_TICK_S if is_bow(snap) else FIGHT_TICK_S)
+                            continue
+                bonus_goal(bot, snap, clock())                # the nearest time bonus as a point goal (BONUS_ROUTE)
                 keys.apply(bot.tick(snap, now=clock()),
                            tap_hold=BOW_TAP_HOLD_S if is_bow(snap) else GUN_TAP_HOLD_S)
-                re4_walk.publish(pub, snap, bot, stats["screen"])
-            else:
-                keys.release()
-                re4_walk.publish(pub, None, None, stats["screen"])
-            off_round = 0
-            sleep(FIGHT_TICK_S)
-            continue
-        if in_round and gs is not None:
-            keys.release()                                   # the game says the round is over (or a menu is named):
-            off_round += 1                                   # ROUND_END_TICKS reads in a row end it (one torn read
-            if off_round >= ROUND_END_TICKS:                 # never splits a round in two)
-                in_round = False
-                round_ended()
-        last_phase = phase
-        if gs is not None and where in ("playing", "round_intro"):
-            where = "unknown"                                # no round runs: the HUD test or the reader's intro guess
-        stats["screen"] = where                              # is a load, a fade or the intro's camera, not play
-        if where != "playing" or not in_round:
-            re4_walk.publish(pub, None, None, where or "unknown")
-        sig = (where, screen.get("cursor"), screen.get("moved"))
-        if where is not None and sig != last_sig:
-            # a change of named screen is progress, and so is a cursor (or a select screen's steering) that moved on
-            # the same one - CURSOR_PROGRESS_MAX times: a cursor moving forever without the screen changing is a stall
-            same_screen = last_sig is not None and last_sig[0] == where
-            cursor_steps = cursor_steps + 1 if same_screen else 0
-            if not same_screen or cursor_steps <= CURSOR_PROGRESS_MAX:
-                stats["stall_steps"] = 0
-                last_action = clock()
-            last_sig = sig
-        # a still picture before a stage is a trapped menu, whatever the classifier calls it: the save list itself is
-        # "unknown" once it darkens its background, and skipping those left the bot on "Cancel loading? Yes/No" with No
-        # selected for minutes at mean 19.4 (2026-11-07). The escape is a fixed sequence, one press per failure to
-        # change the picture, and it restarts as soon as the picture moves.
-        if not stats["stage_seen"] and clock() - last_action > still_s:
-            step = min(stats["stall_steps"], len(STALL_ESCAPE) - 1)
-            _press(send, STALL_ESCAPE[step], sleep=sleep)
-            stats["presses"] += 1
-            stats["stall_steps"] += 1
-            if step == 0:
-                stats["story_recoveries"] += 1
-            last_action = clock()
-            sleep(0.6)
-            continue
-        stats["stage_seen"] = stats["stage_seen"] or where == "select_stage"
-        if where in ("main_menu", "extras_menu", "mercs_title", "select_player", "select_stage") \
-                and not stats.get("pre_round_done"):
-            # the saved RE4 mods into this boot before its round is built (the loadouts, the weapon tables)
-            stats["pre_round_done"] = True
-            try:
-                from .mercs.titles import re4_switch_mods
-                stats["pre_round"] = re4_switch_mods.pre_round(ad, m)
-            except Exception as exc:                         # noqa: BLE001 - a mod never costs the walk
-                stats["pre_round_error"] = f"{type(exc).__name__}: {exc}"[:160]
-        if where in ("story", "story_prompt", "title", "main_menu", "extras_menu"):
-            # back before the stage select: no dark picture is a round until a stage is picked again (live 2026-11-10
-            # 23:26: after Yes on Cancel loading? the black was taken for a round and its three entry A presses went
-            # into the main menu's LOAD - the walk's press log, runner line 337 - for the whole turn)
-            stats["stage_seen"] = False
-
-        # --- menus: the same route the driver walks, one press at a time
-        if where not in ("unknown", "playing"):
-            if in_round:
-                keys.release()
-                round_ended()
-            in_round = False
-            if where == 'select_player' and stats.pop('selection_redraw_pending', False):
-                stats['next_selection'] = driver.next_selection()
-            target = (driver.EXTRAS_ROW if where == "main_menu"
-                      else driver.MERCENARIES_ROW if where == "extras_menu" else None)
-            scr = {**screen, "target": target, "reader": reader}
-            pace.observe(scr, clock())
-            walk.screen(where)
-            walk_stats()
-            if where == "title" and seen_menu:
-                stats["title_returns"] = stats.get("title_returns", 0) + (prev_where != "title")
-            if where == "dead_continue" and prev_where != "dead_continue":
-                stats["deaths"] = stats.get("deaths", 0) + 1     # the walk answers Continue: Yes (re4_switch.step)
-                if bot is not None and hasattr(bot, "record_death"):
-                    bot.record_death(clock())
-                # What killed him. This posted hp=None, so a death reached the round report with no health and no
-                # position (ten Krauser/Waterworld rounds read outcome=died with round_threat_hits=0 - no damage
-                # counted - and nothing to say why), which is exactly the "instant kill or slow bleed?" question. The
-                # last snapshot has both: his life and how close the nearest live Ganado was.
-                _dsnap = last_snap or {}
-                _dpl = _dsnap.get("player") or {}
-                _dp = _dpl.get("pos")
-                _dnear = None
-                if _dp:
-                    _dds = [math.dist(_dp, e["pos"]) for e in (_dsnap.get("enemies") or ())
-                            if e.get("pos") and (e.get("hp") or 0) > 0]
-                    _dnear = round(min(_dds) / 1000.0, 1) if _dds else None
-                stats["death_hp"] = _dpl.get("hp")
-                stats["death_hp_max"] = _dpl.get("hp_max")
-                stats["death_nearest_m"] = _dnear
-                if rnd is not None and rnd.posted is None and rnd.player_seen:
-                    # the round's end, witnessed by the game's own death screen (mercmode.accept_boundary)
-                    _post(rnd, {"screen": "dead", "death_screen": True, "hp": _dpl.get("hp"),
-                                "nearest_m": _dnear}, _dsnap, stats, clock(), round_boundary, keys)
-            seen_menu = seen_menu or where in driver.CURSOR_MENUS
-            prev_where = where
-            # moves on a short cadence once the last one showed; a confirm once its screen has settled (and, on a
-            # cursor menu, two reads agree it is on the target); the driver's per-screen gap keeps a second A off a
-            # screen that is fading out (it would land on the next screen's default row)
-            if pace.ready(scr, clock()):
-                key = driver.step(scr, clock())               # the driver's per-screen gaps on this run's clock
-                if key:
-                    _press(send, key, sleep=sleep)
-                    driver.pressed(scr, key, clock())
-                    missed = pace.misses
-                    pace.pressed(scr, key, clock())
-                    walk.press(where, key)
-                    if pace.misses > missed:
-                        walk.miss(where)                      # the game dropped the last one (pressed again)
-                    stats["presses"] += 1
-                    stats["menu_presses"] = stats.get("menu_presses", 0) + 1
-                    last_step = clock()
-            sleep(MENU_POLL_S)
-            continue
-
-        # --- unknown / the HUD: in the stage (the classifier cannot read a live round's picture, only its HUD)
-        if not in_round:
-            walk.screen(where or "unknown")                  # a load or a fade on the walk's timeline
-        if not stats["stage_seen"] and where != "playing":
-            sleep(0.4)
-            continue                       # a screen nobody can classify before a stage: do not press into the dark
-        if gs is not None:
-            # the game's state is read and no round runs: an unnamed picture is the stage's load, a fade or a screen
-            # the reader does not know - never a round, however long it lasts, and nothing is pressed into it
-            unknown_since = None
-            stats["waits_no_round"] = stats.get("waits_no_round", 0) + 1
-            sleep(MENU_POLL_S)
-            continue
-        unknown_since = (unknown_since or clock()) if where == "unknown" else None
-        if not in_round and where == "unknown" \
-                and getattr(reader, "intro_presses", 0) < getattr(reader, "INTRO_MAX_PRESSES", 0) \
-                and clock() - unknown_since < UNKNOWN_ROUND_S:
-            # the fade after the stage's confirm is not the round: the reader names the intro once the load's black
-            # has shown (and the walk pages it), the HUD names the round; only an unnamed picture that lasts
-            # UNKNOWN_ROUND_S (no black seen, no HUD read) is taken for the round
-            sleep(MENU_POLL_S)
-            continue
-        if not in_round:
-            in_round = True
-            stats["rounds"] += 1
-            stats.setdefault("walk_s", round(clock() - started, 1))     # the boot's walk to its first round
-            rnd = _new_round(stats, clock())
-            round_started()
-            if where != "playing":                           # the HUD is up: the clock already runs, no entry presses
-                for _ in range(ROUND_ENTRY_PRESSES):
-                    if stopped():
-                        break
-                    _press(send, "a", sleep=sleep)
-                    stats["presses"] += 1
-                    sleep(0.8)
+                _capture_round(rnd, snap, bot, stats, clock())
+                re4_walk.publish(pub, snap, bot, "playing")
+                sleep(BOW_FIGHT_TICK_S if is_bow(snap) else FIGHT_TICK_S)
                 continue
-        if where == "playing" and rnd is not None:
-            rnd.hud_seen = True
 
-        snap = _snapshot(m, stats) if m is not None else None
-        if snap is not None:
-            last_snap = snap
-        if snap is not None:
-            _maintain_mods(ad, snap, stats)
-        if rnd is not None and snap is not None:
-            rnd.observe(snap, clock())
-            _report(rnd, snap, stats, clock(), round_boundary, keys)
-        p = (snap or {}).get("player")
-        if bot is not None and p and p.get("pos") is not None:
-            # --- the fight, from RAM
-            stats["fight"] = "ram"
-            if ring_step is not None:                    # the ring takes its own tick: keys released first
-                try:
-                    ring_out = ring_step(snap, stats, clock(), lambda _keys: (keys.release() or True))
-                except Exception as exc:                 # noqa: BLE001 - a ring never ends the round
-                    stats["ring_error"] = f"{type(exc).__name__}: {exc}"[:160]
-                else:
-                    # The engine publishes these for the Switch titles; this driver is RE4's own loop, so without them
-                    # the operator's panel and the round reads showed no ring at all (live 2026-11-11: RE4 rounds 9-17
-                    # with empty ring_armed / ring_decision while the ring step was wired and running).
-                    stats["ring_armed"] = True
-                    stats["ring_decision"] = str(ring_out.get("reason") or "")[:200]
-                    if ring_out.get("fired"):
-                        re4_walk.publish(pub, snap, bot, "playing")
-                        sleep(BOW_FIGHT_TICK_S if is_bow(snap) else FIGHT_TICK_S)
-                        continue
-            bonus_goal(bot, snap, clock())                # the nearest time bonus as a point goal (BONUS_ROUTE)
-            keys.apply(bot.tick(snap, now=clock()),
-                       tap_hold=BOW_TAP_HOLD_S if is_bow(snap) else GUN_TAP_HOLD_S)
-            re4_walk.publish(pub, snap, bot, "playing")
-            sleep(BOW_FIGHT_TICK_S if is_bow(snap) else FIGHT_TICK_S)
-            continue
+            # --- no player in RAM: advance, sweep the aim, fire. Screen-only, so this is deliberately blunt.
+            stats["fight"] = "frame"
+            keys.release()
+            if ticks % IDLE_TICKS_BEFORE_ACTION == 0:
+                _press(send, "dup", sleep=sleep)            # aim up is harmless in a menu-free round and lifts the camera
+                _press(send, "w", 0.35, sleep=sleep)        # advance
+                _press(send, driver.ACTION_BTN, sleep=sleep)   # the action button (Y on Switch: kicks at a prompt)
+                stats["presses"] += 3
+            sleep(0.35)
 
-        # --- no player in RAM: advance, sweep the aim, fire. Screen-only, so this is deliberately blunt.
-        stats["fight"] = "frame"
+    finally:
         keys.release()
-        if ticks % IDLE_TICKS_BEFORE_ACTION == 0:
-            _press(send, "dup", sleep=sleep)            # aim up is harmless in a menu-free round and lifts the camera
-            _press(send, "w", 0.35, sleep=sleep)        # advance
-            _press(send, driver.ACTION_BTN, sleep=sleep)   # the action button (Y on Switch: kicks at a prompt)
-            stats["presses"] += 3
-        sleep(0.35)
-
-    keys.release()
-    if pub is not None:
-        pub.close()
+        if rnd is not None and rnd.posted is None:
+            _record_round(rnd, {"screen": "interrupted"}, stats)
+        cap = getattr(rnd, "capture", None)
+        if cap is not None:
+            cap.wait(2.0)
+        if pub is not None:
+            pub.close()
     stats["ended"] = clock()
     stats["seconds"] = round(stats["ended"] - started, 1)
     return {"ok": True, "mode": "re4-switch-ram" if stats.get("fight") == "ram" else "re4-switch-screen",
@@ -969,7 +988,18 @@ def _new_round(stats: dict, at: float) -> Round:
     """A round with the counters' starting values, so its end can record this round's own amounts."""
     rnd = Round(at)
     rnd.counter_base = {key: stats.get(key, 0) for key in ROUND_COUNTERS}
+    from .mercs import lessons, run_capture
+    rnd.capture = run_capture.RunCapture(lessons.ROOT.parent / "round_maps", MAP_ID, rnd.id,
+                                        provenance=stats, position_scale_to_cm=.1)
     return rnd
+
+
+def _capture_round(rnd, snap, bot, stats, now):
+    cap = getattr(rnd, "capture", None)
+    if cap is not None and snap is not None:
+        hp = (snap.get("player") or {}).get("hp")
+        dead = isinstance(hp, (int, float)) and hp <= 0
+        cap.observe(now, "dead" if dead else "playing", snap, bot, stats)
 
 
 def _record_round(rnd: Round, end: dict, stats: dict) -> None:
@@ -980,6 +1010,15 @@ def _record_round(rnd: Round, end: dict, stats: dict) -> None:
     round's telemetry, so the next report shows the raise/lower, the tangents and the stand breaks the operator judges a
     block by. Best effort: a failure is a stat, never the round's end.
     """
+    if getattr(rnd, "evidence_recorded", False):
+        return
+    rnd.evidence_recorded = True
+    outcome = {"results": "completed", "dead": "died"}.get(end.get("screen"), "interrupted")
+    pick = driver.SELECTION
+    stage = driver.STAGES[pick.get("stage") or 0]
+    cap = getattr(rnd, "capture", None)
+    if cap is not None:
+        stats.update(cap.finish(time.time(), outcome, stage=stage))
     sid, jid = stats.get("source_session_id"), _job_id(stats.get("source_autoplay_job_id"))
     if not isinstance(sid, str) or not sid or not jid:
         stats["round_notebook"] = "skipped: no exact session/autoplay start to attribute the round to"
@@ -1000,7 +1039,7 @@ def _record_round(rnd: Round, end: dict, stats: dict) -> None:
                         source_session_id=sid, source_autoplay_job_id=jid)
         Notebook(lesson_store.ROOT.parent, MAP_ID).finish(
             driver.STAGES[pick.get("stage") or 0], "mercenaries", driver.CHARACTERS[pick.get("player") or 0],
-            "completed" if end.get("screen") == "results" else "died", observed, round_id=rnd.id)
+            outcome, observed, round_id=rnd.id)
         stats["round_notebook"] = "recorded"
     except Exception as exc:                                   # noqa: BLE001 - evidence never ends a round
         stats["round_notebook_error"] = f"{type(exc).__name__}: {exc}"[:200]

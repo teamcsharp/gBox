@@ -369,6 +369,9 @@ def test_the_round_end_writes_the_curriculum_row_the_round_reports_read(monkeypa
     assert data["round_shots"] >= 1, "the round's own amount, not the session's total"
     assert "round_gun_downs" in data and "round_unwall_tangents" in data
     assert stats["round_notebook"] == "recorded"
+    evidence = json.loads((tmp_path / "mercs" / data["round_map_file"]).read_text())
+    assert evidence["round_id"] == rid and evidence["outcome"] == "completed"
+    assert evidence["flight"]["source_position_scale_to_cm"] == .1
 
 
 def test_a_failed_notebook_write_never_stops_the_round_end(monkeypatch, tmp_path):

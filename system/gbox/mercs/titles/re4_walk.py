@@ -538,7 +538,9 @@ class Goals(map_goals.Goals):
                 goal.update(state="expired", reason="The marked spot was not reached in two minutes")
                 return None
             at = (snap.get("player") or {}).get("pos")
-            if at and math.hypot(at[0] - goal["pos"][0], at[2] - goal["pos"][2]) <= GOAL_ARRIVE_MM:
+            floor = goal.get("floor_y")
+            on_floor = floor is None or (at and abs(at[1] - floor) <= LEVEL_DY_MM)
+            if at and on_floor and math.hypot(at[0] - goal["pos"][0], at[2] - goal["pos"][2]) <= GOAL_ARRIVE_MM:
                 goal.update(state="completed", reason="He is at the marked spot; back to his own play")
                 return None
             goal.update(state="active", reason="On his way to the marked spot by the map")

@@ -65,7 +65,8 @@ def test_a_round_is_sampled_cheaply_and_written_as_a_run_map(tmp_path):
     for k in ("shots", "mine", "prompt", "stuck", "kill", "bonus", "hit", "death"):
         assert k in kinds, k
     hit = next(e for e in d["events"] if e["kind"] == "hit")
-    assert hit["loss"] == 200 and hit["attackers"][0][:2] == [2500, 0] and hit["dist"] == 100
+    assert hit["loss"] == 200 and hit["nearby_enemies"][0][:2] == [2500, 0] and hit["dist"] == 100
+    assert hit["damage_source"] == "unknown"
     death = next(e for e in d["events"] if e["kind"] == "death")
     assert death["doing"] == "fire"
     taken = {b["id"]: b for b in d["bonuses"]}
@@ -107,10 +108,36 @@ def test_the_buffers_are_bounded(tmp_path, monkeypatch):
     assert d["truncated"]["samples"] == 30
 
 
-def test_a_short_round_gets_no_map(tmp_path):
+def test_a_short_round_keeps_its_evidence(tmp_path):
     cap = RC.RunCapture(tmp_path, TITLE, "d" * 32, threaded=False)
     play(cap, [("playing", snap(0.0, 0.0), {}, "walk")] * 5)
-    assert cap.finish(5.0, "interrupted") == {} and not list(tmp_path.rglob("*.json"))
+    assert cap.finish(1002.0, "interrupted")["explore_samples"] == 5
+    d = json.loads(next((tmp_path / TITLE / "unknown").glob("*.json")).read_text())
+    assert len(d["flight"]["tail"]) == 5 and d["outcome"] == "interrupted"
+
+
+def test_empty_attempt_is_explicit_and_finish_is_idempotent(tmp_path):
+    cap = RC.RunCapture(tmp_path, TITLE, "empty", threaded=False)
+    a = cap.finish(5, "interrupted")
+    assert a["explore_samples"] == 0 and cap.finish(6, "died") == a
+    d = json.loads(next((tmp_path / TITLE / "unknown").glob("*.json")).read_text())
+    assert d["evidence_state"] == "no_player_samples" and d["flight"]["tail"] == []
+
+
+def test_re4_mm_and_late_death_survive_map_limit(tmp_path, monkeypatch):
+    monkeypatch.setattr(RC, "MAX_SAMPLES", 10)
+    cap = RC.RunCapture(tmp_path, "re4", threaded=False, position_scale_to_cm=.1)
+    for k in range(400):
+        cap.observe(1000+k*.2, "dead" if k == 399 else "playing",
+                    snap(k*100, 5000, hp=0 if k == 399 else 1000), Bot(), {"shots": k})
+    cap.finish(1080, "died")
+    d = json.loads(next((tmp_path / "re4" / "unknown").glob("*.json")).read_text())
+    assert d["route"][-1][1:3] == [3990, 500]
+    assert d["flight"]["tail"][-1]["pos"] == [3990, 5, 500]
+    assert d["flight"]["tail"][-1]["hp"] == 0 and len(d["flight"]["tail"]) <= 302
+    assert d["flight"]["tail"][0]["t"] >= 1019.8
+    assert len(d["flight"]["timeline"]) == 80
+    assert any(e["kind"] == "death" for e in d["events"])
 
 
 def test_a_navmesh_is_the_known_extent(tmp_path):
@@ -224,7 +251,7 @@ def test_the_engine_writes_one_run_map_per_round_keyed_to_its_curriculum_row(tmp
         rows = [(r[0], r[1], json.loads(r[2])) for r in db.execute("SELECT id,outcome,data FROM rounds ORDER BY rowid")]
     assert [r[1] for r in rows] == ["died", "completed", "interrupted"]
     mapped = [r for r in rows if r[2].get("round_map_file")]
-    assert len(mapped) == 2                                   # the 3-tick stop round is too short for a map
+    assert len(mapped) == 3                                   # including the three-tick interrupted attempt
     for rid, outcome, data in mapped:
         path = tmp_path / "mercs" / data["round_map_file"]
         d = json.loads(path.read_text())
@@ -236,7 +263,7 @@ def test_the_engine_writes_one_run_map_per_round_keyed_to_its_curriculum_row(tmp
         assert any(e["kind"] == "shots" for e in d["events"])
     died = json.loads((tmp_path / "mercs" / mapped[0][2]["round_map_file"]).read_text())
     assert [e["kind"] for e in died["events"] if e["kind"] == "death"] == ["death"]
-    assert stats["last_run_map"] == mapped[1][2]["round_map_file"]
+    assert stats["last_run_map"] == mapped[-1][2]["round_map_file"]
 
 
 def test_a_brain_with_its_own_round_map_keeps_it_alone(tmp_path, monkeypatch):
