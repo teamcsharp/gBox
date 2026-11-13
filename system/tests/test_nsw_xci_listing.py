@@ -352,3 +352,71 @@ def test_n0_10bit_normal_decode_real_card():
     assert scores[best] > 0.85, scores
     assert best == (0, 10, 20), scores
     assert scores[best] - others[-1] >= 0.3, scores
+
+
+@pytest.mark.skipif(not (os.path.exists(REAL) and os.path.exists(KEYS)), reason="owned XCI/prod.keys not present")
+def test_t0_u0_decode_real_card():
+    """_t0 = LE s8x3/127 (fmt 0x020b), _u0 = (s16+32768)/65536 (fmt 0x0112).
+
+    Machine-verified on the owned NpcNmlAnt00 card: decoded tangents are
+    orthogonal to decoded normals (mean |dot| < 0.01) and byte-reversed
+    tangents are not (mean |dot| > 0.1); all UVs land in [0, 1).
+    """
+    bf = _real_ant_bfres()
+    model = nsw.parse_bfres_model(bf)
+    for s in model["shapes"]:
+        fv = model["fvtx"][s["fvtx"]]
+        N = fv["vertex_count"]
+        t = nsw.bfres_decode_t0(nsw.bfres_read_attr(bf, model, s, "_t0"))
+        assert len(t) == N
+        nrm = nsw.bfres_decode_10vec(nsw.bfres_read_attr(bf, model, s, "_n0"))
+
+        def dotmean(reversed_bytes):
+            tot = 0.0
+            for i in range(N):
+                tv = t[i][2::-1] if reversed_bytes else t[i]
+                l1 = math.sqrt(sum(x * x for x in tv)) or 1.0
+                l2 = math.sqrt(sum(x * x for x in nrm[i])) or 1.0
+                tot += abs(sum(a * b for a, b in zip(tv, nrm[i]))) / (l1 * l2)
+            return tot / N
+
+        assert dotmean(False) < 0.01, (s["name"], dotmean(False))
+        assert dotmean(True) > 0.1, (s["name"], dotmean(True))
+        uv = nsw.bfres_decode_u0(nsw.bfres_read_attr(bf, model, s, "_u0"))
+        assert len(uv) == N
+        assert all(0.0 <= x < 1.0 and 0.0 <= y < 1.0 for x, y in uv), s["name"]
+
+
+@pytest.mark.skipif(not (os.path.exists(REAL) and os.path.exists(KEYS)), reason="owned XCI/prod.keys not present")
+def test_real_villager_obj_export():
+    """OBJ export of all three NpcNmlAnt00 shapes: vertex counts, face
+    counts, index bounds and optional per-vertex attributes parse back."""
+    bf = _real_ant_bfres()
+    model = nsw.parse_bfres_model(bf)
+    counts = {"Body__mBody": 2284, "Body__mCapVis": 398, "Body__mEye": 152}
+
+    def obj_counts(obj):
+        c = {"v": 0, "vn": 0, "vt": 0, "vc": 0, "f": 0}
+        for line in obj.splitlines():
+            for k in ("vn ", "vt ", "vc ", "f ", "v "):
+                if line.startswith(k):
+                    c[k.rstrip()] += 1
+                    break
+        return c
+
+    for s in model["shapes"]:
+        obj = nsw.bfres_export_obj(bf, model, s)
+        c = obj_counts(obj)
+        N = counts[s["name"]]
+        assert c["v"] == N, (s["name"], c)
+        assert c["vn"] == N and c["vt"] == N, (s["name"], c)
+        assert c["f"] == s["lod0"]["index_count"] // 3, (s["name"], c)
+        have_c0 = any(a["name"] == "_c0" for a in model["fvtx"][s["fvtx"]]["attrs"])
+        assert (c["vc"] == N) == have_c0, (s["name"], c)
+        for line in obj.splitlines():
+            if line.startswith("f "):
+                for tok in line[2:].split():
+                    assert 1 <= int(tok.split("/")[0]) <= N
+    all_obj = nsw.bfres_export_obj_all(bf, model)
+    for name in counts:
+        assert ("o %s" % name) in all_obj

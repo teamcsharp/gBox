@@ -629,3 +629,123 @@ def bfres_decode_10vec(data: bytes, order=(0, 10, 20)):
         out.append(tuple((( (w >> sh) & 0x3FF) if ((w >> sh) & 0x3FF) < 512
                           else ((w >> sh) & 0x3FF) - 1024) / 512.0 for sh in order))
     return tuple(out)
+
+
+def bfres_decode_t0(data: bytes) -> List[tuple]:
+    """Decode the _t0 tangent attribute stream (NVN fmt 0x020b): 4-byte LE words,
+    three signed 8-bit components (x, y, z), third byte padding, each /127.
+
+    Machine-verified on AC:NH NpcNmlAnt00 (owned card): mean |dot| against
+    the decoded _n0 normals is 0.0019-0.00196 on all three shapes, versus
+    0.28-0.53 for reversed/permuted byte orders (~150x gap).
+    """
+    out = []
+    for i in range(len(data) // 4):
+        b = data[i * 4:i * 4 + 4]
+        out.append(tuple((v - 256 if v >= 128 else v) / 127.0 for v in b[:3]))
+    return tuple(out)
+
+
+def bfres_decode_u0(data: bytes) -> List[tuple]:
+    """Decode the _u0 UV attribute stream (NVN fmt 0x0112): s16x2 per 4-byte
+    LE word, sign-biased: uv = (raw + 32768) / 65536 maps [-32768, 32767]
+    to [0.0, 1.0).
+
+    Machine-verified on AC:NH NpcNmlAnt00 (owned card): all coordinates land
+    in [0, 1) on all three shapes (Body raw x range [-32768, 32729]).
+    """
+    out = []
+    for i in range(len(data) // 4):
+        x, y = struct.unpack_from("<2h", data, i * 4)
+        out.append(((x + 32768) / 65536.0, (y + 32768) / 65536.0))
+    return tuple(out)
+
+
+def bfres_read_attr(data: bytes, model: dict, shape: dict, name: str) -> bytes:
+    """Raw 4-byte-stride attribute stream of one FVTX attribute for a shape."""
+    fv = model["fvtx"][shape["fvtx"]]
+    a = next((x for x in fv["attrs"] if x["name"] == name), None)
+    if a is None:
+        raise ValueError("attribute %s missing on shape %s" % (name, shape["name"]))
+    b = fv["buffers"][a["buffer"]]
+    start = model["pool_base"] + b["pool_offset"] + a["offset"]
+    n = fv["vertex_count"]
+    if start + n * 4 > len(data):
+        raise ValueError("attribute %s out of range" % name)
+    return data[start:start + n * 4]
+
+
+def _bf_attr_values(data: bytes, model: dict, shape: dict, name: str) -> List[tuple]:
+    """Decode one attribute per shape by its verified format code."""
+    raw = bfres_read_attr(data, model, shape, name)
+    if name == "_n0":
+        return list(bfres_decode_10vec(raw))
+    if name == "_t0":
+        return list(bfres_decode_t0(raw))
+    if name == "_u0":
+        return list(bfres_decode_u0(raw))
+    if name in ("_c0", "_w0", "_i0"):  # u8x4, stride 4
+        out = []
+        for i in range(len(raw) // 4):
+            out.append(struct.unpack_from("<4B", raw, i * 4))
+        return out
+    raise ValueError("no decoder for attribute %s" % name)
+
+
+def bfres_export_obj(data: bytes, model: dict, shape: dict) -> str:
+    """Export one shape as a Wavefront OBJ (v / vn / vt / vc / f).
+
+    _p0 -> v (f32x3), _n0 -> vn, _u0 -> vt, _c0 -> vc (u8x4 /255, alpha
+    last). Attributes are optional per shape (Body__mEye has no _c0).
+    _i0 (bone indices) / _w0 (bone weights) ride along as per-vertex
+    metadata comments:  # skin i <i0...> w <w0...>, one line per vertex
+    after each f line block, in vertex order. Faces are 1-based per shape.
+    """
+    pos = bfres_read_positions(data, model, shape)
+    n = len(pos)
+    fv = model["fvtx"][shape["fvtx"]]
+    have = {a["name"] for a in fv["attrs"]}
+    lines = ["# gBox NSW BFRES shape export", "o %s" % shape["name"],
+             "# vertices %d, fvtx %s, bones skin=%s" % (n, fv["vertex_count"], shape["skin_bones"])]
+    for p in pos:
+        lines.append("v %.6f %.6f %.6f" % p)
+    vn = _bf_attr_values(data, model, shape, "_n0") if "_n0" in have else None
+    for v in vn or ():
+        lines.append("vn %.6f %.6f %.6f" % v)
+    vt = _bf_attr_values(data, model, shape, "_u0") if "_u0" in have else None
+    for v in vt or ():
+        lines.append("vt %.6f %.6f" % v)
+    vc = _bf_attr_values(data, model, shape, "_c0") if "_c0" in have else None
+    for v in vc or ():
+        lines.append("vc %.6f %.6f %.6f %.6f" % tuple(c / 255.0 for c in v))
+    idx = bfres_read_indices(data, model, shape)
+    if vn and vt:
+        for i in range(0, len(idx), 3):
+            tri = tuple(x + 1 for x in idx[i:i + 3]) * 3
+            lines.append("f %d/%d/%d %d/%d/%d %d/%d/%d" % tri)
+    elif vn:
+        for i in range(0, len(idx), 3):
+            lines.append("f %d//%d %d//%d %d//%d" % (tuple(x + 1 for x in idx[i:i + 3]) * 3))
+    elif vt:
+        for i in range(0, len(idx), 3):
+            lines.append("f %d/%d %d/%d %d/%d" % tuple(x + 1 for x in idx[i:i + 3]) * 3)
+    else:
+        for i in range(0, len(idx), 3):
+            lines.append("f %d %d %d" % tuple(x + 1 for x in idx[i:i + 3]))
+    if "_i0" in have or "_w0" in have:
+        i0 = _bf_attr_values(data, model, shape, "_i0") if "_i0" in have else None
+        w0 = _bf_attr_values(data, model, shape, "_w0") if "_w0" in have else None
+        for k in range(n):
+            meta = "# skin"
+            if i0:
+                meta += " i " + " ".join(str(c) for c in i0[k])
+            if w0:
+                meta += " w " + " ".join("%.3f" % (c / 255.0) for c in w0[k])
+            lines.append(meta)
+    return "\n".join(lines) + "\n"
+
+
+def bfres_export_obj_all(data: bytes, model: dict) -> str:
+    """Export every shape of a parsed BFRES model as one multi-object OBJ
+    file (each shape under its own `o` name, numbering per shape)."""
+    return "\n".join(bfres_export_obj(data, model, s) for s in model["shapes"])
