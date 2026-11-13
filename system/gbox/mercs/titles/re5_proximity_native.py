@@ -13,7 +13,9 @@ from contextlib import contextmanager
 DTI, VTABLE, ITEM = 0x1D715A8, 0x1C5E478, 0x10A
 RADIUS_CM, RING_COUNT = 152.4, 5
 COUNTS = (1, RING_COUNT, 8)  # retain the earlier eight-mine research request
-LIVE_VERIFIED = False
+# 2026-11-13: live single drops and five-mine ring, native armed volumes read
+# back with the Hydra still equipped. See docs/research/re5-automine.md.
+LIVE_VERIFIED = True
 FUNCTIONS = {
     0x7E51A0: bytes.fromhex('f30f1ef8fd7b01a9fd430091f30300aa'),
     0x60D6D0: bytes.fromhex('f85fbca9f65701a9f44f02a9fd7b03a9'),

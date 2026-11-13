@@ -910,7 +910,8 @@ THROW_ITEMS = {"hand": 0x06, "fire": 0x07, "flash": 0x08}    # WP06 / WP07 / WP0
 # The fire pattern (gbox.mercs.core.fire_pattern; the operator 2026-11-10: "the bot fired the magnum with a nice scatter
 # and a very rapid repeat and i want that across all these titles"). The rapid repeat is RE5's own and stays: ZR held
 # while the laser is on a body (_trigger), the game repeating it at re5_switch_mods.fire_rate's time scale in the shot
-# motion (FIRE_MAX 5x: the M92F measured 8.7 shots/s at x4 and 15.3 at x8 - x5 itself not counted; a magnum's shot motion
+# motion (configured multiplier reported as rapid_fire_configured_x; the M92F measured 8.7 shots/s at x4 and 15.3 at x8;
+# a requested multiplier is not a measured bullet rate). A magnum's shot motion
 # was never checked to be MOTION_SHOT, so whether the time scale reaches the magnums is not known). What the pattern
 # adds is the PS3's scatter: the old rule steered only with the laser OFF him (once on, the aim stood still and every
 # repeat hit one spot); with FIRE_PATTERN a pattern gun (re5_weapons family magnum / handgun / shotgun / rifle) on him
@@ -974,7 +975,7 @@ def combat_profile() -> combat.TitleProfile:
         page_max_s=FROZEN_PAGE_MAX_S, page_clear_cm=FROZEN_CLEAR_R,
         fire_pattern=FIRE_PATTERN, fire_style="hold", fire_tick_s=1.0 / 30.0, fire_cap_hz=0.0,
         fire_cap_note="measured (M92F, ZR held): 2.7 shots/s at x1, 8.7 x4, 15.3 x8, 24.7 x80 (re5_switch_mods); the "
-                      "live cap FIRE_MAX 5x not counted; the magnums' shot motion not checked",
+                      "configured multiplier is not measured shots/s; the magnums' shot motion not checked",
         family=fire_family)
 # Dynamite Majini (operator: "dynamite Majini - see them, keep away, shoot the dynamite"). A Majini carrying a lit
 # stick of dynamite is a threat of its own: the fuse is already burning, so the blast is coming whether or not his
@@ -2042,7 +2043,12 @@ def snapshot(m) -> dict:
                 snap["prompt"] = pr or qte.grab_fallback(MAP_ID, m, snap)
                 snap["prompt_read"] = True
             stage('prompt')
-            if any(s["id"] == MINE_ITEM for s in snap["inventory"]):   # the bombs on the ground (re5_switch_mines)
+            from . import re5_native_mine_tactic
+            if re5_native_mine_tactic.watching(m, snap['player']):
+                observed = re5_native_mine_tactic.ground(m, base, snap['player'])
+                if observed is not None:
+                    snap['ground_mines'] = observed
+            elif any(s["id"] == MINE_ITEM for s in snap["inventory"]):   # legacy inventory placement observation
                 # uWp0a also represents the inventory's own mine stack. Its
                 # dormant position can be near a fight; it is not a planted
                 # explosive. Exclude by exact native object identity only.
@@ -5814,7 +5820,7 @@ class Bot:
         if self.pending_mine and self.mines is not None and self.mines.enabled:
             # the loadout the round was built from is the one that decides it: fire the tactic the moment a bomb is in hand
             inv = snap.get("inventory")
-            if inv is None or self.mines.stack(inv) is not None:
+            if inv is None or self.mines.stack(inv) is not None or getattr(self.mines, 'native', None) is not None:
                 self.pending_mine = False
                 self.stats["directive_status"] = self._mine_now(
                     "the mine tactic held from the operator now fires: a bomb is in hand", snap)
@@ -6447,6 +6453,7 @@ class Bot:
     # --- the decision ----------------------------------------------------------------------------------------------
     def tick(self, snap: dict) -> dict:
         now = self.clock()
+        self.observe_reactions(snap, now)
         self._infinite_ammo = snap.get('infinite_ammo') is True
         if self.native_equip is not None:
             self.native_equip.tick()
@@ -6982,10 +6989,9 @@ class Bot:
                 self.doing, self.why = "heal", str(self.stats.get("heal_status") or "")
             elif (act := self._operator_goal(p, snap, live, flat, now)) is not None:
                 self.escape = None                           # the operator's mark on the map: ahead of the rest
-            elif self.mines is not None and (act := self.mines.tick(p, snap, live, now)) is not None:
-                # A due mine is part of fleeing, not blocked by a persistent escape.
-                # Held/dying and healing already take priority above. The mine
-                # controller finds clearance and owns the plant/retreat sequence.
+            elif self.mines is not None and (act := self._mine_action(p, snap, live, now)) is not None:
+                # Native pending requests return None and leave this plan alone.
+                # A real mine hazard may still ask the map for a retreat route.
                 self.escape = None
                 self._gun_down()
                 self.doing, self.why = "mine", str(self.stats.get("mine_status") or "")
@@ -7017,6 +7023,43 @@ class Bot:
         if set(act.get("hold", ())) & {"rleft", "rright", "lup", "ldown"} and "zl" not in act.get("hold", ()):
             self.move_at = now
         return act
+
+    def _mine_action(self, p, snap, live, now):
+        """Only a physical mine hazard can interrupt the combat/navigation plan."""
+        return self.mines.automatic(p, snap, live, now)
+
+    def observe_reactions(self, snap, now):
+        """Also called before prompt-only ticks, so QTE handling never hides a request."""
+        p = snap.get('player') or {}
+        if ((self._round_started is None or self.died) and snap.get('mercenaries_phase') == PHASE_PLAYING
+                and (p.get('hp') or 0) > DYING_HP and not self.stats.get('operator_control')):
+            self._round_start(snap, now)          # initialize before admitting a first-tick grab request
+        if self.mines is not None:
+            self.mines.observe_native(self._m, snap, now)
+        from .re5_native_mine_tactic import identity, position, REACTION_S
+        event, p = self.stats.get('automine_event') or {}, snap.get('player') or {}
+        if (event.get('id') == getattr(self, '_reactive_escape_seen', None)
+                or tuple(event.get('owner') or ()) != identity(snap, self.stats)
+                or event.get('kind') not in ('hit', 'qte') or type(event.get('at')) not in (int, float)
+                or not 0 <= now - event['at'] <= REACTION_S
+                or snap.get('mercenaries_phase') != PHASE_PLAYING
+                or (p.get('hp') or 0) <= DYING_HP or p.get('motion') in MOTION_HELD
+                or not position(p.get('pos')) or self.stats.get('operator_control')):
+            return
+        self._reactive_escape_seen = event['id']
+        if self.escape is not None and now < self.escape[1]:
+            return                                  # never restart a live escape's clock or heading
+        near = sorted(heading(e['pos'][0] - p['pos'][0], e['pos'][2] - p['pos'][2])
+            for e in snap.get('enemies') or () if (e.get('hp') or 0) > 0 and position(e.get('pos'))
+            and abs(e['pos'][1] - p['pos'][1]) <= LEVEL_DY
+            and math.hypot(e['pos'][0] - p['pos'][0], e['pos'][2] - p['pos'][2]) <= RING_R)
+        if not near:
+            return
+        gap, start = max(((near[(i + 1) % len(near)] - a) % math.tau or math.tau, a)
+                         for i, a in enumerate(near))
+        self.escape, self.escape_at = (wrap(start + gap / 2), now + ESCAPE_S), now
+        self._gun_down()
+        self.stats['reactive_escape_requests'] = self.stats.get('reactive_escape_requests', 0) + 1
 
     def _mine_route(self, p, act, now) -> dict:
         """The mine controller's run out (its retreat, its guard) picks a heading by the widest gap among the Majini;
@@ -7546,7 +7589,7 @@ class Bot:
         # due, so arming it only leaves the bot standing (operator 2026-11-08: "give them a mine to equip so they can
         # execute the command"). Report the missing piece and keep fighting; the tactic is remembered for the next round.
         inv = (snap or {}).get("inventory")
-        if inv is not None and m.stack(inv) is None:
+        if inv is not None and m.stack(inv) is None and getattr(m, 'native', None) is None:
             self.pending_mine = True
             return ("no proximity bomb in this round's loadout - fighting on; the mines setting puts one in every loadout "
                     "from the next round, and this tactic fires as soon as it is in hand")
@@ -8850,6 +8893,8 @@ class Bot:
         return True
 
     def save(self) -> None:
+        if self.mines is not None:
+            self.mines.close()
         if self.fighter is not None:
             self.fighter.end_round(self.clock())
         if self.release is not None:
@@ -9009,6 +9054,7 @@ class RE5Switch(Driver):
                 self.stats["mine_supply_verified"] = bool(supply.get("verified"))
                 self.stats["mine_template_blocks"] = int(supply.get("template_blocks") or 0)
             self.stats["rapid_fire_active"] = bool(res.get("active"))
+            self.stats['rapid_fire_configured_x'] = res.get('fire_rate_x')
             self.stats["mod_writes"] = self.stats.get("mod_writes", 0) + res.get("writes", 0)
             if not res.get("verified", True):
                 self.stats["mod_reason"] = res.get("reason", "")

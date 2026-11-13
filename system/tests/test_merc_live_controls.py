@@ -103,6 +103,16 @@ def test_inventory_bounds_readback_and_operator_jobs():
         with pytest.raises(ValueError,match='did not confirm'):await c.call({'session_id':SID,'op':'set','control':'mod.fire_rate','value':4})
     asyncio.run(check())
 
+
+def test_re5_fire_rate_control_matches_the_native_twenty_times_cap():
+    rows = LC.control_inventory("re5", {}, {"fire_rate_x": 20.0,
+        "capabilities": {"fire_rate": {"available": True}}})
+    row = next(r for r in rows if r["id"] == "mod.fire_rate")
+    assert row["available"] and (row["min"], row["max"], row["value"]) == (1, 20, 20.0)
+    assert LC.change_input(row, 20)["multiplier"] == 20
+    with pytest.raises(ValueError):
+        LC.change_input(row, 21)
+
 def test_pending_poll_does_not_resubmit_or_expose_other_session_job():
     async def check():
         p=Plane();p.queued=True;c=LC.Controls(p.get,p.post,sleep=no_delay)

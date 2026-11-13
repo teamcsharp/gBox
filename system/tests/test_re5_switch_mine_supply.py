@@ -14,6 +14,21 @@ def fresh_state():
     SM.ORIG.clear()
 
 
+def test_automine_toggle_is_independent_of_supply_and_does_not_touch_game_memory():
+    ad = Adapter(parity_guest())
+    g = SM.RE5Switch(ad)
+    ad.writes.clear()
+    assert g.state.get('automine', True) is True
+    assert SM.automine(g, False)['verified']
+    assert SM.mine_settings(ad)['automine'] is False
+    g.state['mine_loadout'] = False
+    assert SM.automine(g, True)['automine'] is True
+    assert SM.mine_settings(ad) == {'enabled': False, 'interval_s': 30.0, 'only': False, 'automine': True}
+    assert not ad.writes
+    with pytest.raises(ValueError):
+        SM.automine(g, 1)
+
+
 def test_driver_prepares_every_costume_before_a_player_exists_and_rechecks_without_writes():
     guest=parity_guest(player=False);ad=Adapter(guest)
     original={i:guest.rd(block_at(i),SM.TEMPLATE_REC*SM.TEMPLATE_RECS) for i in SM.MERC_DESC}

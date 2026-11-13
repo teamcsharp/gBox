@@ -131,6 +131,20 @@ def test_expand_refuses_what_change_input_would():
         LC.change_input({"id": "axis.aggression", "available": True, "kind": "number", "min": 0, "max": 1}, 0.5)
 
 
+def test_re5_fire_rate_axis_shows_and_enforces_the_native_twenty_times_bound():
+    rows = rows_of("re5", fire_rate_x=20.0)
+    fire = next(r for r in rows if r["id"] == "axis.fire_rate")
+    assert fire["available"] and (fire["min"], fire["max"], fire["value"]) == (1.0, 20.0, 20.0)
+    jobs, skipped = AX.expand("re5", "axis.fire_rate", 20, rows)
+    assert not skipped and jobs == [({"op": "fire_rate", "multiplier": 20.0, "on": True},
+                                    [{"control": "mod.fire_rate", "value": 20.0}])]
+    with pytest.raises(ValueError, match="1..20"):
+        AX.expand("re5", "axis.fire_rate", 21, rows)
+    rows6 = rows_of("re6", fire_rate_x=40.0)
+    assert next(r for r in rows6 if r["id"] == "axis.fire_rate")["max"] == 80.0
+    assert AX.expand("re6", "axis.fire_rate", 80, rows6)[0][0][0]["multiplier"] == 80.0
+
+
 SID = "pc-round"
 
 

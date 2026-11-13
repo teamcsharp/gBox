@@ -156,6 +156,19 @@ def _invert(axis, spec, row):
     return round(lo + v01 * (hi - lo), 4)
 
 
+def _bounded_axis(axis, mapping, index):
+    """A single passthrough dial has the same usable range as its title's native control."""
+    if mapping and len(mapping) == 1 and mapping[0][1:] == ("pass",):
+        row = index.get(mapping[0][0]) or {}
+        lo, hi = row.get("min"), row.get("max")
+        if (type(lo) in (int, float) and type(hi) in (int, float)
+                and math.isfinite(lo) and math.isfinite(hi) and lo <= hi):
+            low, high = max(axis[1], lo), min(axis[2], hi)
+            if low <= high:
+                return (axis[0], low, high, *axis[3:])
+    return axis
+
+
 def inventory(title, rows) -> list:
     """The axis rows for `title`, derived from the mod. / behavior. rows control_inventory already built: the same
     row shape ({id, label, group, kind, value, available, min, max, step, help}, plus targets and a grey dot's
@@ -165,8 +178,9 @@ def inventory(title, rows) -> list:
     index = {r["id"]: r for r in rows if isinstance(r, dict) and not str(r.get("id", "")).startswith("axis.")}
     out = []
     for name, axis in AXES.items():
-        label, lo, hi, step, default, help_ = axis
         mapping = MAPS.get(title, {}).get(name)
+        axis = _bounded_axis(axis, mapping, index)
+        label, lo, hi, step, default, help_ = axis
         row = {"id": "axis." + name, "label": label, "group": GROUP, "kind": "number", "value": None,
                "available": False, "min": lo, "max": hi, "step": step, "default": default, "help": help_,
                "targets": [t[0] for t in (mapping or ())]}
@@ -196,10 +210,11 @@ def expand(title, axis_id, value, rows):
     mapping = MAPS.get(title, {}).get(name) if axis else None
     if axis is None or not mapping:
         raise ValueError(UNMAPPED.get((title, name)) or f"This game has no live {name} axis.")
+    index = {r["id"]: r for r in rows if isinstance(r, dict) and not str(r.get("id", "")).startswith("axis.")}
+    axis = _bounded_axis(axis, mapping, index)
     _label, lo, hi = axis[0], axis[1], axis[2]
     if type(value) not in (int, float) or not math.isfinite(value) or not lo <= value <= hi:
         raise ValueError(f"{axis_id}: a number {lo:g}..{hi:g}")
-    index = {r["id"]: r for r in rows if isinstance(r, dict) and not str(r.get("id", "")).startswith("axis.")}
     prow = index.get(mapping[0][0])
     if prow is None or not prow.get("available"):
         raise ValueError((prow or {}).get("reason") or

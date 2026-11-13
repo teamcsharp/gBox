@@ -104,7 +104,7 @@
       const weapon = row.op === 'equip_primary', ring = row.op === 'grenade_ring', ammo = row.op === 'set_infinite_ammo', aid = row.op === 'first_aid_now', mine = row.op?.startsWith('proximity_mine_');
       if (row.state === 'confirmed') {
         if (row.op === 'detonate_mines') return `Mine darts entering explosion: ${row.result?.initiated ?? 0}/${row.result?.requested ?? 0}.`;
-        if (mine) return `Proximity mines placed: ${row.result?.placed ?? 0}/${row.result?.requested ?? 0}; arming observed: ${row.result?.armed ?? 0}; triggers observed: ${row.result?.triggered ?? 0}.`;
+        if (mine) return `${row.result?.flash_detonated ? 'Flashbang ring detonated. ' : ''}Armed mines: ${row.result?.armed ?? 0}/${row.result?.requested ?? 0}; already triggered: ${row.result?.triggered ?? 0}.`;
         if (aid) return row.result?.consumed ? 'First aid spray used.' : (row.result?.reason || 'First aid checked.');
         if (ammo) return typeof row.result?.enabled==='boolean' ? `Infinite ammo ${row.result.enabled?'on':'off'} confirmed.` : 'Infinite ammo change reported; waiting for live state.';
         if (weapon) return `${row.result?.weapon || 'Primary weapon'} equipped. Held as primary for three minutes.`;
@@ -195,7 +195,7 @@
   function bindProximityMine(button,{ring=false,action,...options}={}) {
     return bindFirstAid(button,{...options,firstAid:action,
       operation:ring?'proximity_mine_ring':'proximity_mine_drop',label:ring?'Mine ring · 5 ft':'Drop mine',
-      description:ring?'Place five RE5 proximity mines in a circle five feet away':'Drop an RE5 proximity mine without changing weapons',
+      description:ring?'Flashbang, deploy five armed mines five feet away, and escape':'Drop an armed RE5 proximity mine without changing weapons',
       supported:report=>report.options?.proximity_mines?.available===true});
   }
   function bindMineDetonate(button,{action,...options}={}) {

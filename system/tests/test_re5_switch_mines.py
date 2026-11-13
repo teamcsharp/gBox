@@ -221,12 +221,14 @@ def switch_bot(monkeypatch):
     return R, R.Bot(stats={}, clock=lambda: clock[0]), clock
 
 
-def test_the_switch_bot_places_a_bomb_between_its_heal_and_its_fight(switch_bot):
+def test_the_switch_bot_never_equips_a_bomb_when_native_automine_is_unavailable(switch_bot):
     R, b, clock = switch_bot
     s = bot_snap([dict(GUN), dict(BOMB)])
     assert b.tick(s)["hold"] == ("zl",) and b.doing == "raise"            # the fight first ...
     clock[0] = R.MINE_EVERY_S + 0.1
-    assert b.tick(s) == {"hold": ()} and b.doing == "mine"                # ... the bomb's turn after MINE_EVERY_S
+    action = b.tick(s)
+    assert b.doing != 'mine' and action.get('tap') != 'dup'
+    assert b.mines.state == 'idle' and b.stats['mine_attempts'] == 0
     for key in ("mines_placed", "mines_gone", "mine_clear_runs", "gun_backs", "t_mine", "t_rearm"):
         assert key in R.RE5Switch.round_counters
 
@@ -691,7 +693,7 @@ def test_close_blast_guard_yields_to_gun_before_due_then_due_mine_seeks_clearanc
     clock[0] = R.MINE_EVERY_S + 1
     bot.tick(state)                                          # due and blocked: the fight keeps the pad, no plant
     assert bot.doing != "mine" and bot.mines.state == "idle"
-    assert bot.stats["mine_blocked_reason"] in ("enemy too close", "last bomb too close")
+    assert bot.stats['mine_blocked_reason'] == 'native mine unavailable; no equipment fallback'
     assert bot.stats["mine_attempts"] == bot.stats["mines_placed"] == 0
 
 def test_a_long_tick_gap_pauses_the_equip_clock_instead_of_failing_the_attempt():

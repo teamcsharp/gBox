@@ -8,6 +8,12 @@ from gbox.mercs.titles import re5_switch_native as N
 from test_re5_switch_native import controller
 
 
+@pytest.fixture(autouse=True)
+def probe_mode(monkeypatch):
+    # Exercise the refusal/probe branch even after the pinned build is verified.
+    monkeypatch.setattr(M, 'LIVE_VERIFIED', False)
+
+
 def mine_controller(monkeypatch):
     ctl = controller()
     ctl.ready = lambda: (ctl.player, ctl.generation)
@@ -52,6 +58,14 @@ def test_default_refuses_unverified_before_any_write(monkeypatch):
     with pytest.raises(N.Unavailable, match='live validation'):
         M.place(ctl)
     assert not ctl.writes and not ctl.native_calls
+
+
+def test_verified_button_requires_native_armed_mines(monkeypatch):
+    monkeypatch.setattr(M, 'LIVE_VERIFIED', True)
+    ctl = mine_controller(monkeypatch)
+    out = M.place(ctl, 5)
+    assert out['verified'] and out['state'] == 'confirmed'
+    assert out['armed'] == 5 and all(m['active'] for m in out['mines'])
 
 
 @pytest.mark.parametrize('count', [5, 8])

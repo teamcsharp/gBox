@@ -41,7 +41,7 @@ def test_mine_now_makes_the_bomb_due_at_once_and_says_so_when_mines_are_off():
     b.tick(s)                                                        # the round starts
     clock[0] = 1.0
     command(b, "mine", 0)
-    assert b.tick(s) == {"hold": ()} and b.doing == "mine"            # due now: the pad rests, then the D-pad
+    assert b.tick(s).get('tap') != 'dup' and b.doing != 'mine'         # no native capability: never equip a mine
     assert b.stats["directive_status"].startswith("mine due now")
     b2, clock2 = bot()
     b2.tick(s)

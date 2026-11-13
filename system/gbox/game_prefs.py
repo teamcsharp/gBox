@@ -49,7 +49,7 @@ RE6 = '0871eee3b68cdea3'
 RE6_SWITCH = '115f9cdbba115432'                         # RE6 on Switch: split screen's team controls (mercs_team)
 RE4 = ('78ab9efa2e310db4', 'e42c9b780c07c437')          # Resident Evil 4 (USA) GameCube Disc 1 / Disc 2
 
-RE5_TOGGLES = ('unlimited_health', 'infinite_ammo', 'infinite_spray', 'instant_qte')
+RE5_TOGGLES = ('unlimited_health', 'infinite_ammo', 'infinite_spray', 'instant_qte', 'automine')
 RE5_SCALES = {'fire_rate': (0.1, 1000.0), 'bullet_damage': (0.1, 1000.0), 'turn_speed': (0.25, 50.0)}
 RE5_ORDER = (*RE5_TOGGLES, *RE5_SCALES, 'kill_time', 'weapon_override', 'rotten_egg_only', 'mines')
 RE4_TOGGLES = ('unlimited_health', 'infinite_ammo', 'combo_freeze', 'merc_timer_freeze', 'grenade_safe')

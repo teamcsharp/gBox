@@ -83,7 +83,6 @@ def ring_controller(unit_vtable=FLASH_VT, spawn_fail_at=None, position=(1000.0, 
     ctl.check = ctl.check_build = lambda: None
     ctl.attach = lambda: None
     ctl.detach_completed = lambda: None
-    ctl.projectile = lambda unit, born: None
     ctl.ready = lambda: (ctl.player, ctl.generation)
     ctl.wait = lambda predicate, timeout=1.0: predicate()
     put(ctl.base + R.S_PLAYER, struct.pack("<Q", ctl.sp))
@@ -100,6 +99,7 @@ def ring_controller(unit_vtable=FLASH_VT, spawn_fail_at=None, position=(1000.0, 
             born = 5000 + n
             put(unit, struct.pack("<Q", ctl.base + unit_vtable))
             put(unit + 0x1A00, struct.pack("<Q", born))
+            put(unit + 0x1A10, struct.pack("<Q", ctl.player))
             put(unit + 0x1B28, struct.pack("<I", 29))
             put(unit + 0x1B88, b"\x01")
             put(unit + 0x28A0, b"\x01")
@@ -111,7 +111,7 @@ def ring_controller(unit_vtable=FLASH_VT, spawn_fail_at=None, position=(1000.0, 
     return ctl
 
 
-HAND_VT = 0x1C5EF98          # a hand class vtable the table does not carry: the wrapper must take the carried one
+HAND_VT = C.VTABLES['hand']
 
 
 def test_a_hand_ring_hands_the_hand_class_to_the_same_verified_wrappers():
@@ -144,7 +144,8 @@ def test_the_flash_ring_keeps_its_verified_values_and_update():
 def test_a_flash_allocation_of_another_class_is_refused():
     ctl = ring_controller(unit_vtable=0x1C5EF58 + 0x40)
     result = ctl.grenade_ring("flash", count=1)
-    assert result["state"] == "failed" and "verified class" in result["reason"]
+    assert result["state"] == "uncertain" and "allocation changed" in result["reason"]
+    assert not ctl.writes and not any(off == EXPLODE for off, _ in ctl.calls)
 
 
 @pytest.mark.parametrize("kind", ["hand", "incendiary"])
@@ -196,7 +197,7 @@ def test_a_hand_ring_never_places_a_grenade_inside_its_own_blast():
 
 
 def test_an_incendiary_ring_asked_for_a_short_radius_is_raised_and_says_so():
-    ctl = ring_controller(unit_vtable=HAND_VT)
+    ctl = ring_controller(unit_vtable=C.VTABLES['incendiary'])
     result = ctl.grenade_ring("incendiary", allow_unverified=True, count=2, radius_cm=300.0, inner_cm=100.0)
     assert result["state"] == "confirmed"
     assert result["radius_cm"] == N.RING_EXPLOSIVE_CLEAR_CM

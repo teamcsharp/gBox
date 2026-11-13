@@ -701,6 +701,17 @@ def play_round(prof, m, send, stopped, stats: dict, lessons=None, sleep=time.sle
             if observe_only:
                 next_frame()
                 continue
+            # RE5 native reactions run beside QTE input. The prompt branch
+            # below can skip bot.tick and the ordinary periodic ring entirely.
+            if where == 'playing':
+                for name, reaction in (('reactive_ring', getattr(ring_step, 'react', None)),
+                                       ('reactive_mines', getattr(bot, 'observe_reactions', None))):
+                    if callable(reaction):
+                        try:
+                            args = (snap, stats, now) if name == 'reactive_ring' else (snap, now)
+                            decision_work.call(name, reaction, *args)
+                        except Exception as exc:       # an optional native reaction never suppresses the QTE
+                            stats[name + '_error'] = f'{type(exc).__name__}: {exc}'[:200]
             from .primary_weapon import release_for_handover, quiescing
             if not stats.get('operator_control') and quiescing(stats, snap):
                 release_for_handover(stats, snap, hold)

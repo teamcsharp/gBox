@@ -598,8 +598,50 @@ def control(ad, prof, *, ring=None):
     # title or damaging round is admitted to this background path.
     from .async_flash_ring import Flight
     flight = Flight() if title == '010018100CD46000' and (ring is None or getattr(ring, 'async_flash_ring', False)) else None
+    re5_reactions = None
+    if flight is not None:
+        from .re5_reactive_ring import Reactions
+        re5_reactions = Reactions()
+
+    def react(snap, stats, now):
+        """Before prompt handling: fresh RE5 hit/QTE edges never wait for the periodic timer."""
+        event = re5_reactions.observe(snap, stats, now)
+        result = flight.poll(snap, stats)
+        if result is not None:
+            if result.get('reactive') and result.get('receipt') is not None:
+                receipt = result['receipt']
+                stats['reactive_ring_receipt'] = {k: receipt.get(k) for k in
+                    ('state', 'verified', 'kind', 'requested', 'detonated', 'reason', 'self_damage')}
+                stats['reactive_ring_receipt']['event'] = result.get('reactive_event')
+            return result
+        if event is None:
+            return None
+        policy_ = policy(title_mod, stats)
+        if not policy_['enabled']:
+            re5_reactions.consume(event, stats, 'ring disabled')
+            return None
+        # A native mine or an already requested flash owns the same native
+        # mailbox. Keep only the fresh event; no blocked worker or pad pause.
+        if stats.get('bot_grenade_state') == 'requested' or stats.get('native_mine_pending'):
+            stats['reactive_ring_wait'] = 'another native defensive action is pending'
+            return {'fire': False, 'pending': True, 'reason': stats['reactive_ring_wait']}
+        decision = decide(snap, stats, now, policy_, title=title)
+        if decision['radius_cm'] > policy_['max_radius_cm'] or (snap.get('player') or {}).get('hp', 0) <= 1:
+            re5_reactions.consume(event, stats, 'native flash requires a living player and supported clearance')
+            return None
+        decision.update(re5_reactions.decision(event))
+        result = flight.submit(snap, stats, decision, now,
+            lambda d, s, t, guard: fire(ad, d, s, t, ring=ring, native_guard=guard, flash_only=True))
+        if result.get('pending'):
+            re5_reactions.consume(event, stats, 'submitted')
+            stats['reactive_ring_requests'] = int(stats.get('reactive_ring_requests') or 0) + 1
+        return result
 
     def step(snap: dict, stats: dict, now: float, hold=None) -> dict:
+        if re5_reactions is not None:
+            result = react(snap, stats, now)
+            if result is not None:
+                return result
         if flight is not None:
             result = flight.poll(snap, stats)
             if result is not None:
@@ -669,6 +711,7 @@ def control(ad, prof, *, ring=None):
     if flight is not None:
         step.observe = flight.observe
         step.close = flight.close
+        step.react = react
     return step
 
 

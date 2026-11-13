@@ -47,7 +47,6 @@ def ring_controller(hp_after=1000, spawn_fail_at=None):
     ctl.check = ctl.check_build = lambda: None
     ctl.attach = lambda: None
     ctl.detach_completed = lambda: None
-    ctl.projectile = lambda unit, born: None
     ctl.ready = lambda: (ctl.player, ctl.generation)
     ctl.wait = lambda predicate, timeout=1.0: predicate()
     put(ctl.base + R.S_PLAYER, struct.pack("<Q", ctl.sp))
@@ -62,8 +61,10 @@ def ring_controller(hp_after=1000, spawn_fail_at=None):
                 return 0
             unit = 0x230000000 + n * 0x10000
             born = 5000 + n
-            put(unit, struct.pack("<Q", ctl.base + 0x1C5EF58))     # the class vtable the allocation carries
+            kind = next((k for k, c in N.CLASSES.CLASSES.items() if len(args) > 2 and args[2] == ctl.base+c.dti), 'flash')
+            put(unit, struct.pack("<Q", ctl.base + N.CLASSES.VTABLES[kind]))
             put(unit + 0x1A00, struct.pack("<Q", born))
+            put(unit + 0x1A10, struct.pack("<Q", ctl.player))
             put(unit + 0x1B28, struct.pack("<I", 29))
             put(unit + 0x1B88, b"\x01")
             put(unit + 0x28A0, b"\x01")

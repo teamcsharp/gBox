@@ -18,11 +18,12 @@ SWITCH = {"52d15709be0fda1a": "re5", "115f9cdbba115432": "re6", "270a15eb98dab4d
 # op, label, status path, optional (min, max, step). Match the desktop's live controls.
 MODS = {
     "re5": [
+        ("automine", "Automine", "automine", None),
         ("unlimited_health", "Unlimited life", "unlimited_health", None),
         ("infinite_ammo", "Infinite ammo", "infinite_ammo", None),
         ("infinite_spray", "Infinite first aid spray", "infinite_spray", None),
         ("instant_qte", "Native QTE assist", "qte_assist.enabled", None),
-        ("fire_rate", "Fire rate", "fire_rate_x", (1, 80, 1)),
+        ("fire_rate", "Fire rate", "fire_rate_x", (1, 20, 1)),
         # per-weapon rates (operator 2026-11-09): the rotten egg's / the longbow's own animation, while it is in hand
         ("egg_rate", "Rotten egg throw rate ×", "egg_rate_x", (1, 40, 1)),
         ("bow_rate", "Bow fire rate ×", "bow_rate_x", (1, 20, 1)),

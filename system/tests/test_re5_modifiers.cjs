@@ -643,6 +643,8 @@ function desktopPipRig({ compact = true, lookup = async () => SESSION, history =
   const stream = { src: '', getAttribute(name) { return name === 'src' ? this.src : null; } };
   let stops = 0;
   const context = vm.createContext({
+    window: {},
+    document: { querySelector: () => null },
     $: selector => selector === '#compact-stream' ? stream : menu,
     gboxStreamWatchdog: { sessionOf: src => /\/api\/sessions\/([^/]+)\/mjpeg/.exec(src)?.[1] },
     COMPACT: { on: compact, sid: SESSION.session_id }, EMB: { sid: SESSION.session_id, last: '' },
@@ -819,7 +821,7 @@ test('both PiP shells load modifier UI and compact right-click owns the gameplay
   const desktop = desktopPipRig().source, mini = miniPipRig().source;
   for (const source of [desktop, mini])
     assert.match(source, /<script src="\.\.\/web\/viz\/re5-modifiers\.js"><\/script>/);
-  assert.match(desktop, /if \(!COMPACT\.on \|\| event\.target\.closest\?\.\('#pipmenu'\)\) return/);
+  assert.match(desktop, /if \(!COMPACT\.on \|\| event\.target\.closest\?\.\('[^']*#pipmenu[^']*'\)\) return/);
   assert.match(desktop, /event\.preventDefault\(\);\s*event\.stopPropagation\(\);\s*pipMenu\(event\.clientX, event\.clientY\)/);
   const follow = desktop.slice(desktop.indexOf('const compactContinuity ='), desktop.indexOf('async function pipFollowSelected()'));
   assert.match(follow, /closePipMenu\(\)/);
@@ -910,7 +912,7 @@ test('RE5 on Switch gets the same panel: eligible on Citron / Eden, split-screen
   for (const change of [{ adapter: 'rpcs3' }, { adapter: 'retroarch' }, { state: 'ended' }, { stopping: true }, { session_id: 'x' }])
     assert.equal(M.eligible({ ...sw, ...change }), false);
   assert.equal(M.eligible({ ...SESSION, adapter: 'citron' }), false);          // the PS3 game on a Switch emulator: no
-  const status = { ...structuredClone(BASE), edition: 'switch', turn_speed_x: null,
+  const status = { ...structuredClone(BASE), edition: 'switch', turn_speed_x: null, automine: true,
     capabilities: { ...structuredClone(BASE.capabilities),
       turn_speed: { available: false, reason: 'not yet on Switch: sParameter’s turn rates are not mapped' } } };
   const calls = [];
@@ -934,6 +936,11 @@ test('RE5 on Switch gets the same panel: eligible on Citron / Eden, split-screen
   assert.match(html, /not yet on Switch: sParameter/);
   const fire = M.rows(painted).find(r => r.op === 'fire_rate');
   assert.equal(fire.disabled, false);
+  assert.deepEqual([fire.min, fire.max, fire.multiplier], [1, 20, 20]);
+  const mine = M.rows(painted).find(r => r.op === 'automine');
+  assert.equal(mine.on, true);
+  assert.equal(mine.disabled, false);
+  assert.match(html, /data-re5-mod="automine"[^>]*checked/);
   // the next-round weapon (a loadout template change) stays usable where the live gun choice is not yet
   const live = { ...painted, status: { ...painted.status, capabilities: { ...painted.status.capabilities,
     select_weapon: { available: false, reason: 'not yet on Switch: the Switch bot’s weapon choice is not wired yet' },

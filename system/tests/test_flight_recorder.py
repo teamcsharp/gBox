@@ -16,6 +16,27 @@ def test_re5_camera_weapon_motion_and_aim_feedback_are_preserved():
     assert out['signal_quality']['tail_field_samples']['camera'] == 1
 
 
+def test_native_defensive_requests_are_bounded_and_detached_from_later_receipts():
+    f = FlightRecorder()
+    event = {'id': 3, 'kind': 'hit', 'at': 10.0, 'owner': ['round', 10, 20], 'damage': 100}
+    stats = {'rapid_fire_configured_x': 20.0, 'rapid_fire_active': False, 'automine_enabled': True,
+             'native_mine_pending': True, 'native_mine_request_id': 'request-1', 'native_mines_placed': 2,
+             'automine_request_reason': 'hit', 'reactive_ring_requests': 3, 'reactive_ring_event': event,
+             'reactive_escape_requests': 2}
+    f.observe(10, {'player': {'hp': 900, 'pos': [100, 0, 200]}},
+              {'controls': {'keys': ['b', 'lup']}}, stats)
+    event['damage'] = 999
+    event['owner'][0] = 'next round'
+    stats.update(native_mine_pending=False, native_mines_placed=3)
+    row = f.snapshot()['tail'][0]
+    assert row['diagnostics']['reactive_ring_event']['damage'] == 100
+    assert row['diagnostics']['reactive_ring_event']['owner'][0] == 'round'
+    assert row['diagnostics']['native_mine_pending'] is True
+    assert row['diagnostics']['native_mines_placed'] == 2
+    assert row['diagnostics']['rapid_fire_configured_x'] == 20 and row['controls']['keys'] == ['b', 'lup']
+    json.dumps(row, allow_nan=False)
+
+
 def record(phase='walk', step=0, turns=False, scale=1):
     f = FlightRecorder(scale)
     for k in range(30):

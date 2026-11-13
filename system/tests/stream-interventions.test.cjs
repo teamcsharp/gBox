@@ -54,7 +54,7 @@ test('RE5 mine drops and rings keep distinct requests and report placement rathe
       return {requests:posts.map(p=>({id:p.request_id,op:p.op,state:'confirmed',result:{requested:8,placed:8,armed:7,triggered:1}}))};}});
   await c.proximityMineDrop('re5');await c.proximityMineRing('re5');
   assert.deepEqual(posts,[{op:'proximity_mine_drop',request_id:'1'},{op:'proximity_mine_ring',request_id:'2'}]);
-  await c.poll();assert.equal(notes.length,2);assert.match(notes[1],/placed: 8\/8.*arming observed: 7.*triggers observed: 1/);
+  await c.poll();assert.equal(notes.length,2);assert.match(notes[1],/Armed mines: 7\/8.*already triggered: 1/);
   assert.doesNotMatch(notes.join(' '),/Flashbang/);c.dispose();
 });
 

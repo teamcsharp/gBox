@@ -1,4 +1,12 @@
-"""RE5 Switch proximity bombs left behind (operator 2026-10-27: "In RE5, I want them placing a landmine every X second as
+"""RE5 Switch Automine now drops native armed mines without equipping or input.
+
+The default-on Automine switch is independent of inventory supply. Observed
+movement queues one drop per twenty feet; hit/grab edges queue one defensive
+drop. A single cancellable background worker leaves navigation and combat in
+control. Only native arming/trigger observations count as placed mines. The
+legacy controller below remains for replay tests, never automatic Bot admission.
+
+Historical equip/plant calibration (operator 2026-10-27: "In RE5, I want them placing a landmine every X second as
 they navigate the level leaving behind the mine for it to be used on the enemy").
 
 The supply: re5_switch_mods.mine_loadout puts the proximity bomb x5 (0x10A, WP0A MINE_B) at grid 1 (D-pad up) in Chris
@@ -183,6 +191,11 @@ class Mines:
         self.flash_until = -1e9                        # a flash went off at his feet: no Majini blocks a plant until then
         self.close_in_blast_at = None                  # the tick the guard gave up a run for a close Majini (CRIT_FLASH)
         self.saw_spent = False
+        self.native = None                            # created only after native live acceptance is enabled
+        from .re5_native_mine_tactic import Cadence
+        self.automine, self.cadence = True, Cadence()
+        self._native_receipts = collections.deque(maxlen=32)
+        self._native_seen_at = {}
         for k in COUNTERS:
             self.stats.setdefault(k, 0)
         self.stats.setdefault("mine_last_actor", 0)
@@ -191,6 +204,8 @@ class Mines:
     def configure(self, settings: dict) -> None:
         """The operator's `mines` op (re5_switch_mods.mines, through the driver's snapshot): on / off and the cadence."""
         self.enabled = bool(settings.get("enabled", True))
+        self.automine = settings.get('automine', True) is not False
+        self.stats['automine_enabled'] = self.automine
         try:
             self.every_s = max(2.0, float(settings.get("interval_s") or self.every_s))
         except (TypeError, ValueError):
@@ -205,10 +220,16 @@ class Mines:
         self.stats["mine_urges"] = self.stats.get("mine_urges", 0) + 1
 
     def new_round(self, now: float) -> None:
+        native = getattr(self, 'native', None)
+        if native is not None:
+            native.cancel()                            # never deliver the old attempt into a new round
+        from .re5_native_mine_tactic import Cadence
+        self.cadence = Cadence()
         self.state, self.t, self.round_t0 = "idle", now, now
         self._rearm_tap_at = -1e9
         self.last_at, self.last_pos, self.site, self.clear_from = None, None, None, None
         self.bombs, self.blast = {}, None
+        self._native_seen_at = {}
         self.baseline = None
         self._clear_run, self._clear_yield = None, -1e9
         self._calm_since = {}                          # quiet bombs he is beside: unit -> since when
@@ -270,9 +291,12 @@ class Mines:
         if not self.bombs or "ground_mines" not in snap:
             return
         now_ptrs = {g["ptr"] for g in snap.get("ground_mines") or ()}
-        gone = [k for k in self.bombs if k not in now_ptrs]
+        # A receipt consumed after this snapshot was captured is newer evidence
+        # than that snapshot's census. Wait for a later observation to retire it.
+        gone = [k for k in self.bombs if k not in now_ptrs and now > self._native_seen_at.get(k, -1e9)]
         for ptr in gone:
             del self.bombs[ptr]
+            self._native_seen_at.pop(ptr, None)
             self.stats["mines_gone"] += 1
         if gone:
             if self.blast is None:
@@ -292,7 +316,7 @@ class Mines:
         ok = type(combo) is int and combo > 0 and isinstance(left, (int, float)) and not isinstance(left, bool)
         return float(left) if ok and 0.0 < left < 600.0 else None
 
-    def due(self, p: dict, snap: dict, live: list, now: float) -> str | None:
+    def due(self, p: dict, snap: dict, live: list, now: float, *, native: bool = False) -> str | None:
         """Why a cycle may start now (None: not now)."""
         self._blocked, self._avoid_site = None, None
         self.stats["mine_blocked_reason"] = None
@@ -303,7 +327,7 @@ class Mines:
         if not self.enabled:
             self.stats["mine_blocked_reason"] = "disabled"
             return None
-        if self.stack(snap.get("inventory")) is None:
+        if not native and self.stack(snap.get("inventory")) is None:
             self.stats["mine_blocked_reason"] = "no usable mine in a quick slot"
             return None
         if now - start < self.every_s and now >= getattr(self, "_urge_until", -1e9):
@@ -315,11 +339,11 @@ class Mines:
             self.stats["mine_blocked_reason"] = "ground mine observation unavailable"
             return None
         left = self.combo_left(snap)
-        if left is not None and left < COMBO_PLANT_MIN_S and self.stats["mine_overdue_s"] < COMBO_WAIT_S:
+        if not native and left is not None and left < COMBO_PLANT_MIN_S and self.stats["mine_overdue_s"] < COMBO_WAIT_S:
             self.stats["mine_blocked_reason"] = "the combo's window: after the next kill"
             self.stats["mine_combo_waits"] = self.stats.get("mine_combo_waits", 0) + 1
             return None
-        if why := self._clearance(p, live, now):
+        if why := self._clearance(p, live, now, native=native):
             self.stats["mine_blocked_reason"] = self._blocked = why
             return None
         return "due"
@@ -339,7 +363,8 @@ class Mines:
         self.stats["mine_clearance_cm"] = round(m, 1)
         return m
 
-    def _clearance(self, p: dict, live: list, now: float | None = None, committed: bool = False) -> str | None:
+    def _clearance(self, p: dict, live: list, now: float | None = None, committed: bool = False,
+                   *, native: bool = False) -> str | None:
         """Keep the placement margins both before equip and immediately before pressing ZL.
 
         A bomb still down keeps its spacing (a double blast). The last site alone does not: once its bomb has gone
@@ -357,8 +382,8 @@ class Mines:
         # committed: the bomb is already in his hand (the gun came down for it half a second ago). Giving the plant
         # up there for a Majini at 3.5 m costs the same two seconds as planting and leaves nothing behind: live
         # 2026-11-09, eight attempts for one bomb. Only one inside the floor stops a plant that far along.
-        margin = min(self.margin(p), FOE_FLOOR_CM) if committed else self.margin(p)
-        if now is not None and now < self.flash_until:       # they are reeling from his flash: the bomb goes down
+        margin = self.foe_clear_cm if native else min(self.margin(p), FOE_FLOOR_CM) if committed else self.margin(p)
+        if not native and now is not None and now < self.flash_until:  # only the legacy placement's flash policy
             self.stats["mine_clearance_cm"] = margin = 0.0
         if any(flat(pos, e["pos"]) < margin for e in live):
             self.stats["mine_status"] = "a Majini too close to place one"
@@ -531,6 +556,8 @@ class Mines:
             self.t += now - self._tick_at
         self._tick_at = now
         self._track(p, snap, now)
+        if getattr(self, 'native', None) is not None:
+            return self._native_tick(p, snap, live, now, busy=busy)
         if self.state == "idle":
             act = self._clear(p, snap, live, now)
             if act is not None or busy:
@@ -675,6 +702,150 @@ class Mines:
                 return {"tap": QUICK[gun["grid"]]}
             return {"hold": ()}                         # retry without extending the rearm deadline
         return None
+
+    def observe_native(self, memory, snap, now):
+        """Poll before any priority return; completion never runs on a worker's stats thread."""
+        from . import re5_native_mine_tactic as native
+        from ..re5_reactive_ring import observe_event
+        if snap.get('mine_settings'):
+            self.configure(snap['mine_settings'])
+        observe_event(snap, self.stats, now)
+        self.cadence.observe(snap, self.stats, now, self.automine)
+        if getattr(self, 'native', None) is None and self.state == 'idle' and native.enabled(memory):
+            self.native = native.Flight(memory)
+        if getattr(self, 'native', None) is None:
+            return
+        self.native.clearance_cm = self.foe_clear_cm
+        packet = self.native.poll(snap, self.stats)
+        if packet is not None:
+            self._merge_native(packet, now)
+        forced = self.stats.get('native_mine_force_receipts')
+        if isinstance(forced, list):
+            for row in forced[:8]:
+                if (isinstance(row, dict) and tuple(row.get('owner') or ()) == self.native.owner
+                        and isinstance(row.get('receipt'), dict)):
+                    self._merge_native(dict(row, archive=row.get('archive')), now, manual=True)
+            del forced[:8]
+        self._request_native(snap, now)
+
+    def _merge_native(self, packet, now, *, manual=False):
+        from . import re5_native_mine_tactic as native
+        if not packet.get('id') or packet['id'] in self._native_receipts:
+            return
+        self._native_receipts.append(packet['id'])
+        result = packet['receipt']
+        self.stats['native_mine_last'] = {k: result.get(k) for k in
+            ('state', 'verified', 'placed', 'armed', 'triggered', 'weapon_unchanged', 'elapsed_ms', 'reason')}
+        self.stats['native_mine_last'].update(id=packet['id'], archive=packet['archive'])
+        rows = [r for r in result.get('mines') or () if isinstance(r, dict) and type(r.get('unit')) is int
+                and type(r.get('generation')) is int and native.position(r.get('pos'))]
+        if self.native.guard is not None:
+            for row in rows:
+                self.native.guard['actors'][row['unit']] = row['generation']
+        confirmed = [r for r in rows if r.get('armed_observed') is True or r.get('trigger_observed') is True]
+        for row in rows:
+            if not row.get('trigger_observed'):
+                self.bombs[row['unit']] = tuple(row['pos'])  # uncertain active actors remain hazards
+                self._native_seen_at[row['unit']] = now
+                if self.baseline is not None:
+                    self.baseline.discard(row['unit'])
+        if confirmed:
+            self.stats['mines_placed'] += len(confirmed)
+            self.stats['native_mines_placed'] = self.stats.get('native_mines_placed', 0) + len(confirmed)
+            row = confirmed[-1]
+            self.stats.update(mine_last_actor=row['unit'], mine_last_placed_at=now,
+                mine_last_confirmation={'source': 'native_armed_uWp0a', 'ptr': row['unit'],
+                                        'pos': list(row['pos']), 'at': now}, mine_overdue_s=0.)
+        expected = result.get('requested', 1) if manual else 1
+        complete = (result.get('state') == 'confirmed' and result.get('verified') is True
+                    and result.get('weapon_unchanged') is True and type(expected) is int
+                    and 1 <= expected <= 8 and len(confirmed) == expected)
+        if result.get('state') == 'confirmed' and not complete:
+            self.native.blocked_owner = packet['owner']
+            self.stats['native_mine_last']['reason'] = 'native receipt did not confirm requested mines with unchanged weapon'
+        if not complete:
+            self.stats['mine_unconfirmed'] += 1
+            self._retry_at = now + RETRY_S
+        active = [r for r in rows if not r.get('trigger_observed')]
+        if active:
+            self.site = tuple(active[-1]['pos'])
+            self.last_at, self.last_pos = now, self.site
+            self._site_until = None
+            self.state, self.t = 'retreat', now
+            self.stats['mine_status'] = 'native mine down; keep moving clear of its blast'
+        else:
+            self.state, self.site = 'idle', None
+            if confirmed:
+                self.last_at = now
+
+    def _request_native(self, snap, now):
+        """Background admission only: never lower a gun, equip, or hold an input."""
+        from . import re5_native_mine_tactic as native
+        flight, p = self.native, snap.get('player') or {}
+        if not self.automine:
+            flight.cancel()
+            self.stats['mine_blocked_reason'] = 'automine disabled'
+            return
+        if flight.job is not None or now < self._retry_at:
+            return
+        demand = self.cadence.demand(snap, self.stats, now)
+        if demand is None:
+            return
+        if not native.enabled(flight.memory) or flight.owner == flight.blocked_owner:
+            self.stats['mine_blocked_reason'] = 'native mine unavailable or previous placement uncertain'
+            return
+        if not native.position(p.get('pos')) or 'ground_mines' not in snap:
+            self.stats['mine_blocked_reason'] = 'ground mine observation unavailable'
+            return
+        # A native drop does not root the runner in a planting animation. Nearby
+        # pursuers are its purpose; only existing mine sites restrict placement.
+        if why := self._clearance(p, [], now, native=True):
+            self.stats['mine_blocked_reason'] = why
+            return
+        if self.stats.get('ring_async_pending') or self.stats.get('bot_grenade_state') == 'requested':
+            self.stats['mine_blocked_reason'] = 'another native defensive action is pending'
+            return
+        if flight.submit(snap, self.stats, now, reason=demand[0]):
+            self.cadence.claimed(demand, now)
+            self.stats['mine_attempts'] += 1
+            self.stats['automine_request_reason'] = demand[0]
+            self.stats['mine_status'] = 'native mine requested; movement and combat continue'
+
+    def automatic(self, p, snap, live, now):
+        """Automatic play never falls back to the legacy equip/place sequence."""
+        self._track(p, snap, now)
+        if self.native is None:
+            self.stats['mine_blocked_reason'] = 'native mine unavailable; no equipment fallback'
+            return self._clear(p, snap, live, now)  # an existing physical hazard still matters
+        return self._native_tick(p, snap, live, now)
+
+    def _native_tick(self, p, snap, live, now, *, busy=False):
+        """A request never neutralizes the pad or enters an equip/placing animation."""
+        from . import re5_native_mine_tactic as native
+        flight = self.native
+        if flight.job is not None:
+            self.stats['mine_status'] = 'native mine pending; movement and combat continue'
+            return None                                  # preserve an escape and never call Bot._gun_down
+        if self.state == 'retreat' and self.site is not None:
+            away = flat(p['pos'], self.site) >= RETREAT_CM
+            if away or self._trail(live) or now - self.t > RETREAT_S:
+                if away:
+                    self.stats['mine_retreats_completed'] += 1
+                elif self._trail(live):
+                    self.stats['mine_trail_plants'] = self.stats.get('mine_trail_plants', 0) + 1
+                self.state, self.site, self.last_pos = 'idle', None, None
+            elif not busy:
+                return self._run(p, live, self.site)
+        if busy:
+            return None
+        act = self._clear(p, snap, live, now)
+        if act is not None:
+            return act
+        return None
+
+    def close(self):
+        if getattr(self, 'native', None) is not None:
+            self.native.close()
 
     def _trail(self, live: list) -> bool:
         """The bomb just planted has no Majini within TRAIL_CM of it: left behind on his way, no run out."""

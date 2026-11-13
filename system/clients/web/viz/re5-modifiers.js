@@ -14,6 +14,8 @@
   // the blueprint look (blueprint-look.js): the PC's MercMode setting, through POST /api/mercmode, next round
   const BLUEPRINT = root.GBoxBlueprintLook || (typeof require === "function" ? (() => { try { return require("./blueprint-look.js"); } catch { return null; } })() : null);
   const DEFINITIONS = [
+    { op: "automine", label: "Automine", field: "automine", switchOnly: true,
+      note: () => "Drop armed mines every 20 feet and on hits/QTEs while keeping the gun equipped." },
     { op: "unlimited_health", label: "Unlimited life", field: "unlimited_health" },
     { op: "infinite_ammo", label: "Infinite ammo", field: "infinite_ammo" },
     { op: "infinite_spray", label: "Infinite first aid spray", field: "infinite_spray" },
@@ -161,8 +163,11 @@
   }
   // a Switch-only control (the per-weapon rates) is not shown on the PS3 edition
   const shown = (state, def) => !def.switchOnly || state?.edition === "switch";
+  const definitionFor = (state, def) => def?.op === 'fire_rate' && state?.edition === 'switch'
+    ? {...def, min:1, max:20, step:1, multiplier:20} : def;
   function rows(state) {
-    return DEFINITIONS.filter(def => shown(state, def)).map(def => {
+    return DEFINITIONS.filter(def => shown(state, def)).map(original => {
+      const def = definitionFor(state, original);
       const on = value(state.status, def), cap = capability(state.status, def.op);
       return { ...def, on, ...cap, disabled: state.busy || state.pending || state.weaponPending || state.stale || !cap.available || on === null };
     });
@@ -442,7 +447,7 @@
     }
     async function change(op, wanted) {
       if (state.busy || state.pending || state.weaponPending || state.stale || disposed) return;
-      const def = DEFINITIONS.find(row => row.op === op);
+      const def = definitionFor(state, DEFINITIONS.find(row => row.op === op));
       const random = op === "random_weapon", selecting = op === "select_weapon", weaponChange = random || selecting;
       const cap = capability(state.status, op);
       if ((!def && !weaponChange) || !cap.available || (!weaponChange && (typeof wanted !== "boolean" || value(state.status, def) === null))) return;
@@ -550,7 +555,7 @@
       finally { state.busy = false; paint(); }
     }
     async function setMultiplier(op, requested) {
-      const def = DEFINITIONS.find(row => row.op === op), number = Number(requested);
+      const def = definitionFor(state, DEFINITIONS.find(row => row.op === op)), number = Number(requested);
       if (!def || def.min === undefined || !Number.isFinite(number) || number < def.min || number > def.max
           || state.busy || state.pending || state.weaponPending || state.stale || disposed
           || !capability(state.status, op).available || value(state.status, def) === null) return;

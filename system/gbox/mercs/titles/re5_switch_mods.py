@@ -9,7 +9,7 @@ apply_ops), and the driver (gbox.mercs.titles.re5_switch.RE5Switch.screen) calls
 ops:
   status                    what is on: the no-ammo flags, the fire-rate multiplier, the player's time scale
   infinite_ammo on=true     every gun and grenade gets the Gatling's "needs no ammo" flag: no round is spent, no reload
-  fire_rate multiplier=N    the player's own time scale x N while his shot motion plays (1..80; 1 = off): a held ZR
+  fire_rate multiplier=N    the player's own time scale x N while his shot motion plays (1..20; 1 = off): a held ZR
                             repeats about N times faster, up to the frame rate. Aiming, walking and turning keep the
                             game's speed (the scale is 1 whenever the shot motion is not playing)
   egg_rate / bow_rate multiplier=N   the same time scale on the rotten egg's (1..40, default 20) / the longbow's (1..20,
@@ -26,7 +26,7 @@ ops:
                             only), loadout weapons=[...] seed=  every gun drawn from the powerful campaign weapons,
   replace_rockets / replace_long_guns seed=   the rocket launcher (and the sniper rifles) as a magnum: all in the
                             Mercenaries loadout templates, from the next round's start (the PS3's semantics, below)
-  random_cheats seed=       the PS3's randomizer with the ops this edition has (fire_rate x80, infinite_ammo, loadout,
+  random_cheats seed=       the PS3's randomizer with the ops this edition has (fire_rate x20, infinite_ammo, loadout,
                             the long guns replaced); addresses: this build's address table
 
 The PS3 tool (gbox.re5_mods_tool, `re5_mods`) routes a Switch session here (tool_run): the same op names, parameters and
@@ -77,10 +77,10 @@ NO_AMMO_SKIP = ("NONE", "Empty", "KNIFE", "STUNROD")         # no rounds to spen
 UPG_TABLE, UPG_STRIDE = 0x1D13B28, 0x210
 P_TIME_SCALE = 0x1A08
 MOTION_SHOT = 29
-FIRE_MAX = 5.0                                               # the operator's round loadout, 2026-10-28
+FIRE_MAX = 20.0                                              # operator: rapid shotguns and magnums, 2026-11-13
 SNIPER_FIRE_X = 30.0                                         # operator 2026-11-01: sniper weapons only
 SNIPER_ITEMS = frozenset({0x05, 0x1C, 0x20})
-FIRE_TOP = 1000.0                                            # the PS3 panel's top; the frame rate caps it long before
+FIRE_TOP = 1000.0                                            # legacy PS3-compatible input; reported clamp to FIRE_MAX
 CHECK_S = 2.0                                                # maintain reads the no-ammo flags back this often
 SPRAY_ID = 0x304                                             # the First Aid Spray (Chris carries one at grid 7)
 SPRAY_KEEP = 2                                               # infinite_spray keeps its count here (a use leaves one)
@@ -176,7 +176,7 @@ class RE5Switch:
         st = {"game": GAME, "module_base": hex(self.base),
               "no_ammo_weapons": [self.name(w) for w, f in flags.items() if f == 1],
               "infinite_ammo": bool(flags) and all(f == 1 for f in flags.values()),
-              "fire_rate_x": self.state.get("fire_rate", 1.0)}
+              "fire_rate_x": self.state.get("fire_rate", 1.0), "fire_rate_max_x": FIRE_MAX}
         snap = R.snapshot(self.m)
         if snap.get("player"):
             p = snap["player"]["ptr"]
@@ -213,14 +213,17 @@ def infinite_ammo(g: RE5Switch, on: bool) -> dict:
 
 def fire_rate(g: RE5Switch, mult) -> dict:
     try:
+        if isinstance(mult, bool):
+            raise ValueError
         k = float(mult if mult is not None else FIRE_MAX)
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
         raise ValueError(f"fire_rate multiplier: a number 1..{FIRE_TOP:g} (1 = the game's)") from None
     if 0.1 <= k < 1.0:
         raise ValueError("fire_rate multiplier: not yet on Switch: slower than the game's own rate (1..%g)" % FIRE_TOP)
-    if not 1.0 <= k <= FIRE_TOP:
+    if not math.isfinite(k) or not 1.0 <= k <= FIRE_TOP:
         raise ValueError(f"fire_rate multiplier: 1..{FIRE_TOP:g} (1 = the game's)")
-    k = min(k, FIRE_MAX)                                     # the operator's cap per weapon (2026-10-28: 5x)
+    requested = k
+    k = min(k, FIRE_MAX)                                     # old saved x80 requests remain bounded and explicit
     g.state["fire_rate"] = k
     restored = 0
     if k == 1.0 and g.state.get("scaled"):                   # off: the player's own pace back now (his round's player)
@@ -228,10 +231,12 @@ def fire_rate(g: RE5Switch, mult) -> dict:
         if p and p["ptr"] == g.state["scaled"][0]:
             restored = _restore_scale(g.ad, g.state)
         g.state.pop("scaled", None)
-    return {"fire_rate_x": k, "sniper_fire_rate_x": SNIPER_FIRE_X if k > 1.0 else 1.0,
+    return {"fire_rate_x": k, "fire_rate_requested_x": requested, "fire_rate_max_x": FIRE_MAX,
+            "fire_rate_capped": requested != k, "sniper_fire_rate_x": SNIPER_FIRE_X if k > 1.0 else 1.0,
             "verified": True, "restored": restored,
             "note": "the player's time scale x N while his shot motion plays (maintained every driver snapshot): a "
-                    "held ZR repeats about N times faster, capped by the frame rate (live: x8 15 shots/s, x80 25)"}
+                    "held ZR repeats faster, capped by the frame rate. The multiplier is not a measured shots/s "
+                    "rate; the ordinary-gun cap is 20x (live M92F: x8 15 shots/s, x80 25)."}
 
 
 def chris_block(g: RE5Switch, off: int) -> bool:
@@ -1141,10 +1146,21 @@ def mine_probe(g: RE5Switch) -> dict:
 def mine_settings(ad) -> dict | None:
     """The session's mine settings for the Switch bot (None: never set: the bot's defaults)."""
     st = ORIG.get(id(ad)) or {}
+    settings = dict(st.get("mine_settings") or {})
     if st.get("mine_loadout") is False:
-        return {"enabled":False,"interval_s":(st.get("mine_settings") or {}).get("interval_s",MINE_EVERY_DEFAULT),
-                "only":False}
-    return dict(st["mine_settings"]) if st.get("mine_settings") else None
+        settings.update(enabled=False, interval_s=settings.get("interval_s", MINE_EVERY_DEFAULT), only=False)
+    if "automine" in st:
+        settings["automine"] = st["automine"]
+    return settings or None
+
+
+def automine(g: RE5Switch, on: bool = True) -> dict:
+    """Native movement/event drops; independent of the inventory mine supply."""
+    if type(on) is not bool:
+        raise ValueError("automine needs an explicit boolean")
+    g.state["automine"] = on
+    return {"automine": on, "verified": g.state["automine"] is on,
+            "distance_ft": 20, "equips_mines": False, "effective_next_round": False}
 
 
 def _prepare_mine_supply(ad, snap, now) -> dict:
@@ -1228,7 +1244,8 @@ def maintain(ad, snap=None, *, enabled: bool = True, prepare_mines: bool = False
     player (a raised scale on a player the round already freed is dropped, never written); never raises."""
     with _LOCK:
         st = ORIG.get(id(ad))
-        out = {"active": False, "writes": 0, "verified": True, "infinite_ammo": None}
+        out = {"active": False, "writes": 0, "verified": True, "infinite_ammo": None,
+               "fire_rate_x": 1.0, "fire_rate_max_x": FIRE_MAX}
         if prepare_mines:
             try:
                 supply = _prepare_mine_supply(ad,snap,clock())
@@ -1245,13 +1262,19 @@ def maintain(ad, snap=None, *, enabled: bool = True, prepare_mines: bool = False
         try:
             p = (snap or {}).get("player")
             k = st.get("fire_rate", 1.0)
+            out["fire_rate_x"] = k                          # configured rate, distinct from a currently scaled shot
             held = next((row for row in (snap or {}).get('inventory') or () if row.get('hand')), None)
             if k > 1.0 and held and held.get('item') in SNIPER_ITEMS:
                 k = SNIPER_FIRE_X
-            motions = (MOTION_SHOT,)                         # the guns: the shot motion, fire_rate (FIRE_MAX)
             item = held.get('item') if held else None
+            from . import re5_weapons
+            weapon = re5_weapons.WEAPONS.get(item)
+            # Mines also report motion 29 in live captures. Only a confirmed
+            # firearm gets the gun multiplier; missing/other inventory restores
+            # the player's own scale instead of accelerating placement or healing.
+            gun = held and held.get('type') == 1 and weapon and weapon.family in re5_weapons.DIRECT
+            motions = (MOTION_SHOT,) if gun else ()
             if item in RATE_ITEMS:                           # the egg / the longbow: their own rate on their own motions
-                from . import re5_weapons
                 k, motions = weapon_rate_x(st, RATE_ITEMS[item]), re5_weapons.rate_motions(item)
                 out["weapon_rate"] = {"weapon": RATE_ITEMS[item], "x": k, "motions_known": bool(motions)}
             playing = bool(p) and p.get("motion") in motions
@@ -1355,13 +1378,13 @@ def revert_all(g: RE5Switch) -> dict:
 
 
 def random_cheats(g: RE5Switch, seed=None) -> dict:
-    """The PS3 tool's per-round randomizer: fire_rate x80, the game's turn speed, bullet damage x10, infinite ammo,
+    """The PS3 tool's per-round randomizer: fire_rate x20, the game's turn speed, bullet damage x10, infinite ammo,
     the loadout re-drawn three rounds in four, the long guns replaced."""
     import random
     rng = random.Random(seed)
-    picked = {"fire_rate_x": 80.0, "turn_speed_x": 1.0, "bullet_damage_x": 10.0, "infinite_ammo": True,
+    picked = {"fire_rate_x": FIRE_MAX, "turn_speed_x": 1.0, "bullet_damage_x": 10.0, "infinite_ammo": True,
               "loadout": rng.random() < 0.75}
-    out = {"fire_rate": fire_rate(g, 80.0)["verified"], "infinite_ammo": infinite_ammo(g, True)["verified"],
+    out = {"fire_rate": fire_rate(g, FIRE_MAX)["verified"], "infinite_ammo": infinite_ammo(g, True)["verified"],
            "turn_speed": turn_speed(g, 1.0)["verified"], "bullet_damage": bullet_damage(g, 10.0)["verified"]}
     if picked["loadout"] or g.state.get("weapon_override"):
         out["loadout"] = loadout(g, seed=rng.random())["verified"]
@@ -1398,6 +1421,7 @@ NOT_YET = {
     "knife_knockback": "no verified live control for this hook",
 }
 AVAILABLE = {
+    "automine": "Armed native mines every 20 feet and on hits/QTEs, without changing weapons.",
     "fire_rate": "the player's time scale while his shot motion plays; read back every snapshot",
     "infinite_ammo": "the Gatling's no-ammo flag on every gun and grenade, read back every 2 s",
     "infinite_spray": "the round's First Aid Spray kept from emptying",
@@ -1437,6 +1461,7 @@ def full_status(g: RE5Switch) -> dict:
     st = g.status()
     hs = g.state.get("health") or {}
     st.update(turn_speed_x=turn_speed_x(g), bullet_damage_x=bullet_damage_x(g), unlimited_health=bool(hs.get("on")),
+              automine=g.state.get("automine", True),
               health_maintenance=hs.get("last"), hit_immunity=False,
               infinite_spray=bool(g.state.get("infinite_spray")), mine_loadout=bool(g.state.get("mine_loadout")),
               mine_settings=g.state.get("mine_settings") or {"enabled": bool(g.state.get("mine_loadout")),
@@ -1548,6 +1573,8 @@ def tool_run(ad, op: str = "status", multiplier=None, on: bool = True, g: RE5Swi
             res.update(bullet_damage(g, (multiplier if multiplier is not None else 10.0) if on else 1.0))
         elif op == "mines":
             res.update(mines(g, multiplier, bool(on)))
+        elif op == "automine":
+            res.update(automine(g, on))
         elif op == "weapon_override":
             res.update(weapon_override(g, extra.get("weapon") if on else None, bool(extra.get("only"))))
         elif op == "loadout":
@@ -1586,7 +1613,7 @@ def _weapons() -> dict:
     return re5_weapons.WEAPONS
 
 
-SAVED_OPS = frozenset({"fire_rate", "infinite_ammo", "infinite_spray", "unlimited_health", "mines", "weapon_override",
+SAVED_OPS = frozenset({"fire_rate", "infinite_ammo", "infinite_spray", "unlimited_health", "mines", "automine", "weapon_override",
                        "egg_rate", "bow_rate"})
 
 

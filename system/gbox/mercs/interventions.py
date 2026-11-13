@@ -666,12 +666,12 @@ def _worker_loop(sid, server, headers, ad, stats_of, alive, event, game=None):
                                         return (alive() and row['expires'] > time.time() and
                                                 row['epoch'] == context(full=False)['epoch'] and
                                                 (stats or {}).get('round_evidence_id') == round_id)
-                                    result = ctl.proximity_mines(row['args'].get('count', 5 if row['op'] == 'proximity_mine_ring' else 1),
+                                    from .titles.re5_mine_escape import execute as mine_escape
+                                    result = mine_escape(ctl,
+                                        row['args'].get('count', 5 if row['op'] == 'proximity_mine_ring' else 1),
+                                        ring=row['op'] == 'proximity_mine_ring',
                                         allow_unverified=row['args'].get('allow_unverified') is True,
-                                        allowed=allowed_mines)
-                                    if stats is not None:
-                                        stats['proximity_mines_last'] = result
-                                        stats['proximity_mines_placed'] = stats.get('proximity_mines_placed', 0) + int(result.get('placed') or 0)
+                                        allowed=allowed_mines, stats=stats, request_id=row['id'], round_id=round_id)
                                 elif row['op'] == 'first_aid_now':
                                     result = ctl.first_aid_now()
                                     if stats is not None and result.get('consumed'):

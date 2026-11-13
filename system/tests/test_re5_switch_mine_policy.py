@@ -53,7 +53,7 @@ def test_snapshot_excludes_inventory_mine_object_but_keeps_unknown_ground_actor(
     assert state["ground_mines"] == [{"ptr": ground, "pos": (0., 0., 0.)}]
 
 
-def test_due_mine_can_begin_during_flight_when_site_is_clear(monkeypatch):
+def test_due_mine_never_cancels_active_escape_or_equips_a_bomb(monkeypatch):
     monkeypatch.setattr(R, "PS3_BRAIN", False)
     monkeypatch.setattr(R, "HEAL_ENABLED", False)
     monkeypatch.setattr(R, "MINE_EVERY_S", 30.0)
@@ -63,9 +63,10 @@ def test_due_mine_can_begin_during_flight_when_site_is_clear(monkeypatch):
     bot.tick(state)
     bot.escape = (0.0, 35.0)
     clock[0] = 30.1
-    assert bot.tick(state) == {"hold": ()}
-    assert bot.doing == "mine" and bot.mines.state == "neutral"
-    assert bot.escape is None
+    assert 'lup' in bot.tick(state)['hold']
+    assert bot.doing != 'mine' and bot.mines.state == 'idle'
+    assert bot.escape == (0.0, 35.0)
+    assert bot.stats['mine_attempts'] == 0
 
 
 def test_held_player_is_not_interrupted_to_place_due_mine(monkeypatch):

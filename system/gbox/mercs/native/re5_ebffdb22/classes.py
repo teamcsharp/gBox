@@ -12,8 +12,8 @@ Read out of the operator's own image (build `EBFFDB22…`, verified): the class 
 which is what makes the whole block trustworthy. `derive()` re-runs that registration sequence with a tiny ARM64
 emulator so the table can be checked against any copy of the image (`scripts/verify_re5_classes.py`).
 
-Only the DTIs are needed by the controller: the detonation wrapper takes the class vtable the allocated unit
-actually carries, exactly as RE6's parameterised pair does, so no per-class vtable is trusted from a table.
+The factory takes the DTI. The controller also verifies the unit's final class
+vtable, allocation generation and owner before moving or detonating it.
 """
 from __future__ import annotations
 
@@ -46,6 +46,10 @@ CLASSES = {
     "flash": GrenadeClass("flash", "uWp08", 0x108, 0x1D71538, 0x28E0, True),
 }
 FLASH_VT = 0x1C5EF58           # the live-verified flash's unit class vtable (for reference only)
+# Final unit tables written by allocators 0x8211B0 / 0x820F70 / 0x820B60.
+# Do not accept an arbitrary recycled allocation merely because its DTI matched
+# at factory admission. These addresses include no Ghidra image-base offset.
+VTABLES = {'hand': 0x1C5FA38, 'incendiary': 0x1C5F4C8, 'flash': FLASH_VT}
 
 
 def _sxt(value: int, bits: int) -> int:

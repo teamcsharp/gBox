@@ -43,11 +43,6 @@ class Adapter:
         return {"address": a, "written": len(data), "verified": True}
 
 
-@pytest.fixture(autouse=True)
-def _mechanics_at_any_multiplier(monkeypatch):
-    monkeypatch.setattr(SM, "FIRE_MAX", 80.0)       # play caps it at 5x (2026-10-28); the mechanics at any multiplier
-
-
 def weapon_guest(names=NAMES, **kw):
     g = round_guest(**kw)
     for wid, name in names.items():
@@ -75,6 +70,7 @@ def scale(g, ptr=None):
 def snap_of(g, motion):
     snap = R.snapshot(g)
     snap["player"] = dict(snap["player"], motion=motion)
+    snap["inventory"] = [{"item": 0x02, "type": 1, "hand": True}]
     return snap
 
 
@@ -98,16 +94,57 @@ def test_the_weapon_table_must_match_this_build():
 def test_fire_rate_scales_the_player_only_while_his_shot_plays():
     g = weapon_guest()
     ad = Adapter(g)
-    assert SM.run(ad, "fire_rate", multiplier=80)["fire_rate_x"] == 80.0
+    assert SM.run(ad, "fire_rate", multiplier=20)["fire_rate_x"] == 20.0
     assert SM.maintain(ad, snap_of(g, 26))["active"] is False and scale(g) == 1.0      # aiming: the game's pace
     out = SM.maintain(ad, snap_of(g, SM.MOTION_SHOT))
-    assert out["active"] and out["writes"] == 1 and scale(g) == 80.0               # a shot: x80
+    assert out["active"] and out["writes"] == 1 and scale(g) == 20.0               # a shot: x20
     assert SM.maintain(ad, snap_of(g, SM.MOTION_SHOT))["writes"] == 0              # once
     assert SM.maintain(ad, snap_of(g, 26))["writes"] == 1 and scale(g) == 1.0      # the shot ended: back
     SM.maintain(ad, snap_of(g, SM.MOTION_SHOT))
     assert SM.maintain(ad, snap_of(g, SM.MOTION_SHOT), enabled=False)["writes"] == 1 and scale(g) == 1.0
     with pytest.raises(ValueError):
         SM.run(ad, "fire_rate", multiplier=2000)
+
+
+@pytest.mark.parametrize("item", [0x19, 0x1A, 0x1B])          # Hydra, Lightning Hawk, S&W M500
+def test_twenty_times_rate_is_configured_between_shots_and_restored_for_movement(item):
+    g = weapon_guest()
+    ad = Adapter(g)
+    result = SM.run(ad, "fire_rate")
+    assert result["fire_rate_x"] == result["fire_rate_max_x"] == 20.0
+    assert result["fire_rate_capped"] is False
+    snap = snap_of(g, 26)
+    snap["inventory"] = [{"item": item, "type": 1, "hand": True}]
+    out = SM.maintain(ad, snap)
+    assert out["fire_rate_x"] == 20.0 and out["active"] is False and ad.writes == []
+    snap["player"]["motion"] = SM.MOTION_SHOT
+    assert SM.maintain(ad, snap)["active"] and scale(g) == 20.0
+    for motion in (0, 1, 8, 22, 26, 32, 99, 101):             # movement, aim, reload, hit/grab are never accelerated
+        snap["player"]["motion"] = motion
+        assert SM.maintain(ad, snap)["active"] is False and scale(g) == 1.0
+    assert all(at == player(g) + SM.P_TIME_SCALE and len(data) == 4 for at, data in ad.writes)
+
+
+@pytest.mark.parametrize("value", [80, 1000])
+def test_legacy_fire_rate_requests_report_the_applied_twenty_times_cap(value):
+    g = weapon_guest()
+    ad = Adapter(g)
+    out = SM.run(ad, "fire_rate", multiplier=value)
+    assert out["fire_rate_requested_x"] == value and out["fire_rate_capped"] is True
+    assert out["fire_rate_x"] == out["fire_rate_max_x"] == 20.0
+    assert SM.run(ad, "status")["fire_rate_x"] == 20.0
+    assert ad.writes == []                                  # settings alone never scale an idle actor
+
+
+@pytest.mark.parametrize("value", [True, False, -20, 0, 0.5, 1001, float("nan"), float("inf"),
+                                   float("-inf"), 10 ** 400, "bad"])
+def test_invalid_fire_rate_keeps_the_existing_setting_and_does_not_write(value):
+    g = weapon_guest()
+    ad = Adapter(g)
+    SM.run(ad, "fire_rate", multiplier=20)
+    with pytest.raises(ValueError, match="fire_rate multiplier"):
+        SM.run(ad, "fire_rate", multiplier=value)
+    assert SM.ORIG[id(ad)]["fire_rate"] == 20.0 and ad.writes == []
 
 
 def test_a_raised_scale_is_never_written_into_a_player_the_round_freed():
@@ -144,6 +181,7 @@ def test_maintain_puts_back_no_ammo_flags_the_game_reset():
 
 def test_the_driver_keeps_the_mods_from_its_snapshot_and_lets_go_when_the_bot_stops():
     g = weapon_guest(motion=SM.MOTION_SHOT)
+    put_slot(g, 0, 0x102, 50, 3, hand=1)
     ad = Adapter(g)
     SM.run(ad, "fire_rate", multiplier=8)
     m = SM.Mem(ad)
@@ -166,7 +204,7 @@ def test_mercs_bot_routes_the_switch_profile_to_re5_switch_mods():
     ad = Adapter(g)
     prof = {"map_id": "010018100CD46000", "platform": "switch"}
     failed = mercs_bot.apply_ops(ad, [("infinite_ammo", {"on": True}), ("fire_rate", {"multiplier": 80})], prof)
-    assert failed == [] and flag(g, 0x02) == 1 and SM.ORIG[id(ad)]["fire_rate"] == 80.0
+    assert failed == [] and flag(g, 0x02) == 1 and SM.ORIG[id(ad)]["fire_rate"] == 20.0
     failed = mercs_bot.apply_ops(ad, [("nonsense", {})], prof)
     assert len(failed) == 1 and failed[0].startswith("nonsense: re5_mods on Switch: unknown op 'nonsense' (")
     assert "weapon_override" in failed[0] and "mines" in failed[0]               # the PS3 tool's ops, listed
@@ -174,7 +212,7 @@ def test_mercs_bot_routes_the_switch_profile_to_re5_switch_mods():
 
 def test_the_profile_turns_the_mods_and_the_bombs_on_when_a_round_starts():
     rm = ram_map.find({"game_id": "52d15709be0fda1a", "platform": "switch"})
-    assert rm.spec["mercs"]["playing_ops"] == [["infinite_ammo", {"on": True}], ["fire_rate", {"multiplier": 5}],
+    assert rm.spec["mercs"]["playing_ops"] == [["infinite_ammo", {"on": True}], ["fire_rate", {"multiplier": 20}],
                                                ["mine_loadout", {"on": True}],
                                                ["infinite_spray", {"on": True}],                 # sprays never run out
                                                ["kill_time", {"on": True, "seconds": 5}],        # 5 s per kill
@@ -184,15 +222,35 @@ def test_the_profile_turns_the_mods_and_the_bombs_on_when_a_round_starts():
         ["loadout", {"on": True, "weapons": ["0x1B", "0x1A", "0x0B", "0x19", "0x17", "0x16", "0x04"]}]]   # magnums, shotguns
 
 
-def test_thirty_times_fire_rate_remains_only_in_the_shot_motion():
+def test_sniper_override_remains_scoped_and_restores_ordinary_gun_rate():
     g = weapon_guest()
     ad = Adapter(g)
     p = player(g)
-    SM.run(ad, "fire_rate", multiplier=30)
-    SM.maintain(ad, {"player": {"ptr": p, "motion": 29}})
+    SM.run(ad, "fire_rate", multiplier=20)
+    snap = {"player": {"ptr": p, "motion": 29}, "inventory": [{"hand": True, "item": 0x05, "type": 1}]}
+    SM.maintain(ad, snap)
     assert struct.unpack("<f", g.rd(p + SM.P_TIME_SCALE, 4))[0] == 30.0
+    snap["inventory"][0]["item"] = 0x19
+    SM.maintain(ad, snap)
+    assert scale(g) == 20.0
     SM.maintain(ad, {"player": {"ptr": p, "motion": 26}})
     assert struct.unpack("<f", g.rd(p + SM.P_TIME_SCALE, 4))[0] == 1.0
+
+
+@pytest.mark.parametrize('inventory', [[], [{'item': 0x0A, 'type': 1, 'hand': True}],
+    [{'item': 0x06, 'type': 1, 'hand': True}], [{'item': 0x08, 'type': 1, 'hand': True}],
+    [{'item': 0x04, 'type': 3, 'hand': True}], [{'item': 0xFE, 'type': 1, 'hand': True}]])
+def test_shot_motion_with_mine_grenade_spray_or_unknown_inventory_restores_gun_scale(inventory):
+    g, ad = weapon_guest(), None
+    ad = Adapter(g)
+    SM.run(ad, 'fire_rate', multiplier=20)
+    snap = snap_of(g, SM.MOTION_SHOT)
+    SM.maintain(ad, snap)
+    assert scale(g) == 20.0
+    snap['inventory'] = inventory
+    assert SM.maintain(ad, snap)['active'] is False and scale(g) == 1.0
+    count = len(ad.writes)
+    assert SM.maintain(ad, snap)['writes'] == 0 and len(ad.writes) == count
 
 
 def put_slot(g, k, idw, rounds, grid, hand=0, obj=0x5D4DDE4740):

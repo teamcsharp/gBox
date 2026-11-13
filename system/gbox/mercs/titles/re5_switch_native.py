@@ -387,10 +387,10 @@ class Controller(N.Controller):
         if self.q(self.player) in (self.heap, self.base + TEMP):
             self.write(self.player, struct.pack("<Q", self.original))
 
-    def projectile(self, unit, born):
-        if (self.q(unit) != self.base + 0x1C5EF58 or self.q(unit + 0x1A00) != born or
+    def projectile(self, unit, born, kind='flash'):
+        if (self.q(unit) != self.base + CLASSES.VTABLES[kind] or self.q(unit + 0x1A00) != born or
                 self.q(unit + 0x1A10) != self.player):
-            raise AllocationLost("flash allocation changed; this click will not be replayed")
+            raise AllocationLost(f"{kind} allocation changed; this click will not be replayed")
 
     def prepare(self):
         """Install/allocate dispatch before advertising the viewer capability.
@@ -520,10 +520,10 @@ class Controller(N.Controller):
         self.ring_projectile_pending.update(unit=unit, generation=born, stage='spawn_returned')
 
         def initialized():
-            self.projectile(unit, born)
+            self.projectile(unit, born, kind)
             return self.w(unit + 0x1B28) == 29 and self.rd(unit + 0x1B88, 1) == b"\x01"
         self.wait(initialized, timeout=RING_CALL_TIMEOUT_S)
-        self.projectile(unit, born)
+        self.projectile(unit, born, kind)
         if guard is not None:
             guard()
         carried = self.q(unit)                      # the class this allocation actually carries
@@ -536,7 +536,7 @@ class Controller(N.Controller):
         self.ring_projectile_pending['stage'] = 'detonation_requested'
         if self._detonate(unit, born, kind, carried) != 1:
             raise Unavailable(f"native {kind} resources or owner are unavailable")
-        self.projectile(unit, born)
+        self.projectile(unit, born, kind)
         if self.rd(unit + 0x28A0, 1) != b"\x01":
             raise Uncertain(f"native {kind} effect did not publish its explosion flag")
         self.ring_projectile_pending = None
