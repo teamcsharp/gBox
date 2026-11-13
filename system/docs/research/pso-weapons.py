@@ -23,8 +23,9 @@ GUN_CODE = "004400"          # RED HANDGUN, given last at arming so it is the de
 MELEE_CODES = ("009d00", "003200")   # DARK FLOW, J-SWORD
 ROTATION = (GUN_CODE,) + MELEE_CODES
 SWAP_SECONDS = 150.0         # the operator's 2-5 minute window, taken at 2.5
+FAIL_BACKOFF_S = 90.0        # after a failed swap, wait this long instead of retrying every iteration
 
-LAST_SWAP = {"at": 0.0, "index": 0, "code": GUN_CODE}
+LAST_SWAP = {"at": 0.0, "index": 0, "code": GUN_CODE, "failed_at": 0.0}
 
 
 def is_flier(entity) -> bool:
@@ -40,6 +41,10 @@ def fliers_present(entities) -> bool:
 def choose_weapon(entities, now=None) -> str | None:
     """Weapon code that should be equipped now, or None if the current one is fine."""
     now = time.time() if now is None else now
+    # A swap that just failed is deferred rather than hammered: the log was filling with the same error every
+    # fifteen seconds and each retry cost a worker round-trip.
+    if now - float(LAST_SWAP.get("failed_at") or 0.0) < FAIL_BACKOFF_S:
+        return None
     if fliers_present(entities):
         # A flier outranks the timer: melee literally cannot damage it.
         return GUN_CODE if LAST_SWAP.get("code") != GUN_CODE else None
@@ -69,7 +74,10 @@ def ensure_equipped(pad, entities, log=None) -> bool:
                 if ok:
                     LAST_SWAP["code"] = wanted
                     LAST_SWAP["at"] = time.time()
+                    LAST_SWAP["failed_at"] = 0.0
                     LAST_SWAP["index"] = ROTATION.index(wanted) if wanted in ROTATION else 0
+                else:
+                    LAST_SWAP["failed_at"] = time.time()
                 if log:
                     log(f"  weapon: {'equipped ' + wanted if ok else 'equip failed ' + wanted}"
                         f"{'' if ok else ' - ' + str(row.get('error'))[:60]}")

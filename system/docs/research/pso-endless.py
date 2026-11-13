@@ -698,6 +698,51 @@ def steer_to(pad: Pad, tx: float, tz: float) -> float:
     return math.hypot(tx - x, tz - z)
 
 
+def route_walk(pad: Pad, tx: float, tz: float, legs: int = 12) -> float:
+    """Walk to (tx,tz) following the internalised Forest route. Returns the remaining distance.
+
+    A beeline stalls against Forest geometry (measured: 92 -> 92 -> 102 -> 241), so the walk follows the safe-cell graph
+    one short leg at a time. Falls back to a plain walk when the map has no route.
+    """
+    try:
+        import json
+        import pathlib as _pathlib
+        from forest_route import MapRouter
+
+        data = json.loads(_pathlib.Path(r"D:\gBox\pso-ds\forest-maps.json").read_text(encoding="utf-8"))
+        row = data.get("Scene/map_forest01c.rel") or {}
+        cells = row.get("cells") or []
+        if cells:
+            router = MapRouter(cells)
+            for _ in range(legs):
+                me = state(pad).get("player") or {}
+                x, z = float(me.get("x") or 0), float(me.get("z") or 0)
+                remaining = math.hypot(tx - x, tz - z)
+                if remaining <= 25.0:
+                    return remaining
+                route = router.route((x, z), (tx, tz), limit=400000)
+                if not route:
+                    break
+                # the furthest waypoint within one short leg, so each hop has a real chance of being reachable
+                target = None
+                for waypoint in route:
+                    if math.dist((x, z), waypoint) <= 25.0:
+                        target = waypoint
+                    else:
+                        break
+                if target is None:
+                    target = route[1] if len(route) > 1 else route[0]
+                before = (x, z)
+                walk_to(pad, target[0], target[1], max_steps=22)
+                after = state(pad).get("player") or {}
+                if math.dist(before, (float(after.get("x") or 0), float(after.get("z") or 0))) < 2.0:
+                    break                                     # this leg is blocked too; stop rather than spin
+    except Exception:                                         # noqa: BLE001 - the map is an optimisation, not a gate
+        pass
+    me = state(pad).get("player") or {}
+    return math.hypot(tx - float(me.get("x") or 0), tz - float(me.get("z") or 0))
+
+
 def play(pad: Pad, seconds: float = 120.0) -> str:
     """Fight what is near, otherwise travel. Returns what it did most."""
     started = time.time()
@@ -768,6 +813,58 @@ def play(pad: Pad, seconds: float = 120.0) -> str:
         enemies = [e for e in (now.get("entities") or [])
                    if str(e.get("kind")) == "enemy" and e.get("hp") is not None
                    and float(e.get("hp")) > 0]
+        # INTERACT FIRST, AHEAD OF EVERYTHING. The operator: "if your indicator changes into an interact indicator,
+        # that means you need to interact with an element" and "it found the teleporter. Go to the next level."
+        # These outrank boxes and enemies because they are PROGRESS: a level-exit teleporter, the door key that opens
+        # the way on, the fence switch. The classes come from RAM, so no vision is involved:
+        # Warp*, TObjDoorKey, TLazerFenceSw and TOKeyGenericSw are already named by the class registry.
+        # CLEAR THE ROOM FIRST. Interaction outranks boxes, but not enemies: the operator asked for the bot to
+        # "dispatch these enemies and then walk out of the room". Anything within 40 units - well beyond the real
+        # 13-30 attack reach - counts as engaged, so the enemy branch keeps the turn until the room is clear.
+        engaged = [e for e in enemies
+                   if math.hypot(float(e.get("x") or 0) - x, float(e.get("z") or 0) - z) <= 40.0]
+        interact = []
+        for candidate in (now.get("entities") or []):
+            candidate_class = str(candidate.get("class"))
+            if candidate.get("x") is None or candidate.get("z") is None:
+                continue
+            if "Warp" in candidate_class:
+                rank = 0                                  # a level exit is the strongest signal in the room
+            elif candidate_class in ("TObjDoorKey", "TLazerFenceSw", "TOKeyGenericSw"):
+                rank = 1                                  # the switch that opens the way on
+            else:
+                continue
+            idist = math.hypot(float(candidate.get("x") or 0) - x, float(candidate.get("z") or 0) - z)
+            # ONLY RANK WHAT IS REACHABLE. Ranking a warp first regardless of distance made a warp 698 units away
+            # the chosen target, which then failed the range gate so the loop did NOTHING - while a switch 124
+            # units away stood untouched. That is the "walks right up to switches and does not flip them" fault.
+            if idist <= 400.0:
+                interact.append((rank, idist, candidate))
+        if interact and not engaged:
+            interact.sort(key=lambda t: (t[0], t[1]))
+            rank, idist, ient = interact[0]
+            iclass = str(ient.get("class"))
+            kind = "level exit" if rank == 0 else "switch"
+            if idist <= 25.0:
+                # PRESS FROM 25 UNITS. The walk closes to ~23 and then cannot get closer, because the switch sits
+                # behind geometry the collision mesh will not cross; with the old 12-unit gate the bot stopped
+                # 11 units short and never pressed. A press costs nothing if nothing is offered.
+                for _ in range(3):
+                    tap(pad, "a")
+                    time.sleep(0.35)
+                log(f"  INTERACT: pressed A on {iclass} at {idist:.1f} units ({kind})")
+                moved += 1
+                continue
+            if idist <= 400.0:
+                route_walk(pad, float(ient.get("x") or 0), float(ient.get("z") or 0))
+                nowat = state(pad).get("player") or {}
+                left = math.hypot(float(ient.get("x") or 0) - float(nowat.get("x") or 0),
+                                  float(ient.get("z") or 0) - float(nowat.get("z") or 0))
+                log(f"  INTERACT: walking to {iclass} ({kind}) {idist:.0f} -> {left:.0f} units")
+                moved += 1
+                time.sleep(0.1)
+                continue
+
         # BOXES FIRST. They are destructible at this level and do not fight back, so they are where the attack can
         # be perfected - and the instrumented run showed the box branch never ran because enemies were always present.
         nearby_boxes = [e for e in (now.get("entities") or [])
@@ -776,9 +873,6 @@ def play(pad: Pad, seconds: float = 120.0) -> str:
                         and e.get("x") is not None and e.get("z") is not None]
         # A CHEAP ENEMY OUTRANKS A BOX. An 8 HP fly is one swing and one step toward levelling; a 300 HP nest and a
         # 1556 HP beast are not worth the window. So boxes come first only when nothing cheap is in reach.
-        trivials = [e for e in enemies
-                    if float(e.get("hp") or 9999) <= TRIVIAL_HP
-                    and math.hypot(float(e.get("x") or 0) - x, float(e.get("z") or 0) - z) <= 22.0]
         if nearby_boxes and not enemies:   # ENEMIES OUTRANK BOXES: kills are progress and levels
             box = min(nearby_boxes, key=lambda e: (float(e.get("x") or 0) - x) ** 2
                       + (float(e.get("z") or 0) - z) ** 2)
