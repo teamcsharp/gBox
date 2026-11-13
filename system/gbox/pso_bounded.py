@@ -671,7 +671,7 @@ class WallFollowMotion:
     def __init__(self, *, arrive: float = 6.0, min_gain: float = 1.0, patience: int = 2,
                  blocked_units: float = 1.0, detour_units: float = 12.0, detour_taps: int = 3,
                  keys: Iterable[str] = DIRECTIONS, effects: dict | None = None,
-                 cal_heading: float = 0.0) -> None:
+                 cal_heading: float = 0.0, probe_every_move: bool = False) -> None:
         self.arrive = float(arrive)
         self.min_gain = float(min_gain)
         self.patience = int(patience)
@@ -685,6 +685,11 @@ class WallFollowMotion:
         self.effects = {str(key): (float(value[0]), float(value[1])) for key, value in (effects or {}).items()
                         if len(value) >= 2}
         self.cal_heading = float(cal_heading)
+        # Probe every move instead of committing. Measured: a hand-run loop that measured all four directions and then
+        # took the best one crossed the whole Pioneer 2 plaza in six hops (d 11, 8, 9, 13, 23, 6) and warped, where the
+        # committing motion wandered and failed from the same start. It costs four probe taps per move - slow, but it
+        # does not need a direction model that stays true.
+        self.probe_every_move = bool(probe_every_move)
         self.key = None
         self.last_key = None
         self.last_pos = None
@@ -790,7 +795,8 @@ class CommitMotion:
     """
 
     def __init__(self, *, arrive: float = 6.0, keys: Iterable[str] = DIRECTIONS, commit: int = 1,
-                 slide: int = 2, blocked_units: float = 3.0, decay: float = 0.3) -> None:
+                 slide: int = 2, blocked_units: float = 3.0, decay: float = 0.3,
+                 probe_every_move: bool = False) -> None:
         self.arrive = float(arrive)
         self.keys = tuple(keys)
         self.commit = max(1, int(commit))
@@ -813,6 +819,7 @@ class CommitMotion:
         self.probe_target = (0.0, 0.0)
         self.probes = 0
         self.turns = 0
+        self.probe_every_move = bool(probe_every_move)
         self.last_y = None
         self.best_distance = None
         self.stuck_taps = 0
@@ -904,7 +911,7 @@ class CommitMotion:
                 ranked = sorted(self.probe_scores.items(), key=lambda kv: kv[1])
                 if ranked:
                     self.key = ranked[0][0]
-                    self.remaining = self.commit
+                    self.remaining = 1 if self.probe_every_move else self.commit
                 self.blocked = 0
             return press(key, f"probe {key} around the obstruction ({self.probes} probes)")
         distance = math.hypot(float(target[0]) - x, float(target[1]) - z)
@@ -932,6 +939,14 @@ class CommitMotion:
                 self.detour_aim = (-uz * self.detour_side, ux * self.detour_side)
                 self.detour_side = -self.detour_side
             aim = _unit(float(target[0]) - x, float(target[1]) - z)
+        if self.probe_every_move and self.remaining <= 0 and not self.probe_queue:
+            self.probe_queue = list(self.keys)
+            self.probe_scores = {}
+            self.probe_target = (float(target[0]), float(target[1]))
+            key = self.probe_queue.pop(0)
+            self.key, self.last_key, self.last_pos = key, key, (x, z)
+            self.steps += 1
+            return press(key, f"probe {key} (probe-every-move)")
         if self.last_ok and self.last_key is not None:
             # Straight-line stickiness. Measured: six presses of the same key walked (221)->(183) dead straight - the
             # follow camera settles behind the movement, so repeating a key continues the line. Re-deciding every tap
