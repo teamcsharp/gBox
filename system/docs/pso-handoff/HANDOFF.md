@@ -37,6 +37,59 @@ And the earlier "taps do not rotate at all" result was **not** a steering failur
 
 ---
 
+## 1c. Addendum — the Ultimate plan, and paralysis as the key
+
+The operator has stated the endgame explicitly, and it changes what "done" means:
+
+> **"I want the game played in ultimate heavily hacked with Ghidra hooks so the bot is making meaningful progress at a low level against fierce enemies which makes for impressive watching."**
+
+And the mechanism to make that survivable:
+
+> **"Once you get paralysis down, you can play in Ultimate and just paralyze enemies while you figure out combat and fight the paralyzed enemies."**
+
+So the shape of the deliverable is:
+
+1. **Ultimate difficulty**, entered at a **low level**, with every hack gBox can supply (MAG, armour, shield, weapons, randomised top-tier builds).
+2. **Paralysis** as the training and survival tool: freeze the room, then learn and practise combat against enemies that cannot retaliate.
+3. **Ghidra hooks** — the decompilation is the intended route to behaviours the RAM profile does not expose.
+4. The whole thing should **look impressive**: a level-5 character working through Ultimate content.
+
+### Paralysis: what is built and what is proven
+
+The actor layout from `pso_actor_dump.KNOWN_FIELDS` is the enabling discovery:
+
+```
+0x038 x   0x03C y   0x040 z      position
+0x0A8 hit records   0x0AC native state
+0x326 action state               animation / AI branch (the authentic stun field)
+0x32C hp
+```
+
+`paralyze.py` implements **two** mechanisms:
+
+* **`set_action_state`** writes the `0x326` word - the game's own state, so a stun value would play the stun animation. The correct value must be calibrated, not guessed.
+* **`pin`** rewrites `0x038` with the actor's own coordinates every cycle, so any movement the AI attempts is overwritten. **This is proven:** holding forward moved the test actor **9.6 units** freely, and with pinning active it moved **0.0 units across 3 writes**. No unknown constant required, and it cannot silently do nothing - which matters, because a training freeze that appears to work but does not would waste exactly the kind of time the "unbreakable boxes" theory did.
+
+**Two measured corrections** fed into it: `read_memory` returns only `{address, length, sha256}` - **not bytes** - so the first version wrote nothing at all; and the profile already carries `x`, `y`, `z` per entity, so the pin needs **no read**. That is why the second version works.
+
+### Weapons: ground to maximum, and one already paralyzes
+
+`give` was writing **grind 0** for every weapon. The catalog shows the ceiling is **per weapon**, not a flat 99:
+
+| weapon | code | max_grind | special_id |
+|---|---|---|---|
+| RED HANDGUN | 004400 | **50** | **29 = Seize (paralysis)** |
+| TSUMIKIRI J-SWORD | 003200 | 50 | 0 |
+| DARK FLOW | 009d00 | **0** (ungrindable) | 0 |
+
+`give` now sets the grind byte (`data[3]`) to the weapon's own `max_grind`, capped at 99. And **the handgun already carries `special_id 29` = Seize**, so the character is holding a paralysis weapon: the game's own mechanism is the **special attack on `B`**. That is a game-legal paralysis route that needs no memory writes at all, and it composes with the pin.
+
+### Also fixed this round
+
+`find_inventory_loose` (from the previous round) had locked onto garbage - item code `3f1999`, grind 154 - because it accepted the longest run of slot-shaped data anywhere in RAM, and `tools.py` caches the first answer per session, so one false positive poisoned every later call. It is now validated by the **item-count byte immediately before slot 0** (which the game and `tools.py` both maintain and which must agree with the count of present slots), and the walk-back crosses **real items only**, because items are packed. Verified against a synthetic decoy: the real inventory is found at the exact address and the decoy alone returns `None`.
+
+---
+
 ## 2. What the operator asked for — condensed
 
 These are the requests made across the session, grouped so the PM can see the shape of the brief:

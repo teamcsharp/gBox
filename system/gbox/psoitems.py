@@ -170,33 +170,49 @@ def find_inventory(mem: bytes, base: int, endian: str = "<") -> int | None:
 
 
 def find_inventory_loose(mem: bytes, base: int, endian: str = "<") -> int | None:
-    """Inventory slot-0 address found by a RUN of valid slots, so an unarmed character still works.
+    """Inventory slot-0 address found by a run of valid slots, validated by the item-count byte.
 
-    `find_inventory` anchors on an EQUIPPED weapon (present=1, flags=8). An unarmed character has no such slot, so the
-    anchor never matches and the inventory stays unreachable - the deadlock behind "inventory not found (equip a weapon
-    first, then retry)". This anchors on ANY real item instead: walk back from each real slot to the run's start, then
-    count forward while the slots stay valid.
+    `find_inventory` anchors on an EQUIPPED weapon (present=1, flags=8), so an unarmed character has no anchor and the
+    inventory is unreachable - the deadlock behind "inventory not found (equip a weapon first, then retry)". This scan
+    anchors on ANY real item instead, but a run of slot-shaped data is not enough on its own: an unvalidated scan locked
+    onto a region that decoded as invalid item codes with impossible grinds.
+
+    The discriminator is the **item count byte immediately before slot 0**, which the game and tools.py both keep in
+    sync (`write_memory(base - 4, min(30, n + 1))`). A candidate must therefore have a small count there, and that count
+    must agree with the number of present slots in the run. Random data will not.
     """
-    best_score, best_start = 0, None
+    best = None
     for position in range(0, len(mem) - SLOT, 4):
         if _slot_ok(mem[position:position + SLOT], endian) != 1:
             continue
         start = position
-        while start - SLOT >= 0 and _slot_ok(mem[start - SLOT:start], endian) >= 0:
+        # Items are PACKED, so slot 0 of a non-empty inventory is a real item: walk back only across real items.
+        # Crossing empty slots is what let the walk escape into unrelated zeroed memory and validate against a
+        # stranger's count byte.
+        while start - SLOT >= 0 and _slot_ok(mem[start - SLOT:start], endian) == 1:
             start -= SLOT
-        score, cursor = 0, start
+        items, cursor = 0, start
         while cursor + SLOT <= len(mem):
             verdict = _slot_ok(mem[cursor:cursor + SLOT], endian)
             if verdict < 0:
                 break
             if verdict == 0 and cursor > start:
                 break
-            score += verdict
+            items += verdict
             cursor += SLOT
-        if score > best_score:
-            best_score, best_start = score, start
-    return base + best_start if best_start is not None else None
-
+        if items < 1:
+            continue
+        # VALIDATE: the byte before slot 0 is the item count, and it must agree with what the run holds.
+        if start - 4 < 0:
+            continue
+        declared = mem[start - 4]
+        if declared > SLOTS or declared == 0:
+            continue
+        agrees = 1 if abs(int(declared) - items) <= 1 else 0
+        score = (agrees, items, (cursor - start) // SLOT)
+        if best is None or score > best[0]:
+            best = (score, start)
+    return base + best[1] if best else None
 
 def decode_slot(b: bytes, endian: str = "<") -> dict:
     present, flags = struct.unpack_from(f"{endian}II", b, 0)
