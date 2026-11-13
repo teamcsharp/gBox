@@ -381,7 +381,7 @@ class RouteFollower:
     a 60-waypoint route between the same two points, so the controller follows the route instead of the straight line.
     """
 
-    def __init__(self, router, *, arrive: float = 5.0, replan_after: int = 4, spacing: float = 12.0,
+    def __init__(self, router, *, arrive: float = 10.0, replan_after: int = 4, spacing: float = 24.0,
                  cell: float = 2.5) -> None:
         self.router = router
         self.arrive = float(arrive)
@@ -1123,6 +1123,29 @@ class SessionWorld:
 # ---------------------------------------------------------------------------------------------------------------------
 # The tick loop
 # ---------------------------------------------------------------------------------------------------------------------
+def carve_doorways(cells, doors, *, radius: float = 7.0, cell: float = 2.5) -> set:
+    """Add grid cells around each doorway so a route can *cross* it instead of going around the room.
+
+    The collision mesh contains the door volume as geometry, and it was captured from the disc with every door in its
+    default (closed) state, so a doorway is a wall in the static grid no matter what its runtime state is. Measured on
+    the live map: a door frame occupies the cells a route would have to cross, and A* therefore never crosses a room
+    boundary at a door - the character stands in front of an open door and orbits. Carving restores the passage; the
+    door's actual open/closed state is then a runtime question for the controller, not a map question.
+    """
+    out = {tuple(cell_index) for cell_index in cells}
+    steps = int(math.ceil(max(radius, 0.0) / cell))
+    for door in doors or ():
+        try:
+            x, z = float(door[0]), float(door[1])
+        except (TypeError, ValueError, IndexError):
+            continue
+        base = (math.floor(x / cell), math.floor(z / cell))
+        for dx in range(-steps, steps + 1):
+            for dz in range(-steps, steps + 1):
+                out.add((base[0] + dx, base[1] + dz))
+    return out
+
+
 @dataclass
 class Pending:
     """A movement action issued by one tick and measured by the next one's state read."""

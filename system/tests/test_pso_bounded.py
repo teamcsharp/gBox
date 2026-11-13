@@ -707,6 +707,69 @@ def test_a_routed_policy_follows_waypoints_instead_of_a_straight_line(workdir):
         f"the follower should reach the goal (at {world.pos[0]:.0f},{world.pos[1]:.0f})"
 
 
+def test_carving_a_doorway_turns_a_static_wall_into_a_passage():
+    """The disc's collision mesh has every door closed, so a doorway is wall in the static grid.
+
+    Two rooms, a solid wall between them, and a door in the wall: the route is impossible until the doorway is carved,
+    and after carving it crosses exactly there.
+    """
+    cell = 2.5
+    cells = {(x, z) for x in range(0, 20) for z in range(0, 40)} | \
+            {(x, z) for x in range(22, 42) for z in range(0, 40)}
+    router = _GridRouter(cells, cell)
+    assert router.route((25.0, 50.0), (75.0, 50.0), limit=50000) is None, "the wall blocks the route"
+
+    carved = B.carve_doorways(cells, [(55.0, 50.0)], radius=6.0, cell=cell)
+    router = _GridRouter(carved, cell)
+    route = router.route((25.0, 50.0), (75.0, 50.0), limit=50000)
+    assert route, "carving the doorway must open the route"
+    crossed = any(abs(point[0] - 55.0) <= 8.0 for point in route)
+    assert crossed, "the route must pass through the carved doorway"
+
+
+class _GridRouter:
+    """A tiny 4-neighbour A* over integer cells, enough to prove a passage exists."""
+
+    def __init__(self, cells, cell=2.5):
+        self.safe = {(int(x), int(z)) for x, z in cells}
+        self.cell = cell
+
+    def _nearest(self, point):
+        base = (int(math.floor(point[0] / self.cell)), int(math.floor(point[1] / self.cell)))
+        best = None
+        for radius in range(1, 20):
+            for dx in range(-radius, radius + 1):
+                for dz in (-radius, radius):
+                    for candidate in ((base[0] + dx, base[1] + dz), (base[0] + dz, base[1] + dx)):
+                        if candidate in self.safe:
+                            distance = math.hypot(candidate[0] - base[0], candidate[1] - base[1])
+                            if best is None or distance < best[0]:
+                                best = (distance, candidate)
+            if best:
+                return best[1]
+        return None
+
+    def route(self, start, goal, limit=50000):
+        start_cell, goal_cell = self._nearest(start), self._nearest(goal)
+        if start_cell is None or goal_cell is None:
+            return None
+        frontier = [start_cell]
+        came = {start_cell: None}
+        while frontier and len(came) < limit:
+            current = frontier.pop(0)
+            if current == goal_cell:
+                path = [current]
+                while came[path[-1]] is not None:
+                    path.append(came[path[-1]])
+                return [((x + 0.5) * self.cell, (z + 0.5) * self.cell) for x, z in reversed(path)]
+            for dx, dz in ((1, 0), (-1, 0), (0, 1), (0, -1)):
+                neighbour = (current[0] + dx, current[1] + dz)
+                if neighbour in self.safe and neighbour not in came:
+                    came[neighbour] = current
+                    frontier.append(neighbour)
+        return None
+
+
 def test_route_following_advances_only_when_the_current_anchor_is_reached(workdir):
     """The anchor must not move because a *nearer* waypoint exists; it moves on arrival. The nearest-waypoint rule
     oscillated: 167 ticks ending 381 units from a target it started 390 away from."""

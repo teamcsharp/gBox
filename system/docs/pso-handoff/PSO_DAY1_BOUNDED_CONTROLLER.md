@@ -361,6 +361,37 @@ The live walk still oscillates between two areas ~90 units apart rather than clo
 the next step is to stop switching targets at all while a leg is in progress (advance only when the *current* target is
 reached, not when a "nearest" waypoint changes) and to measure the tapped distance against the route tangent.
 
+## 10. Round 6 — why it would not walk out of an open door
+
+The operator sent a screenshot: the character standing in a room with an open door ahead and the bot circling. Three
+measured causes, all fixed in this round.
+
+**1. The routing grid's margin was larger than the corridor.** The stored `forest-maps.json` fragments the map into
+components (measured: the cell nearest the character belonged to a component of size **1**), and re-eroding the disc
+mesh by 10 units makes the same mistake in a subtler way — the nearest grid cell to the character was **8.8–10.7 units
+away**, i.e. on the other side of a wall, so every route started across it and the follower orbited trying to reach it.
+`docs/research/pso-forestmap.py` rebuilds the grid from the owned disc and erodes by **5 units** (2 cells): nearest
+cell **1.8 units**, 87,265 safe cells, and a route to the far side of Forest 1 (588 waypoints). Eroding by 15 units
+disconnects the map entirely, so 5 is not a conservative choice — it is the usable one.
+
+**2. The anchors were closer together than a tap.** The follower resampled the route to 12-unit anchors and advanced
+within 5 units, while a tap is 8 units: the character could never land inside an anchor and ping-ponged across it
+(measured: stopped "5 units from the anchor"). Anchors are now **24 units apart with a 10-unit arrival radius** — two
+taps per anchor, one anchor consumed per arrival.
+
+**3. The planner cannot see an open door.** `+0xAC` (the native state) reads **0 for every door**, open or closed; only
+switches expose a linked flag (`+0xC8`: 7 and 6 here). The disc mesh also stores every door closed, so a doorway is
+solid in the static grid; `carve_doorways()` opens a passage in the grid at each gate so a route can cross a room
+boundary, and the door's actual state stays a runtime question.
+
+**Live result:** a walk from `(-146, 70)` went **232 units north and through the doorway at `(-133.8, 271.7)`**, room
+**10 → 11**, 70 ticks, 0 overruns, 0 failures, ending 5.9 units from its target. That is the first time the controller
+has left a room through a door on its own.
+
+**Still open:** the door→flag map (which bit opens which door) still needs the test-only experiment, and the policy
+still ranks any unverified switch above "leave the room", so the bot will walk past an open exit if another key on the
+floor is unpressed.
+
 ```
 cd system
 python -m pytest tests/test_pso_bounded.py -q
