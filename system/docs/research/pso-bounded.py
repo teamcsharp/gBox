@@ -23,6 +23,7 @@ import argparse
 import json
 import math
 import os
+import os
 import pathlib
 import sys
 import time
@@ -33,7 +34,10 @@ sys.path.insert(0, r"C:\_tools\gBox\system")
 from gbox import pso_bounded as B                     # noqa: E402
 from gbox import pso_evidence as E                    # noqa: E402
 
-BASE = "http://127.0.0.1:18765"
+# The app the worker actually registered with. Two app instances can run (the config default 8765 and a
+# hand-started 18765); talking to the wrong one returns 504 for every session RPC while the other answers
+# normally - measured. GBOX_API overrides it.
+BASE = os.environ.get("GBOX_API") or "http://127.0.0.1:8765"
 TOKEN_PATH = pathlib.Path(r"C:\_tools\gBox\system\gbox-data\api_token")
 OUT = pathlib.Path(r"D:\gBox\pso-ds\bounded")
 OPERATOR_FLAG = pathlib.Path(r"D:\gBox\pso-ds\operator-playing.flag")
