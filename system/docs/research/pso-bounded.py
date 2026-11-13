@@ -295,6 +295,16 @@ def run(mode: str, args) -> int:
             log(f"carved {len(gates)} known-open doorway(s) into the grid")
         router = MapRouter(sorted(cells))
         log(f"routing over {name}: {len(row['cells'])} safe cells")
+        # A collision file is one area's frame. Measured today: room 10 sits 1.4 units from the nearest grid cell,
+        # while rooms 2, 4, 5, 8, 11 are 190-460 units outside it - a route there snaps to a cell across the level and
+        # the follower walks into walls. When there is no coverage at the character, say so and move directly instead.
+        here = (world.observe() or {}).get("player") or {}
+        if here.get("x") is not None:
+            nearest = min(math.dist((float(here["x"]), float(here["z"])), cell) for cell in cells)
+            if nearest > 30.0:
+                log(f"no map coverage here: nearest grid cell is {nearest:.0f} units away "
+                    f"(this room is outside {name}'s frame) - moving directly, without a route")
+                router = None
 
     if mode == "walk":
         target = tuple(args.to) if args.to is not None else (0.0, 0.0)
