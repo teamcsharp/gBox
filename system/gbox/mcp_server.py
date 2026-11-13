@@ -8,8 +8,10 @@ import asyncio
 import base64
 import hmac
 import json
+import logging
 import os
 import time
+from contextlib import asynccontextmanager
 
 import httpx
 import mcp_types as T
@@ -25,6 +27,10 @@ S, I, B = {"type": "string"}, {"type": "integer"}, {"type": "boolean"}
 ADDR = {"type": ["string", "integer"], "description": "hex string (0x80001234) or integer"}
 PREFIX = "job_"                                   # registry tools; unprefixed names are the conveniences below
 JOB_WAIT_SECONDS = 25  # Return a durable job ID before the agent's MCP watchdog fires.
+REGISTRY_CACHE_SECONDS = 15
+REGISTRY_RETRY_SECONDS = 2
+REGISTRY_TIMEOUT_SECONDS = 5
+log = logging.getLogger(__name__)
 
 
 def obj(props, req=()):
@@ -309,8 +315,49 @@ RESOURCES = {"gbox://sessions": ("sessions", "Live game sessions"), "gbox://game
 
 
 def build(base_url: str, token: str) -> Server:
-    api = httpx.AsyncClient(base_url=base_url, headers={"authorization": f"Bearer {token}", "x-gbox-actor": "mcp"}, timeout=60)
+    api = live_api = None
+    owners = 0
+
+    @asynccontextmanager
+    async def lifespan(_server):
+        nonlocal api, live_api, owners
+        # HTTP owns one lifespan; overlapping in-memory clients may share it.
+        # Open on first use and close both pools after the final owner exits.
+        if not owners:
+            api = httpx.AsyncClient(base_url=base_url,
+                headers={"authorization": f"Bearer {token}", "x-gbox-actor": "mcp"}, timeout=60)
+            try:
+                # Viewer polling must not queue behind registry/artifact calls.
+                live_api = httpx.AsyncClient(base_url=base_url,
+                    headers={"authorization": f"Bearer {token}", "x-gbox-actor": "pine-live-controls"},
+                    timeout=httpx.Timeout(10, connect=3, pool=2), trust_env=False,
+                    limits=httpx.Limits(max_connections=12, max_keepalive_connections=4, keepalive_expiry=5))
+            except BaseException:
+                await api.aclose()
+                api = None
+                raise
+        owners += 1
+        try:
+            yield {}
+        finally:
+            owners -= 1
+            if not owners:
+                old_api, old_live = api, live_api
+                api = live_api = None
+                try:
+                    await old_live.aclose()
+                finally:
+                    await old_api.aclose()
+
     registry: dict[str, dict] = {}
+    registry_tools = []
+    registry_lock = asyncio.Lock()
+    registry_until = 0.0
+
+    async def live_get(path, **params):
+        r = await live_api.get(path, params=params)
+        r.raise_for_status()
+        return r.json()
 
     async def get(path, **params):
         r = await api.get(path, params=params)
@@ -326,12 +373,12 @@ def build(base_url: str, token: str) -> Server:
     async def live_control_post(path, body):
         # These bounded calls come from the operator's live panel. The core marks
         # actor=mcp jobs as agent work even when agent_use is false (audio ducking).
-        r = await api.post(path, json=body, headers={"x-gbox-actor": "pine-live-controls"})
+        r = await live_api.post(path, json=body, headers={"x-gbox-actor": "pine-live-controls"})
         if r.status_code >= 400:
             raise RuntimeError(f"{r.status_code}: {r.text[:500]}")
         return r.json()
 
-    live_controls = LC.Controls(get, live_control_post)
+    live_controls = LC.Controls(live_get, live_control_post)
 
     async def _capped_requests(rows=None):
         """Open tickets the inbox job has taken STREAK_CAP runs in a row (#1300 gap 3).
@@ -725,23 +772,58 @@ def build(base_url: str, token: str) -> Server:
                                "timeout": a.get("timeout") or 0})
 
     async def list_tools(ctx, params):
-        registry.clear()
-        registry.update({t["name"]: t for t in (await get("/api/registry"))["tools"]})
+        nonlocal registry_until, registry, registry_tools
+        # MCP schema lookups call list_tools too. Coalesce these reads across
+        # viewers and keep the static control schema available during recovery.
+        if time.monotonic() >= registry_until:
+            async with registry_lock:
+                if time.monotonic() >= registry_until:
+                    try:
+                        latest = await asyncio.wait_for(get("/api/registry"), REGISTRY_TIMEOUT_SECONDS)
+                        if not isinstance(latest, dict) or not isinstance(latest.get("tools"), list):
+                            raise ValueError("registry tools must be a list")
+                        replacement, rendered = {}, []
+                        for entry in latest["tools"]:
+                            tool = registry_tool(entry)
+                            if entry["name"] in replacement:
+                                raise ValueError("duplicate registry tool")
+                            replacement[entry["name"]] = entry
+                            rendered.append(tool)
+                    except (httpx.HTTPError, asyncio.TimeoutError, ValueError, TypeError, KeyError) as exc:
+                        # Never log the response body or replace a usable schema
+                        # with a partial response. Recovery retries sooner than
+                        # ordinary successful refreshes, without a viewer herd.
+                        log.warning("MCP registry refresh failed (%s); retaining %d tools",
+                                    type(exc).__name__, len(registry))
+                        registry_until = time.monotonic() + REGISTRY_RETRY_SECONDS
+                    else:
+                        registry, registry_tools = replacement, rendered
+                        registry_until = time.monotonic() + REGISTRY_CACHE_SECONDS
         tools = [T.Tool(name=n, description=d, input_schema=s) for n, (d, s) in CONVENIENCE.items()]
-        for t in registry.values():
-            schema = dict(t.get("input_schema") or obj({"input": {"type": "object"}}))
-            if t["name"].startswith("rea_"):
-                # A transport envelope preserves strict/union upstream schemas;
-                # routing fields must not be injected into their input contract.
-                schema = obj({"input": schema}, ["input"])
-            schema["properties"] = schema.get("properties", {}) | {
-                "require_os": {"type": "string", "enum": ["windows", "linux"]},
-                "require_worker": {"type": "string", "description": "Pin stateful analysis to the worker_id returned by its first job."},
-                "parent_request_id": {"type": "string", "description": "Attribute automated work to its original operator request."}}
-            workers = ", ".join(t.get("workers") or []) or "no online worker"
-            tools.append(T.Tool(name=PREFIX + t["name"], input_schema=schema,
-                                description=f"{t['description']} [gBox job; workers: {workers}; session_id routes it to that session's worker]"))
-        return T.ListToolsResult(tools=tools)
+        return T.ListToolsResult(tools=tools + registry_tools)
+
+    def registry_tool(t):
+        if (not isinstance(t, dict) or not isinstance(t.get("name"), str) or not t["name"]
+                or not isinstance(t.get("description"), str)
+                or (t.get("input_schema") is not None and not isinstance(t["input_schema"], dict))):
+            raise ValueError("invalid registry tool")
+        schema = dict(t.get("input_schema") or obj({"input": {"type": "object"}}))
+        if "properties" in schema and not isinstance(schema["properties"], dict):
+            raise ValueError("invalid registry properties")
+        if t["name"].startswith("rea_"):
+            # A transport envelope preserves strict/union upstream schemas;
+            # routing fields must not be injected into their input contract.
+            schema = obj({"input": schema}, ["input"])
+        schema["properties"] = schema.get("properties", {}) | {
+            "require_os": {"type": "string", "enum": ["windows", "linux"]},
+            "require_worker": {"type": "string", "description": "Pin stateful analysis to the worker_id returned by its first job."},
+            "parent_request_id": {"type": "string", "description": "Attribute automated work to its original operator request."}}
+        workers = t.get("workers")
+        if workers is not None and (not isinstance(workers, list) or any(not isinstance(w, str) for w in workers)):
+            raise ValueError("invalid registry workers")
+        workers = ", ".join(dict.fromkeys(workers or [])) or "no online worker"
+        return T.Tool(name=PREFIX + t["name"], input_schema=schema,
+                      description=f"{t['description']} [gBox job; workers: {workers}; session_id routes it to that session's worker]")
 
     async def call_tool(ctx, params):
         name, a = params.name, dict(params.arguments or {})
@@ -826,6 +908,7 @@ def build(base_url: str, token: str) -> Server:
 
     return Server("gbox", version="0.1.0", instructions="gBox game laboratory: library, launches, live sessions, memory, mods, "
                   "and its own agent (ask_gbox). Registry tools are job_<name>.",
+                  lifespan=lifespan,
                   on_list_tools=list_tools, on_call_tool=call_tool, on_list_resources=list_resources, on_read_resource=read_resource)
 
 
