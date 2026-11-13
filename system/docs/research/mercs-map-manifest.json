@@ -1,0 +1,259 @@
+{
+ "request": 9528,
+ "format": "gbox.mercs_map/1",
+ "units": "mm",
+ "y": "up",
+ "generated_by": "scripts/mercs_map_gen.py (commit b09da5c1f4575ce10578dbce762529af4440b55b)",
+ "canonical_output": "gbox-data/mercs/maps/<title>/<stage>.json (gitignored: .gitignore has gbox-data/; generated on demand)",
+ "why_full_maps_not_committed": "gbox-data/ is gitignored by repository policy and the full set is ~8.1 MB across 12 stages (re5/Prison alone is 6.0 MB); the repo tracks JSON tables and Markdown only, so a bounded sample plus this manifest is committed instead",
+ "generated_at": "2026-11-12T23:54:15.937117Z",
+ "stages": [
+  {
+   "title": "re4",
+   "stage": "Base",
+   "room": "r403",
+   "canonical_path": "gbox-data/mercs/maps/re4/Base.json",
+   "sha256": "644f8177f31fb3e9992cf042dd65a558fe5a10bdc0a5b10f77e53227acfd7b79",
+   "bytes": 161671,
+   "walls": 707,
+   "floor_polygons": 495,
+   "doorways": 18,
+   "chokepoints": 135,
+   "cover": 24,
+   "spawns_count": 138,
+   "route_nodes": 449,
+   "route_edges": 955,
+   "source": {
+    "room_map": "gbox/data/re4_switch_room_map/r403.json",
+    "room_map_sha256": "26ad99bb27c8f680272fccf5f2995c3a8aeccb66256cae9e5e3d90af5c718105",
+    "nav": "gbox/data/re4_switch_nav/r403.json",
+    "origin_research": "docs/research/re4-switch-mercs-collision.md (#9342)"
+   }
+  },
+  {
+   "title": "re4",
+   "stage": "Castle",
+   "room": "r402",
+   "canonical_path": "gbox-data/mercs/maps/re4/Castle.json",
+   "sha256": "bec47f557253774b312685d2568ecf18f6fec83c2bda1a4048068c6a8e0e5dc3",
+   "bytes": 123385,
+   "walls": 477,
+   "floor_polygons": 54,
+   "doorways": 0,
+   "chokepoints": 128,
+   "cover": 7,
+   "spawns_count": 117,
+   "route_nodes": 571,
+   "route_edges": 1247,
+   "source": {
+    "room_map": "gbox/data/re4_switch_room_map/r402.json",
+    "room_map_sha256": "483ae2f3d5535621341ea6771ecf12d31c8a120231c2f576150130e0e29e1b3d",
+    "nav": "gbox/data/re4_switch_nav/r402.json",
+    "origin_research": "docs/research/re4-switch-mercs-collision.md (#9342)"
+   }
+  },
+  {
+   "title": "re4",
+   "stage": "Village",
+   "room": "r400",
+   "canonical_path": "gbox-data/mercs/maps/re4/Village.json",
+   "sha256": "0a90fe48b92330ad07f69136e2e2a79526384a0b0305e89ff19fb97ae37d6dc0",
+   "bytes": 303209,
+   "walls": 482,
+   "floor_polygons": 4,
+   "doorways": 176,
+   "chokepoints": 79,
+   "cover": 6,
+   "spawns_count": 130,
+   "route_nodes": 1657,
+   "route_edges": 5306,
+   "source": {
+    "room_map": "gbox/data/re4_switch_room_map/r400.json",
+    "room_map_sha256": "ddec5ebcb382f7e538be103c59eb37a6af716b916b7e3e997b427054a7d1ca0a",
+    "nav": "gbox/data/re4_switch_nav/r400.json",
+    "origin_research": "docs/research/re4-switch-mercs-collision.md (#9342)"
+   }
+  },
+  {
+   "title": "re4",
+   "stage": "Waterworld",
+   "room": "r404",
+   "canonical_path": "gbox-data/mercs/maps/re4/Waterworld.json",
+   "sha256": "daba58db3a3a7bf314ff37cdf112cc1ce8d22ad06e6d7776cb6e4d213315d719",
+   "bytes": 110371,
+   "walls": 352,
+   "floor_polygons": 103,
+   "doorways": 16,
+   "chokepoints": 63,
+   "cover": 15,
+   "spawns_count": 84,
+   "route_nodes": 548,
+   "route_edges": 1144,
+   "source": {
+    "room_map": "gbox/data/re4_switch_room_map/r404.json",
+    "room_map_sha256": "4307e4253dc274c88dd7f4a7be9b0e1470ab2bd06509fa1d070c635642bf22df",
+    "nav": "gbox/data/re4_switch_nav/r404.json",
+    "origin_research": "docs/research/re4-switch-mercs-collision.md (#9342)"
+   }
+  },
+  {
+   "title": "re5",
+   "stage": "Ancient Ruins",
+   "room": "s403",
+   "canonical_path": "gbox-data/mercs/maps/re5/Ancient Ruins.json",
+   "sha256": "c2b01a895ca9689a6c8c10d316a22507762d332569bc5785014fc3bfadd1a99f",
+   "bytes": 174138,
+   "walls": 464,
+   "floor_polygons": 531,
+   "doorways": 3,
+   "chokepoints": 5,
+   "cover": 7,
+   "spawns_count": null,
+   "route_nodes": 678,
+   "route_edges": 1608,
+   "source": {
+    "room_map": "gbox/data/re5_switch_room_map/s403.json",
+    "room_map_sha256": "83f5783ad5be9d0f6086288366dedef8607f7f945ceee7f344ac947d9c477fe7",
+    "nav": null,
+    "origin_research": "docs/research/re5-switch-mercs-collision.md (#9360)"
+   }
+  },
+  {
+   "title": "re5",
+   "stage": "Missile Area",
+   "room": "s405",
+   "canonical_path": "gbox-data/mercs/maps/re5/Missile Area.json",
+   "sha256": "ec687296754d42021a5c61c6ad8f99f3c892dd459e12bac126b353475026e983",
+   "bytes": 302592,
+   "walls": 1049,
+   "floor_polygons": 39,
+   "doorways": 0,
+   "chokepoints": 180,
+   "cover": 102,
+   "spawns_count": null,
+   "route_nodes": 1463,
+   "route_edges": 3365,
+   "source": {
+    "room_map": "gbox/data/re5_switch_room_map/s405.json",
+    "room_map_sha256": "e83b1a19f7ee305b2d863cfe0c4e76d966fa935d4a638a345c649723a8742677",
+    "nav": null,
+    "origin_research": "docs/research/re5-switch-mercs-collision.md (#9360)"
+   }
+  },
+  {
+   "title": "re5",
+   "stage": "Prison",
+   "room": "s407",
+   "canonical_path": "gbox-data/mercs/maps/re5/Prison.json",
+   "sha256": "6fd52103bb77dd8f70a02f410519753ff2db7278265c6f13119261dc7ac865ce",
+   "bytes": 6026934,
+   "walls": 2250,
+   "floor_polygons": 1,
+   "doorways": 1,
+   "chokepoints": 296,
+   "cover": 277,
+   "spawns_count": null,
+   "route_nodes": 32761,
+   "route_edges": 129085,
+   "source": {
+    "room_map": "gbox/data/re5_switch_room_map/s407.json",
+    "room_map_sha256": "6e39703aff11bf4200bcb4378232e28c71598db0fbc980c84d977d2ece2763dd",
+    "nav": null,
+    "origin_research": "docs/research/re5-switch-mercs-collision.md (#9360)"
+   }
+  },
+  {
+   "title": "re5",
+   "stage": "Public Assembly",
+   "room": "s400",
+   "canonical_path": "gbox-data/mercs/maps/re5/Public Assembly.json",
+   "sha256": "1179c3afe71ecb46c012130a6fef0243bd331a05e29a85848195137529095636",
+   "bytes": 282817,
+   "walls": 1102,
+   "floor_polygons": 286,
+   "doorways": 12,
+   "chokepoints": 101,
+   "cover": 206,
+   "spawns_count": null,
+   "route_nodes": 1126,
+   "route_edges": 2919,
+   "source": {
+    "room_map": "gbox/data/re5_switch_room_map/s400.json",
+    "room_map_sha256": "9126744c589936c1e6769cbba145e5ab8f7a31bf8ffda85d730e78d9b06ccafc",
+    "nav": null,
+    "origin_research": "docs/research/re5-switch-mercs-collision.md (#9360)"
+   }
+  },
+  {
+   "title": "re5",
+   "stage": "Ship Deck",
+   "room": "s406",
+   "canonical_path": "gbox-data/mercs/maps/re5/Ship Deck.json",
+   "sha256": "272b09600b4517f759cdfc99e53eaf2259f1df1fa0869418beb22bdc99701cdc",
+   "bytes": 364436,
+   "walls": 1386,
+   "floor_polygons": 267,
+   "doorways": 0,
+   "chokepoints": 194,
+   "cover": 190,
+   "spawns_count": null,
+   "route_nodes": 1641,
+   "route_edges": 3779,
+   "source": {
+    "room_map": "gbox/data/re5_switch_room_map/s406.json",
+    "room_map_sha256": "9c9c93e2e59ecdc6bdd2d73a88794d8492cf059f74ba5c176487f5f1feea94d9",
+    "nav": null,
+    "origin_research": "docs/research/re5-switch-mercs-collision.md (#9360)"
+   }
+  },
+  {
+   "title": "re5",
+   "stage": "The Mines",
+   "room": "s401",
+   "canonical_path": "gbox-data/mercs/maps/re5/The Mines.json",
+   "sha256": "babd8b4d2be20396bfe607fc95ea71c7c017832a2b49f918efc00f1d31c41879",
+   "bytes": 331599,
+   "walls": 2113,
+   "floor_polygons": 626,
+   "doorways": 0,
+   "chokepoints": 274,
+   "cover": 283,
+   "spawns_count": null,
+   "route_nodes": 487,
+   "route_edges": 1088,
+   "source": {
+    "room_map": "gbox/data/re5_switch_room_map/s401.json",
+    "room_map_sha256": "b7ad52717f751da232d0934dc694b1227ca087d4c063501b648c8754e68dd321",
+    "nav": null,
+    "origin_research": "docs/research/re5-switch-mercs-collision.md (#9360)"
+   }
+  },
+  {
+   "title": "re5",
+   "stage": "Village",
+   "room": "s402",
+   "canonical_path": "gbox-data/mercs/maps/re5/Village.json",
+   "sha256": "314ea89d0c8528580087fd51da0bc70a34b5b6584fe412ab6c98da8f51609b78",
+   "bytes": 249889,
+   "walls": 1210,
+   "floor_polygons": 560,
+   "doorways": 9,
+   "chokepoints": 66,
+   "cover": 42,
+   "spawns_count": null,
+   "route_nodes": 708,
+   "route_edges": 1796,
+   "source": {
+    "room_map": "gbox/data/re5_switch_room_map/s402.json",
+    "room_map_sha256": "6807c650d6df41556d605be92f00f954cb0a6c789f4f381ce7f64823463e41d0",
+    "nav": null,
+    "origin_research": "docs/research/re5-switch-mercs-collision.md (#9360)"
+   }
+  }
+ ],
+ "samples_committed": [
+  "system/docs/research/mercs-map-sample-re4-waterworld.json",
+  "system/docs/research/mercs-map-sample-re5-ancient-ruins.json"
+ ],
+ "re6_gap": "no committed collision table for s1200..s1209 (RE6 Switch); only NavMesh and greybox research exist; a Havok/collision parser run over the RomFS on lilspark would settle it \u2014 see mercs-map-gaps.md"
+}
