@@ -2140,8 +2140,8 @@ CMD_DROP_S = 15.0
 # window is read live (stats combo_window_full: the reading on the tick a kill raised the combo and refilled it);
 # COMBO_WINDOW_S stands in until then.
 # KILL_PACE_S after a kill the next is owed (combo_pace): the quickest kill is the target (the nearest open one; one he
-# is already aiming at is kept) unless a close one is on him, and no time-bonus run starts while any enemy is alive
-# (COMBO_BONUS_WAIT; the clock under BONUS_CLOCK_LOW_S lets it). COMBO_LOW_S (the urgent end) keeps its own rules.
+# is already aiming at is kept) unless a close one is on him. Time bonuses take priority until the current clock
+# reaches five minutes; combo pacing must not keep that run at spawn. COMBO_LOW_S keeps its combat rules.
 # stats combo_left_s, combo_since_kill_s, combo_pace_s, combo_window_full.
 COMBO_WINDOW_S = 15.0
 try:
@@ -2149,7 +2149,7 @@ try:
     KILL_PACE_S = float(getattr(_doctrine, "KILL_PACE_S", 3.0))
 except ImportError:                      # (a worker holding no doctrine module yet)
     KILL_PACE_S = 3.0
-COMBO_PACE, COMBO_BONUS_WAIT, BONUS_CLOCK_LOW_S = True, True, 120.0
+COMBO_PACE, COMBO_BONUS_WAIT, BONUS_CLOCK_LOW_S = True, True, 300.0
 # Never stand (operator 2026-11-09: "There is never ever ever a reason to stand still"): the backstop for every cause -
 # his position unchanged by STAND_MOVE_CM for STAND_MAX_S outside a hold, a tablet, a prompt, a throw, an aimed shot
 # (ZL held) or a tap, and he steps STAND_STEP_S along open floor (the mesh's, STAND_PROBE_CM ahead; toward the route's
@@ -4058,6 +4058,7 @@ class Bot:
         once a tick: the one-shots act on the tick they arrive (explore / next_area: the wall escape; mine: the bomb
         due), the standing modes (fight / hunt / score) are returned for the decision to apply. The emergency flash
         reads its own directive (_emergency_flashbang); nothing here presses a key."""
+        self._mode_is_automatic = False  # unknown command provenance always retains operator priority
         try:                                     # the operator's commands, else the doctrine's
             from ..core.doctrine import Reader
         except ImportError:                      # a worker still holding a doctrine module from before Reader
@@ -4065,7 +4066,23 @@ class Bot:
         try:
             if self.commands is None:
                 self.commands = Reader()
-            cmd, fresh = self.commands.current(self.stats, time.time())
+            from ..directives import Reader as OperatorReader
+            wall_now = time.time()
+            reader = getattr(self.commands, 'base', self.commands)
+            known_reader = type(reader) is OperatorReader and type(self.commands) in (Reader, OperatorReader)
+            command_keys = ('directive', 'directive_seq', 'directive_until', 'doctrine_directive',
+                            'doctrine_directive_seq', 'doctrine_directive_until')
+            command_state = tuple(self.stats.get(k) for k in command_keys)
+            # A fresh explicit command is delivered once even after its TTL.
+            # Capture its pre-read sequence; checking the deadline alone would
+            # incorrectly demote that first delivery to automatic doctrine.
+            directive, seq, until, automatic, auto_seq, auto_until = command_state
+            explicit = bool(directive and seq is not None and
+                            (not known_reader or seq != reader.seen or wall_now < float(until or 0)))
+            cmd, fresh = self.commands.current(self.stats, wall_now)
+            self._mode_is_automatic = bool(known_reader and not explicit and cmd == automatic
+                and auto_seq is not None and wall_now < float(auto_until or 0)
+                and command_state == tuple(self.stats.get(k) for k in command_keys))
         except Exception as exc:                             # noqa: BLE001 - the command never stops a tick
             self.stats["directive_error"] = f"{type(exc).__name__}: {exc}"[:120]
             return None
@@ -4548,9 +4565,9 @@ class Bot:
             out = self._lethal_out(p, live, snap, now)           # a learned attack his shots do not stop: out of reach
             if out is not None:
                 return out
-        # shoot first (operator 2026-10-28: "just have the bot firing on the enemy like mad if they are in the vicinity of
-        # them ... I need him mainly shooting"): one in sight on his level within FIRE_ZONE_R - no bonus run, no green
-        # detour, the fight below (stats fire_zone_s)
+        # Ordinary firefights still take visible threats first. Below the five-minute
+        # bank the time run can pass a distant foe; its close-blocker, damage and
+        # earlier bomb/QTE/healing gates keep immediate survival ahead of the run.
         if getattr(self, "qa_burst", 0) > 0 and not self._burst().active(now):
             close_e = min((e for e in live if flat(e) <= MISS_QA_R and abs(e["pos"][1] - py) <= AIM_DY),
                           key=flat, default=None)
@@ -4597,15 +4614,31 @@ class Bot:
                                 "just took ranged damage: moving to open space")
             return self._go("no_foes", "ranged_break", {"hold": ()}, "just took ranged damage: no foes to turn to")
         goal_tick = self._goal_drive == now                      # the operator's mark drives this tick
-        detours = not goal_tick and not (self.mode == "fight" and live)   # (fight: no detour with one on his floor)
-        if self.mode == "hunt" and live and near > HUNT_R and self.aim_since is None and not goal_tick:
+        time_run = self._time_bonus_priority(snap, now)
+        auto_time_run = time_run and getattr(self, '_mode_is_automatic', False)
+        if self.mode is not None and not getattr(self, '_mode_is_automatic', False):
+            self.stats['bonus_priority'] = 'standing command retains priority: '+self.mode
+        elif time_run:
+            t = snap.get('timer')
+            clock_reason = (f'current clock {t:.1f}/{BONUS_CLOCK_LOW_S:.0f}s'
+                            if type(t) in (int, float) and math.isfinite(t) else 'five-minute bank not observed')
+            self.stats['bonus_priority'] = 'time bonuses before combo: '+clock_reason
+        else:
+            self.stats['bonus_priority'] = ('combat/combo: five-minute bank reached'
+                if self._bonus_clock_ready(snap) else 'combat/combo: no eligible time bonus')
+        if not time_run:
+            self.stats['phase'] = 'match'
+        detours = not goal_tick and not (self.mode == "fight" and live and not auto_time_run)
+        if (self.mode == "hunt" and not auto_time_run and live and near > HUNT_R
+                and self.aim_since is None and not goal_tick):
             self._gun_down()                                     # hunt: after the nearest by the mesh, at once
             chase = self._pursue(p, snap, now)
             if chase is not None:
                 self.why = f"hunt: the nearest {near / 100:.0f} m off - " + str(self.why)
                 return chase
-        ran = None if hot or not detours or self._bonus_wait(snap) else self._bonus_run(p, live, flat, snap, now)
-        if ran is not None:                                      # phase 1: the bonuses first (not with a kill owed)
+        ran = (None if (hot and not time_run) or not detours or self._bonus_wait(snap)
+               else self._bonus_run(p, live, flat, snap, now))
+        if ran is not None:                                      # time bank first, even with a distant kill owed
             return ran
         saved = None if hot or not detours else self._green_save(p, live, flat, snap, now)   # a green bonus for a
         if saved is not None:                                                                  # running-out combo
@@ -5847,17 +5880,26 @@ class Bot:
         return float(left) if 0.0 < left < 600.0 else None
 
     def _bonus_wait(self, snap) -> bool:
-        """COMBO_BONUS_WAIT: a kill owed (combo_pace) with an enemy alive anywhere, the clock above BONUS_CLOCK_LOW_S -
-        no time-bonus run starts (one under way waits too; stats bonus_waits counts the ticks)."""
-        if not (COMBO_BONUS_WAIT and self.combo_pace):
-            return False
-        t = snap.get("timer")
-        if isinstance(t, (int, float)) and not isinstance(t, bool) and t <= BONUS_CLOCK_LOW_S:
+        """Combo pacing may defer time collection only after the five-minute bank."""
+        if not (COMBO_BONUS_WAIT and self.combo_pace and self._bonus_clock_ready(snap)):
             return False
         if not any((e.get("hp") or 0) > 0 for e in snap.get("enemies") or ()):
             return False
         self.stats["bonus_waits"] = self.stats.get("bonus_waits", 0) + 1
         return True
+
+    @staticmethod
+    def _bonus_clock_ready(snap) -> bool:
+        """Only a finite current clock proves the bank; zero is a valid low clock."""
+        t = snap.get('timer')
+        return (type(t) in (int, float) and math.isfinite(t) and t >= BONUS_CLOCK_LOW_S)
+
+    def _time_bonus_priority(self, snap, now) -> bool:
+        if self.mode in ('fight', 'hunt', 'score') and not getattr(self, '_mode_is_automatic', False):
+            return False  # explicit or unknown standing-command ownership is never displaced
+        return bool(BONUS_RUN and not self._bonus_clock_ready(snap)
+                    and any(b.get('kind') == 'time' and self.bonus_skip.get(b['ptr'], -1e9) <= now
+                            for b in snap.get('bonuses') or ()))
 
     def _combo_tick(self, snap, live, flat, now) -> None:
         """The combo's count and window (sGameMan): stats combo_best, combo_breaks (it lapsed with a zombie in reach),
@@ -6783,12 +6825,14 @@ class Bot:
         del log[:-BONUS_LOG_N]
 
     def _bonus_run(self, p, live, flat, snap, now) -> dict | None:
-        """Phase 1 (BONUS_RUN): while a bonus waits, the nearest one next (his floor first), walked to and attacked
+        """Below the five-minute bank, the nearest time bonus (his floor first), walked to and attacked
         physically within BONUS_MELEE_R; only a zombie within BONUS_BLOCK_R is fought. None: phase 2 this tick (no bonus
         waiting, every waiting one left for now, a zombie in the way, or the bomb / an item in hand)."""
         bs = snap.get("bonuses")
         px, py, pz = p["pos"]
-        cands = [b for b in bs or () if self.bonus_skip.get(b["ptr"], -1e9) <= now and b.get("kind") != "combo"]
+        cands = [b for b in bs or () if self.bonus_skip.get(b["ptr"], -1e9) <= now and b.get("kind") == "time"]
+        if not self._time_bonus_priority(snap, now):
+            cands = []
         self.stats["phase"] = "bonus_run" if cands else "match"
         eq = p.get("equipped")
         if (not BONUS_RUN or not cands or (p.get("bomb") or {}).get("out") or self.nade is not None
@@ -6799,7 +6843,7 @@ class Bot:
         if any(flat(e) <= BONUS_BLOCK_R for e in live):          # one in the way: fought first
             self.run_hit_since = None
             return None
-        if self._hazard_break_due(p, live, flat, now):          # #5056: just took HP loss with nobody near: bail, fight
+        if self.hazard is not None or self._hazard_break_due(p, live, flat, now):  # danger escape/fight before a run
             self.run_hit_since = None
             return None
         reach = lambda b: math.hypot(b["pos"][0] - px, b["pos"][2] - pz)
@@ -6861,9 +6905,9 @@ class Bot:
             return None                                         # a failed native route never becomes a blind direct walk
         if want is not None:                                     # along the nav mesh's way to it
             return self._go("bonus", "bonus_run", {"hold": self._walk_keys(p, want, snap, side)},
-                            f"the bonus run: a {kind} bonus at {d:.0f} cm by the nav mesh ({len(cands)} waiting)")
+                            f"time-bonus priority: a {kind} bonus at {d:.0f} cm by the nav mesh ({len(cands)} waiting)")
         return self._go("bonus", "bonus_run", {"hold": self._walk_keys(p, heading(b["pos"][0] - px, b["pos"][2] - pz), snap, side)},
-                        f"the bonus run: a {kind} bonus at {d:.0f} cm ({len(cands)} waiting)")
+                        f"time-bonus priority: a {kind} bonus at {d:.0f} cm ({len(cands)} waiting)")
 
     def _bonus_sight(self, p, b, snap) -> bool:
         """The nav mesh's line from him to the bonus's middle (~1.3 m up): False when a wall is between them.
@@ -6923,6 +6967,8 @@ class Bot:
     def _green_save(self, p, live, flat, snap, now) -> dict | None:
         """The match: the combo window under COMBO_LOW_S, a green (combo) bonus in sight within BONUS_SHOOT_R and nobody
         within BONUS_BLOCK_R - shot through the lock (kicked when it is right there)."""
+        if self._time_bonus_priority(snap, now):
+            return None
         combo, ct = snap.get("combo"), snap.get("combo_timer")
         if not (isinstance(combo, int) and combo > 0 and isinstance(ct, (int, float)) and ct < COMBO_LOW_S):
             return None
@@ -6945,6 +6991,8 @@ class Bot:
     def _bonus(self, p, live, flat, snap, now) -> dict | None:
         """A combo bonus in reach with nobody near (BONUS_SAFE_R): turned to, the gun up, the aim's ray closed
         onto it and the trigger down while the ray runs through it. None: no bonus to shoot (the fight goes on)."""
+        if self._time_bonus_priority(snap, now):
+            return None
         bs = snap.get("bonuses")
         eq = p.get("equipped")
         if (not BONUS_PURSUIT or not bs or (p.get("bomb") or {}).get("out")   # the remote in hand: ZR would set it off

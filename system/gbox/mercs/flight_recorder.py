@@ -122,7 +122,7 @@ class FlightRecorder:
                    'throw_equip_blocked_count', 'throw_equip_blocked_items', 'throw_equip_refusal',
                    'qte_auto', 'qte_auto_reason', 'qte_solved_ram', 'qte_unconfirmed_writes',
                    'qte_escape_flash', 'qte_escapes_observed', 'qte_escape_active', 'qte_escape_mines_due',
-                   'aim_diag', 'aim_errdeg', 'laser_gate', 'sight_block_last', 'nav_status',
+                   'aim_diag', 'aim_errdeg', 'laser_gate', 'sight_block_last', 'nav_status', 'bonus_priority',
                    'navigation_identity', 'navigation_identity_source', 'stage_hazard_coverage',
                    'stage_hazard_blocks', 'stage_hazard_prompt_blocks', 'stage_hazard_heading_waits', 'stage_hazard_last',
                    'target_feedback_target', 'target_feedback_yaw_deg', 'target_feedback_pitch_deg',
