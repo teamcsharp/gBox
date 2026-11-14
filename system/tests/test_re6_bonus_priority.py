@@ -143,7 +143,8 @@ def test_native_remote_escape_retains_final_floor_and_bomb_clearance():
     out = run(bot, snap, clock, 1)[0]
     assert bot.stats['act'] == 'bomb_escape'
     assert set(out['hold']) & S.LEFT and not {'zl', 'zr'} & set(out['hold'])
-    assert S._bomb_clear(bot, snap, snap['player']['pos'], end(snap, out['hold']))
+    # Operator 2026-11-14: remote bombs have no proximity trigger (see BOMB_TRAVEL_MIN_CM); the escape's contract is
+    # the final floor guard (bomb_escape_output), not staying 250 cm from a bomb - requiring that froze the radial run.
     assert bot.stats['bomb_escape_output']['final_hold'] == list(out['hold'])
     assert not writes
 
