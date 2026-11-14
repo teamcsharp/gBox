@@ -60,6 +60,30 @@ NO_PROGRESS = "no native round or combat progress for {minutes:g} min: next Merc
 
 PENDING = "autoplay_on_launch"            # launch job id -> {game_id, at}: start autoplay when that game is up
 PENDING_TTL = 15 * 60
+
+# A launch that fails during boot (Eden/Vulkan boot hang, a GPU-context OOM) must not be retried every scheduler tick:
+# every retry boots the emulator again and leaks another GPU context, which is exactly the 2026-11-14 lilspark failure
+# (dmesg NV_ERR_NO_MEMORY, Eden BootHung, the host needed a power-cycle). Failures back off exponentially and the
+# host's MercMode scheduler waits it out; a successful launch clears the record.
+LAUNCH_BACKOFF = 'mercmode_launch_backoff'
+LAUNCH_BACKOFF_BASE_S = 120.0
+LAUNCH_BACKOFF_MAX_S = 1800.0
+
+
+def launch_backoff_delay(failures: int) -> float:
+    """Seconds to wait before the next MercMode launch after `failures` consecutive launch failures."""
+    tries = max(0, int(failures) - 1)
+    return float(min(LAUNCH_BACKOFF_BASE_S * (2 ** min(tries, 8)), LAUNCH_BACKOFF_MAX_S))
+
+
+def launch_backoff_active(store, name: str, now: float):
+    """(seconds left, row) for this PC's launch backoff; (0, row) when it may launch again."""
+    row = store.get(LAUNCH_BACKOFF, name) or {}
+    try:
+        until = float(row.get('until') or 0)
+    except (TypeError, ValueError):
+        until = 0.0
+    return (max(0.0, until - now), row) if until > now else (0.0, row)
 BOT_DEMO = "bot_demo"                     # launch job id -> {game_id, by, at}: a bot demo (launched with autoplay on)
 BOT_DEMO_KEEP = 300
 DEMO_ACTOR = "autoplay"                   # who starts a bot demo's autoplay (the worker's own calls say the same)
@@ -564,6 +588,12 @@ class Screensaver:
         return recent
 
     def _start(self, w, cfg, now):
+        backoff, row = launch_backoff_active(self.store, w['name'], now)
+        if backoff:
+            note = (f"launch paused {backoff:.0f}s after {row.get('failures') or '?'} failed launch(es): "
+                    f"{str(row.get('last') or '')[:140]}")
+            self.notes[w['name']] = note
+            return note
         from .server import JobRequest
         from . import mercmode
         if _local_scheduler(w):
@@ -716,6 +746,14 @@ class Screensaver:
                 # given up on a game it never found (2026-11-09)
                 why = f"launch {job.get('state')}: {str(job.get('error') or '')[:200]}" if failed else \
                     f"launch timed out: its game never showed up (launch job {job.get('state') or 'missing'})"
+                job_state = str(job.get('state') or '')
+                if job_state in ('failed', 'rejected', 'invalid'):
+                    prev = self.store.get(LAUNCH_BACKOFF, w['name']) or {}
+                    failures = int(prev.get('failures') or 0) + 1
+                    delay = launch_backoff_delay(failures)
+                    self.store.put(LAUNCH_BACKOFF, w['name'], {'failures': failures, 'until': now + delay,
+                                                               'last': why[:200], 'at': now})
+                    self.notes[w['name']] = (f"launch failed ({failures}x): {why[:160]}; next try in {delay:.0f}s")
                 if run.get('prelaunched'):                   # the warm preload failed: that title launches cold next
                     return self._warm_fallback(w, run, now, 'warm ' + why)
                 return self._finish(w, run, now, why)
@@ -725,6 +763,8 @@ class Screensaver:
                                    worker_id=run['worker_id'], game_id=run['game_id'])
             if not sess:
                 return f"launching {run['title']}"
+            if self.store.get(LAUNCH_BACKOFF, w['name']):
+                self.store.delete(LAUNCH_BACKOFF, w['name'])
             if run.get('prelaunched'):
                 # a warm preload taken over mid-load: the worker pauses it when its launch finishes, so the resume
                 # waits for that exact launch to succeed (a resume sent earlier would be undone by that pause)

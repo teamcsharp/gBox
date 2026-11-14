@@ -3,6 +3,29 @@ import random
 from types import SimpleNamespace
 
 from gbox import screensaver as S
+
+
+def test_launch_failure_backoff_is_exponential_and_capped():
+    # The 2026-11-14 lilspark incident: repeated Eden boot failures leaked GPU contexts until the host needed a
+    # power-cycle. A failed launch now pauses the host's next launch exponentially, capped at 30 min.
+    assert S.launch_backoff_delay(1) == 120.0
+    assert S.launch_backoff_delay(2) == 240.0
+    assert S.launch_backoff_delay(3) == 480.0
+    assert S.launch_backoff_delay(10) == 1800.0
+
+
+def test_launch_backoff_active_reads_the_store():
+    class Store:
+        def __init__(self, row):
+            self.row = row
+
+        def get(self, kind, key):
+            return self.row
+
+    assert S.launch_backoff_active(Store({}), 'host', 100.0) == (0.0, {})
+    left, row = S.launch_backoff_active(Store({'until': 160.0, 'failures': 2}), 'host', 100.0)
+    assert left == 60.0 and row['failures'] == 2
+    assert S.launch_backoff_active(Store({'until': 50.0, 'failures': 2}), 'host', 100.0)[0] == 0.0
 from tests.test_inspection_builds import Store as _Store
 
 
