@@ -1105,3 +1105,33 @@ Next: fire a ring when enemies are near it - either ~8-10 s into a fresh round (
 still clean, or a smaller radius; capture `ice_observed` + hp changes per ring. Then the operator-facing wiring
 decision (chooser launcher kinds -> research barrage with the same honest receipt) can be taken with real ring
 evidence; the shell's own explode pair remains unclaimed until observed.
+
+### Round 19: wide-baseline ring evidence path, and the strongest round numbers yet
+
+**Round results observed live:** a RE6 round ended at **349 090 / 192 kills / combo 77 / accuracy 51.2 %** (one
+death), and the round running during the sampling reached 170 kills, 19 native flag detonations, combo 21 at a
+499 s timer with 2 deaths. `qte_seen` 62 with **`qte_failed` 0** - the honest auto-QTE metric holds at scale.
+
+**Ring evidence: one real defect found and fixed.** The agent ring could freeze enemies outside its own receipt: the
+barrage's baseline used the probe's fixed 1000 cm radius, while the ring reaches `radius_cm` (601-2600). `4e11dbb7a`
+gives `nearby_targets` an optional `radius_cm` and the barrage baselines **ring + 900 cm** (capped 2500), so an
+enemy frozen on any shell is inside the observation. Tests updated; 60 pass in the shell suites. Deployed
+(`deployed-main` = 4e11dbb7a) and the worker restarted, so the widened baseline is live.
+
+**Admission constraints measured this round** (why ring evidence is hard to capture):
+- one barrage per player generation, so a failed attempt's life is used up for real barrages;
+- the worker refuses with "shell research waits for bot ownership and no pending remote bombs" or "a fresh complete
+  native bomb census" for most of a round - the remote-mine lane keeps bombs in flight or an uncertain allocation;
+- a 601 cm ring can be refused with "shell probe point is too close to a player" (the player moves between the
+  position read and the point check) - use 750-900 cm;
+- the reliable admission window is the first seconds of a fresh round, which must be hit with admission retries.
+Next: at a RE6 fresh round, fire a **count 8 / radius 800** ring ~6 s in (after the first spawns) with admission
+retries, and capture `ice_observed` plus hp changes; then decide the operator-facing wiring of the chooser's
+launcher kinds to this research barrage.
+
+**Hermes gate:** `enabled: true, available: true, dispatch_mode continuous_queue, git_workspace_ready true,
+max_parallel_jobs 26` - healthy.
+
+**State:** MercMode enabled on its rotation (RE4 playing after the restart, titles re4/re5/re6 x5), queue `[]`,
+deployed `4e11dbb7a`. Note: the handoff document was trimmed last round from 14.6 MB (accidental embedded blobs) to
+81 KB so pushes work; keep appended sections small.
