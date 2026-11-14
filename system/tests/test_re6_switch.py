@@ -1069,6 +1069,24 @@ def test_no_quick_shot_turn_beyond_75_deg_and_a_kick_at_arm_reach():
     assert out == {"tap": "zr"} and bot2.stats["quick_shot_melee"] == 1
 
 
+def test_the_combo_guard_never_stands_still_when_pursuit_finds_no_route():
+    # Live 2026-11-14: doing=raise for ~50 s with the combo lapsed; the guard now walks straight at the nearest.
+    import math as _m
+    bot, clock, snap = brain(round_guest(enemies=((0., 0., 900., 100),)))
+    live = snap["enemies"]
+    p = {"pos": (0., 0., 0.), "ammo": 7, "state": 0, "rot": 0.0}
+    flat = lambda e: _m.hypot(e["pos"][0], e["pos"][2])
+    bot.stats.update(combo_left_s=None, combo_prev=0)
+    bot._kill_at, bot._kill_n = 1.0, 1
+    bot._combo_hot_now = True
+    bot.doing = "raise"
+    bot._quick_shot_target = lambda *a, **k: None
+    bot._face_for_quick_shot = lambda *a, **k: None
+    bot._pursue = lambda *a, **k: None
+    out = bot._combo_guard(p, live, flat, snap, 9.0)
+    assert out is not None and out.get("hold") and bot.stats["combo_guard_walks"] == 1
+
+
 def test_the_combo_gets_a_quick_shot_while_retreating_from_a_bomb_blast():
     # Operator 2026-11-14: "If the bot fights while placing mines, the goal becomes easier"; the combo may never lapse.
     import math as _m

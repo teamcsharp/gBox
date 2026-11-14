@@ -3552,11 +3552,20 @@ class Bot:
         if face is not None:
             return face
         chase = self._pursue(p, snap, now)
-        if chase is None:
-            return None
-        self.stats['combo_guard_chases'] = int(self.stats.get('combo_guard_chases', 0)) + 1
-        self.why = "combo about to lapse: chasing the nearest instead of idling - " + str(self.why)
-        return chase
+        if chase is not None:
+            self.stats['combo_guard_chases'] = int(self.stats.get('combo_guard_chases', 0)) + 1
+            self.why = "combo about to lapse: chasing the nearest instead of idling - " + str(self.why)
+            return chase
+        # Live 2026-11-14 01:40-01:42: the round stalled on doing=raise for ~50 s with 1-2 kills while the combo
+        # lapsed. When the A* has no route the guard never leaves him standing: walk straight at the nearest enemy.
+        target = min(live, key=flat)
+        heading_to = wrap(heading(target["pos"][0] - p["pos"][0], target["pos"][2] - p["pos"][2]))
+        cam_yaw = (snap.get("camera") or {}).get("yaw", p.get("rot") or 0.0)
+        self.stats['combo_guard_walks'] = int(self.stats.get('combo_guard_walks', 0)) + 1
+        self.why = "combo about to lapse: no route, walking straight at the nearest - " + str(self.why)
+        self._gun_down()
+        return self._go("hunt", "combo_guard_walk", {"hold": self._stick(heading_to, cam_yaw)},
+                        f"combo about to lapse: no A* route, walking straight at the one {flat(target):.0f} cm off")
 
     def _critical_no_tablet_flash(self, p, live, flat, now) -> dict | None:
         """Critical health in a melee crowd: the native flash and a gun-down moment instead of raising the gun.
@@ -5418,7 +5427,19 @@ class Bot:
                     self.stats["offlevel_fire_veto"] = int(self.stats.get("offlevel_fire_veto", 0)) + 1
                 elif not (((proven and abs(err[0]) <= GEOM_FIRE_ERR and abs(err[1]) <= GEOM_FIRE_PITCH)
                            or point_blank) and (point_blank or not self.is_blocked(tgt, now))):
-                    return self._go("raise", "raise", {"hold": ("zl",) + back}, "the gun comes up (no laser yet)")
+                    # Live 2026-11-14: a target whose line never proves had the bot raising the gun for ~50 s while
+                    # the combo lapsed. Raising is capped at a second; then it repositions for a line instead.
+                    key = (tgt.get("ptr", tgt.get("slot")), "raise")
+                    if getattr(self, "_raise_key", None) != key:
+                        self._raise_key, self._raise_since = key, now
+                    if now - getattr(self, "_raise_since", now) < 1.0:
+                        return self._go("raise", "raise", {"hold": ("zl",) + back}, "the gun comes up (no laser yet)")
+                    self.stats['raise_repositions'] = int(self.stats.get('raise_repositions', 0)) + 1
+                    heading_to = wrap(heading(tgt["pos"][0] - p["pos"][0], tgt["pos"][2] - p["pos"][2]))
+                    cam_yaw = getattr(self, "_cam_yaw", None) or p.get("rot") or 0.0
+                    self._gun_down()
+                    return self._go("walk", "raise_reposition", {"hold": self._stick(heading_to, cam_yaw)},
+                                    "the line to him never proves: walking round for a shot")
                 if not level_ok:
                     # off his level: never shoot through the floor/ceiling - the aim waits while he goes to it
                     return self._go("raise", "offlevel_raise", {"hold": ("zl",) + back},
