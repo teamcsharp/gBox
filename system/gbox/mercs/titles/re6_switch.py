@@ -5706,6 +5706,15 @@ class Bot:
             self.periodic_qa_arm = None
             return None
         waiting = self.periodic_qa_wait
+        left = self.stats.get('combo_left_s')
+        if (waiting is not None and isinstance(left, (int, float)) and not isinstance(left, bool)
+                and left <= 3.0):
+            # Live 2026-11-14 (attribution): "periodic burst: waiting for the native quick attack to finish" broke a
+            # running combo. A native-observation wait never outranks the chain: drop the wait and keep fighting.
+            self.periodic_qa_wait = None
+            self.periodic_qa_remaining = 0
+            self.stats['periodic_wait_combo_yields'] = int(self.stats.get('periodic_wait_combo_yields', 0)) + 1
+            waiting = None
         if waiting is not None:
             if waiting['seen'] and p.get('action') not in QUICK_ACTION_NAMES:
                 self.periodic_qa_wait = None

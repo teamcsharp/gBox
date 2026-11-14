@@ -287,3 +287,14 @@ def test_the_bomb_lane_being_busy_does_not_starve_the_interval_burst():
     p['bomb'] = {'out': True}
     assert act(bot, p, enemy, 24.0) == {'hold': ()}
 
+
+def test_a_running_out_combo_drops_a_native_quick_attack_wait():
+    # Live 2026-11-14: while a periodic burst waited for the native quick attack, the combo lapsed.
+    bot, p, enemy = ready_bot()
+    bot.periodic_qa_wait = {'at': 24.0, 'seen': False, 'life': (p['ptr'], p['generation'], p['equipped'], p['weapon_id'])}
+    bot.periodic_qa_remaining = 3
+    bot.stats['combo_left_s'] = 1.2
+    out = act(bot, p, enemy, 24.3)
+    assert bot.periodic_qa_wait is None and bot.stats['periodic_wait_combo_yields'] == 1
+    assert out is None or out == {'hold': ()} or 'zl' in out.get('hold', ())
+
