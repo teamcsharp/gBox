@@ -1071,6 +1071,22 @@ def test_no_quick_shot_turn_beyond_75_deg_and_a_kick_at_arm_reach():
     assert out == {"tap": "zr"} and bot2.stats["quick_shot_melee"] == 1
 
 
+def test_the_blast_escape_runs_away_from_the_nearest_bomb():
+    # Operator 2026-11-14: "the mines detonating the moment the bot has enough distance" - the escape is a straight
+    # line away from the nearest actual bomb, not an A* heading that flips between ticks.
+    import math as _m
+    bot, clock, snap = brain(round_guest(enemies=((0.0, 0.0, 300.0, 100),)))
+    p = {"pos": (0.0, 0.0, 0.0), "ammo": 7, "state": 0, "rot": 0.0}
+    bot.stats.update(mine_avoid_positions=[[0.0, 0.0, 300.0]], mine_clearance_cm=300.0,
+                     mine_escape_required=True, mine_required_clearance_cm=1200.0, mine_remaining_s=2.0)
+    bot._escape_route = lambda *a, **k: pytest.fail("the A* route is the fallback, not the first choice")
+    bot._open_heading = lambda *a, **k: 9.9
+    out = bot._blast_retreat(p, snap["enemies"], snap, 5.0)
+    assert out is not None and out.get("hold")
+    # away from a bomb at +Z is -Z (heading pi)
+    assert bot._escape_heading == pytest.approx(math.pi, abs=1e-3)
+
+
 def test_the_blast_is_cleared_immediately_even_with_a_small_shortfall():
     # Operator 2026-11-14: "Clear the blast immediately" - a combo window lost to the escape is accepted, a delayed
     # mine is not (this reverses the round-32 fight-first rule).

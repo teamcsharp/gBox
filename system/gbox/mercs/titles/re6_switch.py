@@ -2237,6 +2237,11 @@ FLASH_MIN_GAP_S = 60.0
 # emergency native flash is NOT the wheel flash, so it gets its own short cooldown instead of the wheel's
 # one-minute/tight-reason gate (RESPOND_FLASH_GAP_S).
 RESPOND_FLASH_GAP_S = 2.5
+# Operator 2026-11-14: "I want the mines detonating the moment the bot has enough distance ... always explode
+# the remote bombs." Live the clearance took 60-80 s (deadline 5 s, 60 misses) because the A* escape heading
+# flipped near the ring. The escape now runs straight away from the nearest actual bomb until clear, with a
+# no-progress watchdog that slides sideways around a blocker.
+BLAST_AWAY_GAIN_CM, BLAST_SLIDE_S = 40.0, 1.5
 FLASH_TIGHT = True
 FLASH_TIGHT_N, FLASH_TIGHT_R, FLASH_TIGHT_LOW = 4, 300.0, 0.35
 # Fire first (the same request): a new grenade cycle (the wheel, the gun down for seconds) is not started while a
@@ -3587,6 +3592,34 @@ class Bot:
         at = self.stats.get('nitrogen_ring_unavailable_at')
         return isinstance(at, (int, float)) and not isinstance(at, bool) and 0 <= now - at <= 120.0
 
+    def _blast_away_heading(self, p, now) -> float | None:
+        """The blast escape heading: straight away from the nearest live bomb, sliding sideways when the clearance
+        stops growing (the operator's "detonate the moment they have enough distance"). None without bomb positions.
+        """
+        positions = self.stats.get('mine_avoid_positions')
+        pos = p.get('pos')
+        if not isinstance(positions, list) or not positions or pos is None:
+            return None
+        bombs = [b for b in positions if isinstance(b, (list, tuple)) and len(b) >= 3]
+        if not bombs:
+            return None
+        bomb = min(bombs, key=lambda b: (b[0] - pos[0]) ** 2 + (b[2] - pos[2]) ** 2)
+        away = heading(pos[0] - bomb[0], pos[2] - bomb[2])
+        clear = self.stats.get('mine_clearance_cm')
+        clear = clear if isinstance(clear, (int, float)) and not isinstance(clear, bool) else None
+        last_clear, last_at = getattr(self, '_blast_clear_at', None), getattr(self, '_blast_clear_t', -1e9)
+        if clear is not None:
+            gained = clear - last_clear if isinstance(last_clear, (int, float)) else clear
+            if last_clear is None or gained >= BLAST_AWAY_GAIN_CM:
+                self._blast_clear_at, self._blast_clear_t = clear, now
+            elif now - last_at >= BLAST_SLIDE_S:
+                # no progress for a while: slide along the ring instead of pushing into the same blocker
+                self._blast_slide = not getattr(self, '_blast_slide', False)
+                self._blast_clear_at, self._blast_clear_t = clear, now
+                away = wrap(away + (math.radians(60) if self._blast_slide else math.radians(-60)))
+                self.stats['blast_slides'] = int(self.stats.get('blast_slides', 0)) + 1
+        return away
+
     def _blast_retreat(self, p, live, snap, now) -> dict | None:
         """Out of a live remote-bomb blast BEFORE any other action: the engine's detonation waits for 1200 cm and live
         2026-11-14 the bot stood at 430 cm with the deadline 7.5 s past, still aiming (the movement-safety hook can only
@@ -3595,17 +3628,20 @@ class Bot:
         bombs (it reads mine_escape_required and the published escape heading).
         """
         if not self._inside_blast_margin():
+            self._blast_clear_at = None
             return None
         clear, need = self.stats.get('mine_clearance_cm'), self.stats.get('mine_required_clearance_cm')
         if not (isinstance(clear, (int, float)) and isinstance(need, (int, float))):
             return None
         # Operator 2026-11-14: "Clear the blast immediately" - inside the margin the walk out is every tick; a
         # combo window lost to the escape is accepted, a delayed mine is not.
-        # Live 2026-11-14: with the greedy open direction the bot stayed pinned 40-60 cm from the ring for minutes
-        # (blast_retreats 558, one detonation left). The mesh A* route to a bomb-clear goal is the planner that gets
-        # out of a ring dropped at his feet; it is published as _escape_heading so the wall/safety hook follows the
-        # same route around railings, and the greedy heading is only the fallback.
-        h = self._escape_route(p, now)
+        # Operator 2026-11-14: "the mines detonating the moment the bot has enough distance". The A* escape route
+        # flipped its goal between ticks near the ring (clearance oscillated 100-1000 cm for 60-80 s, deadline 5 s,
+        # mine_deadline_misses 60), so the escape is a straight line away from the nearest actual bomb first, with a
+        # watchdog that slides around a blocker when the clearance stops improving. The A* route is the fallback.
+        h = self._blast_away_heading(p, now)
+        if h is None:
+            h = self._escape_route(p, now)
         if h is None:
             try:
                 h = self._push_heading(p, live, snap)
