@@ -360,3 +360,30 @@ The mis-install that froze the guest for a few minutes is also instructive: a wr
 hooking it tail-calls itself forever, and the recovery that worked without losing the operator's run was to break the
 loop **in memory** (write `blr` over the routine's loop branch) and restore the original pointer - the CPU was
 executing our code from RAM, so the patch took effect on the next iteration.
+
+## 17. Round 12 - native door hook: guest code execution proven, full update trampoline not yet safe
+
+After round 11's negative result (replacing vtable slot 0x804C3BC8 on a running actor does not execute), the hook moved
+to patching the stock update **entry** 0x801BB330 itself: an absolute jump into a trampoline in unused RAM that runs
+the flag saturation, replays the displaced prologue (stwu/mflr/stw/stw) and continues at 0x801BB340. Guest code
+execution is now **proven**: a probe routine placed at 0x80005000 (zero page between gBox's cave, which ends at
+0x80005000, and the DOL text base 0x8000C000) and called through gBox's native queue ran correctly - marker written,
+counter incremented, clean return. That validates the register-save frame, the counter/marker stores and the queue
+protocol.
+
+The full trampoline is **not safe yet**: calling it through the queue with r3=player (the exact call the patched entry
+will make) leaves the queue entry pending forever - the guest stops consuming the queue, no marker is written, and the
+session has to be booted again. Two guest freezes were recovered by clean boot; notably, **importing a savestate into a
+freshly launched emulator re-froze the guest twice in a row**, so clean boot (not snapshot import) is the reliable
+recovery path for a hung guest.
+
+The tool (`pso-door-hook.py`) is committed with the safe staged verification: `--probe` for the queue-execution proof,
+then relocation phase (marker 0x5A, counter) before the saturation body, with an automatic rollback that restores the
+16 original bytes and re-flushes. The remaining question for the next round: why does executing the update call from
+queue/dispatcher context wedge the guest - the trampoline likely needs to preserve more call state (or the patch must
+run in the real update path, with its caller's CR/FPR state, rather than the queue path), so the next attempt should
+test the relocation phase **only** with the entry patch and a minimal trampoline that does nothing but replay the
+prologue and continue.
+
+Working behaviour meanwhile is unchanged: the agent-side 30-unit proximity unlock (`pso-doors-always.py`) is still the
+live door latch, and it is what opened the Forest 1 door for the operator.

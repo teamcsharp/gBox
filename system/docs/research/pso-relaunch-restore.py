@@ -20,7 +20,7 @@ import uuid
 BASE = "http://127.0.0.1:18765"
 TOKEN = pathlib.Path(r"C:\_tools\gBox\system\gbox-data\api_token").read_text(encoding="utf-8").strip()
 ENTRY = pathlib.Path(r"D:\gBox\pso-ds\mandate\pso-catalog-entry.json")
-WORKER = "ee68c2f40f10443b"
+WORKER = None
 OUT = pathlib.Path(r"D:\gBox\pso-ds\mandate")
 
 
@@ -44,8 +44,17 @@ def log(message):
         handle.write(json.dumps({"at": time.time(), "message": message}) + "\n")
 
 
+def worker_id():
+    global WORKER
+    if WORKER is None:
+        rows = call("/api/workers")
+        rows = rows if isinstance(rows, list) else (rows.get("items") or [])
+        WORKER = rows[0]["id"]
+    return WORKER
+
+
 def submit(tool, payload):
-    job = call("/api/jobs", {"tool": tool, "require_worker": WORKER, "input": payload}, "POST", 60)
+    job = call("/api/jobs", {"tool": tool, "require_worker": worker_id(), "input": payload}, "POST", 60)
     job_id = job.get("id") if isinstance(job, dict) else None
     if not job_id:
         raise RuntimeError(f"{tool} submit rejected: {str(job)[:300]}")
