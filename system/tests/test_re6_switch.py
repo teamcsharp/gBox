@@ -4,6 +4,7 @@ sGameMan / sPlayer / sEnemy, the camera (uCamera +0x60 / +0x80) and the laser si
 native menus from sUnit's interface units by vtable, and the brain's decisions."""
 import json
 import math
+import types
 import struct
 from pathlib import Path
 
@@ -1174,6 +1175,22 @@ def test_a_downed_one_health_bot_in_a_crowd_gets_the_critical_flash():
     bot._respond_flash = lambda *a, **k: True
     out = bot._critical_no_tablet_flash(p, live, flat, 5.0)
     assert out is not None and bot.doing == "flash" and bot.stats["critical_flash_requests"] == 1
+
+
+def test_a_learned_dodge_fires_at_a_close_attacker_when_the_combo_is_lapsing():
+    # Live 2026-11-14: 3 of 9 breaks were the learned dodge walk while the chain lapsed.
+    import math as _m
+    bot, clock, snap = brain(round_guest(enemies=((0., 0., 200., 100),), cam_yaw=0.0))
+    p = {"pos": (0., 0., 0.), "ammo": 7, "state": 0, "rot": 0.0}
+    attacker = snap["enemies"][0]
+    bot._uc = lambda name: types.SimpleNamespace(step_out=lambda *a, **k: attacker)
+    bot.stats.update(combo_left_s=1.5, combo_prev=7)
+    out = bot._lethal_out(p, snap["enemies"], snap, 5.0)
+    assert out == {"hold": ("zl", "zr")} and bot.stats["lethal_combo_shots"] == 1
+    far = dict(attacker, pos=(0., 0., -300.))                # behind him: the step out still wins
+    bot._uc = lambda name: types.SimpleNamespace(step_out=lambda *a, **k: far)
+    out = bot._lethal_out(p, snap["enemies"], snap, 5.5)
+    assert out is not None and "zl" not in out.get("hold", ())
 
 
 def test_a_live_bomb_blast_gets_a_hard_retreat_before_any_fight_action():

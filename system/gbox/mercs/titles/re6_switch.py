@@ -8604,6 +8604,18 @@ class Bot:
             return None
         cam = snap.get("camera")
         yaw = cam["yaw"] if cam else p["rot"]
+        # Live 2026-11-14 (3 of 9 attributed breaks): the learned dodge walk left while the chain was lapsing. When
+        # the attacker itself is at quick-shot reach and in front, fire at it first - a dead attacker needs no dodge -
+        # and only walk out otherwise.
+        left = self.stats.get('combo_left_s')
+        if (isinstance(left, (int, float)) and not isinstance(left, bool) and left <= COMBO_KEEP_S
+                and p.get('ammo') != 0):
+            ex, ez = e["pos"][0] - p["pos"][0], e["pos"][2] - p["pos"][2]
+            if math.hypot(ex, ez) <= COMBO_QUICK_R and abs(wrap(heading(ex, ez) - yaw)) <= math.radians(60):
+                self.stats['lethal_combo_shots'] = int(self.stats.get('lethal_combo_shots', 0)) + 1
+                return self._go("quick_shot", "lethal_combo_shot", {"hold": ("zl", "zr")},
+                                f"{e.get('class')} {e.get('action')}: a quick shot at the attacker "
+                                f"{math.hypot(ex, ez):.0f} cm off before the step out")
         self._gun_down()
         keys = self._stick(self._open_heading(p, live, (e["pos"][0], e["pos"][2])), yaw)
         return self._go("walk", "lethal_backoff", {"hold": keys},
