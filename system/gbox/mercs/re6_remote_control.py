@@ -302,6 +302,9 @@ def control(ad, prof, bot_getter=None):
                             stats['nitrogen_rings'] = int(stats.get('nitrogen_rings', 0)) + 1
                         except Exception as exc:             # noqa: BLE001 - a refused ring never ends the lane
                             stats['nitrogen_ring_error'] = f'{type(exc).__name__}: {exc}'[:160]
+                            if 'resources are not present' in stats['nitrogen_ring_error'] or \
+                                    'no grenade launcher' in stats['nitrogen_ring_error']:
+                                stats['nitrogen_ring_unavailable_at'] = stats.get('clock', None) or time.time()
                         finally:
                             nitrogen_seen["busy"] = False
 

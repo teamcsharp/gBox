@@ -2085,7 +2085,8 @@ def test_down_he_locks_onto_the_nearest_and_fires_then_rises_when_they_are_dead(
     assert not bot.down and bot.stats["down_recoveries"] == 1 and bot.stats["down_s"] > 0
     snap["player"]["action"] = "cPlAction_pl_act_wait"
     snap["enemies"] = [{"slot": 9, "ptr": 0x9999, "pos": (0.0, 0.0, 1500.0), "hp": 700, "hp_max": 700}]
-    assert {"tap": "r"} in run(bot, snap, clock, 3)                          # up at 1 health: a tablet at once
+    # up at 1 health: a tablet at once (after the 0.6 s gun-down window the game needs before R)
+    assert {"tap": "r"} in run(bot, snap, clock, int(R.TABLET_LOWER_S / 0.05) + 4)
     snap["player"].update(hp=1, action="cPlAction_pl_act_dying_loop")       # down again, this time dying
     run(bot, snap, clock, 2)
     assert bot.down and bot.down_dying

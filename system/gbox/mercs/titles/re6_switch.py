@@ -2015,7 +2015,7 @@ DYING_TABLETS, DYING_HP, DYING_GAP_S = False, 1, 1.0   # off: RE6 takes no table
 # Not reaching 1 health in a crowd: with CROWD_TABLET_N within CROWD_TABLET_R a tablet already at CROWD_TABLET_HP; in
 # crowd control with CC_BACK_N within CC_BACK_R the kicks and quick shots carry the stick back (stats cc_backouts).
 CROWD_TABLET_N, CROWD_TABLET_R, CROWD_TABLET_HP = 4, 300.0, 0.70
-TABLET_LOWER_S = 0.3                    # R only this long after ZL was last held
+TABLET_LOWER_S = 0.6                    # R only this long after ZL was last held (live: 0.3 gave 14 ignored presses)
 # Operator 2026-11-14 (live break attribution): a tablet at 442/900 health (49 %) broke a 26-kill combo - the heal
 # guns down for ~1 s straight out of the window. Above the critical band a heal only starts while the combo
 # window has at least this much left (a fresh kill refills it first).
@@ -3548,6 +3548,12 @@ class Bot:
             return out
         return None
 
+    def _nitrogen_unavailable(self, now) -> bool:
+        """A loadout without the grenade launcher can never serve a nitrogen ring (engine error 2026-11-14), so the
+        alternating hit answer falls back to the flash ring for NITROGEN_RETRY_S."""
+        at = self.stats.get('nitrogen_ring_unavailable_at')
+        return isinstance(at, (int, float)) and not isinstance(at, bool) and 0 <= now - at <= 120.0
+
     def _blast_retreat(self, p, live, snap, now) -> dict | None:
         """Out of a live remote-bomb blast BEFORE any other action: the engine's detonation waits for 1200 cm and live
         2026-11-14 the bot stood at 430 cm with the deadline 7.5 s past, still aiming (the movement-safety hook can only
@@ -4353,11 +4359,11 @@ class Bot:
             # a nitrogen (shell1304) launcher-ring request the remote lane picks up.
             self.hit_qs = max(getattr(self, "hit_qs", 0), random.randint(1, 5))
             self.hit_ring_flip = not getattr(self, "hit_ring_flip", False)
-            if self.hit_ring_flip:
-                self.hit_flash_pending = True
-            else:
+            if self.hit_ring_flip and not self._nitrogen_unavailable(now):
                 self.stats['nitrogen_ring_request_at'] = self.clock()
                 self.stats['hit_nitrogen_requests'] = int(self.stats.get('hit_nitrogen_requests', 0)) + 1
+            else:
+                self.hit_flash_pending = True
             self.stats["hit_responses"] = self.stats.get("hit_responses", 0) + 1
         self._tick_hp, self._tick_at = hp_now if isinstance(hp_now, int) else self._tick_hp, now
         self.hp_hist = [h for h in self.hp_hist if now - h[0] <= HP_HIST_S] + [(now, p.get("hp"), self.doing)]
@@ -5400,7 +5406,8 @@ class Bot:
             self.stats['topping_yields_combo'] = int(self.stats.get('topping_yields_combo', 0)) + 1
         if self.heal_chain and not topping:
             self.heal_chain = False                              # full enough: no tablet past his maximum
-        gap = TABLET_CHAIN_S if topping else TABLET_RETRY_S if self.tablet_missed else TABLET_GAP_S
+        crit_hp = hp_max and hp <= TABLET_CRITICAL_HP * hp_max
+        gap = TABLET_CHAIN_S if topping else (0.45 if crit_hp else TABLET_RETRY_S) if self.tablet_missed else TABLET_GAP_S
         if (hp_max and (hp > 1 or (hp == DYING_HP and not self.down)) and not self.down
                 and (p.get("tablets") or 0) > 0
                 and p.get("state") in (0, None)
@@ -6319,9 +6326,9 @@ class Bot:
         with a melee wind-up near: stay down until it swings (the felling that the getting-up deaths are made of,
         #5052) - the kick and the rise at 1 health are what the fall/knockdown/dying chain's deaths are made of."""
         me = p["pos"]
-        if self.down_dying:
-            self._gun_down()
-            return self._go("down", "down_dying_stay", {"hold": ()}, "down at 1 health: staying down, no fight")
+        # Operator 2026-11-14 (live death 05:26: "doing=down why=down at 1 health: staying down, no fight ... near2m=18"):
+        # staying down while a crowd is on him is certain death - at 1 hp the near ones are kicked/fired at; the stay
+        # is only for "nobody near". The melee wind-up hold below still keeps him down while a felling swings.
         # The felling: down at low health with one winding up a melee strike - the single full-HP-cliff hit
         # (900->1, 862->1) that the getting-up deaths are made of (#5052). Stay down until it swings through.
         hp_max = p.get("hp_max")
@@ -6335,6 +6342,9 @@ class Bot:
                       key=lambda e: math.dist(me, e["pos"]))
         if not near:
             self._gun_down()
+            if self.down_dying:
+                return self._go("down", "down_dying_stay", {"hold": ()},
+                                "down at 1 health and nobody near: staying down until the crowd clears")
             return self._go("down", "down_rise", {"hold": ("lup",)}, "down, nobody near: rising")
         e = near[0]
         d = math.dist(me, e["pos"])
