@@ -8,8 +8,7 @@
 | Audience | the operator (you), future maintainers, review agents |
 | Source of truth | this repository at `c3893b42f` + the live worker on `lilspark` |
 | Generated | 2026-11-14, rounds 23-38 of the DeepSeek PM handoff |
-| Status | The bot plays, fights, keeps combo stretches and explores the systems described here. **S-rank / five stars on
-every RE4, RE5 and RE6 run is NOT achieved and this document does not claim it.** |
+| Status | The bot plays, fights, keeps combo stretches and explores the systems described here. **S-rank / five stars on every RE4, RE5 and RE6 run is NOT achieved and this document does not claim it.** |
 
 This document is expansive on purpose. It is the map of the combat machine: every layer, every class and method family,
 every operator-facing command, the exact order in which the bot decides, how it reads the game through RAM instead of
