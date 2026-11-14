@@ -1107,9 +1107,9 @@ def test_session_world_prefers_the_fast_input_queue_and_never_leaves_a_hold_down
     world.act(B.hold("up", 0.3, "test hold"), deadline=time.monotonic() + 3.0)
 
     assert jobs == [], "the fast path must not fall back to a job when the queue accepted the input"
-    assert posts[0] == [{"key": "up", "down": True}]
+    assert posts[0] == [{"key": "Up", "down": True}], "pad names are translated to the keyboard keys the app presses"
     assert all(event["down"] is False for event in posts[-1]), "a hold always ends released"
-    assert {event["key"] for event in posts[-1]} == set(B.DIRECTIONS)
+    assert {event["key"] for event in posts[-1]} == {B.SessionWorld.PAD_TO_KEYBOARD[k] for k in B.DIRECTIONS}
 
 
 def test_session_world_falls_back_to_the_job_queue_when_the_input_queue_refuses():
@@ -1132,7 +1132,7 @@ def test_session_world_falls_back_to_the_job_queue_when_the_input_queue_refuses(
     world = B.SessionWorld("abc-123", call, sleep=lambda seconds: None, poll_s=0.0)
     world.act(B.hold("up", 0.3, "test hold"), deadline=time.monotonic() + 0.05)
 
-    assert jobs[0]["events"] == [{"key": "up", "down": True}]
+    assert jobs[0]["events"] == [{"key": "Up", "down": True}], "the job path carries the same translated key"
     assert releases and all(event["down"] is False for event in releases[-1])
     assert world.job_sent >= 1
 

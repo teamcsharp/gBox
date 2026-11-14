@@ -1601,8 +1601,19 @@ class SessionWorld:
         except Exception:                                     # noqa: BLE001 - input must never fail on a focus call
             return False
 
+    # The app presses keys on the session's display, and on Windows it sends the names it is given straight to the
+    # window - it does not translate gBox pad names first. Measured: {"key": "x"} produced an action state (1 -> 5) while
+    # {"key": "a"}, "b", "start" and "y" produced none, and the Dolphin keyboard map that gBox writes is
+    # a->x, b->z, x->s, y->a. So every press("a") this bot ever sent was the GameCube **Y** button: no attack, no switch
+    # press, no door confirmation, which is exactly the history the ledgers show.
+    PAD_TO_KEYBOARD = {"a": "x", "b": "z", "x": "s", "y": "a", "start": "Return", "select": "BackSpace",
+                       "l": "q", "r": "w", "l2": "e", "r2": "r",
+                       "up": "Up", "down": "Down", "left": "Left", "right": "Right"}
+
     def _apply(self, events: list, deadline: float) -> str:
         self.focus()
+        events = [dict(event, key=self.PAD_TO_KEYBOARD.get(str(event.get("key")), event.get("key")))
+                  for event in events if isinstance(event, dict) and "key" in event]
         # The app's session input queue can die: /input stops returning {"queued": N} and returns [] instead, after which
         # nothing is applied - measured twice, about nine minutes of heavy input into a session, with the frame counter
         # and memory reads still healthy. Counting those empty answers lets a run say "input is dead" instead of
