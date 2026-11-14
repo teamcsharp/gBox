@@ -1535,7 +1535,8 @@ def test_with_none_on_his_floor_he_goes_after_the_stages_nearest_and_counts_the_
     bot.held = lambda p, now: False
     snap.update(combo=7, combo_timer=2.0)
     acts = run(bot, snap, clock, 1)
-    assert acts[0]["hold"][0] == "lup"                                        # on to the far one on his floor
+    # Operator 2026-11-13: a clear one 60 m away is long-shot, not only walked at.
+    assert bot.stats["long_range_raises"] == 1 and "lup" not in acts[0].get("hold", ())
     snap["enemies"] = [snap["enemies"][0]]                                    # only the one upstairs: still after him
     acts = run(bot, snap, clock, 2)
     assert bot.stats["act"] == "pursue" and bot.stats["pursuits"] == 1 and bot.stats["census_alive"] == 1
@@ -2722,7 +2723,8 @@ def test_no_bonus_with_a_zombie_near_and_one_out_of_sight_is_left_and_missed(mon
     bot, clock, snap = brain(g)
     acts = run(bot, snap, clock, int(R.BONUS_TRY_S / 0.05) + 4)
     assert all("zr" not in a.get("hold", ()) for a in acts) and bot.stats["bonus_skips"] == 1
-    assert bot.doing == "walk"                                                         # left: on to the zombie
+    # the zombie is 40 m away on a clear line: long-shot it (operator: shoot unlimited distances) rather than only walk
+    assert bot.doing in ("turn", "aim", "raise", "fire", "walk") and bot.stats["long_range_raises"] >= 1
     snap["mercenaries_phase"] = R.PHASE_OVER
     run(bot, snap, clock, 1)
     assert bot.stats["bonuses_missed"] == 1 and bot.stats["bonus_log"][-1]["missed"] == 1
@@ -2819,9 +2821,46 @@ def test_melee_for_one_at_arms_length_and_the_quick_shot_for_one_close():
     assert acts[0]["hold"] == ("zl", "zr") and acts[1]["hold"] == () and bot.stats["quick_shots"] == 1
 
 
-def test_far_away_it_walks_along_the_camera():
-    bot, clock, snap = brain(round_guest(enemies=((0.0, 0.0, 4000.0, 700),), cam_yaw=0.0))   # past LONG_R
-    assert run(bot, snap, clock, 1)[0]["hold"] == ("lup",)
+def test_an_enemys_laser_is_backtraced_and_that_enemy_is_decommissioned_first():
+    # Operator 2026-11-13 (enemy laser lines on the bot): "if an enemy uses a laser. We need to backtrace it and
+    # decommission that enemy".
+    import math as _m
+    bot, clock, snap = brain(round_guest(enemies=((0.0, 0.0, 3000.0, 700),), cam_yaw=0.0))
+    e = snap["enemies"][0]
+    eid = e.get("ptr", e.get("slot"))
+    bot.windups = {eid: clock[0] - 1.0}
+    bot._laser_sources = lambda *a, **k: [e]
+    run(bot, snap, clock, 1)
+    assert bot.stats["laser_targets"] >= 1 and bot.stats["laser_target"] == eid
+    assert bot.target == eid and bot.doing in ("aim", "raise", "turn", "fire")
+
+
+def test_laser_sources_are_nearest_windup_enemy_on_the_floor_and_in_the_clear():
+    import math as _m
+    bot, clock, snap = brain(round_guest(enemies=((0.0, 0.0, 2500.0, 700), (0.0, 0.0, 800.0, 700))))
+    far, near = snap["enemies"]
+    bid = near.get("ptr", near.get("slot"))
+    bot.windups = {far.get("ptr", far.get("slot")): clock[0], bid: clock[0]}
+    got = bot._laser_sources(snap["player"], snap, clock[0])
+    assert [x.get("ptr", x.get("slot")) for x in got] == [bid, far.get("ptr", far.get("slot"))]
+    bot.is_blocked = lambda *a, **k: True                     # behind cover: not a laser source for the bot
+    assert bot._laser_sources(snap["player"], snap, clock[0]) == []
+
+
+def test_far_away_on_a_clear_line_it_raises_and_long_shoots_instead_of_only_walking():
+    # Operator 2026-11-13: "I want the bot pursuing and going after any and all enemies ... able to shoot unlimited
+    # distances" / "why is the bot just standing here and not shooting at the enemy across the map?"
+    bot, clock, snap = brain(round_guest(enemies=((0.0, 0.0, 4000.0, 700),), cam_yaw=0.0))   # past LONG_R, in the open
+    out = run(bot, snap, clock, 1)[0]
+    assert bot.stats["long_range_raises"] >= 1 and bot.doing in ("aim", "raise", "fire", "turn")
+    assert "zl" in out.get("hold", ()) or out.get("hold") != ("lup",)
+
+
+def test_far_away_behind_a_wall_it_still_walks_along_the_camera():
+    bot, clock, snap = brain(round_guest(enemies=((0.0, 0.0, 4000.0, 700),), cam_yaw=0.0))
+    bot.is_blocked = lambda *a, **k: True                     # no clear line: the walk is the answer
+    hold = run(bot, snap, clock, 1)[0]["hold"]
+    assert "lup" in hold and set(hold) <= {"lup", "lleft", "lright"}
 
 
 def test_a_hold_read_in_ram_is_shaken_off():

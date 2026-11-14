@@ -3392,6 +3392,28 @@ class Bot:
             return True
         return False
 
+    def _laser_sources(self, p, snap, now) -> list:
+        """Enemies whose laser sight / ranged wind-up is on him, nearest first ("backtrace the laser to the enemy").
+
+        Operator 2026-11-13 (screenshot of enemy laser lines at the bot): "if an enemy uses a laser, we need to
+        backtrace it and decommission that enemy." A wind-up read is the RAM's own confirmation that the one is
+        aiming his ranged attack; the source is prioritized as the target (out to LEDGE_RANGED_R) so the bot answers
+        the aimer instead of standing in the beam or shooting past him.
+        """
+        out = []
+        me = p["pos"]
+        for tid in list((getattr(self, "windups", None) or {}).keys()):
+            e = next((x for x in snap.get("enemies") or () if x.get("ptr", x.get("slot")) == tid), None)
+            if e is None or (e.get("hp") or 0) <= 0 or not e.get("pos"):
+                continue
+            if abs(e["pos"][1] - me[1]) > MAX_DY or math.dist(me, e["pos"]) > LEDGE_RANGED_R:
+                continue
+            if self.is_blocked(e, now):
+                continue
+            out.append(e)
+        out.sort(key=lambda e: math.dist(me, e["pos"]))
+        return out
+
     def _combat_pressure(self, live, now) -> bool:
         """An alive enemy is in sight within COMBAT_PRESSURE_R on his floor: fight, do not go sightseeing.
 
@@ -5033,8 +5055,21 @@ class Bot:
         thrown = None if burst_active else self._nade(p, vis, live, flat, yaw, snap, now)
         if thrown is not None:
             return thrown
+        lasers = self._laser_sources(p, snap, now)
+        if lasers:
+            src = lasers[0]
+            sid = src.get("ptr", src.get("slot"))
+            if self.stats.get("laser_target") != sid:
+                self.stats["laser_backtraces"] = int(self.stats.get("laser_backtraces", 0)) + 1
+                self.stats["laser_target"] = sid
+                self.stats["laser_target_cm"] = round(flat(src))
         if goal_tick and self._goal_target is not None and any(e is self._goal_target for e in live):
             pass                                             # the operator's target: no other pick
+        elif lasers:
+            tgt = lasers[0]                                  # the enemy whose laser is on him: decommission it first
+            self.target, self.target_at = tgt.get("ptr", tgt.get("slot")), now
+            foot, dist, err = tgt["pos"], flat(tgt), bearing(tgt)
+            self.stats["laser_targets"] = int(self.stats.get("laser_targets", 0)) + 1
         elif self.combo_urgent and vis:                      # the combo running out: the nearest open one
             tgt = min(vis, key=flat)
             self.target, self.target_at = tgt.get("ptr", tgt.get("slot")), now
@@ -5094,7 +5129,10 @@ class Bot:
                 chase = self._pursue(p, snap, now)
                 if chase is not None:
                     return chase
-                return self._go("walk", "walk_no_route", {"hold": ()}, "no reachable enemy route: releasing forward")
+                heading_to = wrap(heading(tgt["pos"][0] - px, tgt["pos"][2] - pz))
+                cam_yaw = (snap.get("camera") or {}).get("yaw", p.get("rot") or 0.0)
+                return self._go("walk", "walk_no_route", {"hold": self._stick(heading_to, cam_yaw)},
+                                "no reachable enemy route: walking straight at him")
             if now - self.detour_at >= DETOUR_S:
                 self.detour_at, self.detour = now, "lright" if self.detour == "lleft" else "lleft"
                 self.stats["detours"] += 1
@@ -5111,12 +5149,28 @@ class Bot:
                 self.stats["melee"] += 1
                 return self._go("melee", "melee", {"tap": "zr"}, f"one at {near:.0f} cm in front: a kick")
             if not front:
-                if dist > ENGAGE_R:                              # nobody in reach: walk to him along the camera
+                # Operator 2026-11-13: "I want the bot pursuing and going after any and all enemies knowing where
+                # they are on the map and able to shoot unlimited distances" / "why is the bot just standing here and
+                # not shooting at the enemy across the map?" On a clear line out to SNIPER_LONG_R the gun comes up and
+                # the long shot is taken instead of only walking; walking (navmesh A*) is the fallback, and when the
+                # A* has no route the bot walks straight at the enemy rather than standing on an empty hold.
+                far_shot = (dist > ENGAGE_R and dist <= SNIPER_LONG_R and p.get('ammo') != 0
+                            and isinstance(p.get('equipped'), int) and p['equipped'] < WEAPON_INDEXES
+                            and not self.is_blocked(tgt, now) and self._sight(tgt, now))
+                if far_shot:
+                    self.stats['long_range_raises'] = int(self.stats.get('long_range_raises', 0)) + 1
+                    self.stats['long_range_raise_cm'] = round(dist)
+                elif dist > ENGAGE_R:                            # nobody in reach: walk to him along the camera
                     chase = self._pursue(p, snap, now)
                     if chase is not None:
                         return chase
-                    return self._go("walk", "walk_no_route", {"hold": ()}, "no reachable enemy route: releasing forward")
-                if abs(err) > QUICK_ERR and now - self.quick_at > QUICK_GAP_S:
+                    heading_to = wrap(heading(tgt["pos"][0] - px, tgt["pos"][2] - pz))
+                    cam_yaw = (snap.get("camera") or {}).get("yaw", p.get("rot") or 0.0)
+                    return self._go("walk", "walk_no_route", {"hold": self._stick(heading_to, cam_yaw)},
+                                    "no nav route: walking straight at him")
+                if far_shot:                                     # fall through to the raise/fire path below
+                    pass
+                elif abs(err) > QUICK_ERR and now - self.quick_at > QUICK_GAP_S:
                     self.stats["quick_turns"] += 1               # him behind: the quick turn
                     self.quick = 2
                     return self._go("quick_turn", "quick_turn", {"hold": ("ldown",)},
