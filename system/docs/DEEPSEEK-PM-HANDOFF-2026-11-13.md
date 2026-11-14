@@ -1309,3 +1309,50 @@ settings themselves are confirmed saved). No QTE occurred in the sample, so the 
 observed live.
 
 State: MercMode RE6 playing, queue `[]`, Hermes `enabled/available true`, deployed `97ae8aacf`.
+
+### Round 25: shoot everything, answer enemy lasers, point blank, and never through the floor
+
+Operator asks this round (2026-11-13, in order): "the bot needs to always be firing ... never let the bot stop
+fighting and adding to the combo"; "i want the bot doing a quick attack at the intervals outlined here" (sidebar: on,
+4 per burst, every 10 s); the QTE sequence (flag, solve, drop mines, 3 quick shots, flee while detonating and firing);
+"why is the bot just standing here and not shooting at the enemy across the map ... pursuing ... shoot unlimited
+distances"; "their lasers show where they are ... backtrace it and decommission that enemy"; "the bot raises their gun
+and then fails to shoot / misses with the enemy right in front"; "watching the bot shoot at the ceiling just makes no
+sense ... aware that their enemy is on another level ... climb up a ladder ... never get to the enemy shooting
+through the ground".
+
+Shipped (all deployed and active; latest `24f9cf255`, deployed + service restart):
+- **Point blank** (`6ab00525b`): POINT_BLANK_R 260 cm, 10/12 deg band - the trigger is pulled in both fire paths even
+  when the cover probe objects; the out-of-sight branch aims at a point-blank enemy instead of walking past ("a raised
+  gun that holds is a gun that is not shooting"); envelope still bounds the angle to the body at that distance.
+- **Off level** (`24f9cf255`): camera-geometry fire is limited to bodies within FIRE_LEVEL_DY 120 cm of his feet; an
+  off-level body stands the trigger down (`offlevel_fire_veto`) and the bot pursues/walks toward it instead of firing
+  through the floor/ceiling. A measured laser dot on the body still proves a real line (flying/ledges).
+  Real ladder/level routing is NOT implemented - pursuit is what it has, reported honestly.
+- **Unlimited-range pursuit** (`4eea58564`): a clear enemy out to SNIPER_LONG_R (60 m) is raised on and long-shot
+  instead of only walked at (`long_range_raises`); walking is the fallback and a no-route A* now walks straight at the
+  enemy instead of holding an empty walk.
+- **Enemy laser backtrace** (`4eea58564`): `_laser_sources` reads every RAM ranged wind-up (the game's own "this one
+  is aiming at your bot"), nearest first, on his floor, within LEDGE_RANGED_R, in the clear; that source outranks
+  every other pick (`laser_backtraces`/`laser_targets`) so it is decommissioned first.
+- **Combo/blast** (`d136ee8ad`): the interval burst is no longer starved by the bot's own bomb lane (it fired once in
+  a round before: bomb_phase/bomb.out refused almost every tick); and the combo mandate yields to a live bomb
+  clearance margin (`combo_yields_to_blast`) - the 22:23 death was doing=bomb inside 218 of 1200 cm with eight
+  enemies within 2 m after the mandate postponed the escape.
+- Earlier in the round: 280 cm/0.22 s combo-mandate quick shots (`7d28888e1`) and the quick-shot ray guard
+  (`acce3e723`) so the mandate/QTE quick shots only fire at the enemy under the live laser/camera ray, never into
+  whatever the camera last faced.
+
+**Live evidence after the `24f9cf255` activation** (RE6 session ddfd03f3, first ~2.5 minutes): the interval burst
+fired 10 bursts / 11 requests (was 1/0 in a whole round), point_blank_fires 9, laser_backtraces 55 and
+laser_targets 319 (enemy lasers backtraced and targeted continuously), pressure_blocks 426 (no bonus walking while
+enemies are in sight), combo 18 with 1 break, shots 23 / hits 16 (70 %). `offlevel_fire_veto` 0 in this sample (no
+off-level shooter appeared - its live proof is still pending).
+
+**Not yet done / honest gaps**: kill_gap_over_5s 13 in the sample - the "never five seconds without a kill" absolute
+mandate is NOT yet met; the interval burst lands roughly every 12-15 s rather than every 10 s (native quick-shot
+observation limits); real ladder/next-level navigation does not exist (pursuit/straight-line walk only); round-level
+accuracy is ~50-58 % (the two best rounds this run: completed 741,304 / 300 kills / combo 57 / 50.3 % / 0 deaths, and
+an interrupted 415,080 / 284 kills / combo 61 / 57.7 % / 0 deaths). S-rank/five stars still not proven.
+
+State: MercMode RE6 playing, queue `[]`, Hermes `enabled/available true`, deployed `24f9cf255`.
