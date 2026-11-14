@@ -261,3 +261,20 @@ crossed. Three small pieces turn that into coverage:
 Live receipt in the restored session: the first frontier chunk drove the character 156 units to a never-crossed
 `TODoorCave02`; the crossing tracker recorded **room 50 -> 111 at (322.2, 817.9)** (then 111 -> 40), the door is now
 learned, and the next frontier target switched to a different never-crossed door in room 40 (200, 805).
+
+## 13. Round 9 - frontier navigation that checks reachability, and routes through learned doors
+
+The first frontier pass could pick a door that the collision mesh cannot reach (Cave 1's (-200,805) door sits behind a
+closed gate in the static mesh), so a whole 60 s chunk drove at nothing. The planner now:
+
+* builds the same `forest_route.MapRouter` grid from the newest `live-map-floorN-<digest>.json` and rejects a door
+  whose collision route is `None` (recorded in `door-blocked.json`; the veto expires in 15 minutes because a gate can
+  open later);
+* when the current room has no unexplored door, runs BFS over the learned room graph (crossings joined to door
+  positions) to the nearest reachable room that still has one, and returns the **first hop's door**;
+* logs every decision to `mandate/frontier.jsonl`.
+
+Live this round: the planner vetoed (-200,805) and (0,605) as unreachable, redirected to (0,1005), and the bot then
+crossed **40 -> 111 at (213.9, 818.0)** and **111 -> 50 at (339.1, 818.1)**, adding both doorways to the learned
+graph (7 crossings logged); the next frontier target is a never-crossed door in room 50 at (520,1105), 311 units
+away with a verified route.
