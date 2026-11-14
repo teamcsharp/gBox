@@ -154,6 +154,20 @@ def test_nearby_old_bombs_block_both_travel_and_emergency_production(lane, monke
     assert st['mine_escape_required'] and st['mine_clearance_cm'] == 500.
 
 
+def test_a_low_combo_clock_earns_a_periodic_combat_ring(lane, monkeypatch):
+    # Operator 2026-11-14: "If the bot is always moving and placing a mine every 10 seconds ... the combo will be
+    # easier to maintain." Two enemies inside the surround radius and a live combo clock at/below 4 s -> a ring.
+    step, st, flight = lane
+    monkeypatch.setattr(C, 'emergency_ring_now', lambda *a, **k: dict(op='bomb_ring', state='confirmed', placed=6,
+                                                                      units=[], reason='periodic'))
+    st.update(combo_prev=9, combo_left_s=2.0)
+    s = snap(0.)
+    s['enemies'] = [dict(hp=100, pos=[0., 0., 200.]), dict(hp=100, pos=[0., 0., 300.])]
+    step(s, st, 100.)
+    assert flight.requests and flight.requests[0]['reason'] == 'periodic'
+    assert st['mine_periodic_rings'] == 1
+
+
 def test_a_released_qte_ring_may_be_laid_while_an_old_bomb_is_out(lane, monkeypatch):
     # The operator wants the area mined after every survived QTE, even when an earlier set is still lying. The QTE
     # ring is admitted up to QTE_RING_MAX_OUTSTANDING outstanding bombs; the flag gate still refuses detonation below

@@ -484,7 +484,16 @@ def control(ad, prof, bot_getter=None):
         flash = (finite(flash_at) and 0 <= now - flash_at <= (5 if recovery_due else rules.FLASH_COMBO_S)
                  and stats.get('mine_flash_combo_at') != flash_at)
         surrounded = near >= rules.SURROUND_N and now - float(stats.get('mine_surround_at') or 0) >= rules.SURROUND_S
-        emergency = flash or surrounded or qte_ring
+        # Operator 2026-11-14: "If the bot is always moving and placing a mine every 10 seconds ... the combo will be
+        # easier to maintain." A periodic combat ring: two or more enemies inside the surround radius and the policy's
+        # drop interval (5-10 s) elapsed -> a ring at policy count/radius, on top of the travel singles.
+        _combo = stats.get('combo_prev') or 0
+        _left = stats.get('combo_left_s')
+        combo_low_now = (_combo > 0 and isinstance(_left, (int, float)) and not isinstance(_left, bool)
+                         and _left <= 4.0)
+        periodic = (near >= 2 and combo_low_now
+                    and now - float(stats.get('mine_periodic_at') or 0) >= policy['drop_every_s'])
+        emergency = flash or surrounded or qte_ring or periodic
         landed = not emergency and landing.due()
         travel_due = travel.due(now)
         if remotes and chaining and travel_due and not qte_ring:
@@ -515,7 +524,7 @@ def control(ad, prof, bot_getter=None):
         metadata = {'count': count, 'radius_cm': radius,
                  'reason': 'qte_escape' if qte_ring and not flash and not surrounded else
                            'flash' if emergency and flash else 'surrounded' if emergency and surrounded else
-                           'traversal_landing' if landed else 'travel',
+                           'periodic' if periodic else 'traversal_landing' if landed else 'travel',
                  'travel_cm': round(travel.distance, 1), 'player_pos': list(pos),
                  'session': stats.get('source_session_id')}
         if landed:
@@ -540,6 +549,9 @@ def control(ad, prof, bot_getter=None):
             stats['mine_surround_rings'] = int(stats.get('mine_surround_rings', 0)) + 1
         if emergency and flash:
             stats['mine_flash_combo_at'] = flash_at
+        if periodic and not flash and not surrounded:
+            stats['mine_periodic_at'] = now
+            stats['mine_periodic_rings'] = int(stats.get('mine_periodic_rings', 0)) + 1
             stats['mine_flash_combos'] = int(stats.get('mine_flash_combos', 0)) + 1
             stats.pop('qte_escape_mines_due', None)
         if qte_ring:
