@@ -1789,3 +1789,33 @@ but the verification sample could not run: lilspark is occupied by the PSO lane 
 displace it during 10+ minutes (RE6 stays queued for when it frees).
 
 State: deployed c7e9afd03, Hermes healthy, RE6 queued; S-rank still not achieved and not claimed.
+
+### Round 40: periodic combo mine rings shipped; lilspark MercMode launch dispatch stuck (blocked live verification)
+
+Work this round, while the RE6 verification window was unavailable:
+
+**Shipped: periodic combat mine ring** (commit 43a65c8c0, 420 tests green). Operator guidance: "If the bot is always
+moving and placing a mine every 10 seconds and dispatching a foe every 4 seconds, the combo will be easier to
+maintain." The remote-mine lane now also drops a 15-mine ring when (a) two or more enemies are inside the surround
+radius, (b) the live combo clock (`combo_left_s`) is at or below 4 s, and (c) the policy drop interval has elapsed -
+on top of the existing travel singles, flash ring, surround ring and QTE ring. New counters: `mine_periodic_rings`,
+`mine_periodic_at`; metadata reason `periodic`. New test:
+`test_a_low_combo_clock_earns_a_periodic_combat_ring` (in test_re6_remote_travel.py). Deployed 43a65c8c0 (deployed
+marker verified).
+
+**Blocked: live RE6 verification.** After the 06:03 service restart MercMode dispatches to lilspark stay un-applied:
+`dispatch: {command: launch/start/switch, title: re6}` with no `applied`, the worker journal repeats "result for job
+... was answered by the control plane; its job slot is free" for each launch job, no Eden/Switch process is spawned,
+no session Xvfb exists, and `/api/sessions` lists only the PSO Dolphin session on the Windows worker. Tried:
+MercMode stop/start/switch (many), queue `[{"title":"re6"}]`, single start with no re-posting for ~2 min, clearing
+`gbox-data/deploy-restart-pending`, two service restarts, checking Eden AppImage path and the switch library mount
+(both present). RE6 launch is currently an infrastructure/dispatcher failure, not a bot-code failure; Hermes gate is
+healthy and the deployed build is c7e9afd03 -> 43a65c8c0.
+
+**Already verified earlier in the round (live):** grenades throw (combat_grenade_throws 6), hit flash ring 1,
+down_kick fighting at 1 hp, tablets 27 presses / 13 misses (up from 11/14), rounds 39 kills / 3 breaks, breaks
+attributed held/prompt/walk.
+
+Next round: check the launch dispatch (and repair the MercMode launch path if it is still stuck - it worked before the
+06:03 restart); then sample RE6 for the c7e9afd03 1-hp survival build and the 43a65c8c0 periodic mine ring
+(`mine_periodic_rings`, death causes no longer "down at 1 health: staying down"). S-rank still not achieved.
