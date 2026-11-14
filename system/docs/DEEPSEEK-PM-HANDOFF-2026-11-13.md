@@ -1612,3 +1612,27 @@ metrics. S-rank/five stars still not achieved or claimed.
 State: MercMode on lilspark restarted into RE6 (`da8a853b`), queue `[]`, Hermes `enabled/available true`, deployed
 `cf46174e3`, suite green (337 in the switch/bonus/periodic sets before the last two small commits; their focused tests
 passed).
+
+### Round 33: longest compliant round yet (84 kills / max combo 59) with every break named
+
+Deployed `da59cf02b` (combo chain cap, raise cap 0.6 s, downed-critical flash) and ran a long verification round on a
+forced RE6 window (MercMode stop + start, session d7e250d2).
+
+**Live evidence (RE6 03:06-03:12, ~6 minutes):**
+- **84 kills, max combo 59, score 124 960** - the best of this stretch (previous live rounds: 53 kills/combo 40,
+  52 kills/combo 22), with a 50-kill/50-combo stretch (kills 56/combo 47, 64/55, 68/59) before the breaks.
+- **4 combo breaks in ~6 minutes**, all attributed: `bomb` ("bomb clearance 598/1200 cm: out of the blast before
+  anything"), `walk` ("walking off the bomb: 823 cm from it, 2 on it"), `crowd` (the crowd-kick backout), `raise` (a
+  short gun-raise stall). Two of the four are bomb-escape related; the heal/topping chain did not break a window this
+  round (`topping_yields_combo` 0 used, heals did not interrupt).
+- Death cause of the round: `doing=bomb_escape` at **598/1200 cm with 16 enemies within 2 m** and hp3s all 1 - the bot
+  was running its own bomb clearance at 1 health in a 16-strong crowd and died.
+- The previous round (session da8a853b, pre-deploy): 52 kills (died). Current: 84 kills (died) - survival and combo
+  both up, but the round still ends in a death.
+
+**Open, honestly:** combo breaks are 4 per ~6 minutes now (was 4-6 per ~4 min, and 32 in the worst early round), with
+bomb-escape-related walks the biggest remaining cause; the every-4-seconds/combo-never-lost mandate is still not met.
+The death at 1 health inside a 16-enemy crowd while clearing a bomb needs the escape to start earlier (or the crowd
+broken before the clearance run). S-rank/five stars still not achieved or claimed.
+
+State: MercMode on lilspark started into RE6, queue `[]`, Hermes `enabled/available true`, deployed `da59cf02b`.
