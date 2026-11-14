@@ -1,4 +1,4 @@
-"""A bounded, cancellable controller for the PSO autoplayer.
+﻿"""A bounded, cancellable controller for the PSO autoplayer.
 
 Why this module exists
 ----------------------
@@ -1616,7 +1616,7 @@ class ProgressionPolicy:
     """
 
     def __init__(self, *, engage: float = 40.0, reach: float = 400.0, press_range: float = 14.0,
-                 attack_range: float = 20.0, avoid_s: float = 30.0, optional_limit: int = 3,
+                 attack_range: float = 11.0, avoid_s: float = 30.0, optional_limit: int = 3,
                  height_reach: float = 5.0,
                  switch_demote_s: float = 60.0, door_state: dict | None = None) -> None:
         self.engage = float(engage)
@@ -2564,3 +2564,5 @@ class Automaton:
                 "combos": {"attempts": self.combat.attempts, "hits": self.combat.hits,
                            "whiffs": self.combat.whiffs, "stage_transitions": self.combat.stage_transitions},
                 "stopped": self.stopped, "failures": len(self.failures)}
+
+
