@@ -2013,8 +2013,12 @@ DYING_TABLETS, DYING_HP, DYING_GAP_S = False, 1, 1.0   # off: RE6 takes no table
                                         # at 1 health, the count never fell); dyings / dying_states still counted
 # Not reaching 1 health in a crowd: with CROWD_TABLET_N within CROWD_TABLET_R a tablet already at CROWD_TABLET_HP; in
 # crowd control with CC_BACK_N within CC_BACK_R the kicks and quick shots carry the stick back (stats cc_backouts).
-CROWD_TABLET_N, CROWD_TABLET_R, CROWD_TABLET_HP = 4, 300.0, 0.85
+CROWD_TABLET_N, CROWD_TABLET_R, CROWD_TABLET_HP = 4, 300.0, 0.70
 TABLET_LOWER_S = 0.3                    # R only this long after ZL was last held
+# Operator 2026-11-14 (live break attribution): a tablet at 442/900 health (49 %) broke a 26-kill combo - the heal
+# guns down for ~1 s straight out of the window. Above the critical band a heal only starts while the combo
+# window has at least this much left (a fresh kill refills it first).
+TABLET_COMBO_WINDOW_S = 3.0
 # Eat enough, never more (operator 2026-10-28: "he's not eating enough health capsules to heal himself. Make sure that
 # they eat enough health capsules to regain their health when they eat them, but not any more than that"): a tablet is
 # confirmed by the health it gave back (infinite_tablets refills the case at once, so the count alone never fell: 30 of
@@ -3381,10 +3385,32 @@ class Bot:
         cam = snap.get("camera") or {}
         yaw = cam.get("yaw", p.get("rot") or 0.0)
         err = wrap(heading(target["pos"][0] - p["pos"][0], target["pos"][2] - p["pos"][2]) - yaw)
+        if abs(err) > math.radians(75.0):
+            self.stats['quick_shot_turn_skips'] = int(self.stats.get('quick_shot_turn_skips', 0)) + 1
+            return None                                      # no 100+ deg spins inside a combo window
+        if flat(target) <= MELEE_R and abs(err) <= MELEE_CONE:
+            self.melee_at = now
+            self.stats['quick_shot_melee'] = int(self.stats.get('quick_shot_melee', 0)) + 1
+            self._gun_down()
+            return self._go("melee", "face_melee", {"tap": "zr"},
+                            f"at kick reach ({flat(target):.0f} cm): the kick keeps the combo, not a turn")
         self._gun_down()
         self.stats['quick_shot_turns'] = int(self.stats.get('quick_shot_turns', 0)) + 1
         return self._go("turn", "face_for_quick_shot", {"hold": self._yaw(err)},
                         f"quick shot: turning {math.degrees(err):+.0f} deg to the one {flat(target):.0f} cm off")
+
+    def _heal_window_ok(self, hp, hp_max) -> bool:
+        """A heal may start only with a fresh combo window (or none running), unless near-critical health.
+
+        Live 2026-11-14 (attribution): a tablet at 442/900 health broke a 26-kill combo - the gun-down heal ate the
+        window straight after the last kill. Above the critical band the heal waits for a window of at least
+        TABLET_COMBO_WINDOW_S, which the next kill refills.
+        """
+        combo = self.stats.get("combo_prev") or 0
+        left = self.stats.get("combo_left_s")
+        if not isinstance(combo, int) or combo <= 0 or not isinstance(left, (int, float)):
+            return True
+        return left >= TABLET_COMBO_WINDOW_S or (bool(hp_max) and hp <= TABLET_CRITICAL_HP * hp_max)
 
     def _inside_blast_margin(self) -> bool:
         """True when a placed mine's clearance rule says he is still inside the blast and must move out.
@@ -3412,6 +3438,12 @@ class Bot:
             return None
         remaining = self.stats.get('mine_remaining_s')
         tight = (isinstance(remaining, (int, float)) and not isinstance(remaining, bool) and remaining <= 1.0)
+        left = self.stats.get('combo_left_s')
+        combo_low = (isinstance(left, (int, float)) and not isinstance(left, bool) and left <= COMBO_KEEP_S
+                     and (self.stats.get('combo_prev') or 0) > 0)
+        if not tight and combo_low and (need - clear) <= 700.0:
+            self.stats['blast_combo_fights'] = int(self.stats.get('blast_combo_fights', 0)) + 1
+            return None                                      # the chain first: the escape resumes after the kill
         if not tight and p.get('ammo') != 0:
             left = self.stats.get('combo_left_s')
             if isinstance(left, (int, float)) and not isinstance(left, bool) and left <= COMBO_BLAST_SHOT_S:
@@ -3447,7 +3479,7 @@ class Bot:
         return self._go("bomb_escape", "blast_retreat", {"hold": self._stick(h, cam_yaw)},
                         f"bomb clearance {clear:.0f}/{need:.0f} cm: out of the blast before anything else")
 
-    def _combo_mandate_on(self, p, live, flat) -> bool:
+    def _combo_mandate_on(self, p, live, flat, now=None) -> bool:
         """The combo mandate is in force: a kill must land now, so a non-kill detour (a bomb sprint included) waits.
 
         In force when an enemy is within COMBO_HOT_R and either the running combo's clock is at or under COMBO_KEEP_S
@@ -3472,6 +3504,12 @@ class Bot:
         if isinstance(since, (int, float)) and since >= COMBO_KEEP_S:
             return True
         if self._kill_at is not None and self.combo_prev <= 0:
+            return True
+        # Live 2026-11-14 (attribution combo_break_walk, kills 0 for the first ~45 s of a round): before the first
+        # kill of the round the mandate was never in force, so the bot roamed the time-bonus phase with nothing dead.
+        # A round with no kill after COMBO_KEEP_S now hunts the nearest enemy like any other lapse.
+        if (now is not None and self._kill_at is None and self._round_started is not None
+                and now - self._round_started >= COMBO_KEEP_S):
             return True
         return False
 
@@ -3537,17 +3575,27 @@ class Bot:
             self._gun_down()
             return self._go("quick_shot", "combo_quick_shot", {"hold": ("zl", "zr")},
                             f"combo mandate: a quick shot at the one {flat(target):.0f} cm off")
-        if self.doing not in COMBO_GUARD_DOINGS and self.doing not in ("aim", "raise"):
+        periodic_wait = (self.doing == "quick_shot" and self.stats.get("act") == "periodic_quick_wait")
+        if self.doing not in COMBO_GUARD_DOINGS and self.doing not in ("aim", "raise") and not periodic_wait:
             return None
         face = self._face_for_quick_shot(p, live, flat, snap, COMBO_QUICK_R, now)
         if face is not None:
             return face
         chase = self._pursue(p, snap, now)
-        if chase is None:
-            return None
-        self.stats['combo_guard_chases'] = int(self.stats.get('combo_guard_chases', 0)) + 1
-        self.why = "combo about to lapse: chasing the nearest instead of idling - " + str(self.why)
-        return chase
+        if chase is not None:
+            self.stats['combo_guard_chases'] = int(self.stats.get('combo_guard_chases', 0)) + 1
+            self.why = "combo about to lapse: chasing the nearest instead of idling - " + str(self.why)
+            return chase
+        # Live 2026-11-14 01:40-01:42: the round stalled on doing=raise for ~50 s with 1-2 kills while the combo
+        # lapsed. When the A* has no route the guard never leaves him standing: walk straight at the nearest enemy.
+        target = min(live, key=flat)
+        heading_to = wrap(heading(target["pos"][0] - p["pos"][0], target["pos"][2] - p["pos"][2]))
+        cam_yaw = (snap.get("camera") or {}).get("yaw", p.get("rot") or 0.0)
+        self.stats['combo_guard_walks'] = int(self.stats.get('combo_guard_walks', 0)) + 1
+        self.why = "combo about to lapse: no route, walking straight at the nearest - " + str(self.why)
+        self._gun_down()
+        return self._go("hunt", "combo_guard_walk", {"hold": self._stick(heading_to, cam_yaw)},
+                        f"combo about to lapse: no A* route, walking straight at the one {flat(target):.0f} cm off")
 
     def _critical_no_tablet_flash(self, p, live, flat, now) -> dict | None:
         """Critical health in a melee crowd: the native flash and a gun-down moment instead of raising the gun.
@@ -4309,7 +4357,7 @@ class Bot:
         qte_shot = self._qte_recovery_shot(p, live, flat, snap, now)
         if qte_shot is not None:
             return qte_shot
-        self._combo_hot_now = self._combo_mandate_on(p, live, flat)
+        self._combo_hot_now = self._combo_mandate_on(p, live, flat, now)
         if self._combo_hot_now and self._inside_blast_margin():
             self._combo_hot_now = False          # a live bomb around him: out of the blast first, the combo after
             self.stats['combo_yields_to_blast'] = int(self.stats.get('combo_yields_to_blast', 0)) + 1
@@ -5158,7 +5206,12 @@ class Bot:
                 and (topping or hp <= TABLET_LOW_HP * hp_max or (hp <= TABLET_HP * hp_max and near > TABLET_CLEAR_R)
                      or (hp <= CROWD_TABLET_HP * hp_max
                          and sum(1 for e in live if flat(e) <= CROWD_TABLET_R) >= CROWD_TABLET_N))
-                and not (hp == DYING_HP and any(flat(e) <= MELEE_R for e in live))):
+                and not (hp == DYING_HP and any(flat(e) <= MELEE_R for e in live))
+                # Operator 2026-11-14: "the combo should never be lost". A heal tick guns down for a second; above
+                # the critical band it waits for the after-a-kill window instead of breaking a live chain.
+                and not (getattr(self, '_combo_hot_now', False) and not topping
+                         and hp > TABLET_CRITICAL_HP * hp_max * 1.5)
+                and self._heal_window_ok(hp, hp_max)):
             # the lethal heal tick (#5052): down and at 1 health within MELEE_R is never tablet time - the heal chain
             # lowers the gun, and the lower window is what the fall/knockdown/dying chain's deaths are made of
             self._gun_down()                                     # 60 % health or less, free: a tablet (R),
@@ -5405,7 +5458,19 @@ class Bot:
                     self.stats["offlevel_fire_veto"] = int(self.stats.get("offlevel_fire_veto", 0)) + 1
                 elif not (((proven and abs(err[0]) <= GEOM_FIRE_ERR and abs(err[1]) <= GEOM_FIRE_PITCH)
                            or point_blank) and (point_blank or not self.is_blocked(tgt, now))):
-                    return self._go("raise", "raise", {"hold": ("zl",) + back}, "the gun comes up (no laser yet)")
+                    # Live 2026-11-14: a target whose line never proves had the bot raising the gun for ~50 s while
+                    # the combo lapsed. Raising is capped at a second; then it repositions for a line instead.
+                    key = (tgt.get("ptr", tgt.get("slot")), "raise")
+                    if getattr(self, "_raise_key", None) != key:
+                        self._raise_key, self._raise_since = key, now
+                    if now - getattr(self, "_raise_since", now) < 1.0:
+                        return self._go("raise", "raise", {"hold": ("zl",) + back}, "the gun comes up (no laser yet)")
+                    self.stats['raise_repositions'] = int(self.stats.get('raise_repositions', 0)) + 1
+                    heading_to = wrap(heading(tgt["pos"][0] - p["pos"][0], tgt["pos"][2] - p["pos"][2]))
+                    cam_yaw = getattr(self, "_cam_yaw", None) or p.get("rot") or 0.0
+                    self._gun_down()
+                    return self._go("walk", "raise_reposition", {"hold": self._stick(heading_to, cam_yaw)},
+                                    "the line to him never proves: walking round for a shot")
                 if not level_ok:
                     # off his level: never shoot through the floor/ceiling - the aim waits while he goes to it
                     return self._go("raise", "offlevel_raise", {"hold": ("zl",) + back},

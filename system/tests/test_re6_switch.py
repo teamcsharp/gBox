@@ -1052,6 +1052,72 @@ def test_every_combo_break_is_attributed_to_the_doing_that_caused_it():
     assert bot.stats["combo_break_bonus"] == 2
 
 
+def test_no_quick_shot_turn_beyond_75_deg_and_a_kick_at_arm_reach():
+    # Live 2026-11-14: a combo break was "quick shot: turning +101 deg to the one 110 cm off" - the spin ate the window.
+    import math as _m
+    bot, clock, snap = brain(round_guest(enemies=((0., 0., -400., 100),), cam_yaw=0.0))   # behind him
+    live = snap["enemies"]
+    p = {"pos": (0., 0., 0.), "ammo": 7, "state": 0, "rot": 0.0}
+    flat = lambda e: _m.hypot(e["pos"][0], e["pos"][2])
+    assert bot._face_for_quick_shot(p, live, flat, snap, 500.0, 1.0) is None
+    assert bot.stats["quick_shot_turn_skips"] == 1
+    g = round_guest(enemies=((0., 0., 120., 100),), cam_yaw=0.0)                          # right in front, kick reach
+    bot2, clock2, snap2 = brain(g)
+    live2 = snap2["enemies"]
+    flat2 = lambda e: _m.hypot(e["pos"][0], e["pos"][2])
+    out = bot2._face_for_quick_shot(p, live2, flat2, snap2, 500.0, 1.0)
+    assert out == {"tap": "zr"} and bot2.stats["quick_shot_melee"] == 1
+
+
+def test_a_small_blast_shortfall_does_not_override_a_running_out_combo():
+    # Live 2026-11-14 01:55: "bomb clearance 952/1150 cm: out of the blast before anything else" broke the chain.
+    import math as _m
+    bot, clock, snap = brain(round_guest(enemies=((0., 0., 400., 100),)))
+    live = snap["enemies"]
+    p = {"pos": (0., 0., 0.), "ammo": 7, "state": 0, "rot": 0.0}
+    flat = lambda e: _m.hypot(e["pos"][0], e["pos"][2])
+    bot.stats.update(mine_escape_required=True, mine_clearance_cm=952.0, mine_required_clearance_cm=1150.0,
+                     mine_remaining_s=3.0, combo_left_s=1.5, combo_prev=9)
+    assert bot._blast_retreat(p, live, snap, 3.0) is None
+    assert bot.stats["blast_combo_fights"] == 1
+    bot.stats.update(mine_clearance_cm=300.0)              # a big shortfall: out first, and the deadline is 0.8 s
+    bot.stats["mine_remaining_s"] = 0.8
+    out = bot._blast_retreat(p, live, snap, 3.5)
+    assert out is not None and bot.doing == "bomb_escape"
+
+
+def test_the_combo_guard_takes_over_a_stalled_periodic_quick_attack_wait():
+    import math as _m
+    bot, clock, snap = brain(round_guest(enemies=((0., 0., 300., 100),), cam_yaw=0.0))
+    p = {"pos": (0., 0., 0.), "ammo": 7, "state": 0, "rot": 0.0}
+    live = snap["enemies"]
+    flat = lambda e: _m.hypot(e["pos"][0], e["pos"][2])
+    bot.stats.update(combo_left_s=1.2, combo_prev=5, act="periodic_quick_wait")
+    bot._combo_hot_now = True
+    bot.doing = "quick_shot"
+    bot._quick_shot_target = lambda *a, **k: live[0]
+    out = bot._combo_guard(p, live, flat, snap, 9.0)
+    assert out == {"hold": ("zl", "zr")}
+
+
+def test_the_combo_guard_never_stands_still_when_pursuit_finds_no_route():
+    # Live 2026-11-14: doing=raise for ~50 s with the combo lapsed; the guard now walks straight at the nearest.
+    import math as _m
+    bot, clock, snap = brain(round_guest(enemies=((0., 0., 900., 100),)))
+    live = snap["enemies"]
+    p = {"pos": (0., 0., 0.), "ammo": 7, "state": 0, "rot": 0.0}
+    flat = lambda e: _m.hypot(e["pos"][0], e["pos"][2])
+    bot.stats.update(combo_left_s=None, combo_prev=0)
+    bot._kill_at, bot._kill_n = 1.0, 1
+    bot._combo_hot_now = True
+    bot.doing = "raise"
+    bot._quick_shot_target = lambda *a, **k: None
+    bot._face_for_quick_shot = lambda *a, **k: None
+    bot._pursue = lambda *a, **k: None
+    out = bot._combo_guard(p, live, flat, snap, 9.0)
+    assert out is not None and out.get("hold") and bot.stats["combo_guard_walks"] == 1
+
+
 def test_the_combo_gets_a_quick_shot_while_retreating_from_a_bomb_blast():
     # Operator 2026-11-14: "If the bot fights while placing mines, the goal becomes easier"; the combo may never lapse.
     import math as _m
@@ -1097,6 +1163,18 @@ def test_the_combo_mandate_yields_to_a_live_bomb_clearance_margin():
     assert bot._inside_blast_margin() is True
     bot.stats['mine_clearance_cm'] = 1400.0
     assert bot._inside_blast_margin() is False
+
+
+def test_before_the_first_kill_of_a_round_the_mandate_hunts_instead_of_roaming():
+    # Live 2026-11-14: kills stayed 0 for ~45 s after a round start while the bot roamed the bonus phase.
+    import math as _m
+    bot, clock, snap = brain(round_guest(enemies=((0., 0., 2000., 100),)))
+    live = snap["enemies"]
+    p = {"pos": (0., 0., 0.), "ammo": 7, "state": 0}
+    flat = lambda e: _m.hypot(e["pos"][0], e["pos"][2])
+    bot._round_started, bot._kill_at, bot._kill_n, bot.combo_prev = 10.0, None, None, 0
+    assert bot._combo_mandate_on(p, live, flat, 10.5) is False
+    assert bot._combo_mandate_on(p, live, flat, 13.0) is True
 
 
 def test_the_combo_mandate_pursues_the_nearest_enemy_no_matter_the_distance():
@@ -1450,11 +1528,26 @@ def test_dying_at_one_health_he_presses_for_a_tablet_and_counts_whether_it_took(
     assert bot.stats["tablet_dying_taken"] == 1 and bot.stats["dyings"] == 1 and bot.dying_since is None
 
 
-def test_a_crowd_gets_a_tablet_earlier_and_crowd_control_backs_out_as_it_attacks():
+def test_a_heal_waits_for_a_fresh_combo_window_above_the_critical_band():
+    # Live 2026-11-14: a tablet at 49 % health broke a 26-kill combo; the heal now waits for a freshly refilled window.
+    bot, clock, snap = brain(round_guest(enemies=((0., 0., 400., 100),), hp=442))
+    assert bot._heal_window_ok(442, 900) is True                # no combo running: heal freely
+    bot.stats.update(combo_prev=26, combo_left_s=1.5)
+    assert bot._heal_window_ok(442, 900) is False               # window running out: defer the heal
+    bot.stats["combo_left_s"] = 4.0
+    assert bot._heal_window_ok(442, 900) is True                # a kill refilled it: heal now
+    bot.stats["combo_left_s"] = 0.8
+    assert bot._heal_window_ok(200, 900) is True                # near-critical: survival still wins
+
+
+def test_a_crowd_heals_at_seventy_percent_not_at_eighty_and_crowd_control_backs_out_as_it_attacks():
     four = ((0.0, 0.0, 120.0, 700), (100.0, 0.0, 200.0, 700), (-100.0, 0.0, 220.0, 700), (0.0, 0.0, 280.0, 700))
     bot, clock, snap = brain(round_guest(enemies=four, hp=740, cam_yaw=0.0))   # 82 % with four within 3 m
     bot.held = lambda p, now: False
-    assert run(bot, snap, clock, 1)[0] == {"tap": "r"}                       # a tablet already
+    assert run(bot, snap, clock, 1)[0] != {"tap": "r"}                       # no heal: the combo comes first
+    bot, clock, snap = brain(round_guest(enemies=four, hp=558, cam_yaw=0.0))   # 62 %: the crowd heal fires
+    bot.held = lambda p, now: False
+    assert run(bot, snap, clock, 1)[0] == {"tap": "r"}
     bot, clock, snap = brain(round_guest(enemies=four, cam_yaw=0.0))
     bot.held = lambda p, now: False
     acts = run(bot, snap, clock, 12)
