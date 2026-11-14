@@ -1661,3 +1661,28 @@ every-4-seconds/never-lose-the-combo mandate is still not met; S-rank/five stars
 
 State: MercMode on lilspark running RE6 (session f079e411 at the sampling close), queue `[]`, Hermes
 `enabled/available true`, deployed `69600bacd`.
+
+### Round 35: a 154-kill / 193 200-point live round, and the dodge answer shipped
+
+The round that was running at the end of round 34 was followed to its death: **154 kills, max combo 53, score
+193 200** (build `69600bacd`) - the best live round of this stretch (previous: 84 kills/124 960, 53/64 280). It ran ~18
+minutes with the timer extended to 500+ s through the blue crystals and **11 attributed combo breaks**:
+`walk` 3 (the learned dodge: "an attack that hurt him through his shots: out of its reach"), `held` 3 (QTE/grab
+holds), `raise` 1, `crowd` 1, `tablet` 1, `quick_turn` 1.
+
+Shipped `940556532` (deployed + restarted): the learned dodge now fires at the attacker first when the combo is
+lapsing and the attacker is at quick-shot reach (<= COMBO_QUICK_R) and in the 60-degree front arc
+(`lethal_combo_shots`); only then does it step out. A dead attacker needs no dodge.
+
+**Live verification of `940556532`** (short round, forced RE6): 34 kills in ~90 s with **one** attributed break -
+`held` ("held (action 8): one 403 cm behind: panic turn + break") - then the round died (the grab/panic chain). The
+dodge-shot counter stayed 0 in this sample (no learned-dodge threat fired), so the new rule itself still needs a round
+with those attackers; the one break belonged to the grab path.
+
+**Open, honestly:** the two remaining break families are defensive - learned-dodge walks (now answered with a
+pre-dodge shot, to be proven in a round that has those attackers) and grab/QTE holds (the short verification round
+died on exactly this chain: a grab with an attacker behind, panic turn, then death). The every-4-seconds /
+combo-never-lost mandate is still not met; S-rank/five stars are not achieved or claimed.
+
+State: MercMode on lilspark started into RE6 (session fc09a5c0), queue `[]`, Hermes `enabled/available true`,
+deployed `940556532`, switch suite 277 pass.
