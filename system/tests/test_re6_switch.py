@@ -1260,6 +1260,16 @@ def test_a_lapsing_combo_does_not_pause_the_blast_escape_any_more():
     assert bot.stats.get("blast_combo_shots", 0) == 0 and bot.stats.get("blast_combo_fights", 0) == 0
 
 
+def test_a_grab_gets_the_native_flash_on_the_tick_it_starts():
+    # Operator 2026-11-14: "flash on every hit / QTE"; a grab is a QTE - the flash breaks it without mash timing.
+    bot, clock, snap = brain(round_guest(enemies=((0.0, 0.0, 150.0, 700),)))
+    snap["player"]["state"] = next(iter(R.HELD_STATES))
+    bot._respond_flash = lambda why: True
+    acts = run(bot, snap, clock, 1)
+    assert bot.doing == "flash" and bot.stats.get("held_flashes") == 1
+    assert acts and acts[0].get("hold") == ()
+
+
 def test_the_downed_dying_bot_flashes_before_the_down_fight():
     # Live 2026-11-14 03:22 death: "doing=down ... staying down, no fight" at 1 health with 8 within 2 m.
     import math as _m

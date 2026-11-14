@@ -4479,6 +4479,14 @@ class Bot:
                     self.hold_since, self.hold_pressed = now, False
                     self._grab_swap(p, now)
                     self.hold_bomb_out = bool((p.get("bomb") or {}).get("out"))
+                    # Operator 2026-11-14: "flash on every hit / QTE" - the grab itself is a QTE. A native flash on
+                    # hold entry stuns and disarms the grabber; it is the one answer that does not depend on the mash
+                    # timing. Refusals are handled inside _respond_flash and never end the tick.
+                    if self._respond_flash("held: the native flash breaks the grab"):
+                        self.stats['held_flashes'] = int(self.stats.get('held_flashes', 0)) + 1
+                        self._gun_down()
+                        return self._go("flash", "held_flash", {"hold": ()},
+                                        "held: the native flash breaks the grab")
                 self.in_hold = True
                 shown = self._held_prompt(now)                   # the game's own prompt in the hold: its button
                 if shown is not None:
