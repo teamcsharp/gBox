@@ -1030,7 +1030,9 @@ def test_a_live_bomb_blast_gets_a_hard_retreat_before_any_fight_action():
     flat = lambda e: _m.hypot(e["pos"][0], e["pos"][2])
     bot.stats.update(mine_escape_required=True, mine_clearance_cm=430.0, mine_required_clearance_cm=1200.0,
                      mine_remaining_s=1.0)
+    bot._escape_route = lambda *a, **k: 0.5                  # the mesh A* route to a bomb-clear goal
     out = bot._blast_retreat(p, live, snap, 5.0)
+    assert bot._escape_heading == 0.5                        # published for the wall/safety hook to follow
     assert out is not None and bot.doing == "bomb_escape" and out.get("hold")
     assert bot.stats["blast_retreats"] == 1
     bot.stats.update(mine_clearance_cm=1100.0, mine_remaining_s=4.0)      # only 100 cm short, deadline far: no override

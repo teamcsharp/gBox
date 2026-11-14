@@ -3410,10 +3410,17 @@ class Bot:
         urgent = (isinstance(remaining, (int, float)) and not isinstance(remaining, bool) and remaining <= 2.0)
         if not urgent and (need - clear) < 500.0:
             return None
-        try:
-            h = self._push_heading(p, live, snap)
-        except Exception:                                    # noqa: BLE001 - a retreat is never blocked by its planner
-            h = self._open_heading(p, live)
+        # Live 2026-11-14: with the greedy open direction the bot stayed pinned 40-60 cm from the ring for minutes
+        # (blast_retreats 558, one detonation left). The mesh A* route to a bomb-clear goal is the planner that gets
+        # out of a ring dropped at his feet; it is published as _escape_heading so the wall/safety hook follows the
+        # same route around railings, and the greedy heading is only the fallback.
+        h = self._escape_route(p, now)
+        if h is None:
+            try:
+                h = self._push_heading(p, live, snap)
+            except Exception:                                # noqa: BLE001 - a retreat is never blocked by its planner
+                h = self._open_heading(p, live)
+        self._escape_heading = h
         cam_yaw = (snap.get("camera") or {}).get("yaw", p.get("rot") or 0.0)
         self._gun_down()
         self.stats['blast_retreats'] = int(self.stats.get('blast_retreats', 0)) + 1
