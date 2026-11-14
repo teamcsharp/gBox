@@ -1178,6 +1178,24 @@ def test_a_failed_qte_writes_an_investigation_report(tmp_path, monkeypatch):
     assert report["prompt"]["key"] == "zr" and report["kind"] == "failed" and "near_cm" in report
 
 
+def test_a_combat_grenade_is_thrown_into_a_mob_in_range():
+    # Operator 2026-11-14: "why is the bot never throwing grenades? they are so effective."
+    import math as _m
+    bot, clock, snap = brain(round_guest(enemies=((0., 0., 900., 100), (200., 0., 1000., 100))))
+    live = snap["enemies"]
+    p = dict(snap["player"])
+    p["pos"] = (0., 0., 0.)
+    p["nades"] = {R.NADE_TYPES["frag"]: (3, 4)}
+    flat = lambda e: _m.hypot(e["pos"][0], e["pos"][2])
+    def fake_nade(*a, **k):
+        bot.nade = {"kind": "frag", "phase": "equip"}
+        return {"hold": ("ldown",)}
+    bot._nade = fake_nade
+    out = bot._combat_grenade(p, live, flat, snap, 5.0)
+    assert out is not None and bot.stats["combat_grenade_throws"] == 1
+    assert bot._combat_grenade(p, live, flat, snap, 9.0) is None        # the 8 s pacing holds
+
+
 def test_a_raised_gun_fires_its_twenty_bullet_scatter_burst():
     # Operator 2026-11-14: "If they raise their gun, they need to fire off at least twenty bullets in a scatter shot."
     import math as _m
@@ -1542,12 +1560,15 @@ def test_the_one_right_in_front_is_the_target_not_a_distant_sniper():
 def test_surrounded_grenade_cluster_bomb_burst_lobs_five_at_burst_speed(monkeypatch):
     # operator 2026-11-03: "take a moment every few minutes to spam some grenades (at least 5) in rapid succession via
     monkeypatch.setattr(R, "PERIODIC_QA", False)                            # (the burst alone; the interval is separate)
+    monkeypatch.setattr(R, "GRENADE_EVERY_S", 1e12)                         # (the periodic combat grenade: off here)
+    monkeypatch.setattr(R, "RELOCATE_S", 1e9)                               # (the always-move rule: off here)
     # 5x animation speed at the enemies when they are surrounded" / "cluster-bomb the crowd"
     ring = tuple((40.0 * i - 100, 0.0, 120.0 + 10 * i, 700) for i in range(6))     # six encircling him (within BURST_SURROUND_R)
     bot, clock, snap = brain(round_guest(enemies=ring, cam_yaw=0.0))
     snap["player"].update(equipped=0, nades={0x113: (9, 5), 0x114: (10, 5), 0x115: (11, 5)})
     run(bot, snap, clock, 2)
     assert bot.stats["re6_grenade_bursts"] == 0                                    # not in the first BURST_COOLDOWN_S
+    bot.nade = None                                                              # (the opening flash throw has finished)
     clock[0] += R.BURST_COOLDOWN_S + 1
     run(bot, snap, clock, 3)                                                       # the burst begins and equips
     assert bot._gburst is not None and bot.stats["burst_throw_speed"] == R.BURST_THROW_SPEED_X

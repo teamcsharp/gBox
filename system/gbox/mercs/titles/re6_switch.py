@@ -2211,7 +2211,7 @@ MAP_GOALS, GOAL_FIRE_R, GOAL_THREAT_R, GOAL_FIGHT_R, GOAL_NO_ROUTE_S = True, 150
 # file as RE5's, each line with its title; the newest also in stats map_goal_trace).
 MAP_GOAL_LOG = Path(__file__).resolve().parents[3] / "gbox-data" / "mercs" / "map-goals.log"
 MAP_GOAL_LOG_EVERY_S = 1.0
-NADES = False                            # (on per profile, re6_switch_mods bot_options nades=); the wheel measured live 14:17 (_wheel_key; the D-pad's right from an item lands
+NADES = True                             # Operator 2026-11-14: "why is the bot never throwing grenades? they are so effective." (on per profile, re6_switch_mods bot_options nades=); the wheel measured live 14:17 (_wheel_key; the D-pad's right from an item lands
                                         # on wheel index 0, between the guns it steps 0 -> 1 -> 2 -> 0; a throw leaves the
                                         # game's own pick of a gun in hand - the knife, index 2 - so the gun back is to his)
 NADE_UP_FROM = 11                       # from a gun, the wheel's up reaches the flash (11) and the bomb (12) first
@@ -2324,6 +2324,9 @@ SURROUND_N = 8
 # last throw (FLASH_GAP_S, the flash's own gap, held every throw back until then), the throw at 20x (re6_switch_mods
 # throw_speed, on without fire_rate) and the gun back by the hook at once.
 NADE_N, NADE_MIN_R, NADE_MAX_R, NADE_CLUSTER_R = 1, 500.0, 1500.0, 300.0
+# Operator 2026-11-14: a grenade every GRENADE_EVERY_S into a mob in the throw range, regardless of the
+# move/last-throw/fire-first pacing (the pacing still applies to the optional wheel throws).
+GRENADE_EVERY_S = 8.0
 NADE_ANY_GAP_S = 1.5
 # While he backs off or flees, the throw goes on: the stick keeps him moving away from the nearest (NADE_FLEE_R) while
 # the grenade is readied and thrown over his shoulder at the pursuers (a flash at any within NADE_MIN_R - it cannot hurt
@@ -3517,6 +3520,33 @@ class Bot:
         self._gun_down()
         return self._go("walk", "relocate", {"hold": self._stick(heading, cam_yaw)},
                         "standing too long among them: relocating before they crowd him")
+
+    def _combat_grenade(self, p, live, flat, snap, now) -> dict | None:
+        """A grenade into a mob in throw range at most every GRENADE_EVERY_S (operator: "why is the bot never throwing
+        grenades? they are so effective"). The wheel throw itself is _nade with its pacing gates relaxed for this call.
+        """
+        if self.down or self.in_hold or self.nade is not None:
+            return None
+        if now - getattr(self, '_grenade_at', -1e9) < GRENADE_EVERY_S:
+            return None
+        nades = p.get('nades') or {}
+        if not any((nades.get(NADE_TYPES[k]) or (0, 0))[1] > 0 for k in ('frag', 'fire')):
+            return None
+        vis = [e for e in live if not self.is_blocked(e, now)]
+        if not any(NADE_MIN_R <= flat(e) <= NADE_MAX_R for e in vis):
+            return None
+        cam = snap.get('camera')
+        yaw = cam['yaw'] if cam else p.get('rot') or 0.0
+        self._force_grenade = True
+        try:
+            out = self._nade(p, vis, live, flat, yaw, snap, now)
+        finally:
+            self._force_grenade = False
+        if out is not None and self.nade is not None:
+            self._grenade_at = now
+            self.stats['combat_grenade_throws'] = int(self.stats.get('combat_grenade_throws', 0)) + 1
+            return out
+        return None
 
     def _blast_retreat(self, p, live, snap, now) -> dict | None:
         """Out of a live remote-bomb blast BEFORE any other action: the engine's detonation waits for 1200 cm and live
@@ -5151,6 +5181,9 @@ class Bot:
                 return self._go("walk", "boss_step_out",
                                 {"hold": self._stick(self._open_heading(p, live, (boss["pos"][0], boss["pos"][2])), yaw)},
                                 f"a big attack ({windup(boss, p['pos'])}) winding up at {flat(boss):.0f} cm: moving out")
+        grenade = self._combat_grenade(p, live, flat, snap, now)
+        if grenade is not None:
+            return grenade
         n = self.nade                                            # a throw with the grenade in hand (or the gun on its
         if n is not None and not self.down and (n["phase"] != "equip" or p.get("equipped") == n["index"]):
             cam = snap.get("camera")                             # way back) goes on before the near ones' fight - that
@@ -6853,7 +6886,8 @@ class Bot:
         n = self.nade
         eq = p.get("equipped")
         px, _, pz = p["pos"]
-        ff = self._fire_first(p, vis, flat, now) if FIRE_FIRST else None   # one in clear sight near: the gun first
+        force = bool(getattr(self, '_force_grenade', False))
+        ff = None if force else (self._fire_first(p, vis, flat, now) if FIRE_FIRST else None)
         if n is None:
             if p.get('ammo') == 0 and any(n > 0 for n in (p.get('gun_ammo') or {}).values()):
                 return None                                # establish a loaded gun before an optional item cycle
@@ -6866,11 +6900,11 @@ class Bot:
                 burst = self._burst_begin(p, vis, live, flat, now)   # the surround cluster-bomb burst (its own cooldown)
             if burst is not None:
                 kind, group = burst
-            elif (not (NADES or FLASH) or (now - self.nade_last < NADE_ANY_GAP_S
+            elif (not (NADES or FLASH) or (not force and now - self.nade_last < NADE_ANY_GAP_S
                                             and not getattr(self, '_combo_urgent_now', False)) or not vis
                   or (self._bomb_out(p) and (not BOMB_MIND or self.mind is None or eq == BOMB_INDEX))):
                 return None                                  # (a bomb out with the gun in hand: the hook's, throw on)
-            elif (not getattr(self, '_combo_urgent_now', False)
+            elif (not force and not getattr(self, '_combo_urgent_now', False)
                   and not self._nade_moved(p, now) and not self._overwhelmed(p, live, flat, now)
                   and not any(windup(e, p["pos"]) == "melee" for e in vis if flat(e) <= FLASH_R)):
                 self.stats["nade_move_waits"] = self.stats.get("nade_move_waits", 0) + 1
@@ -6884,11 +6918,11 @@ class Bot:
                         and now >= self.fever_until                  # (not again on the stunned ones of its own fever)
                         and self._flash_ok("wheel", snap, now)[0]):  # one a minute, a tight reason (FLASH_TIGHT)
                     group, kind = near or [min(vis, key=flat)], "flash"   # (vis: on his ground only)
-                elif (now - self.nade_last < NADE_GAP_S
+                elif (not force and now - self.nade_last < NADE_GAP_S
                       and not getattr(self, '_combo_urgent_now', False)):
                     return None
                 elif (not NADES                                          # (FLASH alone: no grenades)
-                      or ((now - self.frag_last < FRAG_GAP_S or (now - self.nade_last < URGENT_NADE_GAP_S))
+                      or (not force and (now - self.frag_last < FRAG_GAP_S or (now - self.nade_last < URGENT_NADE_GAP_S))
                           and self._clusters(vis, flat) < SPAM_CLUSTERS
                           and not getattr(self, '_combo_urgent_now', False))):
                     return None
