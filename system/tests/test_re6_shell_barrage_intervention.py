@@ -80,7 +80,9 @@ def test_the_shell_barrage_runs_under_the_shared_owner_when_idle(monkeypatch, so
     ('shell1303', True, 0, 0),
     ('flash', False, 0, 1),
 ])
-def test_the_ring_button_routes_launcher_kinds_to_the_research_barrage(monkeypatch, kind, pending, barrage_calls, ring_calls):
+@pytest.mark.parametrize('allow', [True, False])
+def test_the_ring_button_routes_launcher_kinds_to_the_research_barrage(monkeypatch, kind, pending, barrage_calls,
+                                                                      ring_calls, allow):
     # The operator's chooser row for a launcher shell kind carries allow_unverified; the worker turns it into the
     # research barrage (idle-gated, honest receipt), while every other kind still uses the native grenade_ring.
     from gbox.mercs.titles import re6_switch_native as N, re6_switch_shell_probe as P
@@ -111,7 +113,7 @@ def test_the_ring_button_routes_launcher_kinds_to_the_research_barrage(monkeypat
         if request.url.path.endswith('/claim'):
             return httpx.Response(200, json={'requests': [{'id': 'ring', 'claim': 'once',
                 'op': 'grenade_ring', 'source': 'probe',
-                'args': {'kind': kind, 'allow_unverified': True},
+                'args': {'kind': kind, 'allow_unverified': allow},
                 'expires': time.time() + 10, 'epoch': body['epoch']}]})
         results.extend(body['results'])
         running[0] = False

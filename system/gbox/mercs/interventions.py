@@ -82,6 +82,28 @@ def shell_barrage_args(args, source):
     return {'kind': kind, 'count': count, 'radius_cm': radius, 'allow_unverified': True}
 
 
+def kind_rows(kinds):
+    """Validate a worker's grenade-kind rows for the viewer, keeping the honest source label.
+
+    The PiP decides from ``source == "probe"`` whether the click carries allow_unverified (the research path); a
+    probe row stripped of its source made the operator's Nitrogen click hit the native refusal instead of the
+    research barrage (live 2026-11-13: the chooser showed the shells, the click failed with the old refusal).
+    """
+    if (not isinstance(kinds, list) or len(kinds) > len(GRENADE_RING_KINDS) or any(
+            not isinstance(k, dict) or k.get('kind') not in GRENADE_RING_KINDS or
+            type(k.get('available')) is not bool for k in kinds)
+            or len({k['kind'] for k in kinds}) != len(kinds)):
+        raise ValueError('invalid grenade kind status')
+    out = []
+    for k in kinds:
+        row = {'kind': k['kind'], 'available': k['available'], 'reason': str(k.get('reason') or '')[:300]}
+        source = k.get('source')
+        if source in ('title', 'native', 'probe', 'bot'):
+            row['source'] = source
+        out.append(row)
+    return out
+
+
 @contextmanager
 def wake_on_post(sid):
     """Local serve/worker dispatch wakes on commit; remote workers retain polling."""
@@ -366,13 +388,10 @@ def install(app, store, auth):
             options['proximity_mines'] = {'available': mines['available'], 'radius_cm': 152.4, 'count': mines['count'],
                                           'reason': str(mines.get('reason') or '')[:300]}
         if kinds is not None:
-            if (not isinstance(kinds, list) or len(kinds) > len(GRENADE_RING_KINDS) or any(
-                    not isinstance(k, dict) or k.get('kind') not in GRENADE_RING_KINDS or
-                    type(k.get('available')) is not bool for k in kinds)
-                    or len({k['kind'] for k in kinds}) != len(kinds)):
-                raise HTTPException(422, 'invalid grenade kind status')
-            options['grenade_kinds'] = [{'kind': k['kind'], 'available': k['available'],
-                'reason': str(k.get('reason') or '')[:300]} for k in kinds]
+            try:
+                options['grenade_kinds'] = kind_rows(kinds)
+            except ValueError:
+                raise HTTPException(422, 'invalid grenade kind status') from None
         if ammo is not None:
             if (not isinstance(ammo, dict) or type(ammo.get('available')) is not bool
                     or ammo.get('enabled') is not None and type(ammo.get('enabled')) is not bool
@@ -682,8 +701,13 @@ def _worker_loop(sid, server, headers, ad, stats_of, alive, event, game=None):
                                                         "round him (mine_ring_shots), not the native harness"}
                                 elif row['op'] == 'grenade_ring':
                                     kind = row['args'].get('kind', 'flash')
-                                    if kind in ('shell1302', 'shell1303', 'shell1304') and \
-                                            row['args'].get('allow_unverified') is True and type(ctl) is N.Controller:
+                                    if kind in ('shell1302', 'shell1303', 'shell1304') and type(ctl) is N.Controller:
+                                        # The chooser lists the launcher kinds as available (probe) rows and the PiP's
+                                        # click may arrive WITHOUT allow_unverified (that flag belongs to the probe
+                                        # rows: live 2026-11-13 the Nitrogen click still hit the native refusal "the
+                                        # uWp1304 launcher round needs its native shell initialization and explosion
+                                        # path"). The research barrage is the only implementation of these kinds, so
+                                        # the click is routed to it either way.
                                         # The operator's 360 launcher ring: research grade (see
                                         # docs/research/re6-native-shell-ring.md). Live ring evidence 2026-11-13: eight
                                         # shells spawned/armed on a 800 cm ring, three enemies entered DmgIce with stable

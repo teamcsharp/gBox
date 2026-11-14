@@ -252,3 +252,14 @@ def test_re6_shell_probe_is_not_advertised_for_inherited_other_title_controller(
     ctl = OtherTitle(pid=123, identity=(123, 99), ready=lambda: (456, 2))
     body = _run_worker(monkeypatch, ctl, {'game_id': 'resident-evil-5'})
     assert 're6_shell_probe' not in body['capabilities']
+
+
+def test_kind_rows_keep_the_probe_source_and_reject_malformed_rows():
+    rows = I.kind_rows([{"kind": "shell1304", "available": True, "reason": "probe: research", "source": "probe"},
+                        {"kind": "flash", "available": True, "reason": ""}])
+    assert rows[0]["source"] == "probe" and rows[1]["kind"] == "flash" and "source" not in rows[1]
+    with pytest.raises(ValueError):
+        I.kind_rows([{"kind": "shell1304", "available": "yes"}])
+    with pytest.raises(ValueError):
+        I.kind_rows([{"kind": "not_a_kind", "available": True}])
+
