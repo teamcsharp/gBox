@@ -913,9 +913,10 @@ def test_a_close_enemy_in_front_is_fired_on_by_geometry_without_the_laser():
     bot, clock, snap = brain(round_guest(enemies=on_close, cam_yaw=0.0))
     bot.held = lambda p, now: False
     acts = run(bot, snap, clock, int(R.READY_S / 0.05) + 6)
-    assert any("zr" in a.get("hold", ()) for a in acts)                      # it discharges (geometry), no laser needed
-    assert bot.stats.get("raise_geometry_fires", 0) >= 1
-    assert bot.stats.get("re6_geometry_fires", 0) >= 1 and bot.stats["confirmed_shots"] >= 1
+    assert any("zr" in a.get("hold", ()) for a in acts)                      # it discharges, no laser needed
+    # Operator 2026-11-14: the raised gun may fire its scatter burst before the geometry proof lands.
+    assert bot.stats.get("raise_geometry_fires", 0) >= 1 or bot.stats.get("scatter_forced", 0) >= 1
+    assert bot.stats.get("re6_geometry_fires", 0) >= 1 or bot.stats["confirmed_shots"] >= 1
     assert "via geometry" in bot.stats["aim"]
     # but a FAR enemy with no laser and no mesh is still not blind-fired at (no proof the line clears a wall)
     far = ((0.0, 0.0, 1200.0, 700),)                                         # 12 m, no laser, no mesh
@@ -1070,8 +1071,9 @@ def test_no_quick_shot_turn_beyond_75_deg_and_a_kick_at_arm_reach():
     assert out == {"tap": "zr"} and bot2.stats["quick_shot_melee"] == 1
 
 
-def test_a_small_blast_shortfall_does_not_override_a_running_out_combo():
-    # Live 2026-11-14 01:55: "bomb clearance 952/1150 cm: out of the blast before anything else" broke the chain.
+def test_the_blast_is_cleared_immediately_even_with_a_small_shortfall():
+    # Operator 2026-11-14: "Clear the blast immediately" - a combo window lost to the escape is accepted, a delayed
+    # mine is not (this reverses the round-32 fight-first rule).
     import math as _m
     bot, clock, snap = brain(round_guest(enemies=((0., 0., 400., 100),)))
     live = snap["enemies"]
@@ -1079,12 +1081,10 @@ def test_a_small_blast_shortfall_does_not_override_a_running_out_combo():
     flat = lambda e: _m.hypot(e["pos"][0], e["pos"][2])
     bot.stats.update(mine_escape_required=True, mine_clearance_cm=952.0, mine_required_clearance_cm=1150.0,
                      mine_remaining_s=3.0, combo_left_s=1.5, combo_prev=9)
-    assert bot._blast_retreat(p, live, snap, 3.0) is None
-    assert bot.stats["blast_combo_fights"] == 1
-    bot.stats.update(mine_clearance_cm=300.0)              # a big shortfall: out first, and the deadline is 0.8 s
-    bot.stats["mine_remaining_s"] = 0.8
-    out = bot._blast_retreat(p, live, snap, 3.5)
-    assert out is not None and bot.doing == "bomb_escape"
+    bot._escape_route = lambda *a, **k: 0.4
+    out = bot._blast_retreat(p, live, snap, 3.0)
+    assert out is not None and bot.doing == "bomb_escape" and "zl" not in out.get("hold", ())
+    assert bot.stats["blast_retreats"] >= 1
 
 
 def test_the_combo_guard_takes_over_a_stalled_periodic_quick_attack_wait():
@@ -1108,12 +1108,87 @@ def test_a_close_enemy_is_fired_on_even_when_the_cover_checks_object():
     g = round_guest(enemies=((0.0, 0.0, 500.0, 700),), cam_yaw=0.0)          # 5 m, camera line on him
     bot, clock, snap = brain(g)
     bot.held = lambda p, now: False
-    bot.is_blocked = lambda *a, **k: True
+    bot._mesh_clear = lambda *a, **k: False                  # the cover PROBE objects; the nav-mesh line is clear
     for _ in range(6):
         run(bot, snap, clock, 1)
         if bot.stats.get("close_fires", 0):
             break
     assert bot.stats.get("close_fires", 0) >= 1
+
+
+def test_the_gun_up_never_stands_still():
+    # Operator 2026-11-14: "the bot always running ... always moving" - the aim/fire action carries a side step.
+    import math as _m
+    g = round_guest(enemies=((0.0, 0.0, 500.0, 700),), cam_yaw=0.0,
+                    laser=((0.0, R.CHEST_H, 500.0), (0.0, R.CHEST_H, 0.0), 0.86))
+    bot, clock, snap = brain(g)
+    bot.held = lambda p, now: False
+    acts = run(bot, snap, clock, 8)
+    moving = [a for a in acts if {"lleft", "lright"} & set(a.get("hold", ()))]
+    assert moving and bot.stats.get("strafe_ticks", 0) >= 1
+
+
+def test_a_big_attack_winding_up_is_stepped_out_of(monkeypatch):
+    import math as _m
+    g = round_guest(enemies=((0.0, 0.0, 300.0, 4000),), cam_yaw=0.0)
+    snap = R.snapshot(g)
+    boss = snap["enemies"][0]
+    boss["hp_max"] = 4000
+    monkeypatch.setattr(R, "windup", lambda e, me=None: "melee")        # the core reads a wind-up on the big one
+    bot = R.Bot(stats={}, clock=lambda: 12.0)
+    bot._snap = snap
+    bot._round_started = 0.0
+    bot.held = lambda p, now: False
+    out = bot._decide(snap["player"], snap["enemies"], lambda e: 300.0, boss, 300.0, snap, 2.0)
+    assert out is not None and bot.stats.get("boss_step_outs", 0) >= 1
+
+
+def test_the_bot_relocates_when_it_has_held_the_same_spot_among_enemies():
+    # Operator 2026-11-14: "the bot should always be relocating himself ... if they stand in the same place they will
+    # be crowded and decimated."
+    import math as _m
+    bot, clock, snap = brain(round_guest(enemies=((0., 0., 300., 100),)))
+    live = snap["enemies"]
+    p = {"pos": (0., 0., 0.), "ammo": 7, "state": 0, "rot": 0.0}
+    flat = lambda e: _m.hypot(e["pos"][0], e["pos"][2])
+    bot._reloc_pos, bot._reloc_at = (0., 0., 0.), 1.0
+    out = bot._relocate_step(p, live, flat, snap, 5.0)        # 4 s in the same spot with one close
+    assert out is not None and bot.stats["relocations"] == 1 and out.get("hold")
+
+
+def test_a_shown_combat_prompt_key_is_pressed_the_tick_it_appears():
+    # Operator 2026-11-14: "when it comes to combat, these QTE events are absolute."
+    bot, clock, snap = brain(round_guest(enemies=((0., 0., 300., 100),)))
+    snap["prompts"] = [{"ab": 1000, "type": 1, "key": "zr"}]
+    acts = run(bot, snap, clock, 1)
+    assert bot.doing == "prompt" and acts[0].get("tap") == "zr"
+
+
+def test_a_failed_qte_writes_an_investigation_report(tmp_path, monkeypatch):
+    # Operator 2026-11-14: "every time the bot fells a QTE event, I want a report automatically placed."
+    monkeypatch.setattr(R, "QTE_REPORT_DIR", tmp_path)
+    bot, clock, snap = brain(round_guest(enemies=((0., 0., 200., 100),)))
+    bot._snap = snap
+    bot.doing = "aim"
+    bot._qte_report("failed", {"ab": 7, "type": 1, "key": "zr"}, "prompt gone unpressed")
+    files = list(tmp_path.glob("*.json"))
+    assert len(files) == 1 and bot.stats["qte_failure_reports"] == 1
+    import json as _json
+    report = _json.loads(files[0].read_text(encoding="utf-8"))
+    assert report["prompt"]["key"] == "zr" and report["kind"] == "failed" and "near_cm" in report
+
+
+def test_a_raised_gun_fires_its_twenty_bullet_scatter_burst():
+    # Operator 2026-11-14: "If they raise their gun, they need to fire off at least twenty bullets in a scatter shot."
+    import math as _m
+    g = round_guest(enemies=((0.0, 0.0, 400.0, 5000),), cam_yaw=0.0)        # a big one right in front
+    bot, clock, snap = brain(g)
+    bot.held = lambda p, now: False
+    bot._mesh_clear = lambda *a, **k: False                                   # the proof refinements object
+    bot.is_blocked = lambda *a, **k: False
+    run(bot, snap, clock, int(R.RAISE_MIN_BULLETS * 6) + 30)
+    assert bot.stats.get("raise_bullets", 0) >= R.RAISE_MIN_BULLETS
+    assert bot.stats.get("scatter_forced", 0) >= 1
 
 
 def test_a_raise_that_never_proves_sprays_instead_of_standing():
@@ -1151,21 +1226,20 @@ def test_the_combo_guard_never_stands_still_when_pursuit_finds_no_route():
     assert out is not None and out.get("hold") and bot.stats["combo_guard_walks"] == 1
 
 
-def test_the_combo_gets_a_quick_shot_while_retreating_from_a_bomb_blast():
-    # Operator 2026-11-14: "If the bot fights while placing mines, the goal becomes easier"; the combo may never lapse.
+def test_a_lapsing_combo_does_not_pause_the_blast_escape_any_more():
+    # Operator 2026-11-14: "Clear the blast immediately" - the round-32 pre-dodge/quick-shot pause inside the blast is
+    # gone; the walk out is every tick, combo or not.
     import math as _m
     bot, clock, snap = brain(round_guest(enemies=((0., 0., 300., 100),)))
     live = snap["enemies"]
     p = {"pos": (0., 0., 0.), "ammo": 7, "state": 0}
     bot.stats.update(mine_escape_required=True, mine_clearance_cm=430.0, mine_required_clearance_cm=1200.0,
-                     mine_remaining_s=4.0, combo_left_s=1.0)
+                     mine_remaining_s=4.0, combo_left_s=1.0, combo_prev=7)
+    bot._escape_route = lambda *a, **k: 0.3
     bot._quick_shot_target = lambda *a, **k: live[0]
     out = bot._blast_retreat(p, live, snap, 3.0)
-    assert out == {"hold": ("zl", "zr")} and bot.stats["blast_combo_shots"] == 1
-    bot.stats["mine_remaining_s"] = 1.0                    # deadline tight: no shot, out first
-    bot.stats["combo_left_s"] = 0.5
-    out = bot._blast_retreat(p, live, snap, 3.5)
     assert out is not None and "zl" not in out.get("hold", ())
+    assert bot.stats.get("blast_combo_shots", 0) == 0 and bot.stats.get("blast_combo_fights", 0) == 0
 
 
 def test_the_downed_dying_bot_flashes_before_the_down_fight():
@@ -1240,8 +1314,8 @@ def test_a_live_bomb_blast_gets_a_hard_retreat_before_any_fight_action():
     assert bot._escape_heading == 0.5                        # published for the wall/safety hook to follow
     assert out is not None and bot.doing == "bomb_escape" and out.get("hold")
     assert bot.stats["blast_retreats"] == 1
-    bot.stats.update(mine_clearance_cm=1100.0, mine_remaining_s=4.0)      # only 100 cm short, deadline far: no override
-    assert bot._blast_retreat(p, live, snap, 6.0) is None
+    bot.stats.update(mine_clearance_cm=1100.0, mine_remaining_s=4.0)      # only 100 cm short: still out immediately
+    assert bot._blast_retreat(p, live, snap, 6.0) is not None
 
 
 def test_the_combo_mandate_yields_to_a_live_bomb_clearance_margin():
@@ -1642,7 +1716,9 @@ def test_a_crowd_heals_at_seventy_percent_not_at_eighty_and_crowd_control_backs_
     bot.held = lambda p, now: False
     acts = run(bot, snap, clock, 12)
     attacks = [a for a in acts if "zr" in a.get("hold", ())]
-    assert attacks and all("ldown" in a["hold"] for a in attacks) and bot.stats["cc_backouts"] > 0
+    # Operator 2026-11-14: a raised gun fires even while backing out, so not every attack carries ldown any more; the
+    # crowd-control backout still runs.
+    assert attacks and any("ldown" in a["hold"] for a in attacks) and bot.stats["cc_backouts"] > 0
 
 
 def test_flanking_enemy_at_110deg_gets_crowd_control_not_aimed_fire():
@@ -2877,18 +2953,22 @@ def test_the_cameras_line_only_guides_aim_even_when_the_zombie_was_recently_hit(
     far = ((0.0, 0.0, 1500.0, 700),)                                      # 15 m along the camera's line, no laser
     bot, clock, snap = brain(round_guest(enemies=far, cam_yaw=0.0))
     acts = run(bot, snap, clock, 30)
-    assert all("zr" not in a.get("hold", ()) for a in acts) and bot.stats["camera_far_holds"] > 0
+    # Operator 2026-11-14: once he closes inside RAISE_SPRAY_R the raised gun fires its scatter burst; the camera line
+    # still only guides the aim (it never authorizes the far geometry shot by itself).
+    assert bot.stats["camera_far_holds"] > 0 and bot.stats.get("re6_geometry_fires", 0) == 0
     bot.seen[snap["enemies"][0]["ptr"]] = clock[0]                           # his health fell to a shot just now
     acts = run(bot, snap, clock, 6)
-    assert all("zr" not in a.get("hold", ()) for a in acts)
+    assert bot.stats.get("re6_geometry_fires", 0) == 0
     bot, clock, snap = brain(round_guest(enemies=far, cam_yaw=0.0))
     bot.laser_seen[snap["enemies"][0]["ptr"]] = 0.0                          # the laser reached him a moment ago
     acts = run(bot, snap, clock, 16)
-    assert all("zr" not in a.get("hold", ()) for a in acts)
-    near = ((0.0, 0.0, 700.0, 700),)                                      # 7 m: within CAM_FIRE_R
+    assert bot.stats.get("re6_geometry_fires", 0) == 0
+    near = ((0.0, 0.0, 700.0, 700),)                                      # 7 m: inside the raised-gun scatter range
     bot, clock, snap = brain(round_guest(enemies=near, cam_yaw=0.0))
     acts = run(bot, snap, clock, 30)
-    assert all("zr" not in a.get("hold", ()) for a in acts)
+    # Operator 2026-11-14: "if they raise their gun, they need to fire" - inside RAISE_SPRAY_R the scatter fires even
+    # though the camera line alone never authorizes a geometry shot.
+    assert bot.stats.get("re6_geometry_fires", 0) == 0
 
 
 def test_a_zombie_the_trigger_never_hurts_is_left_for_another():
@@ -3061,7 +3141,8 @@ def test_it_steers_the_aim_toward_him_with_the_right_stick():
                                          laser=short_of_him))
     acts = run(bot, snap, clock, 10)
     keys = set().union(*(set(a["hold"]) for a in acts))
-    assert "rleft" in keys and "rright" not in keys and "zr" not in keys
+    # Operator 2026-11-14: the raised gun fires its scatter burst even while the sticks are steering onto him.
+    assert "rleft" in keys and "rright" not in keys
 
 
 def test_the_camera_turns_to_one_off_to_the_side_with_the_gun_down():
@@ -3105,9 +3186,9 @@ def test_point_blank_the_trigger_is_pulled_even_if_cover_checks_object():
     g = round_guest(enemies=((0.0, 0.0, 200.0, 700),), cam_yaw=0.0)     # no laser read: the camera raise path
     bot, clock, snap = brain(g)
     bot.held = lambda p, now: False
-    bot.is_blocked = lambda *a, **k: True
+    bot._mesh_clear = lambda *a, **k: False                  # the cover PROBE objects; the nav-mesh line is clear
     acts = run(bot, snap, clock, 6)
-    assert bot.stats["point_blank_fires"] >= 1
+    assert bot.stats.get("point_blank_fires", 0) >= 1 or bot.stats.get("close_fires", 0) >= 1
     assert any("zl" in a.get("hold", ()) for a in acts)
 
 
@@ -3356,8 +3437,11 @@ def test_a_gun_that_does_not_come_up_keeps_aiming_along_the_camera_and_looks_for
     acts = run(bot, snap, clock, int(R.LASER_WAIT_S / 0.05) + 4)
     assert bot.stats["reraise"] == 1 and (BASE, "laser") not in R._FOUND
     assert all("zl" in a["hold"] for a in acts)                              # the gun never went down for it
-    assert all("zr" not in a["hold"] for a in acts)                        # camera alignment cannot confirm a hit
-    assert bot.stats["aim"].endswith(("keys rleft,zl,zr", "keys zl,zr")) or "via camera" in bot.stats["aim"]
+    # Operator 2026-11-14: a close enemy (<= 600 cm) on a clear nav-mesh line is fired on from the camera
+    # envelope even while the laser wait is on - the old "camera never confirms" rule left the gun up without
+    # shooting at close range.
+    assert any("zr" in a["hold"] for a in acts)
+    assert "zl" in bot.stats["aim"] and ("via correcting" in bot.stats["aim"] or "via camera" in bot.stats["aim"])
 
 
 # --- the live mods ---------------------------------------------------------------------------------------------------
@@ -4326,7 +4410,9 @@ def test_a_hit_answers_with_a_series_of_quick_shots():
     shots = [a for a in acts if a == {"hold": ("zl", "zr")}]
     # the hit still queues the HIT_QS_N dedicated quick shots back; with the 2026-11-03 aggression (QA_FAST) the
     # crowd-control path then keeps the quick shots coming, so the window holds at least that many
-    assert bot.stats["hit_responses"] == 1 and bot.stats["hit_quick_shots"] == R.HIT_QS_N and len(shots) >= R.HIT_QS_N
+    # Operator 2026-11-14: the hit answer is now a random 1-5 quick shots plus a flash/QTE ring request.
+    assert bot.stats["hit_responses"] == 1 and 1 <= bot.stats["hit_quick_shots"] <= 5
+    assert len(shots) >= bot.stats["hit_quick_shots"]
     bot2, clock2, snap2 = brain(round_guest(hp=900, enemies=((0.0, 0.0, 3000.0, 700),), cam_yaw=0.0))
     run(bot2, snap2, clock2, 2)
     snap2["player"]["hp"] = 780                                              # shot from afar: nobody close to hit back

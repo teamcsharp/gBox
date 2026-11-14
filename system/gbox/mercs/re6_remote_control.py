@@ -239,6 +239,7 @@ def control(ad, prof, bot_getter=None):
     live_view = {}
     recovery = None
     grant_state = {"value": None}
+    nitrogen_seen = {"value": None, "busy": False}
 
     def owner_of(snap, stats):
         p = snap.get('player') or {}
@@ -276,6 +277,37 @@ def control(ad, prof, bot_getter=None):
                              playing=stats.get('screen') in (None, 'playing'))
         except Exception as exc:                             # noqa: BLE001 - never ends the lane
             stats['qte_recovery_error'] = f'{type(exc).__name__}: {exc}'[:160]
+        # Operator 2026-11-14: on every other hit the bot asks for a nitrogen-round ring instead of the flash ring. This
+        # lane is the only owner of the native controller for the launcher shells, so the request is served here, off
+        # the tick (a failed/refused barrage is recorded and never ends the lane).
+        try:
+            req = stats.get('nitrogen_ring_request_at')
+            if (isinstance(req, (int, float)) and not isinstance(req, bool) and req != nitrogen_seen["value"]
+                    and not nitrogen_seen["busy"]):
+                nitrogen_seen["value"] = req
+                if 0 <= now - req <= 1.5 and not stats.get('mine_ring_pending') and not stats.get('operator_control'):
+                    nitrogen_seen["busy"] = True
+
+                    def _nitrogen_ring(ad=ad, stats=stats):
+                        try:
+                            from .titles import re6_switch_shell_probe as probe
+                            with native._CREATE_LOCK:
+                                ctl = getattr(ad, '_re6_native_shell', None)
+                                if ctl is None:
+                                    ctl = ad._re6_native_shell = native.Controller(ad)
+                            receipt = probe.barrage(ctl, count=8, radius_cm=800.0, kind='shell1304',
+                                                    cancelled=lambda: False)
+                            stats['nitrogen_ring_last'] = {k: receipt.get(k) for k in
+                                                           ('state', 'spawned', 'armed', 'detonated', 'verified', 'reason')}
+                            stats['nitrogen_rings'] = int(stats.get('nitrogen_rings', 0)) + 1
+                        except Exception as exc:             # noqa: BLE001 - a refused ring never ends the lane
+                            stats['nitrogen_ring_error'] = f'{type(exc).__name__}: {exc}'[:160]
+                        finally:
+                            nitrogen_seen["busy"] = False
+
+                    threading.Thread(target=_nitrogen_ring, daemon=True).start()
+        except Exception as exc:                             # noqa: BLE001
+            stats['nitrogen_ring_error'] = f'{type(exc).__name__}: {exc}'[:160]
         travel.observe(owner, snap, stats, now, rules.policy(stats)['enabled'])
         landing.observe(owner, snap, stats, now, rules.policy(stats)['enabled'])
         p = snap.get('player') or {}
