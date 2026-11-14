@@ -3441,7 +3441,7 @@ class Bot:
         left = self.stats.get('combo_left_s')
         combo_low = (isinstance(left, (int, float)) and not isinstance(left, bool) and left <= COMBO_KEEP_S
                      and (self.stats.get('combo_prev') or 0) > 0)
-        if not tight and combo_low and (need - clear) <= 700.0:
+        if not tight and combo_low and (need - clear) <= 1000.0:
             self.stats['blast_combo_fights'] = int(self.stats.get('blast_combo_fights', 0)) + 1
             return None                                      # the chain first: the escape resumes after the kill
         if not tight and p.get('ammo') != 0:
@@ -3611,14 +3611,14 @@ class Bot:
         missing) this returns None and the ordinary fight continues. Instrumentation: critical_flash_requests/at.
         """
         hp, hp_max = p.get('hp') or 0, p.get('hp_max') or 0
-        if not (hp_max and ((1 < hp <= TABLET_CRITICAL_HP * hp_max)
-                            or (self.down and hp <= DYING_HP))):
+        if not (hp_max and ((1 < hp <= TABLET_CRITICAL_HP * hp_max) or hp <= DYING_HP)):
             return None
         crowd = sum(1 for e in live if flat(e) <= 200.)
         if self.down or p.get('state') not in (0, None):
-            # The 2026-11-14 02:53 death: downed at 1 health with 11 enemies within 2 m and no tablets - the flash was
-            # refused only because he was down, and he then stayed down until he died. Flash the crowd that is on him.
-            if not (self.down and hp <= DYING_HP and crowd >= 3):
+            # The 02:53 (downed) and 03:12 (standing) deaths at 1 health inside 11-16 enemies: the flash was refused
+            # because the hp gate wanted >1 and the down gate wanted state 0. At DYING_HP with a crowd on him the
+            # flash fires whatever state he is in.
+            if not (hp <= DYING_HP and crowd >= 3):
                 return None
         tablets = p.get('tablets') or 0
         if tablets > 0:

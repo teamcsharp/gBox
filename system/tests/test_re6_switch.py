@@ -1135,6 +1135,19 @@ def test_the_combo_gets_a_quick_shot_while_retreating_from_a_bomb_blast():
     assert out is not None and "zl" not in out.get("hold", ())
 
 
+def test_a_standing_one_health_bot_in_a_crowd_gets_the_critical_flash():
+    # Live 2026-11-14 03:12: doing=bomb_escape at 1 health with 16 enemies within 2 m died without a flash.
+    import math as _m
+    bot, clock, snap = brain(round_guest(enemies=((0., 0., 120., 100), (100., 0., 150., 100), (-100., 0., 140., 100))))
+    live = snap["enemies"]
+    flat = lambda e: _m.hypot(e["pos"][0], e["pos"][2])
+    p = {"pos": (0., 0., 0.), "hp": 1, "hp_max": 900, "tablets": 0, "state": 0}
+    bot.down = False
+    bot._respond_flash = lambda *a, **k: True
+    out = bot._critical_no_tablet_flash(p, live, flat, 5.0)
+    assert out is not None and bot.stats["critical_flash_requests"] == 1
+
+
 def test_a_downed_one_health_bot_in_a_crowd_gets_the_critical_flash():
     # Live 2026-11-14 02:53 death: doing=down at 1 health with 11 enemies within 2 m and no tablets; the flash was
     # refused only because he was down.
