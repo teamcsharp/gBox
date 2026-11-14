@@ -2832,6 +2832,19 @@ def test_melee_for_one_at_arms_length_and_the_quick_shot_for_one_close():
     assert acts[0]["hold"] == ("zl", "zr") and acts[1]["hold"] == () and bot.stats["quick_shots"] == 1
 
 
+def test_an_enemy_on_another_level_is_not_shot_through_the_floor_or_ceiling():
+    # Operator 2026-11-13: "Watching the bot shoot at the ceiling just makes no sense ... They need to be aware that
+    # their enemy is on another level ... they will never get to the enemy shooting through the ground."
+    g = round_guest(enemies=((0.0, 500.0, 600.0, 700),), cam_yaw=0.0)     # 5 m above his feet, in front
+    bot, clock, snap = brain(g)
+    bot.held = lambda p, now: False
+    acts = run(bot, snap, clock, 6)
+    # aware it is off his level: he goes after it (pursue/walk) instead of shooting at the ceiling
+    assert bot.stats["act"] in ("pursue", "walk", "turn", "raise")
+    assert not any("zr" in a.get("hold", ()) or a.get("tap") == "zr" for a in acts)
+    assert not bot.stats.get("confirmed_shots")             # never through the floor/ceiling at it
+
+
 def test_point_blank_the_trigger_is_pulled_even_if_cover_checks_object():
     # Operator 2026-11-13: "Every time the bot raises their gun and then fails to shoot the enemy or misses with the
     # enemy right in front of them, it just makes me sad." At 2 m the body is 30 cm across: the raised gun fires.

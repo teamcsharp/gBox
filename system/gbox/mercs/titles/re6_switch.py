@@ -2835,6 +2835,11 @@ COMBAT_PRESSURE_R = 2000.0
 # pulled even if the wall/probe checks object - at 2 m the body is 30 cm across, and a raised gun that
 # holds is a gun that is not shooting. The envelope still bounds the angle to the body at that distance.
 POINT_BLANK_R, PB_YAW, PB_PITCH = 260.0, math.radians(10.0), math.radians(12.0)
+# Operator 2026-11-13 (screenshot of the muzzle pointing at the ceiling): "Watching the bot shoot at the
+# ceiling just makes no sense ... They need to be aware that their enemy is on another level ... they will never
+# get to the enemy shooting through the ground." Camera-geometry fire is limited to bodies within
+# FIRE_LEVEL_DY of his feet; a measured laser dot on the body still proves a real line (flying/ledges).
+FIRE_LEVEL_DY = 120.0
 WALL_ESCAPE_S = 1.5                      # Bot._wall_command: the walk away from the operator's wall
 _NAV_MESH = None
 FIRE_ZONE_R = 600.0                     # Bot._decide: one this near in sight on his level - the fight before any bonus
@@ -4984,6 +4989,8 @@ class Bot:
         if saved is not None:                                                                  # running-out combo
             return saved
         high = self._off_floor(p, snap, now) if not live else []   # nobody on his floor: one above or below him
+        if high:
+            self.stats['offlevel_targets'] = int(self.stats.get('offlevel_targets', 0)) + 1
         if self.hazard is not None and not live and not self._hazard_break_due(p, live, flat, now):  # nobody to fight and in smoke: out of it
             cam = snap.get("camera")
             return self._go("walk", "hazard_out", {"hold": self._stick(self._open_heading(p, live, self.hazard),
@@ -5290,9 +5297,16 @@ class Bot:
                                and (tgt.get('hp') or 0) > 0)
                 if point_blank:
                     self.stats["point_blank_fires"] = self.stats.get("point_blank_fires", 0) + 1
-                if not (((proven and abs(err[0]) <= GEOM_FIRE_ERR and abs(err[1]) <= GEOM_FIRE_PITCH)
-                         or point_blank) and (point_blank or not self.is_blocked(tgt, now))):
+                level_ok = abs(tgt["pos"][1] - p["pos"][1]) <= FIRE_LEVEL_DY
+                if not level_ok:
+                    self.stats["offlevel_fire_veto"] = int(self.stats.get("offlevel_fire_veto", 0)) + 1
+                elif not (((proven and abs(err[0]) <= GEOM_FIRE_ERR and abs(err[1]) <= GEOM_FIRE_PITCH)
+                           or point_blank) and (point_blank or not self.is_blocked(tgt, now))):
                     return self._go("raise", "raise", {"hold": ("zl",) + back}, "the gun comes up (no laser yet)")
+                if not level_ok:
+                    # off his level: never shoot through the floor/ceiling - the aim waits while he goes to it
+                    return self._go("raise", "offlevel_raise", {"hold": ("zl",) + back},
+                                    "the gun up, the one above/below: no shot through the floor")
                 self.stats["raise_geometry_fires"] = self.stats.get("raise_geometry_fires", 0) + 1
             origin, dot, source = cam["pos"], cam["target"], "camera"
         cands = self._aimable if source == "laser" else (front or self._aimable)
@@ -5383,7 +5397,10 @@ class Bot:
                        and (aim_at.get('hp') or 0) > 0 and p.get('ammo') != 0)
         if point_blank and not on:
             self.stats["point_blank_fires"] = self.stats.get("point_blank_fires", 0) + 1
-        correcting = ((not on and p.get('ammo') != 0 and (aim_at.get('hp') or 0) > 0
+        level_ok = (abs(aim_at["pos"][1] - p["pos"][1]) <= FIRE_LEVEL_DY or source == 'laser')
+        if not level_ok and not on:
+            self.stats["offlevel_fire_veto"] = int(self.stats.get("offlevel_fire_veto", 0)) + 1
+        correcting = ((not on and level_ok and p.get('ammo') != 0 and (aim_at.get('hp') or 0) > 0
                        and dist <= ENGAGE_R and abs(yaw_err) <= SPRAY_YAW and abs(pitch_err) <= SPRAY_PITCH
                        and self._fire_envelope(dist, yaw_err, pitch_err))
                       and (point_blank or (
