@@ -1519,3 +1519,36 @@ screen once, never playing). The next RE6 window must read `combo_break_*`, `hun
 `blast_combo_shots` before any further tuning.
 
 State: MercMode working through its rotation, queue `[]`, Hermes `enabled/available true`, deployed `51b22a805`.
+
+### Round 30: the attribution named the combo killers, and the aim/raise stall is gone in live evidence
+
+Operator 2026-11-14: "look at the last match that just played. the bot meandered and didnt go find the enemies", then
+the standing mandate (combo never lost; a kill every 4 s; mines every 10 s; pursue and dispatch every enemy at any
+distance).
+
+Shipped this round (all tested, pushed; latest deployed `5d4ba6a98`):
+- `51b22a805`: the combo-break attribution was dead code (it waited on a snapshot key that does not exist); it now
+  hooks the bot's OWN lapse increment, recording `combo_break_<doing>`, `combo_break_last`, its why. Off-floor hunt:
+  `hunt_elsewhere` stops the bonus phase while an enemy lives off his floor; taunt/bonus only run when no enemy lives
+  anywhere; with no A* route the bot walks straight at the nearest (`hunt_offlevel`).
+- `3d46993c5`: the live attribution's first findings - two breaks were crowd tablets at 80 % health and one was a
+  "quick shot: turning +101 deg to the one 110 cm off". CROWD_TABLET_HP 0.85 -> 0.70, heals above the critical band
+  never interrupt a lapsing combo, quick-shot facing is capped at 75 deg, and at kick reach the bot kicks instead of
+  spinning.
+- `5fe869ff5`: the round sat in doing=raise for ~50 s with the combo dead - the camera-geometry raise kept waiting for
+  a line that never proved. Raising is capped at 1 s then repositions (`raise_repositions`); the combo guard's last
+  resort with no A* route is a straight walk at the nearest (`combo_guard_walks`).
+- `5d4ba6a98`: the next attributed breaks - "bomb clearance 952/1150 cm: out of the blast before anything else"
+  (small shortfall beat the chain) and "periodic burst: waiting for the native quick attack to finish". A small blast
+  shortfall (<=700 cm) with no tight deadline now lets the fight win the tick (`blast_combo_fights`), and the guard
+  may take over a stalled periodic wait.
+
+**Live evidence (build `5fe869ff5`, RE6 01:54-01:56):** kills 6 -> 41 in ~2 minutes, timer 139 -> 360 s (the blue time
+crystals), `raise_repositions` 0 - the 50-second raise stall did not recur. Attribution then named the remaining
+breaks: quick_turn 1, quick_shot (periodic wait) 1, bomb_escape 1. Those three are what `5d4ba6a98` targets.
+
+**Not yet sampled live:** the `5d4ba6a98` build (deployed + restarted) - after the restart the host stayed on PSO/RE4
+for every switch window (RE6 reached the title once, never playing). `kill_gap_max` in the last live sample was still
+16.98 s and over5 9: **the combo is not yet held; S-rank is not claimed.**
+
+State: queue `[]`, Hermes `enabled/available true`, deployed `5d4ba6a98`.
