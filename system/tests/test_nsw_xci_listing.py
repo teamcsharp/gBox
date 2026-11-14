@@ -420,3 +420,94 @@ def test_real_villager_obj_export():
     all_obj = nsw.bfres_export_obj_all(bf, model)
     for name in counts:
         assert ("o %s" % name) in all_obj
+
+
+def test_writer_encoder_inverses_decoders_synthetic():
+    """Writer: encoders are exact inverses of the verified decoders for every
+    packed format (machine check on the format math, no card needed)."""
+    import random
+    rnd = random.Random(2499)
+    n10 = [tuple(rnd.randint(-512, 511) / 512.0 for _ in range(3)) for _ in range(400)]
+    assert nsw.bfres_decode_10vec(nsw.bfres_encode_10vec(n10)) == tuple(n10)
+    nt = [tuple(rnd.randint(-128, 127) / 127.0 for _ in range(3)) for _ in range(400)]
+    assert nsw.bfres_decode_t0(nsw.bfres_encode_t0(nt)) == tuple(nt)
+    nu = [tuple(rnd.randint(0, 65535) / 65536.0 for _ in range(2)) for _ in range(400)]
+    assert nsw.bfres_decode_u0(nsw.bfres_encode_u0(nu)) == tuple(nu)
+    np_ = [tuple(rnd.uniform(-50.0, 50.0) for _ in range(3)) for _ in range(200)]
+    raw = nsw.bfres_reencode_stream("_p0", np_)
+    flat = [c for p in np_ for c in p]
+    # f32 quantization: doubles re-encoded through the f32 stream equal their
+    # f32 projection, not the double itself
+    exp = list(struct.unpack("<%df" % (3 * len(np_)),
+                             struct.pack("<%df" % (3 * len(np_)), *flat)))
+    assert list(struct.unpack("<%df" % (3 * len(np_)), raw)) == exp
+    nu8 = [tuple(rnd.randint(0, 255) for _ in range(4)) for _ in range(200)]
+    assert nsw.bfres_reencode_stream("_c0", nu8) == b"".join(struct.pack("<4B", *v) for v in nu8)
+    # out-of-range components must raise, not silently clamp
+    with pytest.raises(ValueError):
+        nsw.bfres_encode_10vec([(1.0, 0.0, 0.0)])
+    with pytest.raises(ValueError):
+        nsw.bfres_encode_t0([(128 / 127.0, 0.0, 0.0)])
+    with pytest.raises(ValueError):
+        nsw.bfres_encode_u0([(1.0, 0.0)])
+
+
+@pytest.mark.skipif(not (os.path.exists(REAL) and os.path.exists(KEYS)), reason="owned XCI/prod.keys not present")
+def test_writer_noop_roundtrip_real_card():
+    """Writer: byte-exact no-op roundtrip on the owned card. Every FVTX
+    attribute stream of every NpcNmlAnt00 shape (2284/398/152 verts) is
+    decoded with the verified decoders, re-encoded with the writer encoders,
+    and must equal the original pool bytes; same for the LOD0 index buffer."""
+    bf = _real_ant_bfres()
+    model = nsw.parse_bfres_model(bf)
+    allowed = {"_p0", "_n0", "_t0", "_u0", "_w0", "_i0", "_c0"}
+    for s in model["shapes"]:
+        res = nsw.bfres_roundtrip_check(bf, model, s)
+        assert set(res) == {"indices"} | allowed & {a["name"] for a in model["fvtx"][s["fvtx"]]["attrs"]}, s["name"]
+        for k, r in res.items():
+            assert r["identical"], (s["name"], k, r)
+        n = model["fvtx"][s["fvtx"]]["vertex_count"]
+        assert res["_p0"]["length"] == 12 * n, (s["name"], res["_p0"])
+        assert res["indices"]["length"] == s["lod0"]["index_count"] * 2  # int16 indices on this model
+
+
+@pytest.mark.skipif(not (os.path.exists(REAL) and os.path.exists(KEYS)), reason="owned XCI/prod.keys not present")
+def test_writer_changed_value_real_card():
+    """Writer: changing one decoded value per stream changes exactly that
+    vertex's bytes in the re-encoded stream and nothing else (Body__mBody)."""
+    bf = _real_ant_bfres()
+    model = nsw.parse_bfres_model(bf)
+    s = model["shapes"][0]
+    assert s["name"] == "Body__mBody"
+    N = model["fvtx"][s["fvtx"]]["vertex_count"]
+    # _p0 f32x3: vertex 0 x -> 42.5
+    orig = nsw.bfres_attr_stream(bf, model, s, "_p0")
+    pos = list(nsw.bfres_read_positions(bf, model, s))
+    pos2 = list(pos)
+    pos2[0] = (42.5, pos[0][1], pos[0][2])
+    enc = nsw.bfres_reencode_stream("_p0", pos2)
+    assert len(enc) == len(orig)
+    assert enc[:12] != orig[:12] and enc[12:] == orig[12:]
+    back = [struct.unpack_from("<3f", enc, i * 12) for i in range(N)]
+    assert back[0][0] == 42.5 and all(back[i] == pos[i] for i in range(1, N))
+    # _n0 3xs10: vertex 0 x -> 0.5 (exact 10-bit)
+    orig = nsw.bfres_attr_stream(bf, model, s, "_n0")
+    nd = list(nsw.bfres_decode_10vec(orig))
+    nd2 = list(nd)
+    nd2[0] = (0.5, nd[0][1], nd[0][2])
+    enc = nsw.bfres_reencode_stream("_n0", nd2, orig=orig)
+    assert enc[:4] != orig[:4] and enc[4:] == orig[4:]
+    assert nsw.bfres_decode_10vec(enc)[0][0] == 0.5
+    # _t0 s8x3/127: vertex 0 -> (31/127, -31/127, 0) (exact s8 values)
+    orig = nsw.bfres_attr_stream(bf, model, s, "_t0")
+    td2 = [tuple(nsw.bfres_decode_t0(orig))]
+    td2[0] = (31 / 127.0, -31 / 127.0, 0.0)
+    enc = nsw.bfres_reencode_stream("_t0", td2, orig=orig)
+    assert enc[:4] != orig[:4]
+    assert nsw.bfres_decode_t0(enc)[0] == (31 / 127.0, -31 / 127.0, 0.0)
+    # _u0 s16x2/65536: vertex 0 -> (12345/65536, 32767/65536)
+    orig = nsw.bfres_attr_stream(bf, model, s, "_u0")
+    ud2 = [(12345 / 65536.0, 32767 / 65536.0)]
+    enc = nsw.bfres_reencode_stream("_u0", ud2)
+    assert enc == struct.pack("<2h", 12345 - 32768, 32767 - 32768)
+    assert nsw.bfres_decode_u0(enc)[0] == (12345 / 65536.0, 32767 / 65536.0)

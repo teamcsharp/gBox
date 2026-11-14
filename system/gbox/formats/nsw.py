@@ -749,3 +749,134 @@ def bfres_export_obj_all(data: bytes, model: dict) -> str:
     """Export every shape of a parsed BFRES model as one multi-object OBJ
     file (each shape under its own `o` name, numbering per shape)."""
     return "\n".join(bfres_export_obj(data, model, s) for s in model["shapes"])
+
+
+def bfres_attr_stream(data: bytes, model: dict, shape: dict, name: str) -> bytes:
+    """Raw contiguous vertex stream of one FVTX attribute, honoring the
+    buffer stride (12B for _p0, 4B for the packed formats)."""
+    fv = model["fvtx"][shape["fvtx"]]
+    a = next((x for x in fv["attrs"] if x["name"] == name), None)
+    if a is None:
+        raise ValueError("attribute %s missing on shape %s" % (name, shape["name"]))
+    b = fv["buffers"][a["buffer"]]
+    start = model["pool_base"] + b["pool_offset"] + a["offset"]
+    n = fv["vertex_count"]
+    if start + n * b["stride"] > len(data):
+        raise ValueError("attribute %s out of range" % name)
+    return data[start:start + n * b["stride"]]
+
+
+def bfres_encode_10vec(vecs, order=(0, 10, 20), preserve=None):
+    """Inverse of bfres_decode_10vec: three 10-bit two's-complement
+    components per 32-bit LE word. Values are expected in [-1, 1].
+
+    ``preserve`` (the original same-length stream) restores the unused high
+    2 bits of every word; on the owned AC:NH card they are constant 0b01 in
+    every _n0 word, so byte-exact no-op roundtrips must keep them."""
+    out = bytearray()
+    for i, comp in enumerate(vecs):
+        w = 0
+        for sh, c in zip(order, list(comp)[:3]):
+            k = int(round(c * 512.0))
+            if not -512 <= k <= 511:
+                raise ValueError("s10 component out of range: %r" % (c,))
+            w |= (k & 0x3FF) << sh
+        if preserve is not None:
+            w |= (struct.unpack_from("<I", preserve, i * 4)[0] >> 30) << 30
+        out += struct.pack("<I", w)
+    return bytes(out)
+
+
+def bfres_encode_t0(vecs, preserve=None):
+    """Inverse of bfres_decode_t0: two's-complement s8x3 per 4-byte LE
+    word, fourth byte padding. Values are expected in [-1, 1].
+
+    ``preserve`` (the original same-length stream) restores the fourth pad
+    byte of every word; on the owned AC:NH card it is non-zero in every
+    _t0 word, so byte-exact no-op roundtrips must keep it."""
+    out = bytearray()
+    for i, comp in enumerate(vecs):
+        packed = []
+        for c in list(comp)[:3]:
+            k = int(round(c * 127.0))
+            if not -128 <= k <= 127:
+                raise ValueError("s8 component out of range: %r" % (c,))
+            packed.append(k & 0xFF)
+        out += bytes(packed) + bytes([preserve[i * 4 + 3] if preserve is not None else 0])
+    return bytes(out)
+
+
+def bfres_encode_u0(values) -> bytes:
+    """Writer inverse of bfres_decode_u0: s16x2 per 4-byte LE word,
+    uv = (raw + 32768) / 65536. Raw components in [-32768, 32767]."""
+    out = bytearray()
+    for x, y in values:
+        kx = int(round(x * 65536.0)) - 32768
+        ky = int(round(y * 65536.0)) - 32768
+        if not -32768 <= kx <= 32767 or not -32768 <= ky <= 32767:
+            raise ValueError("s16 UV component out of range: %r" % ((x, y),))
+        out += struct.pack("<2h", kx, ky)
+    return bytes(out)
+
+
+def bfres_reencode_stream(name: str, values, order=(0, 10, 20), orig: bytes = None) -> bytes:
+    """Encode decoded attribute values back to NVN FVTX bytes (writer path).
+
+    Dispatches on the attribute name to the format verified on AC:NH:
+    _p0 f32x3, _n0 3xs10 bits (0,10,20), _t0 s8x3/127, _u0 s16x2/65536,
+    _c0/_w0/_i0 u8x4. ``orig`` (original stream) restores padding bits."""
+    if name == "_p0":
+        return struct.pack("<%df" % (3 * len(values)), *[c for p in values for c in p])
+    if name == "_n0":
+        return bfres_encode_10vec(values, order, preserve=orig)
+    if name == "_t0":
+        return bfres_encode_t0(values, preserve=orig)
+    if name == "_u0":
+        return bfres_encode_u0(values)
+    if name in ("_c0", "_w0", "_i0"):
+        return b"".join(struct.pack("<4B", *tuple(v)[:4]) for v in values)
+    raise ValueError("no encoder for attribute %s" % name)
+
+
+def bfres_encode_attr(data: bytes, model: dict, shape: dict, name: str) -> bytes:
+    """Decode one attribute stream of a shape with the verified decoders and
+    re-encode it with the writer encoders, returning the NVN bytes.
+
+    Padding bits are preserved from the original stream where the owned
+    card uses them (_n0 high 2 bits, _t0 fourth byte), so this is the
+    byte-exact inverse used by the no-op roundtrip."""
+    if name == "_p0":
+        return bfres_reencode_stream(name, list(bfres_read_positions(data, model, shape)))
+    if name in ("_n0", "_t0"):
+        raw = bfres_attr_stream(data, model, shape, name)
+        dec = bfres_decode_10vec(raw) if name == "_n0" else bfres_decode_t0(raw)
+        return bfres_reencode_stream(name, list(dec), orig=raw)
+    if name == "_u0":
+        return bfres_reencode_stream(name, list(bfres_decode_u0(bfres_attr_stream(data, model, shape, name))))
+    if name in ("_c0", "_w0", "_i0"):
+        raw = bfres_attr_stream(data, model, shape, name)
+        vals = [struct.unpack_from("<4B", raw, i * 4) for i in range(len(raw) // 4)]
+        return bfres_reencode_stream(name, vals)
+    raise ValueError("no encoder for attribute %s" % name)
+
+
+def bfres_roundtrip_check(data: bytes, model: dict, shape: dict) -> dict:
+    """Byte-exact no-op roundtrip for every attribute stream of a shape and
+    its LOD0 index buffer.
+
+    Returns per stream name/indices: {"length": n, "identical": bool}, where
+    identical means the re-encoded bytes equal the original pool bytes.
+    """
+    fv = model["fvtx"][shape["fvtx"]]
+    out = {}
+    for a in fv["attrs"]:
+        raw = bfres_attr_stream(data, model, shape, a["name"])
+        out[a["name"]] = {"length": len(raw),
+                          "identical": bfres_encode_attr(data, model, shape, a["name"]) == raw}
+    idx = bfres_read_indices(data, model, shape)
+    lod = shape["lod0"]
+    width = {0: 1, 1: 2, 2: 4}[lod["index_format"]]
+    start = model["pool_base"] + lod["face_pool_offset"]
+    reenc = struct.pack("<%d%s" % (len(idx), {1: "B", 2: "H", 4: "I"}[width]), *idx)
+    out["indices"] = {"length": len(idx) * width, "identical": reenc == data[start:start + len(idx) * width]}
+    return out
