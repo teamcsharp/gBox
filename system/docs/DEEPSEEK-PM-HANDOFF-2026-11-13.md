@@ -1135,3 +1135,37 @@ max_parallel_jobs 26` - healthy.
 **State:** MercMode enabled on its rotation (RE4 playing after the restart, titles re4/re5/re6 x5), queue `[]`,
 deployed `4e11dbb7a`. Note: the handoff document was trimmed last round from 14.6 MB (accidental embedded blobs) to
 81 KB so pushes work; keep appended sections small.
+
+### Round 20: ring-level nitrogen evidence captured - 8 shells armed, 3 enemies frozen, one for 450 damage
+
+The research ring finally landed in the right window. Persistent fresh-round detection with rapid admission retries
+(detected at kills 0-1, then a submission every ~0.3 s while the remote lane was clean) let an **8-shell ring
+(shell1304, radius 800 cm)** run in a live RE6 round:
+
+```
+state uncertain, spawned 8, armed 8, detonated 0, ice_observed 3, targets_before 8
+reason: native shells spawned and armed; the blast emission and the ice reaction are unverified research
+ice:
+ unit 401065944352 gen 799  cEm1000ActIkakuKnife -> cEm1000ActDmgIce  hp 500 -> 500
+ unit 401052050720 gen 788  cEm1000ActDmgFlash   -> cEm1000ActDmgIce  hp 493 -> 493
+ unit 401052738848 gen 786  cEm1000ActDmgFlash   -> cEm1000ActDmgIce  hp 498 -> 48   (450 damage)
+```
+
+That is the ring-level effect evidence: every requested shell spawned and armed, three nearby enemies entered the
+nitrogen ice reaction with stable identity, and one took 450 damage. The receipt still does not claim the shell's
+own explode/emission pair (`detonated 0`, allocation recycling) - that limitation is unchanged and recorded.
+
+**Round results continue strong:** another RE6 round **340 560 / 222 kills / combo 60 / accuracy 52.2 %** (died);
+the live round at sampling was 22 kills / 0 deaths / 50.9 % accuracy with flags detonating. MercMode sits on RE6,
+queue `[]`, Hermes task-mode `enabled/available true, continuous_queue, git_workspace_ready true`; deployed
+`4e11dbb7a`.
+
+**The admission procedure that works** (for the next attempt, documented): new-round detection (screen playing and
+kills <= 1 with previous kills > 5), then repeated submissions every ~0.3 s while `mine_deadline_pending`,
+`mine_ring_pending`, `mine_avoid_positions`, `mine_bombs_since_detonate`, `mine_allocation_blocked_reason` and
+`operator_control` are all empty, with a radius of 800 cm (601 cm trips "point is too close to a player" as the
+player moves).
+
+Next: with ring-level ice/damage evidence in hand, decide the operator-facing wiring of the chooser's launcher ring
+kinds to this research barrage (idle-gated, same honest receipt, no verified-blast claim), and try to capture the
+shell's own explosion pair with a faster native sampling path.
