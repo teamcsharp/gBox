@@ -1052,6 +1052,23 @@ def test_every_combo_break_is_attributed_to_the_doing_that_caused_it():
     assert bot.stats["combo_break_bonus"] == 2
 
 
+def test_no_quick_shot_turn_beyond_75_deg_and_a_kick_at_arm_reach():
+    # Live 2026-11-14: a combo break was "quick shot: turning +101 deg to the one 110 cm off" - the spin ate the window.
+    import math as _m
+    bot, clock, snap = brain(round_guest(enemies=((0., 0., -400., 100),), cam_yaw=0.0))   # behind him
+    live = snap["enemies"]
+    p = {"pos": (0., 0., 0.), "ammo": 7, "state": 0, "rot": 0.0}
+    flat = lambda e: _m.hypot(e["pos"][0], e["pos"][2])
+    assert bot._face_for_quick_shot(p, live, flat, snap, 500.0, 1.0) is None
+    assert bot.stats["quick_shot_turn_skips"] == 1
+    g = round_guest(enemies=((0., 0., 120., 100),), cam_yaw=0.0)                          # right in front, kick reach
+    bot2, clock2, snap2 = brain(g)
+    live2 = snap2["enemies"]
+    flat2 = lambda e: _m.hypot(e["pos"][0], e["pos"][2])
+    out = bot2._face_for_quick_shot(p, live2, flat2, snap2, 500.0, 1.0)
+    assert out == {"tap": "zr"} and bot2.stats["quick_shot_melee"] == 1
+
+
 def test_the_combo_gets_a_quick_shot_while_retreating_from_a_bomb_blast():
     # Operator 2026-11-14: "If the bot fights while placing mines, the goal becomes easier"; the combo may never lapse.
     import math as _m
@@ -1450,11 +1467,14 @@ def test_dying_at_one_health_he_presses_for_a_tablet_and_counts_whether_it_took(
     assert bot.stats["tablet_dying_taken"] == 1 and bot.stats["dyings"] == 1 and bot.dying_since is None
 
 
-def test_a_crowd_gets_a_tablet_earlier_and_crowd_control_backs_out_as_it_attacks():
+def test_a_crowd_heals_at_seventy_percent_not_at_eighty_and_crowd_control_backs_out_as_it_attacks():
     four = ((0.0, 0.0, 120.0, 700), (100.0, 0.0, 200.0, 700), (-100.0, 0.0, 220.0, 700), (0.0, 0.0, 280.0, 700))
     bot, clock, snap = brain(round_guest(enemies=four, hp=740, cam_yaw=0.0))   # 82 % with four within 3 m
     bot.held = lambda p, now: False
-    assert run(bot, snap, clock, 1)[0] == {"tap": "r"}                       # a tablet already
+    assert run(bot, snap, clock, 1)[0] != {"tap": "r"}                       # no heal: the combo comes first
+    bot, clock, snap = brain(round_guest(enemies=four, hp=558, cam_yaw=0.0))   # 62 %: the crowd heal fires
+    bot.held = lambda p, now: False
+    assert run(bot, snap, clock, 1)[0] == {"tap": "r"}
     bot, clock, snap = brain(round_guest(enemies=four, cam_yaw=0.0))
     bot.held = lambda p, now: False
     acts = run(bot, snap, clock, 12)

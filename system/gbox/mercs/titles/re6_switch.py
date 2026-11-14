@@ -2013,7 +2013,7 @@ DYING_TABLETS, DYING_HP, DYING_GAP_S = False, 1, 1.0   # off: RE6 takes no table
                                         # at 1 health, the count never fell); dyings / dying_states still counted
 # Not reaching 1 health in a crowd: with CROWD_TABLET_N within CROWD_TABLET_R a tablet already at CROWD_TABLET_HP; in
 # crowd control with CC_BACK_N within CC_BACK_R the kicks and quick shots carry the stick back (stats cc_backouts).
-CROWD_TABLET_N, CROWD_TABLET_R, CROWD_TABLET_HP = 4, 300.0, 0.85
+CROWD_TABLET_N, CROWD_TABLET_R, CROWD_TABLET_HP = 4, 300.0, 0.70
 TABLET_LOWER_S = 0.3                    # R only this long after ZL was last held
 # Eat enough, never more (operator 2026-10-28: "he's not eating enough health capsules to heal himself. Make sure that
 # they eat enough health capsules to regain their health when they eat them, but not any more than that"): a tablet is
@@ -3381,6 +3381,15 @@ class Bot:
         cam = snap.get("camera") or {}
         yaw = cam.get("yaw", p.get("rot") or 0.0)
         err = wrap(heading(target["pos"][0] - p["pos"][0], target["pos"][2] - p["pos"][2]) - yaw)
+        if abs(err) > math.radians(75.0):
+            self.stats['quick_shot_turn_skips'] = int(self.stats.get('quick_shot_turn_skips', 0)) + 1
+            return None                                      # no 100+ deg spins inside a combo window
+        if flat(target) <= MELEE_R and abs(err) <= MELEE_CONE:
+            self.melee_at = now
+            self.stats['quick_shot_melee'] = int(self.stats.get('quick_shot_melee', 0)) + 1
+            self._gun_down()
+            return self._go("melee", "face_melee", {"tap": "zr"},
+                            f"at kick reach ({flat(target):.0f} cm): the kick keeps the combo, not a turn")
         self._gun_down()
         self.stats['quick_shot_turns'] = int(self.stats.get('quick_shot_turns', 0)) + 1
         return self._go("turn", "face_for_quick_shot", {"hold": self._yaw(err)},
@@ -5158,7 +5167,11 @@ class Bot:
                 and (topping or hp <= TABLET_LOW_HP * hp_max or (hp <= TABLET_HP * hp_max and near > TABLET_CLEAR_R)
                      or (hp <= CROWD_TABLET_HP * hp_max
                          and sum(1 for e in live if flat(e) <= CROWD_TABLET_R) >= CROWD_TABLET_N))
-                and not (hp == DYING_HP and any(flat(e) <= MELEE_R for e in live))):
+                and not (hp == DYING_HP and any(flat(e) <= MELEE_R for e in live))
+                # Operator 2026-11-14: "the combo should never be lost". A heal tick guns down for a second; above
+                # the critical band it waits for the after-a-kill window instead of breaking a live chain.
+                and not (getattr(self, '_combo_hot_now', False) and not topping
+                         and hp > TABLET_CRITICAL_HP * hp_max * 1.5)):
             # the lethal heal tick (#5052): down and at 1 health within MELEE_R is never tablet time - the heal chain
             # lowers the gun, and the lower window is what the fall/knockdown/dying chain's deaths are made of
             self._gun_down()                                     # 60 % health or less, free: a tablet (R),
