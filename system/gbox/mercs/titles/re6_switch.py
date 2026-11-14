@@ -3593,18 +3593,37 @@ class Bot:
         return isinstance(at, (int, float)) and not isinstance(at, bool) and 0 <= now - at <= 120.0
 
     def _blast_away_heading(self, p, now) -> float | None:
-        """The blast escape heading: straight away from the nearest live bomb, sliding sideways when the clearance
-        stops growing (the operator's "detonate the moment they have enough distance"). None without bomb positions.
+        """The blast escape heading: the direction whose step keeps the largest distance from EVERY live bomb.
+
+        Live 2026-11-14 (hardened build): the nearest-bomb version flipped its heading 180 degrees as the nearest
+        bomb's identity alternated between two clusters (telemetry: nearest dx/dz (-130,-459) then (260,414) within
+        five seconds) and the bot orbited inside its own ring for 45+ s. Scoring 32 directions by the smallest
+        distance from a 600 cm step to all bombs, with hysteresis toward the previous heading, makes the run leave
+        the field instead of circling a neighbour. The slide watchdog still turns when the clearance stalls.
         """
         positions = self.stats.get('mine_avoid_positions')
         pos = p.get('pos')
         if not isinstance(positions, list) or not positions or pos is None:
             return None
-        bombs = [b for b in positions if isinstance(b, (list, tuple)) and len(b) >= 3]
+        bombs = [(b[0], b[2]) for b in positions if isinstance(b, (list, tuple)) and len(b) >= 3]
         if not bombs:
             return None
-        bomb = min(bombs, key=lambda b: (b[0] - pos[0]) ** 2 + (b[2] - pos[2]) ** 2)
-        away = heading(pos[0] - bomb[0], pos[2] - bomb[2])
+        step_cm = 600.0
+        best, best_score = None, -1.0
+        scored = []
+        for k in range(32):
+            h = 2.0 * math.pi * k / 32.0
+            ex, ez = pos[0] + step_cm * math.sin(h), pos[2] + step_cm * math.cos(h)
+            score = min(math.hypot(ex - bx, ez - bz) for bx, bz in bombs)
+            scored.append((h, score))
+            if score > best_score:
+                best, best_score = h, score
+        prev = getattr(self, '_blast_latch', None)
+        if prev is not None:
+            near = [(h, sc) for h, sc in scored if sc >= best_score - 60.0]
+            best = min(near, key=lambda hs: abs(wrap(hs[0] - prev)))[0]
+        self._blast_latch = best
+        away = wrap(best)
         clear = self.stats.get('mine_clearance_cm')
         clear = clear if isinstance(clear, (int, float)) and not isinstance(clear, bool) else None
         last_clear, last_at = getattr(self, '_blast_clear_at', None), getattr(self, '_blast_clear_t', -1e9)
@@ -3613,11 +3632,11 @@ class Bot:
             if last_clear is None or gained >= BLAST_AWAY_GAIN_CM:
                 self._blast_clear_at, self._blast_clear_t = clear, now
             elif now - last_at >= BLAST_SLIDE_S:
-                # no progress for a while: a quarter turn instead of pushing into the same blocker, staying on the
-                # away-side of the ring (live 2026-11-14 the 60-degree slide still orbited inside the ring)
+                # no progress for a while: a quarter turn from the latched heading when the straight run is blocked
                 self._blast_slide = not getattr(self, '_blast_slide', False)
                 self._blast_clear_at, self._blast_clear_t = clear, now
-                away = wrap(away + (math.radians(90) if self._blast_slide else math.radians(-90)))
+                away = wrap(best + (math.radians(90) if self._blast_slide else math.radians(-90)))
+                self._blast_latch = away
                 self.stats['blast_slides'] = int(self.stats.get('blast_slides', 0)) + 1
         self.stats['escape_heading_deg'] = round(math.degrees(away), 1)
         self.stats['escape_pos'] = f'{pos[0]:.0f},{pos[2]:.0f}'

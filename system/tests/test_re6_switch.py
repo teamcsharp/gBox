@@ -1083,8 +1083,8 @@ def test_the_blast_escape_runs_away_from_the_nearest_bomb():
     bot._open_heading = lambda *a, **k: 9.9
     out = bot._blast_retreat(p, snap["enemies"], snap, 5.0)
     assert out is not None and out.get("hold")
-    # away from a bomb at +Z is -Z (heading pi)
-    assert bot._escape_heading == pytest.approx(math.pi, abs=1e-3)
+    # away from a single bomb at +Z is -Z (heading pi, in either wrap representation)
+    assert abs(R.wrap(bot._escape_heading - math.pi)) < 1e-3
 
 
 def test_the_blast_is_cleared_immediately_even_with_a_small_shortfall():

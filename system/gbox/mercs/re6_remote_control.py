@@ -508,7 +508,7 @@ def control(ad, prof, bot_getter=None):
             emergency = landed = False
         if not emergency and not landed and not travel_due:
             return dict(result, reason=f'measured travel {travel.distance:.0f}/{TRAVEL_CM:.0f} cm; no stationary timer drops')
-        if stats.get('mine_deadline_pending') and not qte_ring:
+        if stats.get('mine_deadline_pending'):
             # Operator 2026-11-14: "Always explode the remote bombs." Chaining a new bomb while the last set is still
             # waiting for detonation resets the nearest-bomb clearance to zero and makes detonation impossible; the
             # escape must finish and the set must go off before another placement.

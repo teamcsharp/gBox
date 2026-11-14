@@ -168,18 +168,22 @@ def test_a_low_combo_clock_earns_a_periodic_combat_ring(lane, monkeypatch):
     assert st['mine_periodic_rings'] == 1
 
 
-def test_a_released_qte_ring_may_be_laid_while_an_old_bomb_is_out(lane, monkeypatch):
-    # The operator wants the area mined after every survived QTE, even when an earlier set is still lying. The QTE
-    # ring is admitted up to QTE_RING_MAX_OUTSTANDING outstanding bombs; the flag gate still refuses detonation below
-    # the rule's clearance.
+def test_a_released_qte_ring_waits_for_the_pending_set_then_is_laid(lane, monkeypatch):
+    # Operator 2026-11-14: "Always explode the remote bombs." A QTE ring does not stack onto a set that is still
+    # waiting to detonate; it is laid once the old set has gone off.
     from gbox.mercs import remote_mines as RULES
     step, st, flight = lane
     monkeypatch.setattr(N, 'bomb_detonate_now', lambda *a, **k: dict(verified=False, reason='old bomb pending'))
     st['mine_deadline_pending'] = 1
     step(snap(100., units=[bomb(x=0.)]), st, 100., lambda _: None)
-    assert not flight.requests                      # ordinary production still waits for the old bomb
+    assert not flight.requests                      # ordinary production waits for the old bomb
     st['qte_escape_mines_due'] = 'episode-1'
-    out = step(snap(100., units=[bomb(x=0.)]), st, 100.5, lambda _: None)
+    step(snap(100., units=[bomb(x=0.)]), st, 100.5, lambda _: None)
+    assert not flight.requests and st['qte_escape_mines_due'] == 'episode-1'   # the QTE ring waits too
+    # the old set goes off and leaves the census: the earned QTE ring is laid now
+    step.observe(snap(100., units=[]), st, 101.0)
+    st.pop('mine_deadline_pending', None)
+    step(snap(100., units=[]), st, 101.2, lambda _: None)
     assert flight.requests and flight.requests[0]['reason'] == 'qte_escape'
     assert flight.requests[0]['count'] == RULES.FLASH_COMBO_MINES
     assert st['mine_qte_rings'] == 1 and 'qte_escape_mines_due' not in st
