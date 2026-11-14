@@ -2548,6 +2548,10 @@ REPLAY_LOAD_S = 60.0                    # a death's YES replay loads this long a
 # left for BONUS_SKIP_S. Every break (his shot, a bomb, a kick) counts as taken, a bonus still waiting when the round
 # ends as missed: stats bonuses_taken / bonuses_missed (per round: round_*, bonus_log).
 BONUS_PURSUIT = False                   # (shooting them: off - operator 16:52, they break only to a physical attack)
+# Operator 2026-11-14: "activating combo time via ... shooting / destroying blue time bonus crystals (RE6)".
+# A time bonus below the five-minute bank inside BONUS_SHOOT_R with a clear line is now shot through the lock
+# as well as walked to; the walk kept costing the combo, the shot does not.
+BONUS_TIME_RANGED = True
 BONUS_R, BONUS_DY, BONUS_SAFE_R = 2500.0, 600.0, 600.0
 BONUS_H, BONUS_HIT_R = 130.0, 45.0     # the capsule's middle (a frame of one, 2026-10-27: a column ~2.6 m tall
                                         # with its glowing part around 1.3 m up; 40 cm aimed at its foot - live,
@@ -4987,6 +4991,9 @@ class Bot:
         # objective - a distant enemy does not veto them - while anything inside FIRE_ZONE_R still pre-empts (hot).
         # At or above the bank the bot is in fight/trap/combo mode and every bonus detour yields.
         fight_mode = self._bonus_clock_ready(snap)
+        time_shot = self._time_bonus_shot(p, snap, now)      # a blue time crystal in range: shoot it, do not walk
+        if time_shot is not None:
+            return time_shot
         ran = (None if (hot or (pressure and fight_mode) or not detours or self._bonus_wait(snap))
                else self._bonus_run(p, live, flat, snap, now))
         if ran is not None:                                      # time bank first, even with a distant kill owed
@@ -7423,10 +7430,11 @@ class Bot:
         """A bonus shot through the lock: its centre locked onto, the gun up, the trigger down while the laser's ray runs
         through it (not ending short); the ray short of it BONUS_SEE_S on with a clear nav-mesh line: out of sight for
         BONUS_UNSEEN_S (None: walk there). A wall by the nav mesh: out of sight at once (walk, don't wait on the laser)."""
-        if b.get("kind") != "combo" or p.get("ammo") == 0:
+        if b.get("kind") not in ("combo", "time") or p.get("ammo") == 0 \
+                or (b.get("kind") == "time" and not BONUS_TIME_RANGED):
             self.bshot = None
             self._gun_down()
-            return None                                         # time bonuses always require approach and melee
+            return None                                         # only a green (combo) bonus used to be shootable
         pt = (b["pos"][0], b["pos"][1] + BONUS_H, b["pos"][2])
         if self.bshot is None or self.bshot[0] != b["ptr"]:
             self.bshot = (b["ptr"], now)
@@ -7461,6 +7469,27 @@ class Bot:
         return self._go("bonus", "bonus_fire" if fire else "bonus_aim", {"hold": tuple(sorted({"zl"} | fire))},
                         f"a {kind} bonus at {math.dist(p['pos'], b['pos']):.0f} cm: "
                         + ("shooting it (lock)" if on else "the lock on it"))
+
+    def _time_bonus_shot(self, p, snap, now) -> dict | None:
+        """Below the five-minute bank: shoot a blue time bonus in range through the lock instead of only walking to it.
+
+        Operator 2026-11-14: "initially go after the time bonuses throughout the level while building initial combo
+        ... shooting / destroying blue time bonus crystals (RE6)". The walk costs the combo chain; a shot does not.
+        """
+        if not BONUS_TIME_RANGED or self._bonus_clock_ready(snap) or not self._time_bonus_priority(snap, now):
+            return None
+        cands = [b for b in snap.get('bonuses') or () if b.get('kind') == 'time'
+                 and self.bonus_unseen.get(b['ptr'], -1e9) <= now
+                 and math.dist(p['pos'], b['pos']) <= BONUS_SHOOT_R]
+        if not cands:
+            return None
+        b = min(cands, key=lambda c: math.dist(p['pos'], c['pos']))
+        if not self._bonus_sight(p, b, snap):
+            return None
+        out = self._bonus_shoot(p, b, snap, now)
+        if out is not None:
+            self.stats['time_bonus_shots'] = int(self.stats.get('time_bonus_shots', 0)) + 1
+        return out
 
     def _green_save(self, p, live, flat, snap, now) -> dict | None:
         """The match: the combo window under COMBO_LOW_S, a green (combo) bonus in sight within BONUS_SHOOT_R and nobody

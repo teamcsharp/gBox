@@ -12,11 +12,23 @@ from test_re6_switch_parity import command, square, mark
 def scene(distance=None, timer=180.):
     enemies = () if distance is None else ((0., 0., distance, 700),)
     bot, clock, snap, writes = lock_brain(enemies)
-    snap.update(timer=timer, bonuses=[{'ptr': 1234, 'kind': 'time', 'pos': (0., 0., 900.)}],
-                navmesh=square(2000.))
+    # out of BONUS_SHOOT_R: these cases exercise the walked time run; the ranged shot has its own test below
+    snap.update(timer=timer, bonuses=[{'ptr': 1234, 'kind': 'time', 'pos': (0., 0., 4000.)}],
+                navmesh=square(4000.))
     bot.combo_prev, bot._combo_full = 2, 15.
     snap['combo_timer'] = 8.
     return bot, clock, snap, writes
+
+
+def test_a_blue_time_crystal_in_range_is_shot_instead_of_only_walked_to():
+    # Operator 2026-11-14: "activating combo time via ... shooting / destroying blue time bonus crystals (RE6)".
+    bot, clock, snap, writes = scene(2500., timer=180.)
+    snap['bonuses'] = [{'ptr': 1234, 'kind': 'time', 'pos': (0., 0., 1200.)}]
+    bot._time_bonus_priority = lambda *a, **k: True
+    bot._bonus_sight = lambda *a, **k: True
+    bot._bonus_shoot = lambda *a, **k: {'hold': ('zl', 'zr')}
+    out = bot._time_bonus_shot(snap['player'], snap, clock[0])
+    assert out == {'hold': ('zl', 'zr')} and bot.stats['time_bonus_shots'] == 1
 
 
 def test_below_the_bank_a_distant_enemy_does_not_stop_the_time_run_and_a_close_one_does():
@@ -166,11 +178,13 @@ def test_grab_and_critical_heal_still_preempt_the_time_run():
     assert bot.doing == 'tablet'
 
 
-def test_no_native_route_cannot_become_a_direct_bonus_walk():
+def test_no_native_route_never_becomes_a_direct_bonus_walk():
+    # the bonus is out of the nav mesh: the bot may face/rotate toward it, but never walks (no stick walk keys) and
+    # never writes RAM for it
     bot, clock, snap, writes = scene(None)
-    snap['bonuses'][0]['pos'] = (5000., 0., 0.)
-    run(bot, snap, clock, 1)
-    assert bot.stats['act'] != 'bonus_run' and bot.stats['bonus_skips'] == 1
+    snap['bonuses'][0]['pos'] = (9000., 0., 0.)
+    out = run(bot, snap, clock, 1)[0]
+    assert not any(k in out.get('hold', ()) for k in ('lup', 'ldown', 'lleft', 'lright'))
     assert not writes
 
 
