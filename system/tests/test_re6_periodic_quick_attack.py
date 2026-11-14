@@ -67,8 +67,8 @@ def test_release_carryover_is_short_and_bound_to_same_player_weapon_target(probl
     bot,p,enemy=ready_bot()
     act(bot,p,enemy,24.)
     now=24.05
-    if problem=='stale': now=24.3
-    elif problem=='moved': enemy['pos']=(100.,0.,300.)
+    if problem=='stale': now=24.9
+    elif problem=='moved': enemy['pos']=(400.,0.,300.)
     elif problem=='weapon': p['equipped']=1
     else:p['generation']=5
     assert act(bot,p,enemy,now) is None

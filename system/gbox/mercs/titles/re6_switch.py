@@ -1947,7 +1947,14 @@ QSHOT_R, QSHOT_CONE, QSHOT_GAP_S = 200.0, math.radians(35), 1.5   # point blank 
 # HIT_QS_GAP_S apart once he is free to act, while one stands within HIT_QS_R. stats hit_responses, hit_quick_shots.
 HIT_QS_N, HIT_QS_GAP_S, HIT_QS_R = 3, 0.35, 400.0
 PERIODIC_QA, PERIODIC_QA_COUNT, PERIODIC_QA_INTERVAL_S = True, 4, 24.0
-PERIODIC_QA_CONTACT_S, PERIODIC_QA_ACK_S = .25, 1.2
+# The operator's sidebar sets these live (PERIODIC_QA / _COUNT / _INTERVAL_S; saved example: on, 4 per burst,
+# every 10 s). The burst fires its requests this far apart and gives up on a partially fired burst after
+# PERIODIC_QA_EXPIRE_S instead of waiting silently.
+PERIODIC_QA_GAP_S, PERIODIC_QA_EXPIRE_S = 0.14, 8.0
+PERIODIC_QA_CONTACT_S, PERIODIC_QA_ACK_S = .6, 1.2
+# The carryover tolerances: 20 cm of player movement and 30 cm of target movement in a quarter second never
+# survived a live fight (one burst in 530 s, zero requests). The measured-contact/laser checks still gate it.
+PERIODIC_QA_MOVE_CM, PERIODIC_QA_TARGET_CM = 140.0, 220.0
 READY_S, LASER_WAIT_S, RAY_STALE_S = 0.12, 0.7, 1.0
 KEEP_TARGET, THREAT_R, COMMIT_S = 1.5, 250.0, 1.0
 HIT_S = 0.45                            # a zombie's health falls within this of the shot that hit him
@@ -2799,6 +2806,20 @@ WALL_PROBE_R, WALL_COST = 350.0, 6.0
 # Misses answered up close (operator 2026-10-28: "if the bot misses a shot three times, they need to do three quick
 # attacks"): MISS_QA_N misses in a row queue MISS_QA_COUNT quick attacks (ZR alone) on the nearest within MISS_QA_R.
 MISS_QA_N, MISS_QA_COUNT, MISS_QA_R = 3, 3, 300.0
+# QTE recovery burst (operator 2026-11-13: "in RE6, I want the bot reacting to QTE events by: auto flipping the flag
+# for completing them, succeed at the QTE event, drop mines, perform 3 quick shots, flee while detonating them and
+# firing quick shots"). The mines come from the QTE recovery episode (qte_escape.Recovery -> re6_remote_control's QTE
+# ring); these are the three shots, fired before the flee over the next QTE_SHOT_WINDOW_S at QTE_SHOT_GAP_S.
+QTE_SHOT_N, QTE_SHOT_GAP_S, QTE_SHOT_WINDOW_S, QTE_SHOT_R = 3, 0.18, 3.0, 400.0
+# Never idle while the combo is about to lapse ("Never let the bot stop fighting and adding to the combo"): a
+# non-combat detour doing becomes a chase to the nearest enemy while the combo clock is low.
+COMBO_GUARD_DOINGS = ("walk", "no_foes", "bonus", "taunt")
+# The absolute mandate (operator 2026-11-13: "the bot should never go five seconds without accruing a kill and
+# keeping the combo going ... the combo is the most important part of the game"). While the combo clock is low (or no
+# kill has landed for COMBO_KEEP_S) and an enemy is near, the bot stops every non-kill detour - including a bomb
+# escape sprint - and takes the fastest kill it can: a rapid quick shot when the enemy is at COMBO_QUICK_R, else a
+# chase for the next combat decision. COMBO_HOT_R is how near the enemy must be for the override.
+COMBO_KEEP_S, COMBO_HOT_R, COMBO_QUICK_R, COMBO_QUICK_GAP_S = 3.2, 1200.0, 350.0, 0.16
 WALL_ESCAPE_S = 1.5                      # Bot._wall_command: the walk away from the operator's wall
 _NAV_MESH = None
 FIRE_ZONE_R = 600.0                     # Bot._decide: one this near in sight on his level - the fight before any bonus
@@ -2958,6 +2979,11 @@ class Bot:
         self.quick, self.quick_at = 0, -1e9
         self.melee_at = self.qshot_at = self.reload_at = self.tablet_at = -1e9
         self.tablet_wait, self.tablet_missed = None, False   # (the count, when, health) after an R press, until it falls
+        self.qte_shots_owed, self.qte_shots_at, self.qte_shot_last = 0, -1e9, -1e9
+        self._qte_escapes_seen = int(self.stats.get("qte_escapes_observed", 0) or 0)
+        self._combo_hot_now = False
+        self._kill_at, self._kill_n = None, None
+        self._combo_quick_at = -1e9
         self.heal_gain, self.heal_chain = None, False        # a tablet's learned gain; eating on to the top (HEAL_FILL)
         self.tablet_hold_until = -1e9                         # gun stays down this long after a crowd tablet (cluster)
         self._zl_at = -1e9                                   # when ZL was last held
@@ -3269,6 +3295,83 @@ class Bot:
             stats['dying_bomb_out'] = int(bool(bomb.get('out')))
         elif last == DYING_HP and hp > DYING_HP:
             stats['dying_recoveries'] = int(stats.get('dying_recoveries', 0)) + 1
+
+    def _qte_recovery_shot(self, p, live, flat, now) -> dict | None:
+        """Three quick shots right after a survived QTE, before the flee (operator 2026-11-13).
+
+        The recovery episode already drops mines (qte_escape.Recovery -> re6_remote_control's QTE ring); this keeps the
+        combo going on the way out: succeed, drop mines, three rapid quick shots, then flee while detonating and firing.
+        Counted from the escape counter, QTE_SHOT_N shots at QTE_SHOT_GAP_S within QTE_SHOT_WINDOW_S.
+        """
+        escapes = self.stats.get('qte_escapes_observed') or 0
+        if escapes != getattr(self, '_qte_escapes_seen', 0):
+            self._qte_escapes_seen = escapes
+            if escapes:
+                self.qte_shots_owed, self.qte_shots_at = QTE_SHOT_N, now
+        if not getattr(self, 'qte_shots_owed', 0) or now - getattr(self, 'qte_shots_at', -1e9) > QTE_SHOT_WINDOW_S:
+            return None
+        if p.get('ammo') == 0 or now - getattr(self, 'qte_shot_last', -1e9) < QTE_SHOT_GAP_S:
+            return None
+        target = min((e for e in live if flat(e) <= QTE_SHOT_R), key=flat, default=None)
+        if target is None:
+            return None
+        self.qte_shots_owed -= 1
+        self.qte_shot_last = now
+        self.stats['qte_recovery_quick_shots'] = int(self.stats.get('qte_recovery_quick_shots', 0)) + 1
+        self._gun_down()
+        return self._go("quick_shot", "qte_recovery_shot", {"hold": ("zl", "zr")},
+                        f"QTE recovery: a quick shot at the one {flat(target):.0f} cm off "
+                        f"({self.qte_shots_owed} left)")
+
+    def _combo_mandate_on(self, p, live, flat) -> bool:
+        """The combo mandate is in force: a kill must land now, so a non-kill detour (a bomb sprint included) waits.
+
+        In force when an enemy is within COMBO_HOT_R and either the running combo's clock is at or under COMBO_KEEP_S
+        (the chain is about to lapse) or the last kill is COMBO_KEEP_S old (nothing has been added to the chain).
+        """
+        if not BOMBS or not live:
+            return False
+        near = min((flat(e) for e in live), default=None)
+        if near is None or near > COMBO_HOT_R:
+            return False
+        left = self.stats.get("combo_left_s")
+        combo = self.stats.get("combo_prev") or 0
+        if isinstance(left, (int, float)) and combo > 0 and left <= COMBO_KEEP_S:
+            return True
+        since = self.stats.get("kill_gap_last_s")
+        if self._kill_at is not None:
+            since = None  # the tick's own clock is authoritative below
+        if isinstance(since, (int, float)) and since >= COMBO_KEEP_S:
+            return True
+        if self._kill_at is not None and self.combo_prev <= 0:
+            return True
+        return False
+
+    def _combo_guard(self, p, live, flat, snap, now) -> dict | None:
+        """Never idle while the combo is about to lapse (operator 2026-11-13, the absolute mandate: "never let the bot
+        stop fighting and adding to the combo ... never go five seconds without accruing a kill").
+
+        With the mandate in force, a nearby enemy gets a rapid quick shot (COMBO_QUICK_R, COMBO_QUICK_GAP_S); with no
+        one in quick-shot reach, a non-combat detour (walking, a bonus run, a taunt, no foes) becomes a chase so the
+        next decision is combat. Healing, prompts, holds and the QTE burst keep their priority.
+        """
+        if not getattr(self, '_combo_hot_now', False) or not live:
+            return None
+        target = min((e for e in live if flat(e) <= COMBO_QUICK_R), key=flat, default=None)
+        if target is not None and p.get('ammo') != 0 and now - getattr(self, '_combo_quick_at', -1e9) >= COMBO_QUICK_GAP_S:
+            self._combo_quick_at = now
+            self.stats['combo_quick_shots'] = int(self.stats.get('combo_quick_shots', 0)) + 1
+            self._gun_down()
+            return self._go("quick_shot", "combo_quick_shot", {"hold": ("zl", "zr")},
+                            f"combo mandate: a quick shot at the one {flat(target):.0f} cm off")
+        if self.doing not in COMBO_GUARD_DOINGS and self.doing not in ("aim", "raise"):
+            return None
+        chase = self._pursue(p, snap, now)
+        if chase is None:
+            return None
+        self.stats['combo_guard_chases'] = int(self.stats.get('combo_guard_chases', 0)) + 1
+        self.why = "combo about to lapse: chasing the nearest instead of idling - " + str(self.why)
+        return chase
 
     def _critical_no_tablet_flash(self, p, live, flat, now) -> dict | None:
         """Critical health in a melee crowd: the native flash and a gun-down moment instead of raising the gun.
@@ -4024,7 +4127,17 @@ class Bot:
             return self._go("held", "break_free", {"hold": WIGGLE[self.wiggle % len(WIGGLE)]},
                             f"held (action {state}): B mashed, the stick round")
         self.in_hold = False
-        if self.stats.get('mine_escape_required'):
+        qte_shot = self._qte_recovery_shot(p, live, flat, now)
+        if qte_shot is not None:
+            return qte_shot
+        self._combo_hot_now = self._combo_mandate_on(p, live, flat)
+        if self._combo_hot_now:
+            self.stats['combo_mandate_s'] = round(float(self.stats.get('combo_mandate_s', 0.0) or 0.0) + TICK_S, 2)
+        if self._combo_hot_now and self.stats.get('mine_escape_required'):
+            # The bomb sprint stands the gun down and never adds to the combo; while a kill must land the sprint waits
+            # (the flag still detonates only when the live clearance passes the rule).
+            self.stats['combo_over_bomb_sprints'] = int(self.stats.get('combo_over_bomb_sprints', 0)) + 1
+        if self.stats.get('mine_escape_required') and not self._combo_hot_now:
             # Placement starts a five-second deadline. A quick-turn sequence,
             # weapon handover or another grenade must not consume this route.
             self.quick, self.qshot_release = 0, False
@@ -4067,9 +4180,10 @@ class Bot:
                 self.stats["hit_quick_shots"] = self.stats.get("hit_quick_shots", 0) + 1
                 return self._go("quick_shot", "hit_quick_shot", {"hold": ("zl", "zr")},
                                 f"hit: a quick shot back ({self.hit_qs} more)")
-        escape = self._bomb_escape(p, snap, now)
-        if escape is not None:
-            return escape
+        if not self._combo_hot_now:
+            escape = self._bomb_escape(p, snap, now)
+            if escape is not None:
+                return escape
         switched = self._weapon_switch(p, now)                   # the weapon asked for (the app, a grab's pick)
         if switched is not None:
             return switched
@@ -4093,6 +4207,9 @@ class Bot:
                 self.move_at = now
             return goal
         act = self._decide(p, live, flat, near_e, near, snap, now)
+        guard = self._combo_guard(p, live, flat, snap, now)
+        if guard is not None:
+            act = guard
         if set(act.get("hold", ())) & {"lup", "ldown", "lleft", "lright"}:
             self.move_at = now
         return act
@@ -5208,6 +5325,13 @@ class Bot:
         Both triggers need a fresh edge. Release aim once after measured contact,
         then allow only a short, identity/movement-checked contact carryover. An
         unseen native action expires the burst instead of blindly repeating it.
+
+        Live 2026-11-13 the strict carryover (player 20 cm, target 30 cm within 0.25 s) never let a burst fire: one
+        burst armed in a 530 s round and it expired with zero requests, while the operator's sidebar asked for 4
+        quick attacks every 10 s. Combat movement exceeds 20 cm per tick, so the carryover now allows the movement a
+        fight really has (PERIODIC_QA_MOVE_CM / PERIODIC_QA_TARGET_CM in PERIODIC_QA_CONTACT_S): the safety rules -
+        measured contact, the laser's clear line, native quick-shot observation, prompts and healing first - are
+        unchanged.
         """
         from .re6_switch_equip import FREE_ACTIONS
         if not PERIODIC_QA:
@@ -5238,7 +5362,7 @@ class Bot:
             else:
                 return self._go('quick_shot', 'periodic_quick_wait', {'hold': ()},
                                 'periodic burst: waiting for the native quick attack to finish')
-        if self.periodic_qa_remaining and now > self.periodic_qa_last + 6.0:
+        if self.periodic_qa_remaining and now > self.periodic_qa_last + PERIODIC_QA_EXPIRE_S:
             self.periodic_qa_remaining, self.periodic_qa_arm = 0, None
             self.stats['periodic_qa_expired'] = self.stats.get('periodic_qa_expired', 0) + 1
             return None
@@ -5257,7 +5381,8 @@ class Bot:
         if arm is not None:
             target = next((e for e in live if e.get('ptr', e.get('slot')) == arm['target']), None)
             if (life != arm['life'] or target is None or now - arm['at'] > PERIODIC_QA_CONTACT_S
-                    or math.dist(p['pos'], arm['player_pos']) > 20 or math.dist(target['pos'], arm['target_pos']) > 30
+                    or math.dist(p['pos'], arm['player_pos']) > PERIODIC_QA_MOVE_CM
+                    or math.dist(target['pos'], arm['target_pos']) > PERIODIC_QA_TARGET_CM
                     or flat(target) > HIT_QS_R or not self._sight(target, now)):
                 self.periodic_qa_arm = None
                 return None
@@ -6057,6 +6182,17 @@ class Bot:
                 self.stats["combo_pushes"] += 1
             self.combo_urgent = urgent
             self.combo_prev = combo
+        k = snap.get("kills")
+        if isinstance(k, int):
+            if self._kill_n is None:
+                self._kill_n, self._kill_at = k, now
+            elif k > self._kill_n:
+                gap = now - (self._kill_at or now)
+                self.stats["kill_gap_last_s"] = round(gap, 2)
+                self.stats["kill_gap_max_s"] = round(max(float(self.stats.get("kill_gap_max_s", 0.0) or 0.0), gap), 2)
+                self._kill_n, self._kill_at = k, now
+            elif self._kill_at is None:
+                self._kill_at = now
         if self._combo_full is not None:
             self.stats["combo_window_full"] = round(self._combo_full, 1)
         full = self._combo_full if (self._combo_full or 0.0) >= KILL_PACE_S + COMBO_LOW_S else COMBO_WINDOW_S
@@ -6977,6 +7113,8 @@ class Bot:
         del log[:-BONUS_LOG_N]
 
     def _bonus_run(self, p, live, flat, snap, now) -> dict | None:
+        if getattr(self, '_combo_hot_now', False):
+            return None                                      # the combo mandate: no bonus detour while a kill must land
         """Below the five-minute bank, the nearest time bonus (his floor first), walked to and attacked
         physically within BONUS_MELEE_R; only a zombie within BONUS_BLOCK_R is fought. None: phase 2 this tick (no bonus
         waiting, every waiting one left for now, a zombie in the way, or the bomb / an item in hand)."""

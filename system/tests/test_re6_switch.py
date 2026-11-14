@@ -974,6 +974,64 @@ def test_critical_health_in_a_heavy_crowd_flashes_even_with_tablets():
     # Three in the crowd: the tablet rule handles it, no flash.
     assert bot._critical_no_tablet_flash(p, live[:3], flat, clock[0]) is None
 
+def test_a_survived_qte_fires_three_quick_shots_before_the_flee():
+    # Operator 2026-11-13: "in RE6, I want the bot reacting to QTE events by - auto flipping the flag for completing
+    # them, succeed at the QTE event, drop mines, perform 3 quick shots, flee while detonating them and firing quick
+    # shots". The mines come from the recovery episode; these are the three shots.
+    import math as _m
+    bot, clock, snap = brain(round_guest(enemies=((150., 0., 60., 100),)))
+    p = {'pos': (0., 0., 0.), 'ammo': 7, 'state': 0}
+    live = snap['enemies']
+    flat = lambda e: _m.hypot(e['pos'][0], e['pos'][2])
+    bot.stats['qte_escapes_observed'] = 1
+    out = bot._qte_recovery_shot(p, live, flat, 10.0)
+    assert out == {'hold': ('zl', 'zr')} and bot.doing == 'quick_shot'
+    assert bot.stats['qte_recovery_quick_shots'] == 1 and bot.qte_shots_owed == 2
+    assert bot._qte_recovery_shot(p, live, flat, 10.1) is None      # within the burst gap
+    assert bot._qte_recovery_shot(p, live, flat, 10.4) is not None  # second shot
+    assert bot._qte_recovery_shot(p, live, flat, 10.8) is not None  # third shot
+    assert bot.qte_shots_owed == 0 and bot._qte_recovery_shot(p, live, flat, 11.2) is None
+
+
+def test_the_combo_mandate_turns_a_lapsing_chain_into_a_quick_shot():
+    # Operator 2026-11-13 (absolute mandate): "never go five seconds without accruing a kill and keeping the combo
+    # going ... never let the bot stop fighting and adding to the combo".
+    import math as _m
+    bot, clock, snap = brain(round_guest(enemies=((200., 0., 80., 100),)))
+    p = {'pos': (0., 0., 0.), 'ammo': 7, 'state': 0}
+    live = snap['enemies']
+    flat = lambda e: _m.hypot(e['pos'][0], e['pos'][2])
+    bot.stats.update(combo_left_s=1.2, combo_prev=9)
+    assert bot._combo_mandate_on(p, live, flat) is True
+    bot._combo_hot_now = True
+    bot.doing = 'bonus'
+    out = bot._combo_guard(p, live, flat, snap, 5.0)
+    assert out == {'hold': ('zl', 'zr')} and bot.doing == 'quick_shot'
+    assert bot.stats['combo_quick_shots'] == 1
+    # Out of quick-shot reach the guard still refuses to idle: a chase replaces the non-combat detour.
+    far = [{'pos': (900., 0., 0.), 'hp': 100}]
+    bot._pursue = lambda *a, **k: {'hold': ('lup',)}
+    bot.doing = 'bonus'
+    chased = bot._combo_guard(p, far, flat, snap, 5.0)
+    assert chased == {'hold': ('lup',)} and bot.stats['combo_guard_chases'] == 1
+    # No enemy near: the mandate is not in force and the detour stands.
+    assert bot._combo_mandate_on(p, [], flat) is False
+
+
+def test_kill_gap_max_records_the_five_second_mandate():
+    bot, clock, snap = brain(round_guest(enemies=()))
+    snap['combo'] = 3
+    snap['combo_timer'] = 2.0
+    snap['kills'] = 10
+    bot._combo_tick(snap, [], lambda e: 0., 100.0)
+    snap['kills'] = 11
+    bot._combo_tick(snap, [], lambda e: 0., 104.5)
+    assert bot.stats['kill_gap_last_s'] == 4.5 and bot.stats['kill_gap_max_s'] == 4.5
+    snap['kills'] = 12
+    bot._combo_tick(snap, [], lambda e: 0., 110.0)
+    assert bot.stats['kill_gap_max_s'] == 5.5
+
+
 def test_an_auto_qte_prompt_does_not_count_as_a_bot_failure():
     # qte_seen 15 / qte_failed 6 was measured live while the game's own automatic action button solved every grab.
     # A prompt that vanishes with no press and no registered RAM grant is only a failure when the game is not
