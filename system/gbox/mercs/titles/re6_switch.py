@@ -3402,8 +3402,12 @@ class Bot:
         """
         if not BOMBS or not live:
             return False
+        # Operator 2026-11-14: "the bot must not only fight enemies but locate and pursue them ... Every enemy is
+        # meant to be dispatched no matter the distance." The mandate no longer needs an enemy inside COMBO_HOT_R (the
+        # old 30 m gate): with the combo clock low or no kill for COMBO_KEEP_S, the nearest enemy on his floor - at any
+        # distance - is chased; the quick-shot step still needs COMBO_QUICK_R.
         near = min((flat(e) for e in live), default=None)
-        if near is None or near > COMBO_HOT_R:
+        if near is None:
             return False
         left = self.stats.get("combo_left_s")
         combo = self.stats.get("combo_prev") or 0
@@ -8565,7 +8569,12 @@ class RE6Switch(Driver):
         if ad is None or getattr(m, "mercs_no_modifications", False):
             return
         from . import re6_switch_mods
-        if playing and QTE_INSTANT and (snap or {}).get("player"):  # the QTEs by RAM, on by default and read back
+        # Operator 2026-11-14: "I want the flag flipped for that immediately so they don't even have to go through
+        # that." The QTE option is written as soon as the session has an adapter - during the load and the menus too,
+        # not only once a player snapshot exists - so no QTE in the round can be reached before both the game's own
+        # automatic action button and the RAM escape are on and read back (ensure_qte retries every 1 s until then and
+        # re-applies every 5 s, since a save load can reset the option).
+        if QTE_INSTANT:
             qte = re6_switch_mods.ensure_qte(ad, snap)
             if self.stats is not None:
                 self.stats["qte_auto"] = bool(qte.get("verified") and qte.get("auto_qte") and qte.get("auto_qte_ram"))

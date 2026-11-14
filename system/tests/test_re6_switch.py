@@ -1031,6 +1031,21 @@ def test_the_combo_mandate_yields_to_a_live_bomb_clearance_margin():
     assert bot._inside_blast_margin() is False
 
 
+def test_the_combo_mandate_pursues_the_nearest_enemy_no_matter_the_distance():
+    # Operator 2026-11-14: "Every enemy is meant to be dispatched ... no matter the distance."
+    import math as _m
+    bot, clock, snap = brain(round_guest(enemies=((0., 0., 6000., 100),)))
+    p = {'pos': (0., 0., 0.), 'ammo': 7, 'state': 0}
+    live = snap['enemies']
+    flat = lambda e: _m.hypot(e['pos'][0], e['pos'][2])
+    bot.stats.update(combo_left_s=1.0, combo_prev=5)
+    assert bot._combo_mandate_on(p, live, flat) is True
+    bot._combo_hot_now = True
+    bot.doing = 'walk'
+    bot._pursue = lambda *a, **k: {'hold': ('lup',)}
+    assert bot._combo_guard(p, live, flat, snap, 9.0) is not None
+
+
 def test_the_combo_mandate_never_fires_a_quick_shot_at_the_ceiling():
     # Operator 2026-11-13, screenshot: "Why is the bot just shooting up at the ceiling, missing the enemies right in
     # front?" With no enemy under the camera/laser ray the guard turns to the enemy instead of pressing both triggers.
