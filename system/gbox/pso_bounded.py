@@ -508,6 +508,13 @@ class StepMotion:
         # ended 98 units out), while measuring each direction is the behaviour that closes within a few units.
         self.fine = ProbeMotion(arrive=self.arrive, keys=self.keys, lock_points=self.lock_points,
                                 lock_radius=self.lock_radius)
+        # A step moves along the camera heading, so pointing that heading at the target is half the job. Nothing was
+        # doing it: from (269,64) with the heading facing west, the motion lunged west and a chain meant for (360,26)
+        # finished 231 units away at (134,76). Turn effects are learned per key, because one tap can swing the camera
+        # 80-175 degrees and the sign differs between sessions.
+        self.turn_effect: dict[str, float] = {}
+        self.turn_keys = ("left", "right")
+        self._pending_turn: tuple[str, float] | None = None
 
     def landing(self, player: dict) -> tuple[float, float]:
         """Where one attack step would put the character: 8.5 units along the camera heading."""
@@ -518,12 +525,47 @@ class StepMotion:
     def safe(self, point: tuple[float, float]) -> bool:
         return all(math.dist(point, lock) > self.lock_radius for lock in self.lock_points)
 
+    @staticmethod
+    def bearing(player: dict, target: Iterable[float]) -> float:
+        dx = float(target[0]) - float(player["x"])
+        dz = float(target[1]) - float(player["z"])
+        return math.degrees(math.atan2(dx, dz)) % 360.0
+
+    def steer(self, player: dict, target: Iterable[float]) -> Action | None:
+        """Turn the camera until the heading points at the target, learning what each turn key does."""
+        heading = float(player.get("heading_deg") or 0.0)
+        if self._pending_turn is not None:
+            key, before = self._pending_turn
+            delta = ((heading - before + 540.0) % 360.0) - 180.0
+            if abs(delta) > 1.0:
+                prior = self.turn_effect.get(key)
+                self.turn_effect[key] = delta if prior is None else prior * 0.6 + delta * 0.4
+            self._pending_turn = None
+        want = self.bearing(player, target)
+        error = ((want - heading + 540.0) % 360.0) - 180.0
+        if abs(error) <= 25.0:
+            return None
+        known = [(key, effect) for key, effect in self.turn_effect.items() if abs(effect) > 5.0]
+        if known:
+            # prefer a key whose effect moves the heading toward the target, largest step that does not overshoot wildly
+            candidates = [(key, effect) for key, effect in known if (effect > 0) == (error > 0)]
+            if candidates:
+                key, effect = min(candidates, key=lambda kv: abs(abs(kv[1]) - abs(error)))
+                self._pending_turn = (key, heading)
+                return press(key, f"turn toward the aim ({error:+.0f} degrees off)")
+        key = self.turn_keys[0] if not self.turn_effect else self.turn_keys[len(self.turn_effect) % 2]
+        self._pending_turn = (key, heading)
+        return press(key, f"learn a turn ({error:+.0f} degrees off)")
+
     def step(self, player: dict, target: Iterable[float], reason: str = "") -> Action | None:
         x, z = float(player["x"]), float(player["z"])
         tx, tz = float(target[0]), float(target[1])
         distance = math.dist((x, z), (tx, tz))
         if distance <= self.arrive:
             return None
+        turn = self.steer(player, target)
+        while turn is not None:
+            return turn
         landing = self.landing(player)
         gain = distance - math.dist(landing, (tx, tz))
         # A step moves 8.5 units, so it cannot do the last few: aiming a lunge at a point 4 units away overshoots to the
