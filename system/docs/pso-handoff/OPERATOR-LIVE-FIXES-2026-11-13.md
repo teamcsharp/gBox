@@ -241,3 +241,23 @@ That changed two things in the bot:
 
 Also verified live this round: the restored bot walked Caves 1 from the entrance (room 1, z ~ -50) to room 50
 (z ~ 985) across successive 60-second chunks with zero failures, status word kept at 0 the whole time.
+
+## 12. Round 8 - deliberate floor coverage: learn the door graph, then walk through every new doorway
+
+The bot spent chunks wandering the same two bordering Cave rooms because nothing knew which doorway had been
+crossed. Three small pieces turn that into coverage:
+
+* **`pso-door-crossings.py`** samples the session ~1 Hz, confirms a room change on a second read (the room value
+  flickers at boundaries) and records `{floor, layout, from_room, to_room, x, z}` in `mandate/door-crossings.jsonl`.
+  The layout name is the collision digest from the live map dump, so a randomized map never inherits another
+  layout's door knowledge.
+* **`pso-frontier.py`** joins that log with the live entity list: it picks the nearest door **in the current room
+  that has never been crossed** (falling back to a door leading to an unvisited room), and prints its coordinate.
+  Switch panels (`TLazerFenceSw`, `TObjDoorKey`) are excluded - they are pressed, not walked through.
+* **`pso-autoplay-loop.py`** asks for a frontier door before each chunk and, when one exists, runs
+  `pso-bounded.py walk --to <door> --through` instead of open-ended play. A doorway that fails twice in four minutes
+  is skipped for a while so a blocked gate cannot consume the session.
+
+Live receipt in the restored session: the first frontier chunk drove the character 156 units to a never-crossed
+`TODoorCave02`; the crossing tracker recorded **room 50 -> 111 at (322.2, 817.9)** (then 111 -> 40), the door is now
+learned, and the next frontier target switched to a different never-crossed door in room 40 (200, 805).

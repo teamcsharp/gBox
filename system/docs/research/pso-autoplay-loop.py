@@ -1,4 +1,4 @@
-﻿"""autoplay-loop - hand the pad back and forth with the operator, with the two live guards applied throughout.
+"""autoplay-loop - hand the pad back and forth with the operator, with the two live guards applied throughout.
 
 Operator's standing requests (2026-11-13):
   * "have the bot take over whenever I stop playing the game for three seconds" -- operator input (pad/keyboard/app pad)
@@ -39,6 +39,7 @@ RECORDER = pathlib.Path(r"C:\_tools\gBox\system\docs\research\pso-demo-recorder.
 BOUNDED = pathlib.Path(r"C:\_tools\gBox\system\docs\research\pso-bounded.py")
 GUARD = pathlib.Path(r"C:\_tools\gBox\system\docs\research\pso-operator-guard.py")
 LIVE_MAP = pathlib.Path(r"C:\_tools\gBox\system\docs\research\pso-live-map.py")
+FRONTIER = pathlib.Path(r"C:\_tools\gBox\system\docs\research\pso-frontier.py")
 PYTHON = sys.executable
 OPERATOR_IDLE_S = 3.0
 BOT_SECONDS = 60.0
@@ -143,6 +144,7 @@ class Supervisor:
         self.session = None
         self.sid = None
         self.catalog = None
+        self.frontier_attempts = {}
         self.last_operator = 0.0
         self.recorder = None
         self.bot = None
@@ -247,10 +249,46 @@ class Supervisor:
             log(f"weapon reach lookup failed: {type(error).__name__}: {error}")
             return None
 
+    def frontier_target(self):
+        """The next never-crossed doorway from pso-frontier.py, or None to fall back to normal play.
+
+        A doorway attempt that keeps failing is used at most twice in four minutes; after that the chunk goes back to
+        the progression policy so a single blocked door cannot consume the session.
+        """
+        try:
+            result = subprocess.run([PYTHON, str(FRONTIER), "--json"], capture_output=True, text=True, timeout=45,
+                                    env=dict(os.environ, GBOX_API=BASE))
+            if result.returncode != 0:
+                log(f"frontier plan failed: {(result.stderr or result.stdout).strip()[-300:]}")
+                return None
+            summary = json.loads(result.stdout.strip().splitlines()[-1])
+            door = summary.get("door")
+            if not door:
+                log(f"frontier: no unexplored doorway ({summary.get('reason')})")
+                return None
+            ptr = str(summary.get("ptr"))
+            count, last = self.frontier_attempts.get(ptr, (0, 0.0))
+            now = time.monotonic()
+            if count >= 2 and now - last < 240.0:
+                log(f"frontier: doorway {ptr} failed twice in 4 minutes - using normal play")
+                return None
+            self.frontier_attempts[ptr] = (count + 1, now)
+            log(f"frontier: doorway {ptr} {summary.get('class')} at {door} ({summary.get('distance')} units, "
+                f"{summary.get('reason')}; known {summary.get('known_doorways')})")
+            return door
+        except Exception as error:                                   # noqa: BLE001
+            log(f"frontier plan error: {type(error).__name__}: {error}")
+            return None
+
     def run_bot(self) -> None:
         env = dict(os.environ, GBOX_API=BASE)
         log_path = OUT / "autoplay-bot.log"
-        command = [PYTHON, str(BOUNDED), "play", "--seconds", str(BOT_SECONDS), "--motion", "hill"]
+        door_target = self.frontier_target()
+        if door_target:
+            command = [PYTHON, str(BOUNDED), "walk", "--to", f"{door_target[0]}", f"{door_target[1]}", "--through",
+                       "--seconds", str(BOT_SECONDS), "--motion", "hill"]
+        else:
+            command = [PYTHON, str(BOUNDED), "play", "--seconds", str(BOT_SECONDS), "--motion", "hill"]
         map_path, map_key = self.live_map()
         if map_path:
             command += ["--map", map_path, "--map-name", map_key]
@@ -260,7 +298,8 @@ class Supervisor:
         with log_path.open("a", encoding="utf-8") as handle:
             handle.write(f"\n=== bot chunk {time.strftime('%H:%M:%S')} ===\n")
             self.bot = subprocess.Popen(command, env=env, stdout=handle, stderr=subprocess.STDOUT)
-        log(f"operator idle {OPERATOR_IDLE_S:.0f}s - bot took the pad (bounded play {BOT_SECONDS:.0f}s"
+        log(f"operator idle {OPERATOR_IDLE_S:.0f}s - bot took the pad ("
+            f"{'frontier doorway walk' if door_target else 'bounded play'} {BOT_SECONDS:.0f}s"
             f"{', routed over the live collision grid' if map_path else ', no live map'})")
         started = time.monotonic()
         while True:
