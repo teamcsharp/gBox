@@ -984,13 +984,14 @@ def test_a_survived_qte_fires_three_quick_shots_before_the_flee():
     live = snap['enemies']
     flat = lambda e: _m.hypot(e['pos'][0], e['pos'][2])
     bot.stats['qte_escapes_observed'] = 1
-    out = bot._qte_recovery_shot(p, live, flat, 10.0)
+    bot._quick_shot_target = lambda *a, **k: live[0]          # the ray is on the enemy
+    out = bot._qte_recovery_shot(p, live, flat, snap, 10.0)
     assert out == {'hold': ('zl', 'zr')} and bot.doing == 'quick_shot'
     assert bot.stats['qte_recovery_quick_shots'] == 1 and bot.qte_shots_owed == 2
-    assert bot._qte_recovery_shot(p, live, flat, 10.1) is None      # within the burst gap
-    assert bot._qte_recovery_shot(p, live, flat, 10.4) is not None  # second shot
-    assert bot._qte_recovery_shot(p, live, flat, 10.8) is not None  # third shot
-    assert bot.qte_shots_owed == 0 and bot._qte_recovery_shot(p, live, flat, 11.2) is None
+    assert bot._qte_recovery_shot(p, live, flat, snap, 10.1) is None      # within the burst gap
+    assert bot._qte_recovery_shot(p, live, flat, snap, 10.4) is not None  # second shot
+    assert bot._qte_recovery_shot(p, live, flat, snap, 10.8) is not None  # third shot
+    assert bot.qte_shots_owed == 0 and bot._qte_recovery_shot(p, live, flat, snap, 11.2) is None
 
 
 def test_the_combo_mandate_turns_a_lapsing_chain_into_a_quick_shot():
@@ -1005,6 +1006,7 @@ def test_the_combo_mandate_turns_a_lapsing_chain_into_a_quick_shot():
     assert bot._combo_mandate_on(p, live, flat) is True
     bot._combo_hot_now = True
     bot.doing = 'bonus'
+    bot._quick_shot_target = lambda *a, **k: live[0]          # the ray is on the enemy
     out = bot._combo_guard(p, live, flat, snap, 5.0)
     assert out == {'hold': ('zl', 'zr')} and bot.doing == 'quick_shot'
     assert bot.stats['combo_quick_shots'] == 1
@@ -1016,6 +1018,23 @@ def test_the_combo_mandate_turns_a_lapsing_chain_into_a_quick_shot():
     assert chased == {'hold': ('lup',)} and bot.stats['combo_guard_chases'] == 1
     # No enemy near: the mandate is not in force and the detour stands.
     assert bot._combo_mandate_on(p, [], flat) is False
+
+
+def test_the_combo_mandate_never_fires_a_quick_shot_at_the_ceiling():
+    # Operator 2026-11-13, screenshot: "Why is the bot just shooting up at the ceiling, missing the enemies right in
+    # front?" With no enemy under the camera/laser ray the guard turns to the enemy instead of pressing both triggers.
+    import math as _m
+    bot, clock, snap = brain(round_guest(enemies=((200., 0., 80., 100),)))
+    p = {'pos': (0., 0., 0.), 'ammo': 7, 'state': 0}
+    live = snap['enemies']
+    flat = lambda e: _m.hypot(e['pos'][0], e['pos'][2])
+    bot.stats.update(combo_left_s=1.2, combo_prev=9)
+    bot._combo_hot_now = True
+    bot.doing = 'aim'
+    bot._quick_shot_target = lambda *a, **k: None             # the ray is on the ceiling
+    out = bot._combo_guard(p, live, flat, snap, 5.0)
+    assert out is not None and 'zl' not in out.get('hold', ())
+    assert bot.stats['quick_shot_turns'] >= 1
 
 
 def test_kill_gap_max_records_the_five_second_mandate():

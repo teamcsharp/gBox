@@ -3306,7 +3306,7 @@ class Bot:
         elif last == DYING_HP and hp > DYING_HP:
             stats['dying_recoveries'] = int(stats.get('dying_recoveries', 0)) + 1
 
-    def _qte_recovery_shot(self, p, live, flat, now) -> dict | None:
+    def _qte_recovery_shot(self, p, live, flat, snap, now) -> dict | None:
         """Three quick shots right after a survived QTE, before the flee (operator 2026-11-13).
 
         The recovery episode already drops mines (qte_escape.Recovery -> re6_remote_control's QTE ring); this keeps the
@@ -3322,9 +3322,10 @@ class Bot:
             return None
         if p.get('ammo') == 0 or now - getattr(self, 'qte_shot_last', -1e9) < QTE_SHOT_GAP_S:
             return None
-        target = min((e for e in live if flat(e) <= QTE_SHOT_R), key=flat, default=None)
+        target = self._quick_shot_target(snap, live, flat, now, QTE_SHOT_R)
         if target is None:
-            return None
+            # The ray is not on a body: turn to the nearest close enemy and take the quick shot once it is.
+            return self._face_for_quick_shot(p, live, flat, snap, QTE_SHOT_R, now)
         self.qte_shots_owed -= 1
         self.qte_shot_last = now
         self.stats['qte_recovery_quick_shots'] = int(self.stats.get('qte_recovery_quick_shots', 0)) + 1
@@ -3332,6 +3333,40 @@ class Bot:
         return self._go("quick_shot", "qte_recovery_shot", {"hold": ("zl", "zr")},
                         f"QTE recovery: a quick shot at the one {flat(target):.0f} cm off "
                         f"({self.qte_shots_owed} left)")
+
+    def _quick_shot_target(self, snap, live, flat, now, radius):
+        """The enemy the camera/laser ray is actually on within `radius` (None: the ray is on the ceiling/air).
+
+        Operator 2026-11-13, screenshot: "Why is the bot just shooting up at the ceiling, missing the enemies right
+        in front?" The combo/QTE quick-shot actions press both triggers in whatever direction the camera last faced, so
+        after an off-floor/aimed-up tick they fired into the ceiling. A quick shot is now only taken when the live ray
+        is on a body; otherwise the bot turns to the enemy first (or chases).
+        """
+        lz = snap.get("laser")
+        cam = snap.get("camera")
+        if lz is not None and lz.get("up"):
+            origin, dot, source = tuple(lz["from"]), tuple(lz["at"]), "laser"
+        elif cam is not None and cam.get("pos") and cam.get("target"):
+            origin, dot, source = tuple(cam["pos"]), tuple(cam["target"]), "camera"
+        else:
+            return None
+        on = self._on_line(origin, dot, source, live, now)
+        if on is None or flat(on) > radius:
+            return None
+        return on
+
+    def _face_for_quick_shot(self, p, live, flat, snap, radius, now) -> dict | None:
+        """Turn the camera to the nearest close enemy (no fire): the quick shot follows once the ray is on him."""
+        target = next((e for e in sorted(live, key=flat) if flat(e) <= radius and self._sight(e, now)), None)
+        if target is None:
+            return None
+        cam = snap.get("camera") or {}
+        yaw = cam.get("yaw", p.get("rot") or 0.0)
+        err = wrap(heading(target["pos"][0] - p["pos"][0], target["pos"][2] - p["pos"][2]) - yaw)
+        self._gun_down()
+        self.stats['quick_shot_turns'] = int(self.stats.get('quick_shot_turns', 0)) + 1
+        return self._go("turn", "face_for_quick_shot", {"hold": self._yaw(err)},
+                        f"quick shot: turning {math.degrees(err):+.0f} deg to the one {flat(target):.0f} cm off")
 
     def _combo_mandate_on(self, p, live, flat) -> bool:
         """The combo mandate is in force: a kill must land now, so a non-kill detour (a bomb sprint included) waits.
@@ -3386,10 +3421,11 @@ class Bot:
         """
         if not getattr(self, '_combo_hot_now', False) or not live:
             return None
-        # Only a close enemy in the mesh's sight line gets the mandate's quick shot: live 2026-11-13 the 350 cm
-        # version fired 214 quick shots in a round and still lost the combo (most were outside the quick shot's reach
-        # and added no kill, only misses). 280 cm, a sight check and a 0.22 s gap keep the shots real.
-        target = next((e for e in sorted(live, key=flat) if flat(e) <= COMBO_QUICK_R and self._sight(e, now)), None)
+        # Only a close enemy UNDER THE LIVE RAY gets the mandate's quick shot: the operator's 2026-11-13 screenshot
+        # shows the bot firing into the ceiling while enemies stand in front (the quick-shot action presses both
+        # triggers in whatever direction the camera last faced). 280 cm, a sight check, a ray check and a 0.22 s gap
+        # keep the shots real; with no one on the ray the bot turns to the nearest enemy instead of firing.
+        target = self._quick_shot_target(snap, live, flat, now, COMBO_QUICK_R)
         if target is not None and p.get('ammo') != 0 and now - getattr(self, '_combo_quick_at', -1e9) >= COMBO_QUICK_GAP_S:
             self._combo_quick_at = now
             self.stats['combo_quick_shots'] = int(self.stats.get('combo_quick_shots', 0)) + 1
@@ -3398,6 +3434,9 @@ class Bot:
                             f"combo mandate: a quick shot at the one {flat(target):.0f} cm off")
         if self.doing not in COMBO_GUARD_DOINGS and self.doing not in ("aim", "raise"):
             return None
+        face = self._face_for_quick_shot(p, live, flat, snap, COMBO_QUICK_R, now)
+        if face is not None:
+            return face
         chase = self._pursue(p, snap, now)
         if chase is None:
             return None
@@ -4159,7 +4198,7 @@ class Bot:
             return self._go("held", "break_free", {"hold": WIGGLE[self.wiggle % len(WIGGLE)]},
                             f"held (action {state}): B mashed, the stick round")
         self.in_hold = False
-        qte_shot = self._qte_recovery_shot(p, live, flat, now)
+        qte_shot = self._qte_recovery_shot(p, live, flat, snap, now)
         if qte_shot is not None:
             return qte_shot
         self._combo_hot_now = self._combo_mandate_on(p, live, flat)
