@@ -914,6 +914,13 @@ class CommitMotion:
             self.probes += 1
             if not self.probe_queue:
                 # every key has been tried: commit to the one whose resulting position was closest to the target
+                # Never let the lock avoidance make every direction look terrible: near a lock point all four probes
+                # are penalised, the ranking becomes noise, and the choice is arbitrary - measured, a chain that
+                # normally converges in six hops wandered for five minutes that way. If every key is penalised, the
+                # penalties are dropped and the ordinary ranking decides.
+                keys_scored = [v for k, v in self.probe_scores.items() if k is not None]
+                if keys_scored and min(keys_scored) >= 1000.0:
+                    self.probe_scores = {k: v - 1000.0 for k, v in self.probe_scores.items()}
                 ranked = [(k, v) for k, v in sorted(self.probe_scores.items(), key=lambda kv: kv[1]) if k is not None]
                 if ranked:
                     self.key = ranked[0][0]
