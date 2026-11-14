@@ -1686,3 +1686,47 @@ combo-never-lost mandate is still not met; S-rank/five stars are not achieved or
 
 State: MercMode on lilspark started into RE6 (session fc09a5c0), queue `[]`, Hermes `enabled/available true`,
 deployed `940556532`, switch suite 277 pass.
+
+### Round 37: the operator's combat contract, implemented end-to-end and partly verified live
+
+Operator messages this round (verbatim intent): "if they raise their gun, they need to fire off at least twenty bullets in
+a scatter shot"; "if anyone is close to them, they need to be dispatching them with magnums and shotguns"; "if they
+detect that the combo is going away, they need to start spamming grenades ... quick shots ... blasting ... make a system
+for having the bot fully aware of the combo and how long it's lasting"; "flash on every hit / QTE and do randomly 1-5
+quickshots while dropping mines and then deploy them after getting distance"; "also if they get hit, alternate between a
+flash ring or a nitrogen round ring"; "every time the bot fells a QTE event, I want a report automatically placed";
+"the bot should always be relocating himself to avoid getting crowded"; "clear the blast immediately ... detonate the
+moment they are out of range"; plus the six strategy answers (combo wins over bonuses; ignore activators after the bank;
+clear blasts immediately; fire when the nav-mesh line is clear; heavy weapon at any close enemy; flash on hit/QTE).
+
+Shipped (tested, pushed, deployed `aaf6e3219`):
+- **Raised gun fire**: both raise gates fire at a close enemy (<=600 cm, clear nav-mesh line) instead of a bare gun
+  (raise_trigger_requests); a raise episode forces its 20-bullet scatter burst at the current aim target inside
+  RAISE_SPRAY_R (scatter_forced).
+- **Close weapons**: any enemy within 600 cm brings the shotgun out, magnum fallback (CROWD_GUN_N 1).
+- **Always moving**: aim/fire carries an 0.8 s side-step strafe; a 2.5 s / 120 cm spot stall among enemies returns a
+  relocate walk; a big wind-up within 650 cm is stepped out of (boss_step_outs).
+- **Combo keeper**: `_combo_urgent_now` watches the clock (3 s line); urgent ticks throw a grenade into the mob first
+  (combo_grenades; throw gaps relaxed only while urgent); guard urgency no longer depends on the mandate flag.
+- **Hit/QTE answer**: every damage event requests the native flash (engine now stamps `ring_flash_at`, so the flash
+  mine ring actually fires) plus a random 1-5 quick-shot burst; every other hit asks the remote lane for a nitrogen
+  (shell1304) ring, served off-tick (`nitrogen_rings`); the bot request tolerates the flash ring's 15 mines
+  (`max_remotes` caller-scoped), the operator click keeps the 4-mine tolerance.
+- **QTE**: a shown combat prompt key is tapped on the tick it appears; every failed QTE writes an investigation JSON to
+  `gbox-data/mercs/qte-failures/` (prompt/action/health/doing/near enemies/auto-QTE/ram counters).
+- **Blast**: cleared immediately (round-32's in-blast combo fight removed) - detonation follows the moment the
+  clearance rule passes; the ring admission gate for the launcher click now allows 4 outstanding remotes.
+
+**Live verification (`aaf6e3219`, RE6 04:57-04:59):** 65 kills, combo 43, **one** combo break, remote rings 2;
+**raise_trigger_requests 108** and scatter_forced 108 - the raised gun is firing continuously; relocations 2;
+nitrogen error none. Earlier live build in this round: 38 kills/combo 29 with 223 raise-fire triggers, 2 mine
+detonations, 4 combo breaks in ~3 min.
+
+**Not yet seen live / open:** hit_flashes, combo_grenades and nitrogen_rings were still 0 in the sampled windows (no
+damage event or no grenade/RAM grant lined up); QTE failure reports are 0 because no QTE failed (qte_failed 0); the
+latest window's mine detonations were 0 at the sample end. Three tests in `test_mercs_remote_mines.py` remain
+pre-existing red (flash/surround ring expectations from another lane's engine drift). S-rank/five stars still not
+achieved or claimed.
+
+State: MercMode on lilspark running RE6 (`1eb0948d`), queue `[]`, Hermes `enabled/available true`, deployed
+`aaf6e3219`, bot suites 350 + shell 69 pass.
