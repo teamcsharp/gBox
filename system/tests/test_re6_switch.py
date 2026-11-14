@@ -1069,6 +1069,37 @@ def test_no_quick_shot_turn_beyond_75_deg_and_a_kick_at_arm_reach():
     assert out == {"tap": "zr"} and bot2.stats["quick_shot_melee"] == 1
 
 
+def test_a_small_blast_shortfall_does_not_override_a_running_out_combo():
+    # Live 2026-11-14 01:55: "bomb clearance 952/1150 cm: out of the blast before anything else" broke the chain.
+    import math as _m
+    bot, clock, snap = brain(round_guest(enemies=((0., 0., 400., 100),)))
+    live = snap["enemies"]
+    p = {"pos": (0., 0., 0.), "ammo": 7, "state": 0, "rot": 0.0}
+    flat = lambda e: _m.hypot(e["pos"][0], e["pos"][2])
+    bot.stats.update(mine_escape_required=True, mine_clearance_cm=952.0, mine_required_clearance_cm=1150.0,
+                     mine_remaining_s=3.0, combo_left_s=1.5, combo_prev=9)
+    assert bot._blast_retreat(p, live, snap, 3.0) is None
+    assert bot.stats["blast_combo_fights"] == 1
+    bot.stats.update(mine_clearance_cm=300.0)              # a big shortfall: out first, and the deadline is 0.8 s
+    bot.stats["mine_remaining_s"] = 0.8
+    out = bot._blast_retreat(p, live, snap, 3.5)
+    assert out is not None and bot.doing == "bomb_escape"
+
+
+def test_the_combo_guard_takes_over_a_stalled_periodic_quick_attack_wait():
+    import math as _m
+    bot, clock, snap = brain(round_guest(enemies=((0., 0., 300., 100),), cam_yaw=0.0))
+    p = {"pos": (0., 0., 0.), "ammo": 7, "state": 0, "rot": 0.0}
+    live = snap["enemies"]
+    flat = lambda e: _m.hypot(e["pos"][0], e["pos"][2])
+    bot.stats.update(combo_left_s=1.2, combo_prev=5, act="periodic_quick_wait")
+    bot._combo_hot_now = True
+    bot.doing = "quick_shot"
+    bot._quick_shot_target = lambda *a, **k: live[0]
+    out = bot._combo_guard(p, live, flat, snap, 9.0)
+    assert out == {"hold": ("zl", "zr")}
+
+
 def test_the_combo_guard_never_stands_still_when_pursuit_finds_no_route():
     # Live 2026-11-14: doing=raise for ~50 s with the combo lapsed; the guard now walks straight at the nearest.
     import math as _m

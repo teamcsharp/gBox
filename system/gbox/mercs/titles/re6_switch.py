@@ -3421,6 +3421,12 @@ class Bot:
             return None
         remaining = self.stats.get('mine_remaining_s')
         tight = (isinstance(remaining, (int, float)) and not isinstance(remaining, bool) and remaining <= 1.0)
+        left = self.stats.get('combo_left_s')
+        combo_low = (isinstance(left, (int, float)) and not isinstance(left, bool) and left <= COMBO_KEEP_S
+                     and (self.stats.get('combo_prev') or 0) > 0)
+        if not tight and combo_low and (need - clear) <= 700.0:
+            self.stats['blast_combo_fights'] = int(self.stats.get('blast_combo_fights', 0)) + 1
+            return None                                      # the chain first: the escape resumes after the kill
         if not tight and p.get('ammo') != 0:
             left = self.stats.get('combo_left_s')
             if isinstance(left, (int, float)) and not isinstance(left, bool) and left <= COMBO_BLAST_SHOT_S:
@@ -3546,7 +3552,8 @@ class Bot:
             self._gun_down()
             return self._go("quick_shot", "combo_quick_shot", {"hold": ("zl", "zr")},
                             f"combo mandate: a quick shot at the one {flat(target):.0f} cm off")
-        if self.doing not in COMBO_GUARD_DOINGS and self.doing not in ("aim", "raise"):
+        periodic_wait = (self.doing == "quick_shot" and self.stats.get("act") == "periodic_quick_wait")
+        if self.doing not in COMBO_GUARD_DOINGS and self.doing not in ("aim", "raise") and not periodic_wait:
             return None
         face = self._face_for_quick_shot(p, live, flat, snap, COMBO_QUICK_R, now)
         if face is not None:
