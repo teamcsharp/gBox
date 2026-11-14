@@ -5067,7 +5067,12 @@ class Bot:
         time_shot = self._time_bonus_shot(p, snap, now)      # a blue time crystal in range: shoot it, do not walk
         if time_shot is not None:
             return time_shot
-        ran = (None if (hot or (pressure and fight_mode) or not detours or self._bonus_wait(snap))
+        # "the bot meandered and didnt go find the enemies": with enemies alive somewhere else and none on his floor,
+        # the hunt outranks the capsule run (the bonus phase still wins when the floor is clear or the enemies are
+        # distant but on it - 'hot' already covers the close ones).
+        others_now = [e for e in snap.get("enemies") or () if (e.get("hp") or 0) > 0 and e.get("pos")]
+        hunt_elsewhere = bool(others_now) and not live
+        ran = (None if (hot or (pressure and fight_mode) or hunt_elsewhere or not detours or self._bonus_wait(snap))
                else self._bonus_run(p, live, flat, snap, now))
         if ran is not None:                                      # time bank first, even with a distant kill owed
             return ran
@@ -5082,11 +5087,14 @@ class Bot:
             return self._go("walk", "hazard_out", {"hold": self._stick(self._open_heading(p, live, self.hazard),
                                                                        cam["yaw"] if cam else p["rot"])},
                             "in a hazard: moving out")
+        others = [e for e in snap.get("enemies") or () if (e.get("hp") or 0) > 0 and e.get("pos")]
         if not live and not high:
-            taunt = self._taunt(p, live, flat, now) if detours else None
+            # Operator 2026-11-14: "the bot meandered and didn't go find the enemies." While any enemy lives anywhere
+            # in RAM the hunt outranks taunts and bonus pickups; only a truly empty stage idles/takes.
+            taunt = self._taunt(p, live, flat, now) if detours and not others else None
             if taunt is not None:
                 return taunt
-            took = self._bonus(p, live, flat, snap, now) if detours else None
+            took = self._bonus(p, live, flat, snap, now) if detours and not others else None
             if took is not None:
                 return took
             if self._mine_due(now) or self.bomb_phase in ("equip", "face", "aim", "throw", "thrown"):
@@ -5098,6 +5106,15 @@ class Bot:
             chase = self._pursue(p, snap, now)                   # none on his floor: after the stage's best one
             if chase is not None:
                 return chase
+            if others:
+                px, py, pz = p["pos"]
+                best = min(others, key=lambda e: math.dist((px, py, pz), e["pos"]))
+                heading_to = wrap(heading(best["pos"][0] - px, best["pos"][2] - pz))
+                cam_yaw = (snap.get("camera") or {}).get("yaw", p.get("rot") or 0.0)
+                self.stats["hunt_offlevel"] = int(self.stats.get("hunt_offlevel", 0)) + 1
+                return self._go("hunt", "hunt_offlevel", {"hold": self._stick(heading_to, cam_yaw)},
+                                f"no enemy on his floor: hunting the nearest alive one "
+                                f"{math.dist((px, py, pz), best['pos']):.0f} cm away")
             return self._go("no_foes", "idle", {"hold": ()}, "no zombie alive within reach")
         cam = snap.get("camera")
         yaw = cam["yaw"] if cam else p["rot"]                    # without the camera: the body's heading stands in
@@ -6461,23 +6478,18 @@ class Bot:
             self.stats["combo_best"] = max(self.stats["combo_best"], combo)
             if self.combo_prev > 0 and combo == 0 and any(flat(e) <= ENGAGE_R for e in live):
                 self.stats["combo_breaks"] += 1
+                # Operator 2026-11-14: "the combo should never be lost". Every real loss is attributed to the
+                # doing/act the bot was in (scalars: the PiP only carries scalars), so the next fix targets the
+                # actual cause instead of guessing.
+                tag = str(self.doing or self.stats.get("act") or "unknown")[:24].replace(" ", "_")
+                self.stats["combo_break_" + tag] = int(self.stats.get("combo_break_" + tag, 0)) + 1
+                self.stats["combo_break_last"] = tag
+                self.stats["combo_break_last_why"] = str(self.why or "")[:160]
             urgent = combo > 0 and isinstance(ct, (int, float)) and 0 < ct < COMBO_LOW_S
             if urgent and not self.combo_urgent:
                 self.stats["combo_pushes"] += 1
             self.combo_urgent = urgent
             self.combo_prev = combo
-        breaks = snap.get("combo_breaks")
-        if isinstance(breaks, int) and not isinstance(breaks, bool):
-            if getattr(self, "_combo_breaks_prev", None) is None:
-                self._combo_breaks_prev = breaks
-            elif breaks > self._combo_breaks_prev:
-                self._combo_breaks_prev = breaks
-                # Operator 2026-11-14: "the combo should never be lost". Attribute every loss to the doing/act the
-                # bot was in, as scalar counters the PiP can show (lists/dicts do not reach the telemetry scalars).
-                tag = str(self.doing or self.stats.get("act") or "unknown")[:24].replace(" ", "_")
-                self.stats["combo_break_" + tag] = int(self.stats.get("combo_break_" + tag, 0)) + 1
-                self.stats["combo_break_last"] = tag
-                self.stats["combo_break_last_why"] = str(self.why or "")[:160]
         k = snap.get("kills")
         if isinstance(k, int):
             if self._kill_n is None:

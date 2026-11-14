@@ -1020,19 +1020,35 @@ def test_the_combo_mandate_turns_a_lapsing_chain_into_a_quick_shot():
     assert bot._combo_mandate_on(p, [], flat) is False
 
 
+def test_an_enemy_on_another_floor_is_hunted_not_taunted_or_bonus_picked():
+    # Operator 2026-11-14: "the bot meandered and didnt go find the enemies."
+    import math as _m
+    bot, clock, snap = brain(round_guest(enemies=((0., 800., 2500., 100),)))     # alive, one floor up
+    snap.update(bonuses=[{"ptr": 9, "kind": "time", "pos": (0., 0., 500.)}], timer=180.)
+    bot.held = lambda p, now: False
+    acts = run(bot, snap, clock, 3)
+    assert bot.stats["act"] in ("hunt", "pursue", "walk") and bot.doing != "bonus"
+    assert bot.stats.get("hunt_offlevel", 0) >= 1 or bot.stats["act"] != "no_foes"
+
+
 def test_every_combo_break_is_attributed_to_the_doing_that_caused_it():
     # Operator 2026-11-14: "losing / resetting the combo is a waste of a match and is a serious fail condition" - the
     # live break counters now say which doing was responsible, so the next fix targets the real cause.
-    bot, clock, snap = brain(round_guest(enemies=()))
+    bot, clock, snap = brain(round_guest(enemies=((0., 0., 200., 100),)))
+    live = snap["enemies"]
+    flat = lambda e: 200.0
     bot.doing = "bonus"
     bot.why = "walking to a time capsule"
-    for value in (1, 1, 2):
-        snap.update(combo=0, combo_timer=0., combo_breaks=value, kills=0)
-        bot._combo_tick(snap, [], lambda e: 0., 10.0)
+    snap.update(combo=5, combo_timer=2.0, kills=0)
+    bot._combo_tick(snap, live, flat, 10.0)                  # combo running
+    snap.update(combo=0, combo_timer=0., kills=0)
+    bot._combo_tick(snap, live, flat, 10.5)                  # lapsed with one in reach: a real break
     assert bot.stats["combo_break_bonus"] == 1 and bot.stats["combo_break_last"] == "bonus"
     assert "time capsule" in bot.stats["combo_break_last_why"]
-    snap.update(combo=0, combo_timer=0., combo_breaks=3)
-    bot._combo_tick(snap, [], lambda e: 0., 10.0)
+    snap.update(combo=5, combo_timer=2.0)
+    bot._combo_tick(snap, live, flat, 11.0)
+    snap.update(combo=0, combo_timer=0.)
+    bot._combo_tick(snap, live, flat, 11.5)
     assert bot.stats["combo_break_bonus"] == 2
 
 
@@ -1619,7 +1635,9 @@ def test_with_none_on_his_floor_he_goes_after_the_stages_nearest_and_counts_the_
     acts = run(bot, snap, clock, 2)
     assert bot.stats["act"] == "pursue" and bot.stats["pursuits"] == 1 and bot.stats["census_alive"] == 1
     acts = run(bot, snap, clock, int(R.PURSUE_STUCK_S / 0.05) + 3)            # no progress: bounded back/side recovery
-    assert bot.stats["movement_blocks"] >= 1 and any({"lleft", "lright"} & set(a["hold"]) for a in acts)
+    assert bot.stats["movement_blocks"] >= 1
+    # the recovery is either the movement-safety side step or the new off-floor hunt walk (still after him)
+    assert any({"lleft", "lright"} & set(a["hold"]) for a in acts) or bot.stats.get("hunt_offlevel", 0) >= 1
     assert snap["enemies"][0]["ptr"] in bot._walk_skip
     snap["kills"] = (snap.get("kills") or 0) + 1                              # the kill before the lapse
     run(bot, snap, clock, 1)
