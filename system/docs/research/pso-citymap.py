@@ -34,12 +34,12 @@ OUT = pathlib.Path(r"D:\gBox\pso-ds\city-map.json")
 CELL = 2.5
 
 
-def decode(disc_path: pathlib.Path = DISC) -> dict:
+def decode(disc_path: pathlib.Path = DISC, rel: str = REL) -> dict:
     disc = GCDisc(str(disc_path))
     try:
         if disc._r(0, 8) != b"GPOE8P\0\x02":
             raise SystemExit(f"{disc_path} is not the 3OE2 disc image")
-        data = disc.read(REL)
+        data = disc.read(rel)
     finally:
         disc.f.close()
     digest = hashlib.sha256(data).hexdigest()
