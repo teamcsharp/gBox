@@ -302,3 +302,23 @@ worker run native F_INVENTORY on the game thread; during an area/loading transit
 inventory pointer. The watchdog has been stopped - every weapon gBox gives is already created at its PMT maximum, so
 the guard is only needed if the randomized rotation is re-enabled. The lesson: no high-frequency native polling
 against a live game; read-only RAM passes (status word, doors, position) are safe, native calls are not.
+
+## 15. Round 10 - T0 gate driver: town -> Forest, controller-only, counted
+
+The clean session after the round-9 recovery is in Pioneer 2, which is exactly where the mandate's first gate lives, so
+`pso-t0-trial.py` was written to prove it: the character must reach Forest 1 through the **Pioneer 2 warp pad** using
+only controller input (no dev warps, no memory writes), ten times.
+
+What the live session taught the driver:
+
+* The real pad is the `TObject` at world (360, 26); `TObjCityDoor_Warp` at (254, 25) is only the door marker.
+* The pad's destination menu needs **two A presses about a second apart** (first opens FOREST 1 / CAVE 1 with FOREST 1
+  highlighted, second confirms). One press only opens the menu; the earlier "pressing A did nothing" reading was that.
+* The Forest 1 return pad is a `TObject` at (12.1, -16.6); a single A returns to Pioneer 2 and plays the warp-out
+  effect. Forest arrival is near (-9.7, 22.8), town return near (285-360, 16-25) - close enough that the plaza railing
+  needs a detour only when starting far away: the town leg uses `(255,-5) -> (340,50) -> pad` when far and walks
+  straight to the pad when the return already put us in the pad plaza.
+
+Each verified leg records the floor register before/after, the player entity position and room, and the input count in
+`mandate/t0-trial.jsonl`; the run ends with `mandate/t0-receipt.json` (`controller_only: true`, `memory_writes: 0`,
+`dev_warps: 0`). First cycle verified live: town->forest floor 0->1 and forest->town floor 1->0.
