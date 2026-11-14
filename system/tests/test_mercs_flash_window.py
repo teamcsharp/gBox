@@ -141,12 +141,18 @@ def test_the_window_after_a_flash_urges_a_mine_then_fights(monkeypatch):
 
 
 # --- the flash ring under the same minute ----------------------------------------------------------------------------
-def test_a_flash_ring_waits_out_the_minute_and_starts_outside_his_reach():
+def test_a_flash_ring_waits_out_the_minute_and_a_launcher_ring_is_not_a_flash():
+    # Checkpoint D1: the one-a-minute clock holds a FLASH ring / an all-flash barrage. RE5's RING_KIND is the
+    # launcher round, which places its blasts at the kind's own floor away from the player - it is not a flash and
+    # must not be held by the flash minute (the kind was flash when this test was written; the launcher ring is the
+    # operator's 360 grenade-launcher blast).
     pol = G.policy(R)
     assert pol["inner_cm"] >= R.FLASH_PLACE_MIN_CM and pol["flash_gap_s"] == R.FLASH_MIN_GAP_S
     s = {"player": {"pos": (0.0, 0.0, 0.0)}, "enemies": [{"hp": 800, "pos": (50.0 * i, 0.0, 50.0)} for i in range(6)]}
     stats = {"native_flash_confirmed_at": time.time() - 5.0}
-    d = G.decide(s, stats, 100.0, pol)
+    flash_pol = dict(pol, kind="flash")
+    d = G.decide(s, stats, 100.0, flash_pol)
     assert not d["fire"] and "FLASH_MIN_GAP_S" in d["reason"]
     stats["native_flash_confirmed_at"] = time.time() - R.FLASH_MIN_GAP_S - 1.0
-    assert G.decide(s, stats, 100.0, pol)["fire"]
+    assert G.decide(s, stats, 100.0, flash_pol)["fire"]
+    assert G.decide(s, stats, 100.0, pol)["fire"] is True and pol.get("kind") != "flash"
