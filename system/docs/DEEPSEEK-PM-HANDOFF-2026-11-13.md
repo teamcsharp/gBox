@@ -1393,3 +1393,41 @@ mandate is not yet held); **bombs placed/detonated 0 in that round** (the remote
 switches (host contention from another lane), so round evidence is from a short window.
 
 State: RE6 playing (`bda65ac0`), queue `[]`, Hermes `enabled/available true`, deployed `b972f7878`.
+
+### Round 27: remote mines actually detonate (and the escape no longer pins the bot)
+
+Operator 2026-11-14: "I'm not seeing them detonate enough remote bombs"; the match strategy (mine every 10 s, kill
+every 4 s, combo never lost, pursue every enemy at any distance); and again the combo: "they're sitting around not
+attacking these enemies that surround them".
+
+**Diagnosis (live):** the remote-mine lane was placing rings fine (mine_ring_requests 9, mine_ring_bombs 120,
+rings_dropped 8, last ring 15 armed) but detonation never passed the clearance rule: the bot stood at 430 cm of the
+required 1200 with the deadline 7.5 s past (`mine_detonate_reason: "escape first: nearest actual bomb 430 cm; need
+1200 cm"`) and kept aiming. The wall/safety hook can only steer a WALKING action, so shot/aim ticks left him inside
+the blast forever.
+
+Shipped (`0c44fabfc`, `6cbae5d1e`, `5ebadc9fe`, `853a7d577`; latest deployed `853a7d577`):
+- `_blast_retreat`: inside the blast margin and either 500+ cm short or the five-second deadline within 2 s, the tick
+  returns a pure walk out BEFORE the QTE burst, quick shots and combat. (First build pinned him 40-60 cm from a ring
+  dropped at his feet: blast_retreats 558, one detonation.)
+- The retreat now follows `_escape_route` (navmesh A* to a floor point already clear of every known bomb) and
+  publishes `_escape_heading` so the safety hook follows the same route around railings; the greedy heading is only
+  the fallback.
+- Remote-mine cadence: the bot injects `stats['remote_mines'] = {drop_every_s: 10, drop_jitter_s: 1,
+  radius_cm: 600}` - the operator's ten-second cadence (the shipped 7.5+/-2.5 s default stays for the tests) and the
+  policy's widest ejection radius, so a ring dropped around him starts 600 cm from safety instead of 1000 (live: the
+  earlier 200 cm rings cost 40-90 s of fleeing per cycle; blast_retreats 882 in 4 minutes).
+- Tests: the hard retreat, the route heading, the escape-route change - switch suite 264 pass, bomb/blast subset 30.
+
+**Live evidence (build `6cbae5d1e`, 00:11-00:15):** with the A* retreat the clearance actually reached 1228/1232 cm and
+`mine_flag_detonations` fired twice; in the safe windows the kill count jumped 5 -> 38 and the combo 0 -> 33, then
+0 -> 22 at the next window. Before the fix the round logged ONE detonation in the same span.
+
+**Not verified / open, honestly:** the radius build (`853a7d577`) is deployed but could not be live-verified - the
+host stayed on PSO from another lane for every switch attempt in the last ~10 minutes. The combo still breaks while
+the bot retreats from a ring (live combo_breaks 4-6 per ~4 min in the earlier sample; kill_gap_over_5s 8-10) - the
+escape cycles eat kill windows even now; firing while retreating is the next design step. Three tests in
+`test_mercs_remote_mines.py` (flash-combo ring, surround ring, ring-then-detonate) were already red before this
+round's work (they do not involve the changed code paths) and need a look. PSO contention keeps stealing lilspark.
+
+State: MercMode rotating, queue `[]`, Hermes `enabled/available true`, deployed `853a7d577`.
