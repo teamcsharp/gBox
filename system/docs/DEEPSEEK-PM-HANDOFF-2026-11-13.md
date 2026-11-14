@@ -1847,3 +1847,33 @@ before the host went down; it is down with the host. S-rank is not achieved and 
 
 **Next round:** if the host is back, start RE6 and verify the c7e9afd03 1-hp survival and the 43a65c8c0 periodic mine
 ring; if not, keep the goal active and report the host outage.
+
+### Round 42: host still down; launch-failure backoff, green remote-mine suite, grab flash
+
+**lilspark (10.89.1.246) is still down** - ICMP only, ports 22/8765/623/161/5900/3389 all closed/refused. It has been
+~35+ min since the reboot; this is a hung shutdown/boot and needs a physical power-cycle. Nothing on the host can be
+started, deployed or sampled until then. No S-rank claim.
+
+Local/committed work while the host is down (all tested; the suite is now fully green):
+
+1. **MercMode launch-failure backoff** (`3105cb759`): `gbox/screensaver.py` now records
+   `mercmode_launch_backoff` per host - a failed/rejected/invalid launch boot (Eden `BootHung`, Vulkan/GPU OOM) pauses
+   that host's next launch exponentially: 120 s, 240 s, 480 s ... capped at 1800 s; a launch that reaches its session
+   clears the record. This is the direct prevention of the 2026-11-14 lilspark incident (repeated Eden boot retries
+   leaked GPU contexts: `dmesg NVRM ... NV_ERR_NO_MEMORY`, fuser showed stuck nvidia-device PIDs). Tests:
+   `test_launch_failure_backoff_is_exponential_and_capped`, `test_launch_backoff_active_reads_the_store`.
+2. **Remote-mine suite is green** (`81a969b89`): fixed the flash-combo/periodic stat placement regression in
+   `re6_remote_control.py` (`mine_flash_combos` had fallen inside the periodic branch) and updated the stale
+   `ring_now` fakes in `test_mercs_remote_mines.py` to accept the current `allow_existing` kwarg and the
+   `mine_ring_requests` counter. `pytest tests/test_mercs_remote_mines.py tests/test_re6_remote_travel.py
+   tests/test_re6_remote_landing.py` is fully green (the 3 long-standing red tests are fixed).
+3. **A grab gets the native flash on the tick it starts** (`23cfea1fc`): operator "flash on every hit / QTE" - the held
+   branch now calls `_respond_flash` before the mash/wiggle cycle (`held_flashes`, doing `flash`/`held_flash`). New
+   test `test_a_grab_gets_the_native_flash_on_the_tick_it_starts`. This should reduce the "held" combo breaks
+   (the 05:43 live sample attributed break to `held: the prompt's stick, round`).
+
+Suite: 457 passed across switch/mines/travel/landing/bonus/periodic/screensaver.
+
+Pending on host recovery: deploy 23cfea1fc (autodeploy will pick it up; manual deploy+restart once SSH is back), force
+RE6, and verify live: 1-hp survival (no "down at 1 health: staying down, no fight"), periodic mine ring
+(`mine_periodic_rings`), held flash (`held_flashes`), grenades (`combat_grenade_throws`), combo breaks/round outcome.
