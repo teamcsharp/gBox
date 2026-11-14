@@ -15,6 +15,9 @@ from ..native.re6_061d2a06 import shell_probe as S
 
 PACKET_OFFSET = 0x160  # Private 0x400-byte mailbox; dispatcher uses only through +0x108.
 SAFE_DISTANCE_CM = 601.0
+# The remote bombs allowed outstanding when a shell ring is admitted (an operator click on the launcher kinds);
+# the old rule demanded zero and refused the click through most of a round.
+SHELL_RING_MAX_REMOTES = 4
 INITIALIZE_WAIT_S = 0.75
 
 
@@ -158,8 +161,13 @@ def _no_owned_remotes(ctl, epoch):
         raise AllocationLost("player changed during shell probe bomb census")
     if not isinstance(units, list) or any(not isinstance(u, dict) for u in units):
         raise Unavailable("shell probe requires a fresh complete native bomb census")
-    if any(u.get('kind') == 'remote' for u in units):
-        raise Unavailable("shell probe waits for every native remote bomb to resolve")
+    remotes = sum(1 for u in units if u.get('kind') == 'remote')
+    if remotes > SHELL_RING_MAX_REMOTES:
+        # Operator 2026-11-14: clicking the Nitrogen chooser row while a few remote mines were still out was refused
+        # outright ("waits for every native remote bomb to resolve"). A small outstanding count is safe for the shell
+        # class - the ring is the only implementation of these kinds, so the click should fire instead of failing.
+        raise Unavailable(f"shell probe waits for the remote bombs to resolve ({remotes} outstanding; at most "
+                          f"{SHELL_RING_MAX_REMOTES} is safe for the shell class)")
 
 
 def probe_one(ctl, point, *, kind="shell1304", timeout_s=1.0, expected=None, allowed=None):

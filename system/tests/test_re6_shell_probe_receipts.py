@@ -138,10 +138,10 @@ def probe(monkeypatch):
     return m
 
 
-@pytest.mark.parametrize('units', [None, [None], [{'kind': 'remote', 'action': 'throw'}],
-                                 [{'kind': 'remote', 'action': 'setting'}],
-                                 [{'kind': 'remote', 'action': 'bomb'}]])
-def test_shell_probe_refuses_unknown_or_present_live_bombs_under_shared_lock(probe, monkeypatch, units):
+@pytest.mark.parametrize('units', [None, [None],
+                                 [{'kind': 'remote', 'action': 'throw'}] * 5,
+                                 [{'kind': 'remote', 'action': 'throw'}] * 6])
+def test_shell_probe_refuses_unknown_or_too_many_live_bombs_under_shared_lock(probe, monkeypatch, units):
     def census(ctl, base, player):
         assert ctl is probe and ctl.lock._is_owned()
         assert (base, player) == (probe.base, probe.player)
@@ -154,7 +154,7 @@ def test_shell_probe_refuses_unknown_or_present_live_bombs_under_shared_lock(pro
 
 
 def test_shell_probe_rereads_census_after_preparation_before_spawning(probe, monkeypatch):
-    samples = iter(([], [{'kind': 'remote', 'action': 'setting'}]))
+    samples = iter(([], [{'kind': 'remote', 'action': 'setting'}] * 5))     # five outstanding: over the ring's tolerance
     def census(ctl, *_):
         assert ctl.lock._is_owned()
         return next(samples)
