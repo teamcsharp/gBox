@@ -1271,3 +1271,41 @@ critical health and 4+ enemies are within 2 m (the 20:26 death was downed at 1 h
 race.
 
 State: MercMode RE6 playing, queue `[]`, Hermes `enabled/available true`, deployed `626ff7d49`.
+
+### Round 24: the combo mandate, the QTE recovery burst, and periodic quick attacks that can actually fire
+
+Operator 2026-11-13: "the absolute mandate for mercenaries mode, is the bot should never go five seconds without
+accruing a kill and keeping the combo going ... Never let the bot stop fighting and adding to the combo"; "i want the
+bot doing a quick attack at the intervals outlined here" (sidebar: enabled, 4 per burst, every 10 s); "in RE6, I want
+the bot reacting to QTE events by: auto flipping the flag ... succeed ... drop mines, perform 3 quick shots, flee
+while detonating them and firing quick shots".
+
+Shipped in `97ae8aacf` (deployed `97ae8aacf` and hot-reloaded live):
+- **Combo mandate**: `_combo_mandate_on` + a stronger `_combo_guard`. When an enemy is within COMBO_HOT_R (12 m) and
+  the combo clock is low (or no kill for COMBO_KEEP_S 3.2 s), the bot drops every non-kill detour - a bomb-escape
+  sprint included (`combo_over_bomb_sprints`) - and takes the fastest kill: a rapid quick shot inside COMBO_QUICK_R
+  (3.5 m, COMBO_QUICK_GAP_S 0.16), else a chase so the next decision is combat. `_bonus_run` yields while the mandate
+  is in force. New scalars: combo_mandate_s, combo_over_bomb_sprints, combo_quick_shots, combo_guard_chases,
+  kill_gap_last_s, kill_gap_max_s (the five-second mandate's own measurement).
+- **QTE recovery burst** (`_qte_recovery_shot`): after a survived QTE (the escape counter), three quick shots at
+  QTE_SHOT_GAP_S before the flee at the nearest enemy within QTE_SHOT_R; the mines already come from the QTE recovery
+  episode. New scalar: qte_recovery_quick_shots.
+- **Periodic quick attacks**: the safety design (measured contact, clear laser line, native quick-shot observation,
+  prompts/healing first) is kept, but its carryover tolerances were impossible in a live fight - 20 cm player / 30 cm
+  target movement in 0.25 s gave ONE armed burst with ZERO requests in a 530 s round (periodic_qa_bursts 1,
+  periodic_qa_expired 1). They are now PERIODIC_QA_MOVE_CM 140 / PERIODIC_QA_TARGET_CM 220 within
+  PERIODIC_QA_CONTACT_S 0.6, expiry 8 s, so the sidebar's 4 attacks every 10 s can land.
+- The operator's saved bot-logic (on, 4 per burst, every 10 s) was re-applied to the live module after the reload.
+
+Tests: QTE burst (3 shots, gap, done), combo mandate (quick shot inside reach, chase outside, no enemy = no
+mandate), kill-gap max, restored periodic safety suite with the live tolerances - 341 pass in the affected suites.
+
+**Live observation after the reload** (RE6 round): combo held at 33 with 1 break while sampled; `combo_quick_shots`
+4 (the mandate's quick shots fired), `combo_mandate_s` 0.5, `combo_over_bomb_sprints` set (a bomb sprint was
+pre-empted for the combo), `kill_gap_max_s` 15.37 (round start included - the five-second goal is not yet proven).
+`periodic_qa_remaining` exists (the method runs) but no burst has started yet in the sampled minutes: the start
+still needs measured contact plus a free gun action at the due moment - the next tuning target (the interval
+settings themselves are confirmed saved). No QTE occurred in the sample, so the three-shot burst is still to be
+observed live.
+
+State: MercMode RE6 playing, queue `[]`, Hermes `enabled/available true`, deployed `97ae8aacf`.
