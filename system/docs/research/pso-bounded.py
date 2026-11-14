@@ -392,7 +392,11 @@ def run(mode: str, args) -> int:
                     break
                 world.act(action, time.monotonic() + 2.0)
                 moved += 1
-                clock2.sleep(0.05)
+                # A probe's score is the distance from where it started to where the body ends up, so the body has to
+                # have finished moving before the next step call reads it. The hand-run loop that crossed the plaza
+                # waited 0.24 s; this runner waited 0.05 s and its chains missed by 200-250 units, which is the same
+                # measurement taken mid-stride.
+                clock2.sleep(0.22 if action.kind == "press" else 0.10)
             player = ((world.observe(player_only=True) or {}).get("player")) or {}
             here = (float(player.get("x") or 0), float(player.get("z") or 0))
             log(f"  hop {index + 1}/{len(points)} {tuple(round(v) for v in point)}: d={math.dist(here, point):.0f}"

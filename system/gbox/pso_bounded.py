@@ -512,6 +512,119 @@ class StepMotion:
         # doing it: from (269,64) with the heading facing west, the motion lunged west and a chain meant for (360,26)
         # finished 231 units away at (134,76). Turn effects are learned per key, because one tap can swing the camera
         # 80-175 degrees and the sign differs between sessions.
+        self.turn_tolerance = 25.0
+        self._last_error: float | None = None
+        self._last_turn_key: str | None = None
+
+    def landing(self, player: dict) -> tuple[float, float]:
+        """Where one attack step would put the character: 8.5 units along the camera heading."""
+        heading = math.radians(float(player.get("heading_deg") or 0.0))
+        return (float(player["x"]) + math.sin(heading) * self.step_units,
+                float(player["z"]) + math.cos(heading) * self.step_units)
+
+    def safe(self, point: tuple[float, float]) -> bool:
+        return all(math.dist(point, lock) > self.lock_radius for lock in self.lock_points)
+
+    @staticmethod
+    def bearing(player: dict, target: Iterable[float]) -> float:
+        dx = float(target[0]) - float(player["x"])
+        dz = float(target[1]) - float(player["z"])
+        return math.degrees(math.atan2(dx, dz)) % 360.0
+
+    def steer(self, player: dict, target: Iterable[float]) -> Action | None:
+        """Turn until the heading points at the target, hill-climbing on the heading error.
+
+        One direction press can swing the camera 120-180 degrees at some spots (measured in the Pioneer 2 spawn pocket:
+        24 -> 207 -> 27 -> 284 -> 117 on four consecutive taps), so a learned per-key delta is worthless there and the
+        only reliable loop is: measure the error, press the key that last helped, measure again, and reverse the key the
+        moment it stops helping.
+        """
+        heading = float(player.get("heading_deg") or 0.0)
+        want = self.bearing(player, target)
+        error = ((want - heading + 540.0) % 360.0) - 180.0
+        if abs(error) <= self.turn_tolerance:
+            self._last_error = None
+            self._last_turn_key = None
+            return None
+        if self._last_error is not None and self._last_turn_key is not None:
+            if abs(error) >= abs(self._last_error) - 3.0:      # the last turn did not help; go the other way
+                self._last_turn_key = "right" if self._last_turn_key == "left" else "left"
+        else:
+            self._last_turn_key = "left"
+        self._last_error = error
+        return press(self._last_turn_key, f"turn toward the aim ({error:+.0f} degrees off)")
+
+    def step(self, player: dict, target: Iterable[float], reason: str = "") -> Action | None:
+        here = (float(player["x"]), float(player["z"]))
+        aim = (float(target[0]), float(target[1]))
+        if math.dist(here, aim) <= self.arrive:
+            return None
+        # score the probe issued last tick from where it started to where the body actually is
+        if self.probe_key is not None and self.probe_from is not None:
+            gain = math.dist(self.probe_from, aim) - math.dist(here, aim)
+            if not self.safe(here):
+                gain -= 1000.0
+            self.scores[self.probe_key] = gain
+            self.probe_key = None
+            self.probe_from = None
+        if self.queue:
+            key = self.queue.pop(0)
+            self.probe_key, self.probe_from = key, here
+            return press(key, f"probe {key}{(' - ' + reason) if reason else ''}")
+        if self.scores:
+            best_key, best_gain = max(self.scores.items(), key=lambda kv: kv[1])
+            # never let the lock penalty make every direction look terrible; if it did, ignore the penalty
+            if best_gain <= -999.0:
+                best_key, best_gain = max(self.scores.items(), key=lambda kv: kv[1] + 1000.0)
+            self.scores = {}
+            if best_gain > self.min_gain:
+                self.steps += 1
+                self.turn_streak = 0
+                return press(best_key, f"move {best_key} (+{best_gain:.1f})")
+            self.turn_streak += 1
+            self.turns += 1
+            if self.turn_streak >= self.hold_every:
+                self.turn_streak = 0
+                self.holds += 1
+                return hold(best_key, 0.45, "hold out of a spot where nothing helped")
+            return press("left", "turn: nothing improved")
+        self.queue = list(self.keys)
+        key = self.queue.pop(0)
+        self.probe_key, self.probe_from = key, here
+        return press(key, f"probe {key}{(' - ' + reason) if reason else ''}")
+
+
+class StepMotion:
+    """Move with tap probes, and take an attack step when it is both useful and safe.
+
+    Measured: an attack steps the character ~8.5 units along the camera heading (heading 292.6 -> dx -8, dz +1; twenty
+    presses carried it 170 units where the tap walk covered 30 in the same time). It is the fastest way across open
+    ground, and its cost is that the lunge ignores walking collisions - which also means it can carry the character into
+    the geometry that locks it up. In Forest 1 room 8 it stopped dead at (604,-151), a position derived from 214
+    ledgers as a lock point, after six presses moved nothing and the heading stopped changing.
+
+    So a step is taken only when the landing point is clear of every known lock point by `lock_radius`; otherwise the
+    motion falls back to a probe tap, which is slow but safe.
+    """
+
+    def __init__(self, *, arrive: float = 10.0, step_units: float = 8.5, lock_points: Iterable | None = None,
+                 lock_radius: float = 16.0, keys: Iterable[str] = DIRECTIONS) -> None:
+        self.arrive = float(arrive)
+        self.step_units = float(step_units)
+        self.lock_points = [(float(p[0]), float(p[1])) for p in (lock_points or ())]
+        self.lock_radius = float(lock_radius)
+        self.keys = tuple(keys)
+        self.steps = 0
+        self.refused = 0
+        self._streak = 0
+        # The last stretch is ProbeMotion's job: cycling keys blindly walked away from the pad (a tolerance-2 approach
+        # ended 98 units out), while measuring each direction is the behaviour that closes within a few units.
+        self.fine = ProbeMotion(arrive=self.arrive, keys=self.keys, lock_points=self.lock_points,
+                                lock_radius=self.lock_radius)
+        # A step moves along the camera heading, so pointing that heading at the target is half the job. Nothing was
+        # doing it: from (269,64) with the heading facing west, the motion lunged west and a chain meant for (360,26)
+        # finished 231 units away at (134,76). Turn effects are learned per key, because one tap can swing the camera
+        # 80-175 degrees and the sign differs between sessions.
         self.turn_effect: dict[str, float] = {}
         self.turn_keys = ("left", "right")
         self._pending_turn: tuple[str, float] | None = None
@@ -564,7 +677,7 @@ class StepMotion:
         if distance <= self.arrive:
             return None
         turn = self.steer(player, target)
-        while turn is not None:
+        if turn is not None:
             return turn
         landing = self.landing(player)
         gain = distance - math.dist(landing, (tx, tz))
