@@ -387,6 +387,7 @@ def run(mode: str, args) -> int:
             points.append((float(x), float(z)))
         started = time.monotonic()
         moved = 0
+        still = 0
         for index, point in enumerate(points):
             deadline = time.monotonic() + float(args.per_hop)
             while time.monotonic() < deadline and time.monotonic() - started < float(args.seconds):
@@ -397,6 +398,11 @@ def run(mode: str, args) -> int:
                 action = motion.step({"x": here[0], "z": here[1], "heading_deg": player.get("heading_deg")},
                                      point, f"hop {index + 1}/{len(points)}")
                 if action is None:
+                    # The motion had nothing to say. Logging this separately matters: six consecutive hops at the same
+                    # position looked exactly like a game wedge in round 86, and the character moved 40 units on the
+                    # next run - they were empty hops, not a frozen body.
+                    log(f"  hop {index + 1}/{len(points)}: the motion returned no action at "
+                        f"({here[0]:.0f},{here[1]:.0f}) - ending the hop")
                     break
                 before = {"player": player, "floor": int.from_bytes(world.read(0x805D5FC0, 4), "big")}
                 result = world.act(action, time.monotonic() + 2.0)
