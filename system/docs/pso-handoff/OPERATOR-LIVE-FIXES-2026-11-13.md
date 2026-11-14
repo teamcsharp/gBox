@@ -278,3 +278,27 @@ Live this round: the planner vetoed (-200,805) and (0,605) as unreachable, redir
 crossed **40 -> 111 at (213.9, 818.0)** and **111 -> 50 at (339.1, 818.1)**, adding both doorways to the learned
 graph (7 crossings logged); the next frontier target is a never-crossed door in room 50 at (520,1105), 311 units
 away with a verified route.
+
+## 14. Round 9 - a native-call panic killed the guest; recovery to a clean boot
+
+Shortly after 00:03 the live game froze for good: all of MEM1 was static (1 changed word of 6.29M in a second), the
+Dolphin window kept a stale frame, and its GDB debug port (52764) no longer accepted connections. A Dolphin
+"Warning: Invalid read from 0x00000048, PC = 0x80101d4c" **panic** had appeared (PC inside the item/create code); it
+was dismissed with "Ignore for this session", but the guest CPU never advanced again - the emulator process stayed
+alive and busy, so no hotkey, pause/resume cycle (`win_suspend_emulation`, 77 threads) or in-emulator savestate load
+could restart it.
+
+The only working actuator left was the memory-write path, and re-importing savestates into the half-dead emulator
+kept landing on the same halted CPU. Recovery therefore relaunched: `launch_game` closes the stuck session, starts a
+fresh emulator, and `state_transfer op=import` restores a snapshot. `pso-relaunch-restore.py` scripts that flow
+(stop/relaunch -> import -> re-arm the Virtual Scape Doll -> report the player), and `pso-boot-restore.py` adds the
+"drive the boot menus until the player entity exists before importing" step. In the end the old snapshot states
+themselves re-froze shortly after import, so the session was taken to a **clean boot** with `pso-session.py restart
+--force`: player 68/68 HP in Pioneer 2, permanent Scape Doll re-armed, TSUMIKIRI J-SWORD +50 re-created through the
+max-grind give path, and the autoplay supervisor restarted.
+
+Suspected trigger and mitigation: the **grind watchdog polled `pso_controls op=list` every 2 s**, which makes the
+worker run native F_INVENTORY on the game thread; during an area/loading transition that call can hit a stale
+inventory pointer. The watchdog has been stopped - every weapon gBox gives is already created at its PMT maximum, so
+the guard is only needed if the randomized rotation is re-enabled. The lesson: no high-frequency native polling
+against a live game; read-only RAM passes (status word, doors, position) are safe, native calls are not.
