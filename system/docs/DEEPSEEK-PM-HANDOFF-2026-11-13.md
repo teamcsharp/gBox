@@ -1489,3 +1489,33 @@ the `blast_combo_shots`/`blast_combo_turns` counters before any further tuning.
 
 State: MercMode working through its rotation (RE4 playing when the round closed), queue `[]`, Hermes
 `enabled/available true`, deployed `6a1d8255f`.
+
+### Round 29b: the hunt must outrank the idle detours, and the combo-break hook was on a key that does not exist
+
+Operator follow-up after round 29's first build: "look at the last match that just played. the bot meandered and didnt
+go find the enemies."
+
+Two real defects found and fixed (`51b22a805`, deployed + restarted; on top of `6a1d8255f`):
+- **The combo-break attribution was dead code live**: it waited on a `combo_breaks` snapshot key that does not exist,
+  so `combo_break_*` stayed empty in a round that did break once. It now hooks the bot's OWN increment (the line that
+  counts a lapse with a zombie in reach) and records `combo_break_<doing>`, `combo_break_last`, its why. Test: a real
+  running-to-zero lapse with one in reach attributes the doing.
+- **Meandering with enemies alive elsewhere**: the phase-1 bonus gate won the decision even when every living enemy
+  was off his floor, and the no-enemy-on-floor branch ran taunts/bonus pickups before the hunt. `hunt_elsewhere` now
+  blocks the bonus run while any enemy lives off his floor, the taunt/bonus branch only runs when the round holds no
+  living enemy at all, and with no A* route the bot walks straight at the nearest alive one (`hunt_offlevel`) instead
+  of idling. Tests: an enemy one floor up is hunted, not taunted/bonus-picked; the pursuit-recovery test accepts the
+  hunt walk (294+ in switch+bonus).
+- Also (from `6a1d8255f`): the combo quick shot inside a blast retreat now allows >1 s deadline, COMBO_BLAST_SHOT_S
+  2.5, R 700, and quick-turns to the nearest when the ray is empty.
+
+**Live window that motivated this (build `6a1d8255f`, RE6 01:10-01:12):** 26 kills in ~2 minutes, combo_breaks 1,
+mine_flag_detonations 1, blast_retreats 550 ticks; `combo_break_*` and `blast_combo_shots` both 0 - the first was the
+dead hook fixed above, the second is still to be observed.
+
+**Not verified:** the `51b22a805` build's hunt fix and the repaired attribution have not been sampled in a live RE6
+round yet - after the restart the host alternated PSO/RE4 for every switch window (RE6 reached the title/loading
+screen once, never playing). The next RE6 window must read `combo_break_*`, `hunt_offlevel`/`pursuits`,
+`blast_combo_shots` before any further tuning.
+
+State: MercMode working through its rotation, queue `[]`, Hermes `enabled/available true`, deployed `51b22a805`.
