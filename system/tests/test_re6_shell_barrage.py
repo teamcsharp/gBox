@@ -76,3 +76,19 @@ def test_the_barrage_waits_for_each_arm_return_and_reports_zero_when_refused(rin
     out = P.barrage(ring, count=3, radius_cm=700., timeout_s=.05)
     assert out["spawned"] == 3 and out["armed"] == 0 and out["detonated"] == 0
     assert out["state"] == "uncertain" and "unverified" in out["reason"]
+
+
+def test_a_barrage_reports_the_nearby_ice_reactions_it_observed(ring, monkeypatch):
+    # The ring's evidence rule is the probe's: a NEW DmgIce/DeadIce transition with stable identity after the shells
+    # are spawned and armed. The baseline is read before the spawn so an already-iced enemy never counts.
+    ring.put(ring.action + 0x28, "B", 1)
+    baseline = [{"unit": 7, "generation": 1, "vtable": 2, "action": "cEm1000ActWait", "hp": 500}]
+    monkeypatch.setattr(P, "nearby_targets", lambda ctl, point: list(baseline))
+    monkeypatch.setattr(P, "ice_changes", lambda ctl, before: [
+        {"unit": 7, "generation": 1, "before": "cEm1000ActWait", "after": "cEm1000ActDmgIce",
+         "hp_before": 500, "hp_after": 125}])
+    out = P.barrage(ring, count=2, radius_cm=700., timeout_s=.05)
+    assert out["spawned"] == out["armed"] == 2
+    assert out["ice_observed"] == 1
+    assert out["ice_observations"][0]["after"] == "cEm1000ActDmgIce"
+    assert out["targets_before"][0]["unit"] == 7

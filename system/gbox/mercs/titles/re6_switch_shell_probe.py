@@ -322,6 +322,14 @@ def barrage(ctl, *, count=8, radius_cm=700.0, kind="shell1304", timeout_s=0.6, c
         px, py, pz = struct.unpack("<3f", ctl.rd(ctl.player + R.P_POS, 12))
         if not all(math.isfinite(v) for v in (px, py, pz)):
             raise Unavailable("player position is unavailable for the shell barrage")
+        # The ring's effect evidence: a bounded read-only baseline of nearby enemies before the shells are spawned, so
+        # a new DmgIce/DeadIce transition with stable identity can be reported per barrage (same evidence rule as the
+        # probe). A telemetry failure never blocks the native ring.
+        try:
+            baseline = nearby_targets(ctl, (px, py, pz))
+        except (Unavailable, OSError, ValueError, struct.error):
+            baseline = []
+        ice = []
         attached = False
         try:
             attached = True
@@ -377,6 +385,10 @@ def barrage(ctl, *, count=8, radius_cm=700.0, kind="shell1304", timeout_s=0.6, c
                         continue
                     row["emitted"] = int(bool(sample.get("emitted")))
                 time.sleep(0.01)
+            try:
+                ice = ice_changes(ctl, baseline)
+            except (Unavailable, OSError, ValueError, struct.error):
+                ice = []
         finally:
             if attached:
                 ctl.detach_completed()
@@ -388,6 +400,7 @@ def barrage(ctl, *, count=8, radius_cm=700.0, kind="shell1304", timeout_s=0.6, c
     return {"op": "shell_barrage", "kind": kind, "requested": count, "spawned": spawned, "armed": armed,
             "detonated": emitted, "verified": False, "state": state,
             "radius_cm": round(radius_cm, 1), "player_generation": ctl.generation, "ring": rows,
+            "targets_before": baseline, "ice_observations": ice, "ice_observed": len(ice),
             "reason": ("native shells spawned and armed; the blast emission and the ice reaction are unverified "
                        "research" if armed else
                        "native shells spawned but no arm was confirmed; unverified research, not replayed" if spawned
