@@ -278,7 +278,139 @@ left by the escapes, and the next run walked from `(300,-43)` through `(278,-20)
 and into the warp area — ending 48 units from the pad with 0 overruns and 0 failures. It has not reached the pad yet;
 that is where the next round starts.
 
-## 7. Reproduce
+## 8. Round 3 — speed, and the first verified switch→flag chain
+
+The operator asked for maximum speed. Measured, then fixed:
+
+| bottleneck | measured | fix | result |
+|---|---|---|---|
+| input path | `session_op` job **0.53–1.22 s**; app input queue **15–31 ms** | `SessionWorld` posts to `/api/sessions/{sid}/input` with the job path as fallback | 60× less latency per input |
+| emulator speed | 56 fps (0.9×) → **160 fps (2.7×)** with fast-forward | `session_op fast_forward {"on": true}` | 2.7× game time |
+| state read after input | **0.65–1.0 s** (the worker services the input pump first) | movement actions are measured by the *next* tick's read; interaction presses keep an immediate read | 1.0 → 0.17 s per tick |
+| budgets in ticks | 150 ticks = 150 s at 1/s, 30 s at 5/s | budgets are now **seconds** (`max_objective_s`, `max_no_close_s`) | behaviour independent of loop speed |
+| objective flip-flop | two doors swapping nearest re-ran A* over 90,986 cells every tick | the policy keeps its current objective while it is still a candidate of the same rank | 1 → 4.8 ticks/s |
+| room flicker | room flipped 10→11→10 nine times at a boundary, resetting every progress clock | a room only counts when it is held for two ticks | false progress removed |
+
+Measured after the fixes: **57 ticks in 12 s**, then **191 ticks in 40 s (4.8/s)** with 0 overruns and every ledger
+chain verified.
+
+**The warp worked.** From the city pad at `(360,26)`, one A press moved the character from floor 0 (room 20, 31
+entities) to **Forest 1 — floor 1, 91 entities**, with the stage-flag array still at all zeros:
+`sha256 1a0295f4…`, 18 groups, 0 bits. That is a clean arrival, no global writes, controller input only.
+
+**G3, part one: two switches pressed, two flags set.** In that clean session:
+
+| press | switch | distance | flag array sha256 | bits on floor 1 |
+|---|---|---|---|---|
+| `play-20261113-100018` seq 123 | `TObjDoorKey` at `80DB54C0` | 12.3 units | `1a0295f4…` → `c4e4b92f…` | **7** |
+| `play-20261113-101432` seq 140 | `TObjDoorKey` at `80DB5650` | 12.7 units | `c4e4b92f…` → `73bf9c70…` | 7, **6** |
+
+Read back from the live array: `group 1: set bits [6, 7]`, all other groups zero. Every one of those presses was
+controller input, and the verifier refused to call press 1 a success for two attempts — the flag write landed after
+the read, which is why `flag_wait_s` exists.
+
+**What is not done:** G3's last step, walking through the door those flags open and recording the room change. The
+character reached the room 10/11 boundary (the flicker above) but the door crossing is not yet captured; that is the
+first task of the next round, followed by G4 (enemy-gated door) and G5 (combo verification).
+
+## 9. Round 4 — the switch→flag link, read from the switch itself
+
+Round 3 proved two presses changed two bits. Round 4 closes the other half of that claim: **the switch carries its own
+flag index** at `+0xC8`, and it is exactly the bit that changed.
+
+| switch | `+0xC8` flag index | bit that changed | match |
+|---|---|---|---|
+| `TObjDoorKey` `80DB54C0` | **7** | floor 1, bit 7 | yes |
+| `TObjDoorKey` `80DB5650` | **6** | floor 1, bit 6 | yes |
+
+Read back live (`switch-flag-correlation-20261113-102305.json` in the ledger directory): the array holds exactly
+`[{group 1, index 6}, {group 1, index 7}]`, and those two switches declare those two indices. That is a controller
+press → a named switch → a declared flag index → that bit set, with the middle step read independently of the flag
+array. The same field gives the other switches their indices (30, 31, 32, 33, 8, 60, 61) and the energy barrier 10 —
+the map of what each one controls.
+
+**A doorway was crossed.** From `(-144, 276)` a walked path took the character through the door at
+`(-133.8, 271.7)` and the room settled **11 → 10** (three consecutive reads agree). What is *not* yet proven is that
+this door opened *because of* bits 6/7: plain `TObjDoor` actors carry no flag index (their `+0xC8` holds pointer-like
+data), so the door↔flag link must be made through gates that do — the `TLazerFenceSw` / laser-fence pairs. The crossing
+is recorded as a traversal, not yet as a linked-door transition.
+
+**Two bugs found and fixed by doing this:**
+
+* a verified switch was targeted again after ~60 s, because the "recently pressed" window compared a persisted
+  timestamp against a monotonic clock. Verification is now permanent for the session (`pressed` means done), which
+  stopped the bot walking 111 units back to a switch whose bit was already set;
+* a closed door is *wall* to the collision mesh, so the router goes around it even after its flag opens it. Doors are
+  now approached along a route to a point 18 units short and then walked through directly.
+
+**Still open:** long-range navigation. Measured on a 500-unit route: 138 ticks, a median 7.6 units per tick (the taps
+work), ~1,050 units of path for 105 units of net progress, and five room transitions back and forth.
+
+Three causes were found and fixed in this round, each measured:
+
+* the controller inferred a frame and trusted it. `HillClimbMotion` infers nothing: it credits the key that closed
+  distance and switches when one stops paying (tested against a world whose key mapping rotates 90° every three taps);
+* the route target changed every one or two taps, because waypoints are 12.5 units apart and a tap is 8. The follower
+  now looks four waypoints (~50 units) ahead so a measurement has time to mean something;
+* `A*` returned **None** across most of Forest 1, and the follower silently fell back to a straight line — the orbit.
+  The cause was snapping onto one of the grid's **isolated safe cells** (measured: component size 1). The follower now
+  snaps to the nearest cell with two or more safe neighbours, and the same route returns **545 waypoints** instead of
+  none.
+
+The live walk still oscillates between two areas ~90 units apart rather than closing, so route-following is not solved;
+the next step is to stop switching targets at all while a leg is in progress (advance only when the *current* target is
+reached, not when a "nearest" waypoint changes) and to measure the tapped distance against the route tangent.
+
+## 10. Round 6 — why it would not walk out of an open door
+
+The operator sent a screenshot: the character standing in a room with an open door ahead and the bot circling. Three
+measured causes, all fixed in this round.
+
+**1. The routing grid's margin was larger than the corridor.** The stored `forest-maps.json` fragments the map into
+components (measured: the cell nearest the character belonged to a component of size **1**), and re-eroding the disc
+mesh by 10 units makes the same mistake in a subtler way — the nearest grid cell to the character was **8.8–10.7 units
+away**, i.e. on the other side of a wall, so every route started across it and the follower orbited trying to reach it.
+`docs/research/pso-forestmap.py` rebuilds the grid from the owned disc and erodes by **5 units** (2 cells): nearest
+cell **1.8 units**, 87,265 safe cells, and a route to the far side of Forest 1 (588 waypoints). Eroding by 15 units
+disconnects the map entirely, so 5 is not a conservative choice — it is the usable one.
+
+**2. The anchors were closer together than a tap.** The follower resampled the route to 12-unit anchors and advanced
+within 5 units, while a tap is 8 units: the character could never land inside an anchor and ping-ponged across it
+(measured: stopped "5 units from the anchor"). Anchors are now **24 units apart with a 10-unit arrival radius** — two
+taps per anchor, one anchor consumed per arrival.
+
+**3. The planner cannot see an open door.** `+0xAC` (the native state) reads **0 for every door**, open or closed; only
+switches expose a linked flag (`+0xC8`: 7 and 6 here). The disc mesh also stores every door closed, so a doorway is
+solid in the static grid; `carve_doorways()` opens a passage in the grid at each gate so a route can cross a room
+boundary, and the door's actual state stays a runtime question.
+
+**Live result:** a walk from `(-146, 70)` went **232 units north and through the doorway at `(-133.8, 271.7)`**, room
+**10 → 11**, 70 ticks, 0 overruns, 0 failures, ending 5.9 units from its target. That is the first time the controller
+has left a room through a door on its own.
+
+**Doors are learned by attempting them** (round 7). Since no door exposes its state, the runner now records what
+happened: a crossing through a door's position marks it **open**, a no-close failure on it marks it **closed**, both in
+`door-state.json` and both backed by a ledger event. The policy then ranks a door known open **above any switch** (it
+leads on) and a door known closed out of the candidate list, so the bot stops walking past a known exit to reach a key
+three rooms away. Live proof of the learning loop:
+
+```
+crossed the doorway at (-133.8, 271.7): room 10 -> 11 after 7 ticks
+door 80DB57E0 marked open (room 10 -> 11, at 13 units)
+```
+
+Crossing detection needs **both** signals — the room changed *and* the character is within 15 units of the door — because
+the profile's `room` value flickers at boundaries with no movement at all (measured: room 10 → 5 in one tick, 215 units
+from the door).
+
+**The calibration was moving the character before every run.** Calibration taps are real input: eight taps displace the
+character up to ~60 units, so each run started somewhere other than where the last ended, sometimes against a wall. The
+result is cached per session for 15 minutes (`calibration-cache.json`) and reused, which also cuts the start-up cost
+from ~5 s to nothing.
+
+**Still open:** the door→flag map (which bit opens which door) still needs the test-only experiment, and the policy
+still ranks any unverified switch above "leave the room", so the bot will walk past an open exit if another key on the
+floor is unpressed.
 
 ```
 cd system
@@ -287,8 +419,476 @@ cd docs/research
 python pso-calibrate.py --samples 4 --batch 5                 # the primitive measurement
 python pso-session.py status                                  # session, player, stage-flag audit
 python pso-session.py restart --force                         # stop, launch, boot to a character
-python pso-bounded.py walk --to 498 -261 --seconds 45         # calibration + bounded walk
-python pso-bounded.py play --seconds 90                       # progression policy + switch verification
+python pso-bounded.py walk --to 360 26 --seconds 60 --map D:\gBox\pso-ds\city-map.json   # the city warp pad
+python pso-bounded.py play --seconds 45 --map D:\gBox\pso-ds\forest-maps.json --map-name forest01
+python pso-citymap.py --route 105,160 254,25                  # decode the city grid and route it
 ```
 
 Ledgers, fixtures and the flag audit are written to `D:\gBox\pso-ds\bounded\` (game-session data, never committed).
+
+
+## 11. Rounds 7-8 — operating gBox, and the operator's controller
+
+**gBox itself can hang, and the bot then has no channel at all.** Measured: seven `gBox.exe` processes, `/api/sessions`
+taking **10 s** (and timing out under a 3 s probe) while `/api/workers` answered in 2.5 s and the port stayed open. Every
+controller loop reads state and writes input through that API, so a stuck app looks exactly like a bot that "meanders in
+place": it is driving a dead channel.
+
+Restart recipe that worked (after killing every `gBox.exe` and the `gbox``\``venv` python processes, including
+`desktop_supervisor.py`, `desktop_local`, `serve --worker`, `gamepads --watch`, `audio_volume`, `winembed.py`):
+
+1. `python -P -m gbox.desktop_local --config C:\_tools\gBox\system\gbox.toml --port 18765 --name i9-NUC`
+2. `python -P -m gbox --config C:\_tools\gBox\system\gbox.toml serve --worker`
+
+The worker then refuses to start with *"Worker activation held: a delivered native launch still has an owned PID
+record; no emulator was stopped"* if `D:\gBox\runtime\gbox-running.json` records a live PID. **The emulator's process is
+named `gBox Dolphin`, not `Dolphin`** - a kill filter on `Dolphin` misses it, and the recorded PID stays alive. Kill
+`gBox Dolphin`, then the worker starts. After the restart the API answered in **0.08 s** (was 10 s), and a session
+launched and booted to the city in about two minutes with the stage-flag array at zero.
+
+**The operator's controller.** Dolphin's live config (`D:\gBox\runtime\dolphin\Dolphin-x64\User\Config\GCPadNew.ini`)
+binds `GCPad1` to `Device = XInput/0/Gamepad`. Polling both slots for 25 s: **slot 0 silent** (all zero), **slot 1 a
+resting stick drift** (`lx=1415, ly=749`) and no buttons. The bot's virtual pad does **not** appear in the XInput device
+list at all, so the bot has been driving through the adapter's keyboard path (which does move the character - verified
+again). That is the concrete answer to "why do I have to use the keyboard": the pad is not the device Dolphin reads, and
+the virtual pad that would have bridged it is absent.
+
+`docs/research/pso-controller.py` bridges it without touching Dolphin's config: it reads the operator's pad through
+gBox's own XInput binding at 60 Hz, forwards the key changes into the session's normal input path, and **records the
+demonstration while it does** - every input edge and the player position at ~8 Hz, written as `demo-<stamp>.jsonl` plus
+a simplified waypoint route. Its first version latched onto a resting stick because raw XInput axes (-32768..32767) were
+compared against a normalised 0.55 deadzone; it now requires a **button press** to identify the pad and normalises the
+axes.
+
+
+
+## 12. Why the taught route does not transfer: the keys move every load
+
+This is the answer to the operator's central complaint ("I have taught you fifty times and you meander when I hand you
+the controls"). The level's **geometry** is stable but the **switch and door-key placements are re-randomised on every
+load**. Measured between the session the operator demonstrated in and a fresh one, comparing every gate by class and
+rounded position (`layout-compare-20261113-113739.json` in the ledger directory):
+
+| element | same position in both loads | only in the old load | only in the new load |
+|---|---|---|---|
+| doors (`TObjDoor`) | 5 | 0 | 4 |
+| switches (`TObjDoorKey`, `TLazerFenceSw`) | **2 of 9** | **7** | **4** |
+
+The only switches that stayed put were two laser-fence switches (`(-400, 541)` and `(592, -163)`). Every door key moved.
+So a demonstrated route that says *"press the key at (-127, 71), then walk through the door at (-134, 272)"* cannot be
+replayed on the next load: **there is no key at (-127, 71) any more** - the keys are at (-190, -435) or (567, -311) in
+that load. The bot walks to where the previous load's key was, finds nothing, re-plans, and wanders. It is not
+mis-executing the demonstrated route; it is executing a route for a different level.
+
+What that requires, and what this round started:
+
+* **a search behaviour** - sweep the current room's safe cells instead of walking to the nearest switch within 400 units;
+* **layout fingerprints** - hash the loaded room's gate positions and key the learned knowledge on the variant, so a
+  repeat load is recognised instead of re-searched;
+* **the operator's own demonstrations as the route source**, recorded through `pso-controller.py` (which also writes
+  the operator flag so the bot stands down while they drive).
+
+
+
+## 13. The gate did not open, and a clock bug that stopped the bot
+
+**A switch -> flag chain does not mean switch -> gate.** With the operator's pad relayed in, they walked to the laser-fence
+switch at `(592, -163)` and pressed it; the stage-flag array went from all zero to **bit 30**, and that switch's own
+`+0xC8` is **30**. The fence it presumably opens, `TObjLazerFenceNorm 80DB3ED0` at `(498, -261)`, was then walked into
+from 30 units away: the character closed to **4 units and stopped there** for nine seconds while the route passed
+through it. The fence is still solid. So the flag bit is real, the gate mapping is not established - and the fence's own
+`+0xC8` is `29328` (not a 0..255 flag index), so the gate does not declare which flag opens it.
+
+**A clock bug had been silently disarming the bot.** `OperatorGuard.active()` compared the flag **file mtime** (a wall-clock
+epoch, ~1.8e9) against the **monotonic** tick clock (~1e6 seconds since boot). The difference is always hugely negative,
+so *any* leftover `operator-playing.flag` read as fresh forever: one 141-second-old flag made a whole run report
+"operator owns the pad" on all 265 ticks with zero actions taken. It now uses `time.time()` for the file and a test
+pins it (fresh flag = hands off, 300-second-old flag = dead relay).
+
+Gate carving is now wired into the runner: every gate the session reports gets a grid passage (`--carve`, radius 8
+units), so a route can cross a doorway instead of going around the room. The fence walk above used it - the route did
+pass through the fence's cells, which is how the character got to 4 units of it.
+
+
+
+## 14. Replaying a demonstration, and a lock that outlived its runner
+
+`walk --route-file <demo.jsonl>` replays a recorded trace verbatim: `TraceRouter` returns the trace's waypoints from
+the one nearest the character, so the follower walks the same line the operator walked - no collision grid, no A*, no
+door carving. With `--to` now optional in that mode, the run's target is the trace's own end point. Live check: the
+trace from the operator's latest session loaded, produced its waypoints and the run reported the trace's end as its
+target (`ending at (518.6, -330.2)`); it arrived in one tick because the character was already standing there - the trace
+is mostly stationary samples, which is exactly what the recorder is for once the operator walks a line.
+
+The runner's one-at-a-time lock now records its **pid**: a lock whose process is gone is taken over (`os.kill(pid, 0)` is
+a query only on Windows), and a lock with no recorded pid - every lock written before this change - is taken over with
+a log line instead of blocking forever. Two crashed runs had each left a lock that a later run then refused to start
+behind.
+
+
+
+## 15. G3 closed: a door key press opened a door, and the character walked through it
+
+The gate chain is now proven end to end in **normal play** - the switch press is the only input, no RAM write reaches
+the flag array except through the game's own handler, and both halves are ledger events:
+
+| step | evidence | ledger |
+|---|---|---|
+| the key is at `(566.6, -311.2)`, class `TObjDoorKey`, `+0xC8` flag index **9** | `read_memory` of the actor, twice | - |
+| the bot pressed it at **12.7 units** and the flag array changed `c4de2424dc…` -> `9b2f92cb46…` (bit 9 added) | tick seq 123, `flag_access` on, `delta.stage_flags` differ | `play-20261113-115117.jsonl` |
+| the door `80DADA50` at `(517.8, -349.5)` **opened**: the character walked through it, room **8 -> 4** | crossing at 15 units, both signals (room change + proximity) | `walk-20261113-115223.jsonl` |
+
+Before the key press the same door had stopped the character: an earlier walk ended **20.8 units short** after 204 ticks
+of pushing at it. After the key press the crossing took 180 ticks and ended with `door 80DADA50 marked open`.
+
+That closes **G3** as the mandate defines it: observed `pre-state -> controller input -> post-state`, persistent evidence,
+bounded actions, and the gate opened by an in-game press rather than by a flag write. The flag bit that the press set is
+the switch's own declared index (`+0xC8` = 9), which is the same rule measured on three other switches (`+0xC8` 6, 7 and
+30, each matching the bit that changed).
+
+The laser fence at `(498, -261)` is **not** closed by this: the switch at `(592, -163)` set bit 30, and the character did
+cross the fence's latitude in `play-20261113-115117.jsonl` - but the path went from `(489, -279)` to `(472, -249)`, around
+the fence's west end, so a crossing of the fence itself is not proven. It stays open as a question.
+
+
+
+## 16. The area offset: why rooms 4 and 8 were unmapped, and the offset that fixes them
+
+The collision mesh holds several areas' geometry in **one file frame**, while the game reports **world** coordinates.
+Each area differs from the file by a constant translation, so a route for room 4 was being computed from a point ~300
+units outside the mesh - which is what "no map coverage here" was measuring.
+
+The offset can be **solved from evidence already recorded**: every consecutive pair of player positions in the traces and
+ledgers is a step the character actually walked, so under the right translation both ends and the midpoint must land on
+walkable cells. Searching translations on a 5-unit lattice:
+
+| room | steps tested | offset | steps fully walkable |
+|---|---|---|---|
+| 4 | 112 | **(-450, 325)** | **100.0%** |
+| 8 | 136 | **(-450, 325)** | **99.3%** |
+| 10 | - | (0, 0) | (it is inside the file's frame already) |
+
+Rooms 4 and 8 share one translation, which is what makes it an **area** offset rather than a per-room curiosity. It is
+stored in `D:\gBox\pso-ds\area-offsets.json` and the runner looks it up by the current room, wraps the router in
+`OffsetRouter` (query into the file's frame, waypoints back out) and logs
+`room 4 sits at file offset (-450, 325): routing in the mesh's frame`.
+
+First offline check with the offset applied: room 4 now produces routes at all (before, every query snapped to a cell
+300 units away), e.g. `(575,-199) -> (470,-564)` in 178 waypoints / 552 units. The routes are longer than the straight
+line - the 5-unit grid erosion plus a translation that may be a cell or two off - so the offset is a first solution, not
+a finished one; a finer search on the (dx, dz) lattice is the next step.
+
+
+
+## 17. Three ways a stuck character was invisible, and one session that stopped taking input
+
+The room-4 walk kept ending in the same place: 298 taps, sixty seconds, and the character sat at `(604, -151)`. Three
+separate mechanisms were hiding it, and each is fixed:
+
+* **A settled room counted as progress even when nothing moved.** The room value at that spot alternates with a
+  two-tick period, which settles on every flip, so `_account` reported `progress "room"` every ten seconds and every
+  clock that should have fired stayed alive. It now requires `delta["moved"] >= 1` - a transition you did not walk to is
+  not progress.
+* **The watchdog only saw per-tick movement.** The character wobbled between `(604, -151)` and `(605, -144)` - seven
+  units over sixty seconds - and every individual tap "moved", so liveness was never in doubt. `Watchdog.observe` now
+  keeps a `stall_s` window of positions and calls it a stall when the window never leaves a `net_units` (8) circle:
+  moving but going nowhere is a stall.
+* **An anchor the body cannot reach was ground on until the run failed.** "Still 13 units away" for twenty seconds at a
+  grid cell inside the eroded margin. `RouteFollower` gives each anchor `anchor_patience` (8) ticks and then skips it.
+
+With those in place the same walk now reports `progress start` honestly and the stall verdict fires at tick 210.
+
+**The session then stopped accepting input entirely.** At `(604, -151)` every input had zero effect - direction taps,
+a 0.3 s hold, a turn, A, Start - and even the heading did not change, while `/api/sessions/{sid}/rpc` reads worked and
+the frame counter advanced normally (94016 -> 94035 -> 94054, ~32 fps). `send_input` is "supported", the session says
+`PLAYING`. Nothing in the worker log. The only recovery was a session restart (`pso-session.py restart --force`), after
+which a tap moved the character 8 units immediately. Cause unknown; candidates are the pad-takeover lease dropping agent
+input and a wedged virtual pad. It is written down here because a silent input drop makes everything else look like
+bad navigation.
+
+
+
+## 18. The "frozen character" was window focus
+
+Two sessions ended with a character that ignored **every** input - movement taps, a 0.3 s hold, a turn, A, B, Start -
+while the game itself ran normally (frame counter 94016 -> 94035 -> 94054, ~32 fps), reads worked, and the session
+reported `PLAYING` with `send_input` supported. Both times the only recovery was a session restart, and both times the
+restart "fixed" it, which made it look like a gBox fault.
+
+It is not. The bot's input goes through the app's input queue into the adapter's **keyboard** path, and Dolphin only
+accepts keyboard input while its window is foreground. The evidence: with the queue still wedged, the first thing tried
+was `SetForegroundWindow` on the emulator window (`Dolphin 2609 | JIT64 SC | Vulkan | HLE | Phantasy Star Online
+Episode I & II Plus (GPOE8P)`) - and the very next tap moved the character 6.4 units. The "frozen" spot at
+`(286.7, 537.0)` is now walkable: a 40 s run went from `(250,519)` to within 5.9 units of it in 96 ticks, moving the
+whole way.
+
+`SessionWorld.focus()` runs before **every** input batch: it finds the emulator window once (`Dolphin`/`Phantasy` in
+the title, not `python.exe`), restores it if minimised, and calls `SetForegroundWindow` when it is not already
+foreground. The adapter sets `Dolphin.Input.BackgroundInput`, but that covers the pad, not the keyboard. Losing focus
+was invisible from inside the bot: reads and the frame counter were healthy, only the effect of input was missing - the
+operator's PowerShell windows taking focus did it.
+
+
+
+## 19. The stick is camera-relative, and that is why corners and routes fail
+
+Investigating another wedge - the character ignoring every direction at `(310, 540)` in Forest 1 for seventy seconds,
+three stall verdicts, three escapes, zero movement - produced the mechanism behind most of the wandering:
+
+**the input directions are camera-relative.** "Up" is not north; it is whichever way the camera faces. The calibration
+measures each key's world displacement **once**, in one camera orientation, and every later tap is interpreted in a
+frame that has since rotated - so a key that moved the character toward the target at calibration time can point into a
+wall a minute later. Evidence, at the wedge: every hold in every direction moved **0.0** for 70 s; one turn to heading
+359 and the *same* "up" hold moved **7 units**; four turn-then-hold cycles carried the character from `(310,540)` to
+`(317,569)`.
+
+That is one mechanism explaining three symptoms: characters that "orbit" a target, routes that stop closing, and
+corners where all four directions are dead. The escape now alternates a **turn** and a short **hold** in the new frame,
+instead of pushing four directions in the old one. The hill climber already adapts implicitly (it credits the key that
+moved the aim direction), which is why it is the most reliable motion in unmapped rooms.
+
+What is still missing is a **heading-aware model**: the calibration should be re-measured (or rotated by the heading
+delta) whenever the character turns, so the motion model's frame stays current instead of relying on per-tap learning.
+
+
+
+## 20. heading_deg is the camera, not the facing - the rotation was wrong and is reverted
+
+Round 22 added a heading rotation to the steering table, on the theory that the stick is camera-relative and the table
+should rotate with the character. Measuring the live keys showed the flaw in that: one tap moved the reported heading by
+**125-180 degrees**. That is not a character turning; it is the **follow camera snapping behind the character**, and
+gBox's own autoplay code already treats the same field as the camera (`self.cam = p["heading_deg"]`). The relative-tap
+motion's docstring had said it too - "the facing comes from the last tap, not from `heading_deg`".
+
+So rotating the calibrated table by that delta **double-counts the camera**. It is reverted: `WallFollowMotion` steers
+from the table as measured, with the reason written into the code. The consequence is bigger than one flag: **a
+calibrated direction table is only valid for the camera position it was measured in**, and the camera moves on every
+step - which is exactly why `HillClimbMotion` (per-tap learning, no table) is the default motion and the most reliable
+one in unmapped rooms.
+
+What the round did establish about precision: on a 100-unit hop the hill motion gets within **23 units** and orbits;
+it cannot close the last stretch because one tap is 8 units and the approach is against geometry. That is inside the
+melee attack range (30), so reaching an enemy does not require touching it - but combat itself is still unproven
+(6 attempts, 0 hits) because no enemy has been within range during a run.
+
+
+
+## 21. Combat works: first verified kill, and why it looked broken
+
+Six combo attempts with zero hits over several rounds looked like a broken attack. It was a **range** problem, not an
+attack problem. Chased into melee distance with the hill motion (which holds 23-27 units of precision), the first
+enemy kill followed directly:
+
+| step | measured |
+|---|---|
+| approach | hill motion from `(423,503)` to `(172,387)`, **27.3 units** from the enemy at `(154,366)` |
+| press A once | enemy hp 60, unchanged - a swing the game does not register as a hit |
+| press A three times | enemy hp **60 -> 39** (21 damage), enemy 12 units away |
+| six more presses | no change (the enemy had moved out of the swing arc) |
+| three more presses | **hp 0**, the enemy vanished from the entity table |
+
+Eleven attack presses killed a 60 hp `TObjEneBeast`. Attacks land **conditionally**: one hit per ~3-press combo, and a
+combo that starts while the enemy is outside the swing arc does nothing at all. The bot's earlier zero-hit runs never
+had an enemy inside 30 units - the wave objectives were being chosen at 200-400 units and the runs spent their whole
+budget walking.
+
+Killing it did not set a stage flag (`bits []`), so enemies are not the dependency for the floor's switches in Forest 1.
+
+**And the bot did it itself, in a normal-play run, with the ledger as evidence** (`play-20261113-132815.jsonl`):
+
+```
+seq 137  combo  enemies_delta [{'class': 'TObjEneBeast', 'delta': -21.0, 'died': False, 'hp': [60, 39], 'ptr': '80DBAC60'}]
+seq 141  combo  enemies_delta [{'class': 'TObjEneBeast', 'delta': -39.0, 'died': True,  'hp': [39, 0],  'ptr': '80DBAC60'}]
+seq 181  explore entity vanished ['80DBAC60']
+```
+
+Run stats: `combos {"attempts": 7, "hits": 2, "whiffs": 0}` - a 60 hp enemy killed in seven attack presses, with both
+HP drops and the death recorded as persistent evidence. The tuning that made it work is exactly what the manual
+measurement said: attack inside **20** units rather than 30, and do not abandon the target after two whiffs (the
+measured pattern is two misses then a hit, so `whiff_limit` is 6).
+
+
+
+## 22. The city crossing: short hops, not one long walk - and a savestate that does not load
+
+Two operational findings from a round spent mostly recovering.
+
+**The Pioneer 2 plaza is crossed with short hops, 6 for 6.** One long walk to the pad fails every time (the planner
+re-targets while the character fights the railing). A hand-written chain of waypoints, each a separate `CommitMotion`
+hop with a 45 s budget, converged every time:
+
+```
+(186,179) 81 -> 9 units      (209,164) 31 -> 8      (227,100) 71 -> 10
+(255,-5) 119 -> 11           (340,50) 93 -> 10      (360,26) 27 -> 11
+final (350,31) - ten units from the pad; A warped floor 0 -> 1
+```
+
+Short hops work because each one re-measures the key map from scratch: the camera-relative frame is learned again per
+hop, and a 100-unit hop is short enough that the frame does not drift inside it.
+
+**A three-day-old Dolphin savestate does not restore into a live session.** `load_state` on `GPOE8P.s01` (saved
+2026-11-10) reported success and left the game with **no player and no entities** - a dead state. It has to be
+save-then-load **within** one session to be useful, and the save job did not even produce a file on the attempt made
+here, so a session-level checkpoint remains unproven.
+
+**Hard wedges are the real blocker.** Three of them now: `(607,520)`, `(310,540)`, `(104,174)` and `(256,214)`. At the
+last one all four direction taps moved **0.6 units or less for 201 seconds** while the heading changed with every turn
+- the input arrives, the character is inside geometry and cannot leave. Neither turning, holding, attacking, the menu
+nor loading a state recovers it; only a session restart does. That is why this round kept restarting.
+
+
+
+## 23. Long treks work now; a closed door's alcove is a trap
+
+**The probe-enabled commit motion made long unmapped treks reliable.** Two runs in this round:
+
+| target | result |
+|---|---|
+| energy barrier `(221,493)` | 234 ticks, **0 stalls**, arrived 5.9 units |
+| door at `(53,290)` | 415 ticks, **0 stalls**, 420 units of travel |
+
+That is a change in kind: the same terrain produced 5-8 stalls per three minutes two rounds ago. The barrier itself is
+**passable** - the character walked straight through it (`z 490 -> 559`), so `TOBarrierEnergy01` at `(221,493)` does not
+block the player.
+
+**The door at `(53,290)` is closed**, and its alcove is a trap. Walking *into* it, the character's taps were clipped to
+1-3 units each (geometry eats most of the 8-unit step), then to 0.0 - a hard wedge, in front of a door it could not
+open, with the door key (`+0xC8` = 60) at `(201,-18)`, 330 units away. Holds made it worse, as they always do. The only
+exit was a session restart.
+
+The lesson for the motion: **taps clipped to 1-3 units mean "stop pushing toward the target"**. A wall gives 0; a pocket
+gives 1-3 and then a wedge. The motion should reverse out along the way it came when it sees that signature, instead of
+choosing the best gain (which points into the door). That is the next change.
+
+Restart-to-Forest is now a reliable 4-minute sequence: six hops through the plaza (all converged, 8-10 units) and `A` on
+the pad.
+
+
+
+## 24. Second gate chain completed: the key in room 10 opened the door that had blocked progress
+
+Five rounds were spent circling a pocket around `(-130, 0)` in Forest 1's room 10, and two doors were tested and found
+closed. The mistake was in the entity survey, not the game: there were **two door keys in room 10**, and one of them -
+`TObjDoorKey 80DB54D0` at `(-127, 71)` - was **42 units from the character** the whole time.
+
+| step | measured |
+|---|---|
+| key | `TObjDoorKey 80DB54D0` at `(-127,71)`, `+0xC8` low16 = **7** |
+| press | flags `[]` -> `[(1,7)]` after the second A press at 13 units |
+| door | `TObjDoor` at `(-193,100)`: the character went `(-177,101) -> (-256,113)`, straight through it |
+| after | `(-298,291)` room 10 - a part of the room it could not reach before (it had never passed x = -130) |
+
+That is the **second** complete switch -> flag -> gate chain in normal play, and the first one that unblocked the level
+rather than opening a side room. The rule holds again: the key's own `+0xC8` is the bit its press sets (7 here; 6, 8,
+9, 30-33, 60 and 61 belong to the other keys and switches on the floor).
+
+The whole floor's switches are now known:
+
+```
+TObjDoorKey (-127,71) index 7     TObjDoorKey (-95,214) index 6
+TObjDoorKey (277,7)   index 61    TObjDoorKey (-483,228) index 8
+TObjDoorKey (7,362)   index 60    TLazerFenceSw (-400,541) index 30
+TLazerFenceSw (-435,-482) index 31  TLazerFenceSw (-244,-337) index 32
+TLazerFenceSw (470,-152) index 33
+```
+
+
+
+## 25. The forest has floors: the west basin is 12 units below the doors
+
+After opening the room-10 door (bit 7) the character walked into an area it had never reached, and then could not get
+out of it. The reason is **height**, not walls:
+
+| entity | y |
+|---|---|
+| player, in the western area (room 9) | **8.9** |
+| door `(-134,272)` | 20.9 |
+| door `(-193,100)` | 22.9 |
+| capsule `(-133,150)` | 28.2 |
+| capsule `(-332,405)` | 0.5 |
+
+The doors that lead onward sit **12-13 units above** the character, and the area it fell into slopes further down (y
+decreasing from 10.2 to 6.9 during a short walk). A 2D motion cannot fix that: every key it can press moves it along
+the floor it is on, and the objective is above it. That is why the same walk oscillated between `(-264,98)` and
+`(-293,175)` with no stalls and no progress - it was not failing to steer, it was trying to walk up a cliff.
+
+**What the controller needs:** `y` in the objective test. A target more than a few units above or below the player is not
+reachable by walking, and the policy should prefer objectives at a similar height (or one door away), instead of
+measurably walking at a wall at the bottom of a basin.
+
+Also added this round: when no measured key points at the target (alignment < 0.5), the motion **turns** - clearing the
+learned map and re-dealing the four directions - instead of walking the least-bad way. Taps rotate the follow camera
+125-180 degrees, so a turn is how a new direction becomes available.
+
+
+
+## 26. Correction: the "dead input" was my probe, not the game
+
+Two rounds concluded that a session's input path dies after about nine minutes, based on `/api/sessions/{sid}/input`
+returning `[]`. That conclusion is **wrong**. The route has two handlers:
+
+| method | purpose | response |
+|---|---|---|
+| POST | queue input for the session | `{"queued": N}` |
+| GET | worker side: take and clear the queue | the queued events, `[]` when empty |
+
+My probe scripts passed the payload but left the HTTP method at its `GET` default, so they were **reading and clearing
+the queue** instead of writing to it - which is also why the character sometimes stopped moving right after a "probe":
+the probe had just drained whatever the runner had queued. The runner itself always POSTs (`SessionWorld._apply` passes
+`"POST"`), and a fresh session's POST returns `{"queued": 2}` and moves the character (heading 270 -> 8.2 on the first
+tap).
+
+What remains true: the hard freezes at `(604,-151)` and `(106,424)` were real - all four taps moved 0.0 and a turn
+changed the heading by 0.0 - and a restart fixed them. What is now in doubt is the *cause*: it is not a dying input
+queue. A GET that empties the queue under a running bot is a plausible contributor and was never controlled for.
+
+The `dead_input` counter added for the wrong reason is harmless (a POST never returns a list), but its comment now says
+what it actually detects: an answer no POST should ever give.
+
+
+
+## 27. Third gate chain: the key on the ledge opened the room-10 door
+
+| step | measured |
+|---|---|
+| key | `TObjDoorKey` at `(-95, 33.5, 214)`, `+0xC8` low16 = **6** |
+| press | flags `[7]` -> `[7, 6]`: bit 6 added by an A press at 18 units, on the ledge above the doors |
+| door | `TObjDoor` at `(-134, 272)`: **crossed** - "crossed the doorway at (-134,300): room 10 -> 11 after 56 ticks" |
+| after | room 11, 13 units from the crossing point, flags `[6]` (the bit-7 press was lost with the previous restart) |
+
+That is the third complete switch -> flag -> gate chain in normal play, and the second one this project has driven
+entirely from the bot's own decisions about where the key was.
+
+It also explains the ledge: the character had climbed to `y 33.2` (the doors sit at `y 20.9` and `22.9`), and the key
+that matters is on that ledge, not on the door's level. The height filter had been excluding the doors (12-20 units
+below) - correctly, while the character stood above them - and the way down was a walk of 50 units that crossed the
+door the moment it was open.
+
+
+
+## 28. The input fix, and the first verified world change
+
+The A button never reached the game. On Windows the app presses the names it is given straight onto the session's
+display; it does not translate gBox pad names first. Dolphin's keyboard map - which gBox itself writes - is
+`a->x, b->z, x->s, y->a`, so every `press("a")` was the GameCube **Y** button. Measured: `{"key": "x"}` produced an
+action state (1 -> 5) while `a`, `b`, `start` and `y` produced none. That is why no attack, switch press, container
+break or door confirmation ever worked.
+
+`SessionWorld` now translates pad names to those keys before posting, and the first live consequence is a **verified
+world change**:
+
+| | |
+|---|---|
+| before | 46 containers; `TObjContainerItem` ptr `80DB3590` at `(473.06, -6.62)` |
+| approach | walked to `(466, 8)` - 15 units from the box |
+| press | one `press("a")` |
+| after | 45 containers; `80DB3590` absent from the entity table |
+
+A second primitive came out of the same work: the attack **steps the character ~9 units in the camera heading**.
+Measured `heading 292.6 -> dx -8, dz +1`, repeatable. It carried the character through the channel at `z ~ 0` that every
+walk attempt hit (from `z -23` to `z +64` in ten presses, reaching 3 units from the `TObject` at `(534,36)`), so the
+lunge is a movement tool that bypasses walking collisions.
+
+The `TObject` at `(534,36)` is inert when pressed at 3 units, and two entities share that position - it is not a portal,
+lift or switch.
+

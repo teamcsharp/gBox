@@ -1,148 +1,98 @@
-"""Record the operator's own route through the game, then turn it into a mission the bot can walk.
+"""route - turn a recorded trace into a replayable route.
 
-    python pso_route.py record --session <sid> --seconds 600
-    python pso_route.py convert --file D:\\gBox\\pso-ds\\routes\\route-*.json
+`pso-controller.py` and `pso-record.py` write a trace while the operator plays (`demo-*.jsonl`, one sample per line with
+`x`, `z`, `room`, `keys`). The relay only writes its route JSON when it exits, so a trace is the durable form; this
+converter makes any trace immediately replayable:
 
-`record` samples the player's world position (`pso_ram`: actor + 0x38/0x3C/0x40 from the player slot table) and the operator's pad
-together at 8 Hz. `convert` simplifies the path to waypoints (Douglas-Peucker, in world units) and writes an autoplay mission whose
-steps are `navigate {to: [x, z]}` - the bot walking the same route the operator walked, which is what "the way I am playing" means
-for moving through a city.
+    python pso-route.py D:\\gBox\\pso-ds\\bounded\\demo-20261113-115318.jsonl
+    python pso-bounded.py walk --route-file D:\\gBox\\pso-ds\\bounded\\demo-20261113-115318.jsonl
+
+It reports the path length, the rooms crossed and the waypoint count, and writes `<trace>.route.json` next to the trace
+with the same shape the relay writes. A trace with several stops is split at the stops: a segment starts wherever the
+operator stood still for `--stop-seconds`, so one recording can hold several distinct routes (a key press here, a door
+there) instead of one blended line.
 """
 from __future__ import annotations
 
 import argparse
 import json
+import math
+import pathlib
 import sys
-import time
-from pathlib import Path
-
-sys.path.insert(0, r"C:\_tools\gBox\.tmp\imitate-wt\system")
-sys.path.insert(0, r"C:\_tools\gBox\.tmp\tools")
-
-from gbox import pso_ram                                          # noqa: E402
-from pso_boot import Plane, Reader                                # noqa: E402
-
-OUT = Path(r"D:\gBox\pso-ds\routes")
-GID = "436e0bb84d5337d1"
-BUTTONS = {0x1000: "a", 0x2000: "b", 0x4000: "x", 0x8000: "y", 0x0010: "start", 0x0020: "back",
-           0x0001: "dup", 0x0002: "ddown", 0x0004: "dleft", 0x0008: "dright"}
-OFF_X, OFF_Y, OFF_Z = 0x038, 0x03C, 0x040
 
 
-def pad_keys() -> frozenset:
-    from gbox import xinput
-    fn = xinput.load()
-    for slot in range(4):
-        st = xinput.read(fn, slot)
-        if st is None:
-            continue
-        g = st.gamepad
-        if g.buttons or abs(g.lx) > 7849 or abs(g.ly) > 7849:
-            keys = {name for bit, name in BUTTONS.items() if g.buttons & bit}
-            if abs(g.lx) > 7849:
-                keys.add("right" if g.lx > 0 else "left")
-            if abs(g.ly) > 7849:
-                keys.add("down" if g.ly > 0 else "up")
-            return frozenset(keys)
-    return frozenset()
+def simplify(points: list, spacing: float) -> list:
+    kept: list = []
+    for x, z in points:
+        if not kept or math.dist(kept[-1], (x, z)) >= spacing:
+            kept.append((round(x, 1), round(z, 1)))
+    return kept
 
 
-def actor(reader) -> int:
-    import struct
-    slots = struct.unpack(">4I", reader.read(pso_ram.PLAYER_SLOTS, 16))
-    return next((s for s in slots if s), 0)
+def segments(rows: list, stop_seconds: float, move_units: float) -> list:
+    """Split a trace wherever the operator stood still long enough to call it a stop."""
+    out, current, still_since = [], [], None
+    for row in rows:
+        point = (float(row["x"]), float(row["z"]))
+        if current and math.dist((current[-1]["x"], current[-1]["z"]), point) < move_units:
+            still_since = still_since if still_since is not None else float(row["t"])
+            if float(row["t"]) - still_since >= stop_seconds and len(current) > 1:
+                out.append(current)
+                current, still_since = [row], None
+                continue
+        else:
+            still_since = None
+        current.append(row)
+    if current:
+        out.append(current)
+    return [seg for seg in out if len(seg) > 1]
 
 
-def record(session: str, seconds: float, hz: float = 8.0) -> Path:
-    import struct
-    plane = Plane()
-    reader = Reader(plane, session)
-    rows = []
-    start = time.time()
-    actor_ptr, missing = 0, 0
-    print(f"recording route for {seconds:.0f}s at {hz:.0f} Hz", flush=True)
-    while time.time() - start < seconds:
-        now = time.time() - start
-        try:
-            if not actor_ptr or missing > 20:
-                actor_ptr = actor(reader)
-                missing = 0
-            if not actor_ptr:
-                missing += 1
-            else:
-                x, y, z = struct.unpack(">3f", reader.read(actor_ptr + OFF_X, 12))
-                rows.append({"t": round(now, 3), "x": round(x, 2), "y": round(y, 2), "z": round(z, 2),
-                             "floor": pso_ram.floor(reader), "keys": sorted(pad_keys())})
-                missing = 0
-        except Exception as exc:                                  # noqa: BLE001
-            missing += 1
-            if missing == 1:
-                print("read error:", exc, flush=True)
-        time.sleep(1 / hz)
-    OUT.mkdir(parents=True, exist_ok=True)
-    path = OUT / f"route-{time.strftime('%Y%m%d-%H%M%S')}.json"
-    path.write_text(json.dumps({"session": session, "rows": rows}, indent=0), encoding="utf-8")
-    print(f"{len(rows)} samples -> {path}")
-    return path
+def length(points: list) -> float:
+    return sum(math.dist(a, b) for a, b in zip(points, points[1:]))
 
 
-def _simplify(points: list[tuple[float, float]], tolerance: float) -> list[tuple[float, float]]:
-    """Douglas-Peucker on (x, z)."""
-    if len(points) < 3:
-        return points
-    (x1, z1), (x2, z2) = points[0], points[-1]
-    dx, dz = x2 - x1, z2 - z1
-    norm = (dx * dx + dz * dz) ** 0.5 or 1.0
-    worst, index = -1.0, 0
-    for i in range(1, len(points) - 1):
-        px, pz = points[i]
-        distance = abs(dz * (px - x1) - dx * (pz - z1)) / norm
-        if distance > worst:
-            worst, index = distance, i
-    if worst <= tolerance:
-        return [points[0], points[-1]]
-    left = _simplify(points[: index + 1], tolerance)
-    right = _simplify(points[index:], tolerance)
-    return left[:-1] + right
+def main(argv=None) -> int:
+    parser = argparse.ArgumentParser(description="convert a recorded trace into replayable routes")
+    parser.add_argument("trace", help="demo-*.jsonl written by pso-controller.py or pso-record.py")
+    parser.add_argument("--spacing", type=float, default=8.0)
+    parser.add_argument("--stop-seconds", type=float, default=8.0,
+                        help="standing still this long starts a new segment")
+    parser.add_argument("--move-units", type=float, default=1.5)
+    args = parser.parse_args(argv)
 
+    path = pathlib.Path(args.trace)
+    rows = [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
+    rows = [row for row in rows if row.get("x") is not None and row.get("t") is not None]
+    if len(rows) < 2:
+        print(f"{path.name}: {len(rows)} usable sample(s) - nothing to convert")
+        return 2
 
-def convert(path: Path, tolerance: float = 8.0) -> Path:
-    data = json.loads(path.read_text(encoding="utf-8"))
-    rows = [r for r in data.get("rows") or [] if r.get("x") is not None]
-    if len(rows) < 4:
-        raise SystemExit("route too short to convert")
-    points = [(r["x"], r["z"]) for r in rows]
-    waypoints = _simplify(points, tolerance)
-    moves = sum(1 for a, b in zip(rows, rows[1:]) if abs(a["x"] - b["x"]) + abs(a["z"] - b["z"]) > 1.0)
-    steps = [{"op": "navigate", "to": [round(x, 1), round(z, 1)], "radius": 12} for x, z in waypoints[1:]]
-    mission = {"name": f"route-{path.stem.split('-')[-1]}", "game_id": GID,
-               "objective": "Walk the route the operator walked (recorded from their own play)",
-               "policy": "learned-from-operator-route",
-               "provenance": {"source": str(path), "samples": len(rows), "moving_samples": moves,
-                              "waypoints": len(waypoints), "tolerance": tolerance},
-               "steps": steps}
-    out = path.with_name(path.stem + "-mission.json")
-    out.write_text(json.dumps(mission, indent=1), encoding="utf-8")
-    print(f"{len(waypoints)} waypoints from {len(rows)} samples -> {out}")
-    return out
-
-
-def main() -> int:
-    ap = argparse.ArgumentParser()
-    sub = ap.add_subparsers(dest="cmd", required=True)
-    rec = sub.add_parser("record")
-    rec.add_argument("--session", required=True)
-    rec.add_argument("--seconds", type=float, default=600)
-    con = sub.add_parser("convert")
-    con.add_argument("--file", required=True)
-    con.add_argument("--tolerance", type=float, default=8.0)
-    args = ap.parse_args()
-    if args.cmd == "record":
-        record(args.session, args.seconds)
-    else:
-        convert(Path(args.file), args.tolerance)
-    return 0
+    pieces = segments(rows, args.stop_seconds, args.move_units)
+    routes = []
+    for index, piece in enumerate(pieces):
+        points = [(float(row["x"]), float(row["z"])) for row in piece]
+        waypoints = simplify(points, args.spacing)
+        routes.append({"index": index, "samples": len(piece),
+                       "seconds": round(float(piece[-1]["t"]) - float(piece[0]["t"]), 1),
+                       "path_length": round(length(points), 1),
+                       "rooms": sorted({row["room"] for row in piece if row.get("room") is not None}),
+                       "start": [round(points[0][0], 1), round(points[0][1], 1)],
+                       "end": [round(points[-1][0], 1), round(points[-1][1], 1)],
+                       "waypoints": waypoints})
+    out = {"trace": path.name, "spacing": args.spacing, "segments": routes,
+           "path_length": round(sum(route["path_length"] for route in routes), 1),
+           "rooms": sorted({room for route in routes for room in route["rooms"]})}
+    target = path.with_suffix(".route.json")
+    target.write_text(json.dumps(out, indent=1), encoding="utf-8")
+    print(f"{path.name}: {len(rows)} samples, {len(routes)} segment(s), {out['path_length']:.0f} units, "
+          f"rooms {out['rooms']}")
+    for route in routes:
+        print(f"  segment {route['index']}: {route['samples']} samples, {route['path_length']:.0f} units, "
+              f"{route['start']} -> {route['end']}, {len(route['waypoints'])} waypoints")
+    print(f"wrote {target}")
+    return 0 if routes else 3
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    sys.exit(main())

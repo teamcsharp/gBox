@@ -30,6 +30,7 @@ from __future__ import annotations
 
 import json
 import math
+import os
 import time
 from collections import deque
 from dataclasses import dataclass
@@ -63,10 +64,14 @@ class Bounds:
     wait_s: float = 0.25         # a deliberate no-input tick (combo gap, operator grace)
     max_recoveries: int = 4      # watchdog recoveries before a failure fixture
     hard_progress_s: float = 300.0      # no room/HP/flag progress for this long is a failure, not a slow room
-    max_objective_ticks: int = 150      # ticks one objective may consume without progress before escalating
-    max_no_close_ticks: int = 40        # ticks a point objective may spend without getting measurably closer
+    max_objective_ticks: int = 150      # legacy tick bound, kept for callers that pass it
+    max_objective_s: float = 120.0      # seconds one objective may consume without progress before escalating
+    max_no_close_ticks: int = 40        # legacy tick bound, kept for callers that pass it
+    max_no_close_s: float = 20.0        # seconds a point objective may spend without getting measurably closer
     max_escapes: int = 3                # hold-based escapes tried before a no-close failure is reported
     max_switch_attempts: int = 3        # presses of one switch with no flag change before it is a reported failure
+    flag_wait_s: float = 0.6            # a press is applied asynchronously: poll the array this long for the change
+    full_read_every: int = 4            # ticks between full entity reads; the player is read every tick
 
 
 @dataclass(frozen=True)
@@ -159,9 +164,14 @@ class OperatorGuard:
         if self.flag is None:
             return False
         try:
-            return (now - self.flag.stat().st_mtime) < self.stale_s
+            # Wall clock for a file's mtime, never the caller's monotonic clock: `now` is seconds since boot (~1e6)
+            # while st_mtime is an epoch (~1.8e9), so `now - mtime` is hugely negative and a single leftover flag file
+            # then reads as fresh forever - the bot stood down for a whole run because of it (measured: flag age 141 s,
+            # still "operator owns the pad").
+            age = time.time() - self.flag.stat().st_mtime
         except OSError:
             return False
+        return age < self.stale_s
 
 
 @dataclass(frozen=True)
@@ -188,8 +198,13 @@ class Watchdog:
     """
 
     def __init__(self, *, movement_epsilon: float = 2.0, heading_epsilon: float = 10.0, stall_s: float = 20.0,
-                 max_recoveries: int = 4, hard_progress_s: float = 300.0) -> None:
+                 max_recoveries: int = 4, hard_progress_s: float = 300.0, net_units: float = 8.0) -> None:
         self.movement_epsilon = float(movement_epsilon)
+        # A character can move every tick and still go nowhere: measured at (604..605, -144..-151) it wobbled seven
+        # units for sixty seconds while 298 taps fired, and the per-tick movement test saw a live character the whole
+        # time. Net displacement over the stall window is the honest signal.
+        self.net_units = float(net_units)
+        self.window: list = []
         self.heading_epsilon = float(heading_epsilon)
         self.stall_s = float(stall_s)
         self.max_recoveries = int(max_recoveries)
@@ -210,7 +225,16 @@ class Watchdog:
         position = (float(player.get("x") or 0), float(player.get("z") or 0))
         heading = player.get("heading_deg")
         self.heading = None if heading is None else float(heading) % 360.0
+        self.window.append((now, position))
+        horizon = self.stall_s
+        while len(self.window) > 2 and now - self.window[0][0] > horizon:
+            self.window.pop(0)
+        net = 0.0
+        if len(self.window) > 1:
+            net = max(math.dist(a[1], b[1]) for a in self.window[:2] for b in self.window[-2:])
         moved = self.position is None or math.dist(self.position, position) > self.movement_epsilon
+        if net <= self.net_units and len(self.window) > 3 and now - self.window[0][0] >= horizon * 0.5:
+            moved = False                    # moving, but the window never leaves a net_units circle
         if moved:
             # Translation is the liveness signal. A rotation is not: every blocked tap in the Pioneer 2 plaza still
             # rotated the character by ~90 degrees, so counting rotation as liveness let a completely wedged character
@@ -247,12 +271,21 @@ class Watchdog:
         lands a second late), which is a defect for *movement* but exactly what an escape wants: a large, immediate
         displacement out of whatever geometry the small steps cannot leave.
         """
-        plan = (("down", "reverse out of the obstruction"),
-                ("left", "strafe away and probe"),
-                ("right", "strafe the other way and probe"),
-                ("up", "advance again after the sidestep"))
-        key, why = plan[min(self.recoveries, len(plan)) - 1]
-        return hold(key, 0.45, f"watchdog recovery {self.recoveries}/{self.max_recoveries}: {why}")
+        # **The stick is camera-relative**, so when the character is wedged every one of the four directions can point
+        # into the same wall - and a hold only pushes harder. Measured at (310,540) in Forest 1, heading 186 degrees:
+        # every hold moved 0.0 for seventy seconds; one turn to heading 359 and the same "up" hold moved 7 units, and
+        # four turn-then-hold cycles carried it from (310,540) to (317,569). So the escapes alternate: a turn, then a
+        # short push in the new frame.
+        # Taps, not holds, until the last resort. A hold travels 20-35 units (release latency) and every hard wedge in
+        # this project followed one: (607,520), (310,540), (104,174), (256,214) - all places where the character ended
+        # up inside geometry it could not leave, with all four directions dead. A tap is one step of ~8 units, which
+        # cannot push the body through a wall the way a sustained hold can.
+        plan = ("left", "up", "right", "left", "down", "right")
+        key = plan[min(self.recoveries, len(plan)) - 1]
+        if self.recoveries >= self.max_recoveries:
+            return hold(key, 0.30, f"watchdog recovery {self.recoveries}/{self.max_recoveries}: last resort, one hold")
+        return press(key, f"watchdog recovery {self.recoveries}/{self.max_recoveries}: tap {key} in turn with the "
+                          f"camera-relative frame (holds are what wedge the body inside geometry)")
 
     def exhausted(self) -> bool:
         return self.recoveries > self.max_recoveries
@@ -264,6 +297,15 @@ class Watchdog:
 def _unit(dx: float, dz: float) -> tuple:
     length = math.hypot(dx, dz)
     return (0.0, 0.0) if length < 1e-9 else (dx / length, dz / length)
+
+
+def _rotate_world(dx: float, dz: float, degrees: float) -> tuple:
+    """Rotate a world (x,z) vector by a heading delta, in the game's convention (0 = +z, 90 = +x)."""
+    length = math.hypot(dx, dz)
+    if length < 1e-9:
+        return (0.0, 0.0)
+    rad = math.atan2(dx, dz) + math.radians(degrees)
+    return (math.sin(rad) * length, math.cos(rad) * length)
 
 
 def _bearing(fx: float, fz: float, tx: float, tz: float) -> float:
@@ -369,6 +411,316 @@ def _bearing_degrees(a: tuple, b: tuple) -> float:
     return ((math.degrees(math.atan2(b[0], b[1])) - math.degrees(math.atan2(a[0], a[1])) + 540.0) % 360.0) - 180.0
 
 
+class ProbeMotion:
+    """Measure all four directions, then move the best one. The loop that actually crossed the plaza.
+
+    Measured head to head on the same route: this behaviour, written inline, gave hops of 12, 9, 12, 25, 22 and 52 units
+    and warped to the Forest; `CommitMotion(probe_every_move=True)` gave 187, 154, 120, 389, 479, 639 and 619 on the same
+    waypoints. The extra rules a committing motion carries - detour targets, slide counting, commit learning - interfere
+    with the probe cycle. This is deliberately the blunt version: four probe taps, move the key whose result was closest,
+    turn when none of them helped, and turn a hold every fourth time so the turning cannot livelock.
+    """
+
+    def __init__(self, *, arrive: float = 10.0, keys: Iterable[str] = DIRECTIONS, min_gain: float = 0.5,
+                 lock_points: Iterable | None = None, lock_radius: float = 12.0, hold_every: int = 4) -> None:
+        self.arrive = float(arrive)
+        self.keys = tuple(keys)
+        self.min_gain = float(min_gain)
+        self.lock_points = [(float(p[0]), float(p[1])) for p in (lock_points or ())]
+        self.lock_radius = float(lock_radius)
+        self.hold_every = int(hold_every)
+        self.queue: list[str] = []
+        self.scores: dict[str, float] = {}
+        self.probe_key: str | None = None
+        self.probe_from: tuple[float, float] | None = None
+        self.turn_streak = 0
+        self.steps = 0
+        self.turns = 0
+        self.holds = 0
+        self.last_sent: str | None = None
+        self.pending: Action | None = None
+
+    def safe(self, point: tuple[float, float]) -> bool:
+        return all(math.dist(point, lock) > self.lock_radius for lock in self.lock_points)
+
+    def _out(self, action: Action) -> Action:
+        """Never send the same direction key twice in a row: measured, a repeated key is ignored by the game (three
+        `up` presses moved the character once, then not again; alternating keys all worked). A dropped release leaves
+        the key latched, so the second down is a no-op - which silently swallowed the move that every probe cycle ends
+        with, because the best key is often the one just probed (`right` is last in the probe order).
+        """
+        if self.pending is not None:
+            action, self.pending = self.pending, None
+            self.last_sent = action.key if action.kind == "press" else None
+            return action
+        if action.kind == "press" and action.key == self.last_sent:
+            spacer = next(key for key in self.keys if key != action.key)
+            self.pending = action
+            self.last_sent = spacer
+            return press(spacer, f"spacer before repeating {action.key}")
+        self.last_sent = action.key if action.kind == "press" else None
+        return action
+
+    def step(self, player: dict, target: Iterable[float], reason: str = "") -> Action | None:
+        here = (float(player["x"]), float(player["z"]))
+        aim = (float(target[0]), float(target[1]))
+        if math.dist(here, aim) <= self.arrive:
+            return None
+        # score the probe issued last tick from where it started to where the body actually is
+        if self.probe_key is not None and self.probe_from is not None:
+            gain = math.dist(self.probe_from, aim) - math.dist(here, aim)
+            if not self.safe(here):
+                gain -= 1000.0
+            self.scores[self.probe_key] = gain
+            self.probe_key = None
+            self.probe_from = None
+        if self.queue:
+            key = self.queue.pop(0)
+            self.probe_key, self.probe_from = key, here
+            return self._out(press(key, f"probe {key}{(' - ' + reason) if reason else ''}"))
+        if self.scores:
+            best_key, best_gain = max(self.scores.items(), key=lambda kv: kv[1])
+            # never let the lock penalty make every direction look terrible; if it did, ignore the penalty
+            if best_gain <= -999.0:
+                best_key, best_gain = max(self.scores.items(), key=lambda kv: kv[1] + 1000.0)
+            self.scores = {}
+            if best_gain > self.min_gain:
+                self.steps += 1
+                self.turn_streak = 0
+                return self._out(press(best_key, f"move {best_key} (+{best_gain:.1f})"))
+            self.turn_streak += 1
+            self.turns += 1
+            if self.turn_streak >= self.hold_every:
+                self.turn_streak = 0
+                self.holds += 1
+                return self._out(hold(best_key, 0.45, "hold out of a spot where nothing helped"))
+            return self._out(press("left", "turn: nothing improved"))
+        self.queue = list(self.keys)
+        key = self.queue.pop(0)
+        self.probe_key, self.probe_from = key, here
+        return self._out(press(key, f"probe {key}{(' - ' + reason) if reason else ''}"))
+
+
+class StepMotion:
+    """Move with tap probes, and take an attack step when it is both useful and safe.
+
+    Measured: an attack steps the character ~8.5 units along the camera heading (heading 292.6 -> dx -8, dz +1; twenty
+    presses carried it 170 units where the tap walk covered 30 in the same time). It is the fastest way across open
+    ground, and its cost is that the lunge ignores walking collisions - which also means it can carry the character into
+    the geometry that locks it up. In Forest 1 room 8 it stopped dead at (604,-151), a position derived from 214
+    ledgers as a lock point, after six presses moved nothing and the heading stopped changing.
+
+    So a step is taken only when the landing point is clear of every known lock point by `lock_radius`; otherwise the
+    motion falls back to a probe tap, which is slow but safe.
+    """
+
+    def __init__(self, *, arrive: float = 10.0, step_units: float = 8.5, lock_points: Iterable | None = None,
+                 lock_radius: float = 16.0, keys: Iterable[str] = DIRECTIONS) -> None:
+        self.arrive = float(arrive)
+        self.step_units = float(step_units)
+        self.lock_points = [(float(p[0]), float(p[1])) for p in (lock_points or ())]
+        self.lock_radius = float(lock_radius)
+        self.keys = tuple(keys)
+        self.steps = 0
+        self.refused = 0
+        self._streak = 0
+        # The last stretch is ProbeMotion's job: cycling keys blindly walked away from the pad (a tolerance-2 approach
+        # ended 98 units out), while measuring each direction is the behaviour that closes within a few units.
+        self.fine = ProbeMotion(arrive=self.arrive, keys=self.keys, lock_points=self.lock_points,
+                                lock_radius=self.lock_radius)
+        # A step moves along the camera heading, so pointing that heading at the target is half the job. Nothing was
+        # doing it: from (269,64) with the heading facing west, the motion lunged west and a chain meant for (360,26)
+        # finished 231 units away at (134,76). Turn effects are learned per key, because one tap can swing the camera
+        # 80-175 degrees and the sign differs between sessions.
+        # One turn can swing the camera 120-180 degrees, so a tight tolerance can never be met: the loop turns forever.
+        # 60 degrees still points the 8.5-unit step within ~7 units of the aim, and the next step re-aims.
+        self.turn_tolerance = 60.0
+        self._last_error: float | None = None
+        self._last_turn_key: str | None = None
+
+    def landing(self, player: dict) -> tuple[float, float]:
+        """Where one attack step would put the character: 8.5 units along the camera heading."""
+        heading = math.radians(float(player.get("heading_deg") or 0.0))
+        return (float(player["x"]) + math.sin(heading) * self.step_units,
+                float(player["z"]) + math.cos(heading) * self.step_units)
+
+    def safe(self, point: tuple[float, float]) -> bool:
+        return all(math.dist(point, lock) > self.lock_radius for lock in self.lock_points)
+
+    @staticmethod
+    def bearing(player: dict, target: Iterable[float]) -> float:
+        dx = float(target[0]) - float(player["x"])
+        dz = float(target[1]) - float(player["z"])
+        return math.degrees(math.atan2(dx, dz)) % 360.0
+
+    def steer(self, player: dict, target: Iterable[float]) -> Action | None:
+        """Turn until the heading points at the target, hill-climbing on the heading error.
+
+        One direction press can swing the camera 120-180 degrees at some spots (measured in the Pioneer 2 spawn pocket:
+        24 -> 207 -> 27 -> 284 -> 117 on four consecutive taps), so a learned per-key delta is worthless there and the
+        only reliable loop is: measure the error, press the key that last helped, measure again, and reverse the key the
+        moment it stops helping.
+        """
+        heading = float(player.get("heading_deg") or 0.0)
+        want = self.bearing(player, target)
+        error = ((want - heading + 540.0) % 360.0) - 180.0
+        if abs(error) <= self.turn_tolerance:
+            self._last_error = None
+            self._last_turn_key = None
+            return None
+        if self._last_error is not None and self._last_turn_key is not None:
+            if abs(error) >= abs(self._last_error) - 3.0:      # the last turn did not help; go the other way
+                self._last_turn_key = "right" if self._last_turn_key == "left" else "left"
+        else:
+            self._last_turn_key = "left"
+        self._last_error = error
+        return press(self._last_turn_key, f"turn toward the aim ({error:+.0f} degrees off)")
+
+    def step(self, player: dict, target: Iterable[float], reason: str = "") -> Action | None:
+        here = (float(player["x"]), float(player["z"]))
+        aim = (float(target[0]), float(target[1]))
+        if math.dist(here, aim) <= self.arrive:
+            return None
+        # score the probe issued last tick from where it started to where the body actually is
+        if self.probe_key is not None and self.probe_from is not None:
+            gain = math.dist(self.probe_from, aim) - math.dist(here, aim)
+            if not self.safe(here):
+                gain -= 1000.0
+            self.scores[self.probe_key] = gain
+            self.probe_key = None
+            self.probe_from = None
+        if self.queue:
+            key = self.queue.pop(0)
+            self.probe_key, self.probe_from = key, here
+            return press(key, f"probe {key}{(' - ' + reason) if reason else ''}")
+        if self.scores:
+            best_key, best_gain = max(self.scores.items(), key=lambda kv: kv[1])
+            # never let the lock penalty make every direction look terrible; if it did, ignore the penalty
+            if best_gain <= -999.0:
+                best_key, best_gain = max(self.scores.items(), key=lambda kv: kv[1] + 1000.0)
+            self.scores = {}
+            if best_gain > self.min_gain:
+                self.steps += 1
+                self.turn_streak = 0
+                return press(best_key, f"move {best_key} (+{best_gain:.1f})")
+            self.turn_streak += 1
+            self.turns += 1
+            if self.turn_streak >= self.hold_every:
+                self.turn_streak = 0
+                self.holds += 1
+                return hold(best_key, 0.45, "hold out of a spot where nothing helped")
+            return press("left", "turn: nothing improved")
+        self.queue = list(self.keys)
+        key = self.queue.pop(0)
+        self.probe_key, self.probe_from = key, here
+        return press(key, f"probe {key}{(' - ' + reason) if reason else ''}")
+
+
+class StepMotion:
+    """Move with tap probes, and take an attack step when it is both useful and safe.
+
+    Measured: an attack steps the character ~8.5 units along the camera heading (heading 292.6 -> dx -8, dz +1; twenty
+    presses carried it 170 units where the tap walk covered 30 in the same time). It is the fastest way across open
+    ground, and its cost is that the lunge ignores walking collisions - which also means it can carry the character into
+    the geometry that locks it up. In Forest 1 room 8 it stopped dead at (604,-151), a position derived from 214
+    ledgers as a lock point, after six presses moved nothing and the heading stopped changing.
+
+    So a step is taken only when the landing point is clear of every known lock point by `lock_radius`; otherwise the
+    motion falls back to a probe tap, which is slow but safe.
+    """
+
+    def __init__(self, *, arrive: float = 10.0, step_units: float = 8.5, lock_points: Iterable | None = None,
+                 lock_radius: float = 16.0, keys: Iterable[str] = DIRECTIONS) -> None:
+        self.arrive = float(arrive)
+        self.step_units = float(step_units)
+        self.lock_points = [(float(p[0]), float(p[1])) for p in (lock_points or ())]
+        self.lock_radius = float(lock_radius)
+        self.keys = tuple(keys)
+        self.steps = 0
+        self.refused = 0
+        self._streak = 0
+        # The last stretch is ProbeMotion's job: cycling keys blindly walked away from the pad (a tolerance-2 approach
+        # ended 98 units out), while measuring each direction is the behaviour that closes within a few units.
+        self.fine = ProbeMotion(arrive=self.arrive, keys=self.keys, lock_points=self.lock_points,
+                                lock_radius=self.lock_radius)
+        # A step moves along the camera heading, so pointing that heading at the target is half the job. Nothing was
+        # doing it: from (269,64) with the heading facing west, the motion lunged west and a chain meant for (360,26)
+        # finished 231 units away at (134,76). Turn effects are learned per key, because one tap can swing the camera
+        # 80-175 degrees and the sign differs between sessions.
+        self.turn_effect: dict[str, float] = {}
+        self.turn_keys = ("left", "right")
+        self._pending_turn: tuple[str, float] | None = None
+
+    def landing(self, player: dict) -> tuple[float, float]:
+        """Where one attack step would put the character: 8.5 units along the camera heading."""
+        heading = math.radians(float(player.get("heading_deg") or 0.0))
+        return (float(player["x"]) + math.sin(heading) * self.step_units,
+                float(player["z"]) + math.cos(heading) * self.step_units)
+
+    def safe(self, point: tuple[float, float]) -> bool:
+        return all(math.dist(point, lock) > self.lock_radius for lock in self.lock_points)
+
+    @staticmethod
+    def bearing(player: dict, target: Iterable[float]) -> float:
+        dx = float(target[0]) - float(player["x"])
+        dz = float(target[1]) - float(player["z"])
+        return math.degrees(math.atan2(dx, dz)) % 360.0
+
+    def steer(self, player: dict, target: Iterable[float]) -> Action | None:
+        """Turn the camera until the heading points at the target, learning what each turn key does."""
+        heading = float(player.get("heading_deg") or 0.0)
+        if self._pending_turn is not None:
+            key, before = self._pending_turn
+            delta = ((heading - before + 540.0) % 360.0) - 180.0
+            if abs(delta) > 1.0:
+                prior = self.turn_effect.get(key)
+                self.turn_effect[key] = delta if prior is None else prior * 0.6 + delta * 0.4
+            self._pending_turn = None
+        want = self.bearing(player, target)
+        error = ((want - heading + 540.0) % 360.0) - 180.0
+        if abs(error) <= 25.0:
+            return None
+        known = [(key, effect) for key, effect in self.turn_effect.items() if abs(effect) > 5.0]
+        if known:
+            # prefer a key whose effect moves the heading toward the target, largest step that does not overshoot wildly
+            candidates = [(key, effect) for key, effect in known if (effect > 0) == (error > 0)]
+            if candidates:
+                key, effect = min(candidates, key=lambda kv: abs(abs(kv[1]) - abs(error)))
+                self._pending_turn = (key, heading)
+                return press(key, f"turn toward the aim ({error:+.0f} degrees off)")
+        key = self.turn_keys[0] if not self.turn_effect else self.turn_keys[len(self.turn_effect) % 2]
+        self._pending_turn = (key, heading)
+        return press(key, f"learn a turn ({error:+.0f} degrees off)")
+
+    def step(self, player: dict, target: Iterable[float], reason: str = "") -> Action | None:
+        x, z = float(player["x"]), float(player["z"])
+        tx, tz = float(target[0]), float(target[1])
+        distance = math.dist((x, z), (tx, tz))
+        if distance <= self.arrive:
+            return None
+        turn = self.steer(player, target)
+        if turn is not None:
+            return turn
+        landing = self.landing(player)
+        gain = distance - math.dist(landing, (tx, tz))
+        # A step moves 8.5 units, so it cannot do the last few: aiming a lunge at a point 4 units away overshoots to the
+        # far side and the next lunge goes further still - measured, a tolerance-1 approach to the pad at (360,26) ended
+        # 53 units away. Inside one step of the target the motion taps instead.
+        close = distance <= self.step_units * 1.6
+        if close:
+            return self.fine.step(player, target, reason)
+        if gain >= self.step_units * 0.35 and self.safe(landing):
+            self.steps += 1
+            return press("a", f"step-attack {gain:.0f} units closer{(' - ' + reason) if reason else ''}")
+        if gain >= self.step_units * 0.35:
+            self.refused += 1                      # the step would land on a lock point
+        self._streak += 1
+        if self._streak >= 4:
+            self._streak = 0
+            return hold(self.keys[self.steps % len(self.keys)], 0.45, "hold toward the target while steps are refused")
+        return press(self.keys[self.steps % len(self.keys)], "tap while the step is refused or misaligned")
+
+
 class RouteFollower:
     """Advance along a router's waypoints toward a goal, and re-plan when the current leg does not yield.
 
@@ -377,29 +729,59 @@ class RouteFollower:
     a 60-waypoint route between the same two points, so the controller follows the route instead of the straight line.
     """
 
-    def __init__(self, router, *, arrive: float = 6.0, replan_after: int = 4) -> None:
+    def __init__(self, router, *, arrive: float = 10.0, replan_after: int = 4, spacing: float = 24.0,
+                 cell: float = 2.5, anchor_patience: int = 8) -> None:
         self.router = router
         self.arrive = float(arrive)
         self.replan_after = int(replan_after)
+        self.spacing = float(spacing)
+        self.cell = float(cell)
+        self.anchor_patience = int(anchor_patience)
         self.route = None
         self.index = 0
         self.goal = None
         self.plans = 0
         self.stalls = 0
+        self.stuck = {}                 # anchor index -> ticks spent chasing it without closing
+        self.skipped = 0
 
     def waypoint(self, player: dict, goal: tuple):
-        """The point to walk toward now: the next unreached waypoint, or None when the goal itself is reached."""
+        """The point to walk toward now: the current anchor, advanced only when it is reached.
+
+        A "nearest waypoint in the next ten" rule was tried and oscillates: the index jumps forward when the character
+        happens to sit near a waypoint it already passed, the target jumps with it, and the character turns around -
+        measured as 167 ticks ending 381 units from a target it started 390 away from. The route is resampled to
+        anchors `spacing` apart so one anchor is worth about two taps, and the anchor only changes on arrival.
+        """
         position = (float(player.get("x") or 0), float(player.get("z") or 0))
         if self.route is None or tuple(goal) != self.goal:
             self._plan(position, goal)
         if not self.route:
             return tuple(goal)
-        # Advance when the waypoint is reached. A projection test ("already past it") was tried and is wrong: it
-        # consumes waypoints while the character is far off to the side, and the route then ends wherever it drifted
-        # (measured: a 60-waypoint route consumed while the character ended 118 units from the door). The arrival
-        # radius is larger than one tap so a single 8-unit step lands inside it.
-        while self.index < len(self.route) - 1 and math.dist(position, self.route[self.index]) <= self.arrive:
-            self.index += 1
+        # Advance the current anchor when it is reached or when the character has passed it along the leg to the next
+        # one. "Passed" is safe *because the anchor is sequential*: the earlier version asked "is any waypoint in the
+        # next ten already passed", which consumed the route while the character was far off to the side.
+        while self.index < len(self.route) - 1:
+            anchor = self.route[self.index]
+            following = self.route[self.index + 1]
+            leg = (following[0] - anchor[0], following[1] - anchor[1])
+            offset = (position[0] - anchor[0], position[1] - anchor[1])
+            passed = leg[0] * offset[0] + leg[1] * offset[1] > 0
+            if math.dist(position, anchor) <= self.arrive or passed:
+                self.index += 1
+            else:
+                break
+        # An anchor inside the eroded margin is sometimes unreachable from the character's side (the grid keeps a cell
+        # the body cannot walk to), and the follower then grinds on it until the run fails - measured: 'still 13 units
+        # away' for 20 s in room 8. Skip an anchor that has consumed `anchor_patience` ticks without being reached.
+        if self.index < len(self.route) - 1:
+            anchor = self.route[self.index]
+            if math.dist(position, anchor) > self.arrive:
+                self.stuck[self.index] = self.stuck.get(self.index, 0) + 1
+                if self.stuck[self.index] > self.anchor_patience:
+                    self.index += 1
+                    self.skipped += 1
+                    self.stuck.pop(self.index - 1, None)
         if math.dist(position, tuple(goal)) <= self.arrive:
             return None
         return self.route[self.index]
@@ -415,14 +797,53 @@ class RouteFollower:
         position = (float(player.get("x") or 0), float(player.get("z") or 0))
         self._plan(position, self.goal or position, skip_first=True)
 
+    def _connected_near(self, position: tuple):
+        """The nearest grid cell that is actually part of a corridor, not one of the erosion's isolated islands.
+
+        Measured: the Forest grid's safe set contains single-cell islands, and snapping onto one makes A* return None -
+        the follower then falls back to a straight line and orbits (187 ticks, 380 units still to go). A cell with two
+        or more safe neighbours is a corridor cell by definition, so routing from it works.
+        """
+        safe = getattr(self.router, "safe", None)
+        if not isinstance(safe, set) or not safe:
+            return None
+        base = (math.floor(position[0] / self.cell), math.floor(position[1] / self.cell))
+        neighbours = ((1, 0), (-1, 0), (0, 1), (0, -1))
+
+        def good(cell) -> bool:
+            return cell in safe and sum((cell[0] + ox, cell[1] + oz) in safe for ox, oz in neighbours) >= 2
+
+        if good(base):
+            return ((base[0] + 0.5) * self.cell, (base[1] + 0.5) * self.cell)
+        for radius in range(1, 28):
+            for dx in range(-radius, radius + 1):
+                for dz in (-radius, radius):
+                    for cell in ((base[0] + dx, base[1] + dz), (base[0] + dz, base[1] + dx)):
+                        if good(cell):
+                            return ((cell[0] + 0.5) * self.cell, (cell[1] + 0.5) * self.cell)
+        return None
+
     def _plan(self, position: tuple, goal: tuple, skip_first: bool = False) -> None:
         try:
             route = self.router.route(position, goal) or []
+            if not route:
+                snapped = self._connected_near(position)
+                if snapped is not None and snapped != position:
+                    route = self.router.route(snapped, goal) or []
         except Exception:                                    # noqa: BLE001 - a map is an aid, never a dependency
             route = []
         if skip_first and len(route) > 1:
             route = route[1:]                                # the leg that just failed: start past it
-        self.route = [tuple(point) for point in route]
+        # Resample to anchors about `spacing` apart: the raw route is one waypoint per 2.5-unit cell, which is a
+        # quarter of a tap, and chasing those makes every tick a direction change.
+        anchors = []
+        for point in route:
+            point = tuple(point)
+            if not anchors or math.dist(anchors[-1], point) >= self.spacing:
+                anchors.append(point)
+        if route and (not anchors or tuple(route[-1]) != anchors[-1]):
+            anchors.append(tuple(route[-1]))
+        self.route = anchors
         self.index = 0
         self.goal = tuple(goal)
         self.plans += 1
@@ -438,21 +859,40 @@ class RoutedPolicy:
         self.base = base
         self.follower = RouteFollower(router, arrive=arrive)
 
+    @property
+    def press_range(self) -> float:
+        return float(getattr(self.base, "press_range", 14.0))
+
+    @property
+    def attack_range(self) -> float:
+        return float(getattr(self.base, "attack_range", 30.0))
+
     def choose(self, snap: dict, now: float, *, pressed=None, avoid=None):
         objective = self.base.choose(snap, now, pressed=pressed, avoid=avoid)
         if objective is None or objective.kind not in self.POINT_KINDS:
             return objective
         player = snap.get("player") or {}
+        real_distance = math.hypot(float(player.get("x") or 0) - objective.point[0],
+                                   float(player.get("z") or 0) - objective.point[1])
         if self.follower.stalls >= self.follower.replan_after:
             # Several ticks without closing on this waypoint: it is blocked, so route around it from the current cell
             # instead of pushing against it until the no-close budget ends the run.
             self.follower.replan(player)
-        point = self.follower.waypoint(player, objective.point)
+        goal = objective.point
+        if objective.kind == "door" and real_distance > 22.0:
+            # A closed door is *wall* to the collision mesh, so A* routes around it even after its flag opens it. Route
+            # to a point just short of the door instead, and let the direct door logic walk the last 22 units through
+            # the doorway (measured: the router delivered the character 25 units from the door and then took it 60
+            # units away around the wall).
+            ux, uz = _unit(objective.point[0] - float(player.get("x") or 0),
+                           objective.point[1] - float(player.get("z") or 0))
+            goal = (objective.point[0] - ux * 18.0, objective.point[1] - uz * 18.0)
+        point = self.follower.waypoint(player, goal)
         if point is None:
-            return objective                                 # the goal itself is reached
+            return objective                                 # the approach point or the goal itself is reached
         distance = math.hypot(float(player.get("x") or 0) - point[0], float(player.get("z") or 0) - point[1])
         return Objective(objective.rank, objective.kind, point, distance, objective.cls, objective.ptr,
-                         objective.hp, objective.why)
+                         objective.hp, objective.why, target_distance=real_distance)
 
     def note(self, kind: str, progressed: bool) -> None:
         self.base.note(kind, progressed)
@@ -461,6 +901,448 @@ class RoutedPolicy:
     def progress_token(self) -> int:
         """A re-plan is a new attempt: the no-close budget must start again rather than end the run mid-route."""
         return self.follower.plans
+
+
+class HillClimbMotion:
+    """Keep the key that measurably closes the distance; when it stops, try another and keep the best.
+
+    The models above try to say *which way* a key points and then trust that. The measured failure of that approach is
+    a lane of 1,050 units travelled for 105 units of progress: a frame that cannot be inferred reliably turns every
+    correction into a new orbit. This controller infers nothing. It records the distance closed by the last tap, credits
+    or debits the key that produced it, and switches keys only when the current one stops paying - so an inverted or
+    rotating frame costs one tap to notice, not a detour.
+    """
+
+    def __init__(self, *, arrive: float = 6.0, min_gain: float = 1.0, patience: int = 2,
+                 keys: Iterable[str] = DIRECTIONS) -> None:
+        self.arrive = float(arrive)
+        self.min_gain = float(min_gain)
+        self.patience = int(patience)
+        self.keys = tuple(keys)
+        self.key = None
+        self.last_key = None
+        self.last_pos = None
+        self.last_dir = None
+        self.turns = 0
+        self.gains = {key: 0.0 for key in self.keys}
+        self.misses = 0
+        self.switches = 0
+
+    def step(self, player: dict, target: tuple, reason: str = "") -> Action | None:
+        x, z = float(player.get("x") or 0), float(player.get("z") or 0)
+        dx, dz = float(target[0]) - x, float(target[1]) - z
+        distance = math.hypot(dx, dz)
+        if distance <= self.arrive:
+            return None
+        ux, uz = _unit(dx, dz)
+        if self.last_key is not None and self.last_pos is not None and self.last_dir is not None:
+            # Reward is the component of the last movement along the direction that was being aimed at *then*. The
+            # distance to a route anchor cannot be used: the anchor moves ~12 units every couple of taps, so a target
+            # jump reads as a loss and the controller abandons the key that was working (measured: 169 ticks of
+            # zigzag between two areas 150 units apart).
+            moved = (x - self.last_pos[0]) * self.last_dir[0] + (z - self.last_pos[1]) * self.last_dir[1]
+            if moved >= self.min_gain:
+                self.gains[self.last_key] += moved
+                self.misses = 0
+            else:
+                self.gains[self.last_key] -= 2.0
+                self.misses += 1
+        if self.key is None or self.misses >= self.patience:
+            self.key = self._next_key()
+            self.misses = 0
+            self.switches += 1
+        self.last_key = self.key
+        self.last_pos = (x, z)
+        self.last_dir = (ux, uz)
+        return press(self.key, f"tap {self.key} ({distance:.0f} units, gain {self.gains[self.key]:+.1f}) "
+                              f"toward {reason or 'target'}")
+
+    def _next_key(self) -> str:
+        ranked = sorted(self.keys, key=lambda key: -self.gains[key])
+        for key in ranked:
+            if key != self.last_key:
+                return key
+        return ranked[0]
+
+
+class WallFollowMotion:
+    """Close the distance; when a wall stops the taps, step sideways and go around it.
+
+    `HillClimbMotion` learns which key pays, but a wall dead ahead is not something a gain table can fix: every key that
+    closes the distance pushes into the wall, every key that moves is credited as bad, and the character grinds in place.
+    That is exactly what the operator watched for hours (and what the bot did in Forest 1 room 4, 220 units from its
+    target with the room outside the decoded map's frame).
+
+    So a blocked tap (one that moves less than `blocked_units`) sets a **detour target** `detour_units` to the side,
+    perpendicular to the aim direction; the same gain learning pursues it, then the real target is tried again. The side
+    alternates only after a detour fails to help, so the motion commits instead of oscillating.
+    """
+
+    def __init__(self, *, arrive: float = 6.0, min_gain: float = 1.0, patience: int = 2,
+                 blocked_units: float = 1.0, detour_units: float = 12.0, detour_taps: int = 3,
+                 keys: Iterable[str] = DIRECTIONS, effects: dict | None = None,
+                 cal_heading: float = 0.0, probe_every_move: bool = False) -> None:
+        self.arrive = float(arrive)
+        self.min_gain = float(min_gain)
+        self.patience = int(patience)
+        self.blocked_units = float(blocked_units)
+        self.detour_units = float(detour_units)
+        self.detour_taps = int(detour_taps)
+        self.keys = tuple(keys)
+        # When the session has been calibrated, each key's measured displacement steers directly. Ranking keys by a
+        # gain table cannot: it took until tap 25 to pass the test wall and then orbited the target (live: the same
+        # orbit the operator has watched), because a gain is history, not a direction.
+        self.effects = {str(key): (float(value[0]), float(value[1])) for key, value in (effects or {}).items()
+                        if len(value) >= 2}
+        self.cal_heading = float(cal_heading)
+        self.key = None
+        self.last_key = None
+        self.last_pos = None
+        self.last_dir = None
+        self.last_point = None
+        self.gains = {key: 0.0 for key in self.keys}
+        self.misses = 0
+        self.detour: tuple | None = None
+        self.side = 1.0
+        self.detour_steps = 0
+        self.detours = 0
+
+    def step(self, player: dict, target: tuple, reason: str = "") -> Action | None:
+        x, z = float(player.get("x") or 0), float(player.get("z") or 0)
+        here = (x, z)
+        if self.last_key is not None and self.last_pos is not None and self.last_dir is not None:
+            delta = math.dist(here, self.last_pos)
+            moved = (x - self.last_pos[0]) * self.last_dir[0] + (z - self.last_pos[1]) * self.last_dir[1]
+            if moved >= self.min_gain:
+                self.gains[self.last_key] += moved
+                self.misses = 0
+            else:
+                self.gains[self.last_key] -= 2.0
+                self.misses += 1
+            if delta < self.blocked_units:
+                self._blocked(here, target)
+        if self.detour is not None:
+            self.detour_steps += 1
+            if (math.dist(here, self.detour) <= self.arrive
+                    or self.detour_steps > self.detour_taps * max(1, self.patience + 1)):
+                self.detour = None
+                self.detour_steps = 0
+        goal = self.detour if self.detour is not None else target
+        dx, dz = float(goal[0]) - x, float(goal[1]) - z
+        distance = math.hypot(dx, dz)
+        if distance <= self.arrive and self.detour is None:
+            return None
+        ux, uz = _unit(dx, dz)
+        if self.effects:
+            # No heading rotation. `heading_deg` is the CAMERA azimuth (gBox's own autoplay keeps it as `self.cam`), and
+            # the follow camera snaps behind the character on every move - measured: one tap changed it by 125-180
+            # degrees. Rotating the calibrated table by that delta double-counts the camera and corrupts the steering:
+            # with the rotation a 55-unit hop walked 120 units the wrong way. The calibrated table is only valid for the
+            # camera it was measured in, which is why the hill climber (per-tap learning, no table) is the default.
+            self.key = self._steer(ux, uz)
+        elif self.key is None or self.misses >= self.patience:
+            self.key = self._next_key()
+            self.misses = 0
+        self.last_key = self.key
+        self.last_pos = here
+        self.last_dir = (ux, uz)
+        where = "detour" if self.detour is not None else (reason or "target")
+        return press(self.key, f"tap {self.key} ({distance:.0f} units toward {where}, "
+                              f"gain {self.gains[self.key]:+.1f})")
+
+    def _blocked(self, here: tuple, target: tuple) -> None:
+        if self.detour is not None:
+            return                          # already going around; let the detour finish
+        ux, uz = _unit(float(target[0]) - here[0], float(target[1]) - here[1])
+        # Perpendicular to the aim: step around the obstacle, then aim at the target again.
+        self.detour = (here[0] - uz * self.detour_units * self.side,
+                       here[1] + ux * self.detour_units * self.side)
+        self.detour_steps = 0
+        self.detours += 1
+        # One consistent side: flipping after a fixed count undid progress (measured: 161 taps for a 121-unit path
+        # because every third detour turned back). A finite obstacle always ends on one side.
+
+    def _steer(self, ux: float, uz: float, heading_delta: float = 0.0) -> str:
+        """The calibrated key pointing most nearly along the aim, in the character's *current* frame."""
+        best, best_dot = None, -2.0
+        for key in self.keys:
+            effect = self.effects.get(key)
+            if effect is None:
+                continue
+            rotated = _rotate_world(effect[0], effect[1], heading_delta) if heading_delta else effect
+            ex, ez = _unit(rotated[0], rotated[1])
+            dot = ex * ux + ez * uz
+            if dot > best_dot:
+                best, best_dot = key, dot
+        return best or self.keys[0]
+
+    def _next_key(self) -> str:
+        ranked = sorted(self.keys, key=lambda key: -self.gains[key])
+        for key in ranked:
+            if key != self.last_key:
+                return key
+        return ranked[0]
+
+
+class CommitMotion:
+    """Commit to a heading for several taps, learn each key's direction from what it actually did, and slide sideways
+    when blocked.
+
+    Why this exists: `HillClimbMotion` re-ranks keys every tap from an accumulated gain, which makes it oscillate when
+    two keys pay about the same (measured: 8 stalls in a 180 s Forest run, the character circling at (270,531) for a
+    minute). And a calibration table is only valid for the camera it was measured in - one tap can swing the camera
+    125-180 degrees - so a static table cannot be trusted.
+
+    This motion learns **online**: every tap updates the observed direction of that key (an exponential average of its
+    displacement), so the estimate follows the camera. It then commits to the key that best matches the aim for
+    `commit` taps, which stops the dithering, and on a blocked tap (under `blocked_units`) it slides 90 degrees for
+    `slide` taps before aiming at the target again - the same idea as the wall follower, but with a live key map.
+    """
+
+    def __init__(self, *, arrive: float = 6.0, keys: Iterable[str] = DIRECTIONS, commit: int = 1,
+                 slide: int = 2, blocked_units: float = 3.0, decay: float = 0.3,
+                 probe_every_move: bool = False, lock_points: Iterable | None = None,
+                 lock_radius: float = 12.0) -> None:
+        self.arrive = float(arrive)
+        self.keys = tuple(keys)
+        self.commit = max(1, int(commit))
+        self.slide = max(1, int(slide))
+        self.blocked_units = float(blocked_units)
+        self.decay = float(decay)
+        self.dirs: dict = {}             # key -> running unit vector of its displacement
+        self.key = None
+        self.remaining = 0
+        self.last_key = None
+        self.last_pos = None
+        self.slide_until = 0
+        self.slide_dir = (0.0, 0.0)
+        self.steps = 0
+        self.blocked = 0
+        self.slides = 0
+        self.probe_queue: list = []
+        self.probe_scores: dict = {}
+        self.probe_from = (0.0, 0.0)
+        self.probe_target = (0.0, 0.0)
+        self.probes = 0
+        self.turns = 0
+        self.probe_every_move = bool(probe_every_move)
+        self.turn_streak = 0
+        self.lock_points = [(float(p[0]), float(p[1])) for p in (lock_points or ())]
+        self.lock_radius = float(lock_radius)
+        self.last_y = None
+        self.best_distance = None
+        self.stuck_taps = 0
+        self.detour_left = 0
+        self.detour_side = 1.0
+        self.detour_len = 5
+        self.detours = 0
+        self.last_aim = None
+        self.last_ok = False
+        self.last_dir = None
+
+
+    def step(self, player: dict, target: tuple, reason: str = "") -> Action | None:
+        x, z = float(player.get("x") or 0), float(player.get("z") or 0)
+        here = (x, z)
+        if self.last_key is not None and self.last_pos is not None:
+            dx, dz = x - self.last_pos[0], z - self.last_pos[1]
+            moved = math.hypot(dx, dz)
+            if self.probe_scores is not None and self.last_key is not None and self.probes:
+                # the position reached after that probe key, as a distance to the probe's target
+                score = math.dist((x, z), self.probe_target)
+                # Avoid the places where this character has locked up before. Measured across 214 ledgers: 31 locks,
+                # and they cluster - (550,380) locked three separate runs (239 ticks each), (244,221) locked two. Those
+                # spots are where a tap-driven body gets pushed into geometry it cannot leave, and only a session
+                # restart recovers it, so a probe that lands there is scored as if it were far from the target.
+                if self.lock_points and self.lock_radius > 0:
+                    if any(math.dist((x, z), point) <= self.lock_radius for point in self.lock_points):
+                        score += 1000.0
+                self.probe_scores[self.last_key] = score
+            self.last_ok = False
+            if moved >= 4.0 and self.last_dir is not None:
+                toward = (x - self.last_pos[0]) * self.last_dir[0] + (z - self.last_pos[1]) * self.last_dir[1]
+                self.last_ok = toward > 1.0
+            y_now = player.get("y")
+            if y_now is not None and self.last_y is not None and (float(y_now) - self.last_y) < -3.0:
+                # Do not walk off a ledge. The west basin of Forest 1 is a one-way drop: from its floor (y 0.1-0.8)
+                # forty probes in every direction found no rising ground at all, and the character had to be restarted.
+                # A drop of more than three units is treated as a blocked direction, so the motion probes for another
+                # way instead of stepping over the edge.
+                self.blocked += 1
+                self.remaining = 0
+                self.dirs.pop(self.last_key, None)
+                if not self.probe_queue:
+                    self.probe_queue = list(self.keys)
+                    self.probe_scores = {None: math.dist((x, z), (float(target[0]), float(target[1])))}
+                    self.probe_target = (float(target[0]), float(target[1]))
+                self.last_y = float(y_now)
+                self.key = self.probe_queue.pop(0) if self.probe_queue else self.keys[0]
+                self.last_key, self.last_pos, self.last_dir = self.key, (x, z), (0.0, 0.0)
+                self.steps += 1
+                return press(self.key, f"probe {self.key}: the last tap dropped more than three units (ledge)")
+            if y_now is not None:
+                self.last_y = float(y_now)
+            if moved >= self.blocked_units:
+                # Commit is broken the moment a tap moves *away* from the aim: measured in Forest 1 at (-108,2), the
+                # motion committed three westward taps at a time toward a door that was north, and a whole run went 470
+                # units the wrong way. The learned direction is also replaced outright by the observation rather than
+                # averaged - the camera can swing 125-180 degrees between taps, so an old sample is not evidence.
+                if self.last_aim is not None:
+                    before_d = math.dist(self.last_pos, self.last_aim)
+                    after_d = math.dist((x, z), self.last_aim)
+                    if after_d > before_d + 2.0:
+                        self.remaining = 0
+                        self.dirs.pop(self.last_key, None)
+                old = self.dirs.get(self.last_key)
+                new = (dx / moved, dz / moved)
+                self.dirs[self.last_key] = new if old is None else (
+                    self.decay * old[0] + (1 - self.decay) * new[0],
+                    self.decay * old[1] + (1 - self.decay) * new[1])
+                self.last_aim = (float(target[0]), float(target[1])) if self.steps >= self.slide_until else None
+            else:
+                self.blocked += 1
+                self.remaining = 0
+                # A wall dead ahead: probe every key once instead of sliding blind. Measured in Forest 1 room 16, a
+                # hand-run probe loop closed 118 units where commit-slide had circled for two minutes - the open
+                # direction there was not any of the ones the slide guessed.
+                if self.steps >= self.slide_until and not self.probe_queue and self.blocked >= 2:
+                    self.probe_queue = list(self.keys)
+                    self.probe_scores = {}
+                    self.probe_from = (x, z)
+                    self.probe_target = (float(target[0]), float(target[1]))
+                if self.steps >= self.slide_until and self.blocked < 2:
+                    # Slide 90 degrees from the aim for a few taps, then aim again: a wall dead ahead is not something
+                    # more pushing can solve.
+                    ux, uz = _unit(float(target[0]) - x, float(target[1]) - z)
+                    self.slide_dir = (-uz, ux) if self.slides % 2 == 0 else (uz, -ux)
+                    self.slide_until = self.steps + self.slide
+                    self.slides += 1
+        if self.probe_queue:
+            key = self.probe_queue.pop(0)
+            self.key = key
+            self.last_key, self.last_pos = key, (x, z)
+            self.steps += 1
+            self.probes += 1
+            if not self.probe_queue:
+                # every key has been tried: commit to the one whose resulting position was closest to the target
+                # Never let the lock avoidance make every direction look terrible: near a lock point all four probes
+                # are penalised, the ranking becomes noise, and the choice is arbitrary - measured, a chain that
+                # normally converges in six hops wandered for five minutes that way. If every key is penalised, the
+                # penalties are dropped and the ordinary ranking decides.
+                keys_scored = [v for k, v in self.probe_scores.items() if k is not None]
+                if keys_scored and min(keys_scored) >= 1000.0:
+                    self.probe_scores = {k: v - 1000.0 for k, v in self.probe_scores.items()}
+                ranked = [(k, v) for k, v in sorted(self.probe_scores.items(), key=lambda kv: kv[1]) if k is not None]
+                if ranked:
+                    self.key = ranked[0][0]
+                    self.remaining = 1 if self.probe_every_move else self.commit
+                # If no direction improved on the starting position, turn instead of pushing: the hand-run loop that
+                # crossed the plaza did exactly this, and the version that kept pushing ended up embedded in geometry
+                # (measured at (244,221): all four taps 0.0 and all four holds 0.0, while A still rotated the heading -
+                # input was fine, the body was inside the wall).
+                start_distance = self.probe_scores.get(None)
+                if self.probe_every_move and start_distance is not None and ranked:
+                    if ranked[0][1] >= start_distance - 0.5:
+                        # Turning alone can livelock: measured, 90 seconds of probes that all moved 0.0 at (196,89) in
+                        # the city while one later tap moved the character 7 units. Every fourth fruitless turn becomes
+                        # a held key instead, because a hold moves 20-35 units where a tap moves 0.
+                        self.turn_streak += 1
+                        if self.turn_streak >= 4:
+                            self.turn_streak = 0
+                            self.key = ranked[0][0]
+                            self.remaining = 0
+                            return hold(self.key, 0.45, "hold out of a stubborn spot (four turns moved nothing)")
+                        self.key = "left"
+                    else:
+                        self.turn_streak = 0
+                self.blocked = 0
+            return press(key, f"probe {key} around the obstruction ({self.probes} probes)")
+        distance = math.hypot(float(target[0]) - x, float(target[1]) - z)
+        if distance <= self.arrive:
+            return None
+        # Escalating detour. A greedy motion stalls when the only way on is through a direction that is blocked right
+        # then (measured: 5 stalls in 120 s at (551,380) in Forest 1, with three of four keys open but all of them
+        # leading away from the target). Walking *away* for an increasing number of taps, alternating sides, is what
+        # leaves a local minimum; the immediate one-tap retreat tried earlier ping-ponged instead.
+        if self.detour_left > 0:
+            self.detour_left -= 1
+            aim = self.detour_aim
+        else:
+            if self.best_distance is None or distance < self.best_distance - 2.0:
+                self.best_distance = distance
+                self.stuck_taps = 0
+            else:
+                self.stuck_taps += 1
+            if self.stuck_taps >= 8:
+                self.stuck_taps = 0
+                self.detours += 1
+                self.detour_left = self.detour_len
+                self.detour_len = min(29, self.detour_len + 6)
+                ux, uz = _unit(float(target[0]) - x, float(target[1]) - z)
+                self.detour_aim = (-uz * self.detour_side, ux * self.detour_side)
+                self.detour_side = -self.detour_side
+            aim = _unit(float(target[0]) - x, float(target[1]) - z)
+        if self.probe_every_move and self.remaining <= 0 and not self.probe_queue:
+            self.probe_queue = list(self.keys)
+            self.probe_scores = {None: math.dist((x, z), (float(target[0]), float(target[1])))}
+            self.probe_target = (float(target[0]), float(target[1]))
+            key = self.probe_queue.pop(0)
+            self.key, self.last_key, self.last_pos = key, key, (x, z)
+            self.steps += 1
+            return press(key, f"probe {key} (probe-every-move)")
+        if self.last_ok and self.last_key is not None:
+            # Straight-line stickiness. Measured: six presses of the same key walked (221)->(183) dead straight - the
+            # follow camera settles behind the movement, so repeating a key continues the line. Re-deciding every tap
+            # (commit=1) threw that away and made the motion zigzag between two nearly-equal keys.
+            self.key = self.last_key
+        elif self.remaining <= 0 or self.key is None:
+            self.key = self._best(aim)
+            self.remaining = self.commit
+            # If nothing measured points at the target, turn instead of walking the least-bad way. Taps rotate the
+            # follow camera (measured: 125-180 degrees per tap), so a turn re-deals the four directions; the learned
+            # map is cleared so the next taps measure the new frame.
+            alignment = self._alignment(self.key, aim)
+            if alignment < 0.5 and len(self.dirs) >= 3:
+                self.dirs.clear()
+                self.key = "left"
+                self.turns += 1
+        self.remaining -= 1
+        self.last_key = self.key
+        self.last_pos = here
+        self.steps += 1
+        self.last_dir = aim
+        self.last_aim = (float(target[0]), float(target[1])) if self.steps >= self.slide_until else None
+        return press(self.key, f"tap {self.key} ({distance:.0f} units toward {reason or 'target'}, "
+                              f"slide {self.slides})")
+
+    def _alignment(self, key: str, aim: tuple) -> float:
+        direction = self.dirs.get(key)
+        if direction is None:
+            return -1.0
+        ax, az = _unit(aim[0], aim[1])
+        return direction[0] * ax + direction[1] * az
+
+    def _best(self, aim: tuple) -> str:
+        # A key with no learned direction is tried first. Measured at (-128,250) in Forest 1: the aim was 329 units east,
+        # but `up`, `down` and `left` had all been learned as north/south (the camera had rotated), `right` had never
+        # been tried at all, and so no key could point east - the character walked 41 units south while the target sat
+        # south-east and ended the run 425 units away. Every key must be measured before any is trusted.
+        unknown = [key for key in self.keys if key not in self.dirs]
+        if not self.dirs:
+            return self.keys[0]
+        best, best_dot = None, -2.0
+        for key in self.keys:
+            direction = self.dirs.get(key)
+            if direction is None:
+                continue
+            dot = direction[0] * aim[0] + direction[1] * aim[1]
+            if dot > best_dot:
+                best, best_dot = key, dot
+        # Explore an unmeasured key only when nothing measured points usefully along the aim: a single unknown key tried
+        # too eagerly costs a tap that goes the wrong way (measured: forcing it first broke a rotating-frame walk).
+        if unknown and best_dot < 0.5:
+            return unknown[0]
+        return best or self.keys[0]
 
 
 @dataclass
@@ -477,6 +1359,10 @@ class Calibration:
     turn: dict
     model: str
     samples: list
+    # The heading the effects were measured at. The stick is camera-relative, so a key's world displacement rotates with
+    # the character; without this the table is only valid until the first turn (measured: every hold in every direction
+    # moved 0.0 at heading 186, and one turn made the same hold move 7 units).
+    heading: float = 0.0
 
     def as_dict(self) -> dict:
         return {"model": self.model, "speed": round(self.speed, 2),
@@ -496,6 +1382,8 @@ def calibrate(world, *, keys=DIRECTIONS, ledger: Ledger | None = None, clock: Cl
     """
     clock = clock or MonotonicClock()
     samples, effects, turn = [], {}, {}
+    first = ((world.observe() or {}).get("player") or {})
+    heading_at = float(first.get("heading_deg") or 0.0)
     def read():
         return world.observe() or {}
     for key in keys:
@@ -534,7 +1422,8 @@ def calibrate(world, *, keys=DIRECTIONS, ledger: Ledger | None = None, clock: Cl
             effects[key] = (0.0, 0.0)                 # measured dead this session: do not blame the geometry later
     travel = [math.hypot(*effects[key]) for key in moving]
     speed = round(sum(travel) / len(travel) / 0.12, 1) if travel else 0.0
-    result = Calibration(effects=effects, speed=speed, turn=turn, model=model, samples=samples)
+    result = Calibration(effects=effects, speed=speed, turn=turn, model=model, samples=samples,
+                        heading=heading_at)
     if ledger is not None:
         ledger.record("calibration", note=f"model={model}; {len(moving)} moving key(s)",
                       extra=result.as_dict())
@@ -690,6 +1579,7 @@ class HeadingMotion:
 # Progression policy: what to do next, in dependency order
 # ---------------------------------------------------------------------------------------------------------------------
 SWITCH_CLASSES = frozenset({"TObjDoorKey", "TLazerFenceSw", "TOKeyGenericSw"})
+CITY_ROOMS = ("10", "20", "40")     # Pioneer 2 rooms; the forest uses other numbers
 DOOR_CLASSES = frozenset({"TObjDoor", "TObjLazerFenceNorm", "TOBarrierEnergy01", "TObjLazerFence"})
 CONTAINER_HINTS = ("Container", "Capsule", "Trap")
 
@@ -697,17 +1587,22 @@ CONTAINER_HINTS = ("Container", "Capsule", "Trap")
 @dataclass(frozen=True)
 class Objective:
     rank: int
-    kind: str                 # warp | wave | switch | door | container
+    kind: str                 # warp | wave | switch | door | container | walk
     point: tuple
-    distance: float
+    distance: float           # to `point` (a route waypoint once routed)
     cls: str = ""
     ptr: str = ""
     hp: float | None = None
     why: str = ""
+    #: distance to the actual target entity. When a router replaces `point` with a waypoint this is the only number
+    #: that may decide "close enough to press/attack" - using the waypoint distance pressed a door key from 70 units
+    #: away (measured), because the first waypoint happened to be 8 units ahead of the character.
+    target_distance: float | None = None
 
     def as_dict(self) -> dict:
         return {"rank": self.rank, "kind": self.kind, "class": self.cls, "ptr": self.ptr,
-                "distance": round(self.distance, 1), "hp": self.hp, "why": self.why}
+                "distance": round(self.distance, 1), "hp": self.hp, "why": self.why,
+                "target_distance": None if self.target_distance is None else round(self.target_distance, 1)}
 
 
 class ProgressionPolicy:
@@ -721,16 +1616,21 @@ class ProgressionPolicy:
     """
 
     def __init__(self, *, engage: float = 40.0, reach: float = 400.0, press_range: float = 14.0,
-                 attack_range: float = 30.0, avoid_s: float = 30.0, optional_limit: int = 3,
-                 switch_demote_s: float = 60.0) -> None:
+                 attack_range: float = 20.0, avoid_s: float = 30.0, optional_limit: int = 3,
+                 height_reach: float = 5.0,
+                 switch_demote_s: float = 60.0, door_state: dict | None = None) -> None:
         self.engage = float(engage)
         self.reach = float(reach)
         self.press_range = float(press_range)
         self.attack_range = float(attack_range)
         self.avoid_s = float(avoid_s)
+        self.height_reach = float(height_reach)
         self.optional_limit = int(optional_limit)
         self.switch_demote_s = float(switch_demote_s)
         self.optional_streak = 0
+        self.current_key = None
+        # ptr -> "open" | "closed", learned by attempting a crossing (there is no readable door state).
+        self.door_state = dict(door_state or {})
 
     def choose(self, snap: dict, now: float, *, pressed=None, avoid=None) -> Objective | None:
         pressed = pressed or {}
@@ -738,6 +1638,7 @@ class ProgressionPolicy:
         player = snap.get("player") or {}
         px, pz = float(player.get("x") or 0), float(player.get("z") or 0)
         candidates = []
+        player_y = player.get("y")
         for kind in ("enemy", "gate", "object", "other"):
             for entity in (snap.get("entities") or {}).get(kind, []):
                 if entity.get("x") is None or entity.get("z") is None:
@@ -748,7 +1649,16 @@ class ProgressionPolicy:
                     continue
                 ptr = str(entity.get("ptr") or "")
                 hp = entity.get("hp")
-                if "Warp" in cls:
+                # The forest has floors: the west basin sits 12 units below the doors that lead on, and a 2D motion
+                # cannot walk up a cliff. An objective more than height_reach away vertically is not reachable by
+                # walking (measured: 90 s of walking at a wall underneath the doors).
+                if player_y is not None and entity.get("y") is not None:
+                    if abs(float(entity["y"]) - float(player_y)) > self.height_reach:
+                        continue
+                if "Warp" in cls and not cls.startswith("TObjCityDoor"):
+                    # `TObjCityDoor_Warp` is a city door, not a pad: the bot reached 9 units from one at (254,25) and
+                    # pressing A did nothing, twice, while the real pad is the TObject at (360,26) - two verified
+                    # floor 0 -> 1 transitions.
                     candidates.append(Objective(0, "warp", (float(entity["x"]), float(entity["z"])),
                                                 distance, cls, ptr, None, "level exit in reach"))
                 elif kind == "enemy" and hp is not None and float(hp) > 0 and distance <= self.engage:
@@ -757,20 +1667,37 @@ class ProgressionPolicy:
                     candidates.append(Objective(1, "wave", (float(entity["x"]), float(entity["z"])),
                                                 distance, cls, ptr, float(hp), "live enemy in the room"))
                 elif cls in SWITCH_CLASSES:
-                    last = pressed.get(ptr, 0.0)
-                    if not last or (now - last) > self.switch_demote_s:
-                        candidates.append(Objective(2, "switch", (float(entity["x"]), float(entity["z"])),
-                                                    distance, cls, ptr, None, "switch for the way on"))
+                    if ptr in pressed:
+                        continue                              # verified this session: a flag bit changed for it
+                    candidates.append(Objective(2, "switch", (float(entity["x"]), float(entity["z"])),
+                                                distance, cls, ptr, None, "switch for the way on"))
+                elif cls == "TObject" and str(player.get("room")) in CITY_ROOMS:
+                    # Warp pads are TObjects with no room, and only Pioneer 2's pads are the way on: (360,26) took the
+                    # character to Forest 1 twice, verified. In the Forest the TObjects are the pads *back*, and
+                    # targeting them ping-pongs: measured (366,8) -> (574,486) -> (336,14) through two pads in one run.
+                    candidates.append(Objective(0, "warp", (float(entity["x"]), float(entity["z"])),
+                                                distance, cls, ptr, None, "warp pad"))
                 elif cls in DOOR_CLASSES:
-                    candidates.append(Objective(3, "door", (float(entity["x"]), float(entity["z"])),
-                                                distance, cls, ptr, None, "door on the way on"))
+                    # A door is a passage, not a destination. Carved routes already cross open doorways, and making a
+                    # door an objective produced a ping-pong through it: the character crossed, the aim-past point was
+                    # then behind it, and it turned round and crossed back (measured: 280 ticks around one door).
+                    continue
                 elif kind == "object" and any(hint in cls for hint in CONTAINER_HINTS):
                     if self.optional_streak < self.optional_limit:
                         candidates.append(Objective(4, "container", (float(entity["x"]), float(entity["z"])),
                                                     distance, cls, ptr, None, "optional loot"))
         if not candidates:
             return None
-        return min(candidates, key=lambda objective: (objective.rank, objective.distance))
+        best = min(candidates, key=lambda objective: (objective.rank, objective.distance))
+        # Keep the current objective while it is still a candidate of the same rank. Two doors 115 and 116 units away
+        # swap places on every tick as the character moves, and each swap re-planned the whole route (measured: a
+        # 1 tick/s run whose character covered 45 units in 67 s, every re-plan an A* over 90,986 cells).
+        current = next((objective for objective in candidates
+                        if (objective.kind, objective.ptr) == self.current_key), None)
+        if current is not None and current.rank <= best.rank:
+            best = current
+        self.current_key = (best.kind, best.ptr)
+        return best
 
     def note(self, kind: str, progressed: bool) -> None:
         if kind == "container":
@@ -795,7 +1722,7 @@ class ComboSequencer:
     """
 
     def __init__(self, *, keys=("a", "a", "a"), gap_s: float = 0.45, grace_s: float = 0.9,
-                 whiff_limit: int = 3) -> None:
+                 whiff_limit: int = 6) -> None:
         self.keys = tuple(keys)
         self.gap_s = float(gap_s)
         self.grace_s = float(grace_s)
@@ -877,24 +1804,50 @@ class World(Protocol):
 
 
 class SessionWorld:
-    """`World` over gBox's session channel: `rpc state`, `rpc read_memory`, and `session_op send_input` jobs.
+    """`World` over gBox's session channel: `rpc state`, `rpc read_memory`, and controller input.
+
+    Input goes through the app's **session input queue** (`POST /api/sessions/{sid}/input`), which is measured at
+    **15 ms** round trip and moved the character 7.8 units on the first try, with the `session_op` job path (measured
+    at 0.53-1.22 s per job) as the fallback. That distinction is the whole difference between a bot that takes one
+    step a second and one that takes several: a hold no longer pays a second of queue latency for the down and
+    another for the release, and an operator takeover is released in 15 ms rather than after the in-flight job.
 
     `call(path, payload=None, method="GET", timeout=60)` is injected so this adapter is testable without a running
-    gBox. Every mutation is one job carrying its whole event batch, because splitting a press across jobs was
-    measured to make the hold depend on job latency and to leave keys held when a release was lost.
+    gBox. Each event batch carries its down and its up together, because splitting a press across jobs was measured
+    to make the hold depend on job latency and to leave keys held when a release was lost.
     """
 
+    # The emulator window has to be foreground for the keyboard input path to reach the game. Measured after two
+    # "frozen character" sessions in which every key - movement, A, B, Start - did nothing while the frame counter ran
+    # at 32 fps: with the Dolphin window brought to the foreground the same tap moved the character 6.4 units
+    # immediately. The adapter sets Dolphin.Input.BackgroundInput, but that covers the pad, not the keyboard.
+    EMULATOR_TITLE_PARTS = ("Dolphin", "Phantasy")
+
     def __init__(self, sid: str, call: Callable, *, worker: str | None = None, poll_s: float = 0.05,
-                 sleep: Callable[[float], None] = time.sleep) -> None:
+                 sleep: Callable[[float], None] = time.sleep, fast_input: bool = True,
+                 settle_s: float = 0.12, keep_focus: bool = True) -> None:
         self.sid = sid
         self.call = call
         self.worker = worker or sid.split("-")[0]
         self.poll_s = float(poll_s)
         self.sleep = sleep
+        self.fast_input = bool(fast_input)
+        # The queue acknowledges in ~15 ms, before the worker has applied the events. Without this settle the
+        # post-state read is the *previous* state: measured live, every tap then looked like it moved 0 units, the
+        # motion model kept re-probing, and the routed walk drifted 160 units off its waypoints.
+        self.settle_s = float(settle_s)
         self.sent = 0
+        self.fast_sent = 0
+        self.job_sent = 0
+        self.keep_focus = bool(keep_focus)
+        self._hwnd = None
+        self.focus_calls = 0
+        self.dead_input = False
+        self.missed_input = 0
 
-    def observe(self) -> dict:
-        state = self.call(f"/api/sessions/{self.sid}/rpc", {"op": "state", "args": {}}, "POST", 25)
+    def observe(self, player_only: bool = False) -> dict:
+        args = {"player_only": True} if player_only else {}
+        state = self.call(f"/api/sessions/{self.sid}/rpc", {"op": "state", "args": args}, "POST", 25)
         return state if isinstance(state, dict) else {}
 
     def read(self, address: int, length: int) -> bytes:
@@ -906,12 +1859,12 @@ class SessionWorld:
             return b""
 
     def act(self, action: Action, deadline: float) -> str:
-        """Apply one action. Returns the job state: succeeded / failed / timeout / no-job."""
+        """Apply one action. Returns the delivery state: queued / succeeded / failed / timeout / no-job."""
         events = action.events()
         if not events:
             self.sleep(max(0.0, action.seconds))
             return "succeeded"
-        state = self._job(events, deadline)
+        state = self._apply(events, deadline)
         if action.kind == "hold":
             remaining = deadline - time.monotonic()
             if remaining > 0:
@@ -921,7 +1874,75 @@ class SessionWorld:
         return state
 
     def release(self) -> None:
-        self._job(RELEASE.events(), time.monotonic() + 2.0)
+        self._apply(RELEASE.events(), time.monotonic() + 2.0)
+
+    def focus(self) -> bool:
+        """Bring the emulator window to the foreground. True when it is (or became) the focused window."""
+        if not self.keep_focus or os.name != "nt":
+            return True
+        try:
+            import ctypes
+            from ctypes import wintypes
+            user32 = ctypes.WinDLL("user32", use_last_error=True)
+            if self._hwnd is None:
+                found: list = []
+
+                @ctypes.WINFUNCTYPE(ctypes.c_bool, wintypes.HWND, wintypes.LPARAM)
+                def callback(hwnd, lparam):
+                    length = user32.GetWindowTextLengthW(hwnd)
+                    if length:
+                        buffer = ctypes.create_unicode_buffer(length + 1)
+                        user32.GetWindowTextW(hwnd, buffer, length + 1)
+                        title = buffer.value
+                        if any(part in title for part in self.EMULATOR_TITLE_PARTS) and "python.exe" not in title:
+                            found.append(hwnd)
+                    return True
+
+                user32.EnumWindows(callback, 0)
+                self._hwnd = found[0] if found else 0
+            if not self._hwnd:
+                return False
+            if user32.GetForegroundWindow() == self._hwnd:
+                return True
+            user32.ShowWindow(self._hwnd, 9)                 # SW_RESTORE: an iconic window cannot take focus
+            user32.SetForegroundWindow(self._hwnd)
+            self.focus_calls += 1
+            return user32.GetForegroundWindow() == self._hwnd
+        except Exception:                                     # noqa: BLE001 - input must never fail on a focus call
+            return False
+
+    # The app presses keys on the session's display, and on Windows it sends the names it is given straight to the
+    # window - it does not translate gBox pad names first. Measured: {"key": "x"} produced an action state (1 -> 5) while
+    # {"key": "a"}, "b", "start" and "y" produced none, and the Dolphin keyboard map that gBox writes is
+    # a->x, b->z, x->s, y->a. So every press("a") this bot ever sent was the GameCube **Y** button: no attack, no switch
+    # press, no door confirmation, which is exactly the history the ledgers show.
+    PAD_TO_KEYBOARD = {"a": "x", "b": "z", "x": "s", "y": "a", "start": "Return", "select": "BackSpace",
+                       "l": "q", "r": "w", "l2": "e", "r2": "r",
+                       "up": "Up", "down": "Down", "left": "Left", "right": "Right"}
+
+    def _apply(self, events: list, deadline: float) -> str:
+        self.focus()
+        events = [dict(event, key=self.PAD_TO_KEYBOARD.get(str(event.get("key")), event.get("key")))
+                  for event in events if isinstance(event, dict) and "key" in event]
+        # The app's session input queue can die: /input stops returning {"queued": N} and returns [] instead, after which
+        # nothing is applied - measured twice, about nine minutes of heavy input into a session, with the frame counter
+        # and memory reads still healthy. Counting those empty answers lets a run say "input is dead" instead of
+        # grinding out thousands of actions that cannot land.
+        if self.fast_input:
+            queued = self.call(f"/api/sessions/{self.sid}/input", {"events": events}, "POST", 10)
+            if isinstance(queued, dict) and "queued" in queued:
+                self.fast_sent += 1
+                self.missed_input = 0
+                if self.settle_s > 0:
+                    self.sleep(self.settle_s)
+                return "queued"
+            if isinstance(queued, list):
+                self.missed_input += 1
+                if self.missed_input >= 3:
+                    self.dead_input = True
+                return "dead-input"
+        self.job_sent += 1
+        return self._job(events, deadline)
 
     def _job(self, events: list, deadline: float) -> str:
         job = self.call("/api/jobs", {"tool": "session_op", "require_worker": self.worker,
@@ -943,6 +1964,39 @@ class SessionWorld:
 # ---------------------------------------------------------------------------------------------------------------------
 # The tick loop
 # ---------------------------------------------------------------------------------------------------------------------
+def carve_doorways(cells, doors, *, radius: float = 7.0, cell: float = 2.5) -> set:
+    """Add grid cells around each doorway so a route can *cross* it instead of going around the room.
+
+    The collision mesh contains the door volume as geometry, and it was captured from the disc with every door in its
+    default (closed) state, so a doorway is a wall in the static grid no matter what its runtime state is. Measured on
+    the live map: a door frame occupies the cells a route would have to cross, and A* therefore never crosses a room
+    boundary at a door - the character stands in front of an open door and orbits. Carving restores the passage; the
+    door's actual open/closed state is then a runtime question for the controller, not a map question.
+    """
+    out = {tuple(cell_index) for cell_index in cells}
+    steps = int(math.ceil(max(radius, 0.0) / cell))
+    for door in doors or ():
+        try:
+            x, z = float(door[0]), float(door[1])
+        except (TypeError, ValueError, IndexError):
+            continue
+        base = (math.floor(x / cell), math.floor(z / cell))
+        for dx in range(-steps, steps + 1):
+            for dz in range(-steps, steps + 1):
+                out.add((base[0] + dx, base[1] + dz))
+    return out
+
+
+@dataclass
+class Pending:
+    """A movement action issued by one tick and measured by the next one's state read."""
+    action: Action
+    objective: Objective | None
+    before: dict
+    started: float
+    index: int
+
+
 @dataclass
 class Tick:
     index: int
@@ -1011,6 +2065,14 @@ class Automaton:
         self.best_distance = None
         self.no_close = 0
         self.escapes = 0
+        self.no_close_since = 0.0
+        self.objective_since_at = 0.0
+        self.entities = []
+        self.room = None
+        self.room_candidate = None
+        self.explore_steps = 0
+        self.room_count = 0
+        self.pending = None
 
     # -- public -----------------------------------------------------------------------------------------------------
     def run_for(self, seconds: float) -> list:
@@ -1018,11 +2080,15 @@ class Automaton:
         ticks, deadline = [], self.clock.now() + float(seconds)
         while self.clock.now() < deadline and not self.stopped:
             ticks.append(self.tick())
+        last = self.flush()
+        if last is not None:
+            ticks.append(last)
         return ticks
 
     def tick(self) -> Tick:
         self.ticks += 1
         started = self.clock.now()
+        phase = {"t0": time.monotonic(), "observe": 0.0, "plan": 0.0, "act": 0.0, "after": 0.0, "account": 0.0}
         if self.stopped:
             return self._finish(started, "stopped", note=self.stopped)
         if self.operator.active(started):
@@ -1031,15 +2097,37 @@ class Automaton:
             self._record("preempted", None, None, None, note="operator owns the pad; inputs released")
             return self._finish(started, "preempted", note="operator takeover")
 
-        before = self._observe()
+        before = self._observe(full=(self.ticks % max(1, self.bounds.full_read_every) == 1 or not self.entities))
+        phase["observe"] = time.monotonic() - phase["t0"]
         player = before.get("player") or {}
         if player.get("ptr") is None:
             self._record("no-player", None, before, None, note="no player in the profile")
             return self._finish(started, "no-player", note="transition, menu or loading screen")
 
+        # A movement action is measured by the *next* tick's read. Measured: a state read taken immediately after an
+        # input takes 0.65-1.0 s on this worker (the input pump is serviced first), while the same read one tick later
+        # takes 0.03 s. Deferring the read is what turns ~1 tick/s into 4-6, and it measures a settled position
+        # instead of a half-applied one.
+        concluded = None
+        if self.pending is not None:
+            concluded = self._conclude(self.pending, before, started)
+            self.pending = None
+
         stall = self.watchdog.observe(player, started)
         if stall is not None:
-            action = self.watchdog.recovery()
+            # Probe the four keys instead of trusting a fixed rotation: measured at (557,384) in Forest 1, three of the
+            # four keys moved 7.7 units while the rotation kept choosing the blocked one, and the run reported "every
+            # recovery failed" for a character that was not wedged at all.
+            motion = self.motion
+            if hasattr(motion, "probe_queue") and not getattr(motion, "probe_queue"):
+                motion.probe_queue = list(getattr(motion, "keys", DIRECTIONS))
+                motion.probe_scores = {}
+                target = self._last_target() or (0.0, 0.0)
+                motion.probe_target = (float(target[0]), float(target[1]))
+            if getattr(motion, "probe_queue", None):
+                action = press(motion.probe_queue.pop(0), "stall probe: test a direction instead of trusting a rotation")
+            else:
+                action = self.watchdog.recovery()
             self._execute(action, started)
             self._record("stall", action, before, None, extra=stall.to_dict)
             if self.watchdog.exhausted():
@@ -1053,42 +2141,82 @@ class Automaton:
 
         objective = self.policy.choose(before, started, pressed=self.pressed, avoid=self.avoid)
         action = self._plan(objective, before, started)
+        phase["plan"] = time.monotonic() - phase["t0"] - phase["observe"]
         if action is None:
             action = WAIT if objective is not None else self._explore(player, started)
-        if objective is not None and self.no_close >= max(8, self.bounds.max_no_close_ticks // 3) \
-                and self.escapes < self.bounds.max_escapes:
+        escape_due = (started - (self.no_close_since or started)) >= max(1.5, float(self.bounds.max_no_close_s) / 6)
+        if objective is not None and escape_due and self.escapes < self.bounds.max_escapes:
             # Moving but not closing: taps are the wrong size for this pocket. Try a hold before reporting failure.
             action = self._escape()
             self.no_close = 0
             self.escapes += 1
         action = action.clipped(self.bounds)
 
-        press_tick = objective is not None and objective.kind == "switch" and action.kind == "press"
+        # An interaction button is verified now; a direction tap is a movement and is measured next tick. Both are
+        # "press" actions, so the kind alone cannot tell them apart - the key can.
+        interaction = action.kind == "press" and action.key not in DIRECTIONS
+        press_tick = interaction and objective is not None and objective.kind == "switch" and action.key == "a"
         if press_tick and self.world_supports_flags():
             before = self._with_flags(before)
         self._execute(action, started)
-        after = self._observe()
-        if press_tick and self.world_supports_flags():
-            after = self._with_flags(after)
+        phase["act"] = time.monotonic() - phase["t0"] - phase["observe"] - phase["plan"]
 
         # The mandate asks for the takeover check *after* every input as well as before it: one action is at most
         # half a second, and this is what makes that half second the longest the operator can be ignored.
         if self.operator.active(self.clock.now()):
             self.world.release()
-            self._record("preempted", action, before, after, note="operator took the pad during the action; released")
+            self._record("preempted", action, before, None, note="operator took the pad during the action; released")
             return self._finish(started, "preempted", action=action, objective=objective,
                                 note="operator takeover after the input")
 
+        if interaction:
+            # An interaction is verified now: the press is the evidence, and a flag write or HP delta must be read
+            # before the next action can change them. Movement is measured at the start of the next tick instead,
+            # because a state read taken right after an input costs 0.65-1.0 s on this worker.
+            after = self._observe(full=False)
+            if press_tick and self.world_supports_flags():
+                after = self._await_flag_change(after, before)
+            phase["after"] = time.monotonic() - phase["t0"] - phase["observe"] - phase["plan"] - phase["act"]
+            self.phases = phase
+            if hasattr(self.motion, "learn"):
+                self.motion.learn(action, player, self._player(after))
+            moved, failure = self._account(objective, action, before, after, started)
+            self._record("tick", action, before, after, note=objective.why if objective else "no objective in reach",
+                         extra={"objective": objective.as_dict() if objective else None,
+                                "flag_access": press_tick and self.world_supports_flags()})
+            self.last_objective = objective
+            if failure:
+                return self._fail(started, failure, after, action)
+            return self._finish(started, "acted", action=action, objective=objective, moved=moved,
+                                note=objective.why if objective else "explored")
+
+        self.pending = Pending(action, objective, before, started, self.ticks)
+        if concluded is not None:
+            return concluded
+        return self._finish(started, "issued", action=action, objective=objective,
+                            note="action issued; measured next tick")
+
+    def flush(self):
+        """Conclude the action still pending when a run ends, so its evidence is not lost."""
+        if self.pending is None:
+            return None
+        pending, self.pending = self.pending, None
+        after = self._observe(full=False)
+        return self._conclude(pending, after, self.clock.now())
+
+    def _conclude(self, pending, after: dict, now: float) -> Tick:
+        action, objective, before = pending.action, pending.objective, pending.before
         if hasattr(self.motion, "learn"):
-            self.motion.learn(action, player, self._player(after))
-        moved, failure = self._account(objective, action, before, after, started)
-        self._record("tick", action, before, after, note=objective.why if objective else "no objective in reach",
+            self.motion.learn(action, self._player(before), self._player(after))
+        moved, failure = self._account(objective, action, before, after, now)
+        self._record("tick", action, before, after,
+                     note=objective.why if objective else "no objective in reach",
                      extra={"objective": objective.as_dict() if objective else None,
-                            "flag_access": press_tick and self.world_supports_flags()})
+                            "flag_access": False, "measured": "next tick"})
         self.last_objective = objective
         if failure:
-            return self._fail(started, failure, after, action)
-        return self._finish(started, "acted", action=action, objective=objective, moved=moved,
+            return self._fail(now, failure, after, action)
+        return self._finish(pending.started, "acted", action=action, objective=objective, moved=moved,
                             note=objective.why if objective else "explored")
 
     # -- planning ---------------------------------------------------------------------------------------------------
@@ -1098,17 +2226,16 @@ class Automaton:
             return None
         target = objective.point
         arrive = float(getattr(self.motion, "arrive", 12.0))
+        # Range checks use the distance to the actual entity, never to a route waypoint (see Objective.target_distance).
+        reach = objective.distance if objective.target_distance is None else objective.target_distance
         if objective.kind == "wave":
-            if objective.distance <= self.policy.attack_range:
+            if reach <= self.policy.attack_range:
                 return self.combat.next_action(now, reason=f"combo on {objective.cls}") or WAIT
-            return self.motion.step(player, target, f"{objective.cls} at {objective.distance:.0f} units")
+            return self.motion.step(player, target, f"{objective.cls} at {reach:.0f} units")
         if objective.kind == "switch":
-            if objective.distance <= self.policy.press_range:
-                # The profile does not expose the game's interaction prompt, so this range is calibrated rather than
-                # known. A press that changes no flag is retried (bounded by max_switch_attempts) and ended with a
-                # fixture that records the distance of every attempt, which is the measurement the next session needs.
+            if reach <= self.policy.press_range:
                 self.switch_presses[objective.ptr] = self.switch_presses.get(objective.ptr, 0) + 1
-                return press("a", f"press {objective.cls} at {objective.distance:.1f} units "
+                return press("a", f"press {objective.cls} at {reach:.1f} units "
                                   f"(attempt {self.switch_presses[objective.ptr]})")
             return self.motion.step(player, target, f"switch {objective.cls}")
         if objective.kind == "door":
@@ -1117,10 +2244,15 @@ class Automaton:
             point = self._through_point(player, target, 16.0) if objective.distance <= arrive else target
             return self.motion.step(player, point, f"door {objective.cls}")
         if objective.kind == "warp":
+            # A warp pad is activated by standing on it and pressing A: measured in Pioneer 2, the bot walked to
+            # (360,26) - within 2.9 units of the pad - and nothing happened until A was pressed, after which the floor
+            # went 0 -> 1. Contact alone is not enough.
+            if reach <= 10.0:
+                return press("a", f"activate the warp {objective.cls} at {reach:.0f} units")
             point = self._through_point(player, target, 12.0) if objective.distance <= arrive else target
             return self.motion.step(player, point, f"warp {objective.cls}")
         if objective.kind == "container":
-            if objective.distance <= self.policy.attack_range:
+            if reach <= self.policy.attack_range:
                 return self.combat.next_action(now, reason="break a container") or WAIT
             return self.motion.step(player, target, "optional container")
         if objective.kind == "walk":
@@ -1130,7 +2262,12 @@ class Automaton:
     def _explore(self, player: dict, now: float) -> Action:
         """A deterministic bounded sweep when nothing in the dependency chain is in reach."""
         room = str(player.get("room") or "0").strip()
-        direction = DIRECTIONS[int(room) % 4] if room.isdigit() else "up"
+        # Rotate every call. Taking the direction from the room number alone made the fallback press the SAME key for a
+        # whole run: measured, 599 consecutive `up` presses in Forest 1 room 16 (16 % 4 = 0), where `up` is blocked, so
+        # the character did not move for 150 seconds and the watchdog called it a stall five times.
+        self.explore_steps += 1
+        base = int(room) % 4 if room.isdigit() else 0
+        direction = DIRECTIONS[(base + self.explore_steps) % 4]
         return press(direction, f"explore room {room}: one step {direction}")
 
     def _account(self, objective: Objective | None, action: Action, before: dict, after: dict, now: float):
@@ -1141,7 +2278,15 @@ class Automaton:
         """
         delta = diff(before, after)
         progressed, kind = False, "none"
-        if delta["room"][0] != delta["room"][1]:
+        room = (after.get("player") or {}).get("room")
+        settled = self._room_settled(room)
+        if settled is not None and delta["moved"] >= 1.0:
+            # A settled room is a transition only if the character actually moved. A value that alternates with a
+            # two-tick period settles on every flip, and counting that as progress masked a character that was pinned
+            # in place: measured 347 actions and 60 s at (604,-151) with the room reporting 'progress' every 10 s.
+            # A room value that alternates every tick is a boundary flicker, not a transition: measured at
+            # (7..14, 180..192) the room flipped 10 -> 11 -> 10 nine times and each flip reset the progress clocks,
+            # which is how a character can bounce on a threshold while everything reports progress.
             progressed, kind = True, "room"
         elif delta["enemies"]:
             progressed, kind = True, "enemy-hp"
@@ -1156,10 +2301,15 @@ class Automaton:
             progressed, kind = True, "arrived"
         if progressed:
             self.watchdog.note_progress(now, kind)
+        if objective is not None and objective.kind == "warp" and kind == "room":
+            # A warp that just changed the room took the character where it was going. Target it again immediately and
+            # the policy can loop between two areas: measured, a Forest run stepped onto a warp and came back to
+            # Pioneer 2, then spent the run walking to the warp door it had just used. Leave it alone for a while.
+            self.avoid[objective.ptr] = now
         failure = ""
         if objective is not None:
             self.policy.note(objective.kind, progressed)
-            failure = self._budget(objective, progressed) or self._closing(objective, after)
+            failure = self._budget(objective, progressed, now) or self._closing(objective, after, now)
             if objective.kind == "switch":
                 failure = failure or self._verify_switch(objective, action, before, after, now)
             if objective.kind == "wave":
@@ -1202,12 +2352,12 @@ class Automaton:
                     f"to a flag in this group")
         return ""
 
-    def _closing(self, objective: Objective, after: dict) -> str:
+    def _closing(self, objective: Objective, after: dict, now: float) -> str:
         """Distance closed is the progress signal for a point objective; oscillation is not.
 
-        Measured: 95 taps in the plaza between (105,154) and (112,164), ending 198 units from a 260-unit target, with
-        zero stalls because every tap did move the character by more than the movement epsilon. A walk that is not
-        getting closer is failing whether or not it is moving, so it escalates after `max_no_close_ticks`.
+        The budget is in **seconds**, not ticks. The same loop runs at 1 tick/s while the worker stalls and at 5 tick/s
+        when it does not (both measured), so a 40-tick budget is 40 seconds in one run and 8 in the next. How long a
+        walk may fail to close is a property of the game, not of the loop's speed.
         """
         if objective.kind == "wave":
             return ""                                   # a moving enemy is closed by HP, handled by the combat path
@@ -1225,23 +2375,42 @@ class Automaton:
             self._progress_token = token
             self.best_distance = None
             self.no_close = 0
+            self.no_close_since = now
         distance = math.hypot(float(player.get("x") or 0) - objective.point[0],
                               float(player.get("z") or 0) - objective.point[1])
-        if self.best_distance is None or distance < self.best_distance - 1.0:
+        if self.best_distance is None or distance < self.best_distance - 2.0:
             self.best_distance = distance
             self.no_close = 0
+            self.no_close_since = now
             return ""
         self.no_close += 1
-        if self.no_close > self.bounds.max_no_close_ticks:
+        stalled = now - (self.no_close_since or now)
+        if stalled > float(self.bounds.max_no_close_s):
             if self.escapes < self.bounds.max_escapes:
                 self.no_close = 0
+                self.no_close_since = now
                 return ""                                # the escape in tick() gets another budget
-            return (f"{objective.kind} {objective.cls or objective.ptr} not closed for {self.no_close} ticks after "
+            return (f"{objective.kind} {objective.cls or objective.ptr} not closed for {stalled:.0f}s after "
                     f"{self.escapes} hold escapes (still {distance:.0f} units away); the character is moving without "
                     f"approaching it")
         return ""
 
+    def _last_target(self):
+        """The point of the objective the last tick was working on, for the probe's scoring."""
+        objective = getattr(self, "last_objective", None)
+        point = getattr(objective, "point", None) if objective is not None else None
+        return point
+
     def _escape(self) -> Action:
+        # Prefer the motion's own probe: a fixed rotation of keys can keep picking blocked directions, which is how a
+        # play run reported "every recovery failed" at (557,384) while three of the four keys moved 7.7 units.
+        motion = self.motion
+        if hasattr(motion, "probe_queue") and not getattr(motion, "probe_queue"):
+            motion.probe_queue = list(getattr(motion, "keys", DIRECTIONS))
+            motion.probe_scores = {}
+            target = self._last_target() or (0.0, 0.0)
+            motion.probe_target = (float(target[0]), float(target[1]))
+            return WAIT
         """A hold in a rotating direction, used when the character moves but cannot close on the objective.
 
         Measured: taps move ~8 units and a hold moves ~33, and pockets that swallow taps do not swallow holds. The
@@ -1253,19 +2422,39 @@ class Automaton:
         return hold(key, 0.45, f"escape {self.escapes + 1}/{self.bounds.max_escapes}: hold {key} out of a pocket "
                                f"that swallowed {self.bounds.max_no_close_ticks} taps")
 
-    def _budget(self, objective: Objective, progressed: bool) -> str:
-        """One objective may not consume the session: bounded attempts, then a fixture instead of a loop."""
+    def _room_settled(self, room):
+        """Return (previous, current) only when the room has actually settled, two consecutive ticks on one value."""
+        if room is None:
+            return None
+        if room == self.room_candidate:
+            self.room_count += 1
+        else:
+            self.room_candidate, self.room_count = room, 1
+        if self.room_count >= 2 and room != self.room:
+            previous, self.room = self.room, room
+            return previous, room
+        return None
+
+    def _budget(self, objective: Objective, progressed: bool, now: float) -> str:
+        """One objective may not consume the session: bounded attempts, then a fixture instead of a loop.
+
+        Time-bounded for the same reason as `_closing`: a tick budget means a different number of seconds on every run.
+        """
         key = (objective.kind, objective.ptr)
         if key != self.objective_key:
-            self.objective_key, self.objective_since = key, self.ticks
+            self.objective_key = key
+            self.objective_since = self.ticks
+            self.objective_since_at = now
             self.best_distance, self.no_close = None, 0
+            self.no_close_since = now
             return ""
         if progressed:
             self.objective_since = self.ticks
+            self.objective_since_at = now
             return ""
-        spent = self.ticks - self.objective_since
-        if spent > self.bounds.max_objective_ticks:
-            return (f"{objective.kind} {objective.cls} at {objective.ptr} consumed {spent} ticks without progress")
+        spent = now - (getattr(self, "objective_since_at", now) or now)
+        if spent > float(self.bounds.max_objective_s):
+            return (f"{objective.kind} {objective.cls} at {objective.ptr} consumed {spent:.0f}s without progress")
         return ""
 
     @staticmethod
@@ -1285,8 +2474,20 @@ class Automaton:
     def world_supports_flags(self) -> bool:
         return self.flag_address is not None and hasattr(self.world, "read")
 
-    def _observe(self) -> dict:
-        return snapshot(self.world.observe() or {})
+    def _observe(self, *, full: bool = True) -> dict:
+        """Read the state; the full entity table is expensive and barely changes between ticks.
+
+        Measured: a full state read takes 31 ms when idle but **0.5-1.0 s** while the worker is applying input, which
+        was 0.7 s of every tick. The player changes every tick and the entity table does not, so the player is read
+        every tick and the entities every `full_read_every` ticks (the cached table is merged back in).
+        """
+        if full:
+            state = self.world.observe() or {}
+            self.entities = state.get("entities") or []
+        else:
+            state = self.world.observe(player_only=True) or {}
+            state = {**state, "entities": self.entities}
+        return snapshot(state)
 
     def _with_flags(self, snap: dict) -> dict:
         try:
@@ -1294,6 +2495,26 @@ class Automaton:
         except Exception:                                  # noqa: BLE001 - evidence must never stop the loop
             return snap
         return with_flags(snap, raw) if raw else snap
+
+    def _await_flag_change(self, after: dict, before: dict) -> dict:
+        """Poll the stage-flag array for a beat after a press: the input is queued and the game writes the flag later.
+
+        Measured: the press that set floor 1 bit 7 was recorded as three attempts, because the array still matched
+        the pre-press digest 0.12 s after the second press and only showed the change on the third. Two failed
+        verifications would have ended the switch after three attempts even though the switch had worked.
+        """
+        wait = float(self.bounds.flag_wait_s)
+        deadline = self.clock.now() + wait
+        snap = after
+        original = (before.get("stage_flags") or {}).get("sha256")
+        while True:
+            snap = self._with_flags(snap)
+            current = (snap.get("stage_flags") or {}).get("sha256")
+            if current and original and current != original:
+                return snap
+            if self.clock.now() >= deadline:
+                return snap
+            self.clock.sleep(0.08)
 
     @staticmethod
     def _player(snap: dict) -> dict:

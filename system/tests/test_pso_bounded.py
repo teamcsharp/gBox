@@ -56,6 +56,7 @@ class FakeWorld:
         self.blocked = set()
         self.flags = bytearray(576)
         self.flag_reads = []
+        self.switch_delay = 0            # reads to serve the old array for, after a switch press
         self.attack_lands = True
         self.attack_damage = 9.0
         self.attack_range = 30.0
@@ -68,12 +69,14 @@ class FakeWorld:
         self.tick_seconds = 0.0          # extra time an action "takes" (for the overrun test)
 
     # -- World protocol -------------------------------------------------------------------------------------------
-    def observe(self):
-        return {"player": {"ptr": "80DA62A0", "class": "TObjPlayer", "room": self.room,
-                           "x": round(self.pos[0], 3), "y": 0.0, "z": round(self.pos[1], 3),
-                           "heading_deg": round(math.degrees(self.facing) % 360.0, 1),
-                           "hp": self.hp, "hp_max": 76},
-                "entities": [dict(entity) for entity in self.entities]}
+    def observe(self, player_only=False):
+        player = {"ptr": "80DA62A0", "class": "TObjPlayer", "room": self.room,
+                  "x": round(self.pos[0], 3), "y": 0.0, "z": round(self.pos[1], 3),
+                  "heading_deg": round(math.degrees(self.facing) % 360.0, 1),
+                  "hp": self.hp, "hp_max": 76}
+        if player_only:
+            return {"player": player, "entities": []}
+        return {"player": player, "entities": [dict(entity) for entity in self.entities]}
 
     def act(self, action, deadline):
         self.actions.append(action)
@@ -97,6 +100,11 @@ class FakeWorld:
     def read(self, address, length):
         raw = bytes(self.flags[:length])
         self.flag_reads.append(raw)
+        if self.switch_delay:
+            # The game writes the flag on a later frame than the input: model that as "not yet" for N reads.
+            if self.switch_delay > 0:
+                self.switch_delay -= 1
+                return bytes(576)
         return raw
 
     def release(self):
@@ -193,11 +201,14 @@ def test_tick_issues_exactly_one_action_and_never_exceeds_the_bound(workdir):
     ticks = box.run_for(30.0)
 
     assert ticks, "the loop must tick"
-    assert len(world.actions) == len(ticks), "one world action per tick, never two"
+    # One action per tick: a movement action is issued by one tick and measured by the next, so the last action is
+    # concluded by flush() without issuing a new one. Never two actions in one tick.
+    assert len(world.actions) <= len(ticks), "never more than one world action per tick"
+    assert len(world.actions) >= len(ticks) - 2
     assert all(action.seconds <= box.bounds.action_s for action in world.actions)
     assert all(tick.elapsed < box.bounds.tick_s for tick in ticks)
     assert box.overruns == 0
-    assert box.stats()["actions"] == len(ticks)
+    assert box.stats()["actions"] >= len(ticks) - 2
 
 
 def test_a_tick_that_overruns_its_bound_is_detected_and_recorded(workdir):
@@ -224,6 +235,20 @@ def test_action_validation_rejects_unknown_inputs():
 # ---------------------------------------------------------------------------------------------------------------------
 # Operator ownership: checked before and after every input
 # ---------------------------------------------------------------------------------------------------------------------
+def test_a_stale_operator_flag_does_not_block_the_bot(workdir):
+    """The flag's mtime is an epoch, the tick clock is monotonic: comparing them made every leftover flag fresh forever.
+
+    Measured live: a 141-second-old `operator-playing.flag` still produced "operator owns the pad" for a whole run.
+    """
+    flag = workdir / "operator-playing.flag"
+    flag.write_text("operator pad relay", encoding="ascii")
+    guard = B.OperatorGuard(flag, stale_s=15.0)
+    assert guard.active(1234.0) is True, "a fresh flag means hands off, whatever clock the caller passes"
+    old = time.time() - 300.0
+    os.utime(flag, (old, old))
+    assert guard.active(1234.0) is False, "a dead relay's flag is not a playing operator"
+
+
 def test_operator_takeover_before_the_tick_releases_and_presses_nothing(workdir):
     clock = FakeClock()
     world = FakeWorld(clock)
@@ -268,8 +293,12 @@ def test_a_wedged_character_is_recovered_a_bounded_number_of_times_then_fixtured
                     bounds=B.Bounds(max_recoveries=2, max_objective_ticks=60))
     ticks = box.run_for(120.0)
     recoveries = [action for action in world.actions if "watchdog recovery" in action.reason]
-    assert recoveries and all(action.kind == "hold" for action in recoveries), \
-        "the escape must be a hold: 40 taps moved 0.0 units in a corner where one 0.45 s hold moved 33"
+    assert recoveries, "a wedge must be recovered, not silently looped"
+    # The escape alternates a turn and a short hold: the stick is camera-relative, so in a corner all four directions
+    # can point into the same wall (measured at (310,540): holds moved 0.0 for 70 s, one turn plus the same hold moved
+    # 7 units), and a hold is still what produces the displacement (40 taps moved 0.0 where one hold moved 33).
+    assert any(action.kind == "press" for action in recoveries), "a turn comes first, to change the frame"
+    assert any(action.kind == "hold" for action in recoveries), "and a hold produces the movement"
 
     assert box.stopped, "a wedge must end in a reported failure, not a silent loop"
     assert box.watchdog.stalls >= 1
@@ -297,16 +326,17 @@ class DriftingWorld(FakeWorld):
 
 
 class _FixedWalk:
-    """A policy whose only objective is one coordinate."""
+    """A policy whose only objective is one coordinate (kind='door' walks through it)."""
 
-    def __init__(self, point):
+    def __init__(self, point, kind="walk"):
         self.point = point
+        self.kind = kind
 
     def choose(self, snap, now, *, pressed=None, avoid=None):
         player = snap.get("player") or {}
         distance = math.hypot(self.point[0] - float(player.get("x") or 0),
                               self.point[1] - float(player.get("z") or 0))
-        return B.Objective(0, "walk", self.point, distance, "coordinate", "", None, "walk target")
+        return B.Objective(0, self.kind, self.point, distance, "coordinate", "", None, "walk target")
 
     def note(self, kind, progressed):
         pass
@@ -324,11 +354,78 @@ def test_a_walk_that_moves_without_closing_escalates(workdir):
     assert (workdir / "failure.json").exists()
 
 
+class FlickerWorld(FakeWorld):
+    """The room flips every tick, as it did at the Forest room 10/11 boundary."""
+
+    def act(self, action, deadline):
+        super().act(action, deadline)
+        self.room = 11 if self.room == 10 else 10
+
+
+def test_a_room_that_flicks_back_and_forth_is_not_progress(workdir):
+    clock = FakeClock()
+    world = FlickerWorld(clock)
+    world.entities = [entity("TObjDoorKey", "80DB5650", 200.0, 0.0)]
+    box = automaton(world, workdir, bounds=B.Bounds(max_no_close_s=6.0))
+    box.run_for(30.0)
+
+    assert box.watchdog.progress_kind != "room", "a flickering room is not progress"
+    # The character in this world never gets anywhere either, and that is now visible: the watchdog's net-window
+    # verdict fires even though every individual tap "moved".
+    assert box.watchdog.stalls >= 1, "a character that moves but goes nowhere is a stall"
+
+
+class SlowFlickerWorld(FakeWorld):
+    """The room flips and holds each value for two ticks - long enough to 'settle' - while the character cannot move."""
+
+    def __init__(self, clock):
+        super().__init__(clock)
+        self.flips = 0
+
+    def act(self, action, deadline):
+        x, z = list(self.pos)
+        super().act(action, deadline)
+        self.pos = [x, z]                         # pinned: the inputs move nothing
+        self.flips += 1
+        if self.flips % 2 == 0:
+            self.room = 11 if self.room == 10 else 10
+
+
+def test_a_settled_room_only_counts_when_the_character_moved(workdir):
+    """Room 10/8 boundary: the value settles on each side while the character is pinned. Counting that as progress kept
+    every clock alive and the bot sat in place for a whole run (347 actions, 60 s at (604,-151))."""
+    clock = FakeClock()
+    world = SlowFlickerWorld(clock)
+    world.entities = [entity("TObjDoorKey", "80DB5650", 200.0, 0.0)]
+    box = automaton(world, workdir, bounds=B.Bounds(max_no_close_s=4.0))
+    box.run_for(20.0)
+
+    assert box.watchdog.progress_kind != "room", "a settled room with no movement is not progress"
+
+
+def test_a_room_that_settles_is_progress(workdir):
+    clock = FakeClock()
+    world = FakeWorld(clock)
+    world.entities = [entity("TObjDoorKey", "80DB5650", 200.0, 0.0)]
+    box = automaton(world, workdir, bounds=B.Bounds(max_no_close_s=6.0))
+    room = {"value": 10}
+
+    def act(action, deadline, _act=world.act):
+        _act(action, deadline)
+        room["value"] = 11 if box.ticks > 2 else 10
+        world.room = room["value"]
+
+    world.act = act
+    box.run_for(10.0)
+    assert box.room == 11, "a room held for two ticks is a real transition"
+
+
 def test_no_objective_progress_for_the_limit_ends_the_run_with_a_fixture(workdir):
     clock = FakeClock()
     world = FakeWorld(clock)
-    world.entities = [entity("TObjDoor", "80DAD5C0", 40.0, 0.0)]
-    box = automaton(world, workdir, bounds=B.Bounds(max_objective_ticks=8))
+    world.entities = [entity("TLazerFenceSw", "80DAD5C0", 40.0, 0.0)]
+    # A long no-close budget isolates the objective-progress deadline: this test is about the second clock.
+    box = automaton(world, workdir, bounds=B.Bounds(max_objective_s=2.0, max_no_close_s=1000.0))
     box.run_for(60.0)
 
     assert box.stopped
@@ -365,6 +462,68 @@ def test_no_player_tick_presses_nothing(workdir):
 # ---------------------------------------------------------------------------------------------------------------------
 # Progression order and container starvation
 # ---------------------------------------------------------------------------------------------------------------------
+def test_the_policy_sticks_to_its_current_objective_when_a_rival_is_the_same_rank(workdir):
+    """Two doors at similar range must not swap every tick: each swap re-planned the route (measured at 1 tick/s)."""
+    clock = FakeClock()
+    world = FakeWorld(clock)
+    world.entities = [entity("TLazerFenceSw", "doorA", 100.0, 0.0), entity("TLazerFenceSw", "doorB", 101.0, 0.0)]
+    policy = B.ProgressionPolicy()
+    first = policy.choose(world.observe() and B.snapshot(world.observe()), clock.now())
+    assert first.ptr == "doorA"
+    world.pos = [5.0, 0.0]                     # now doorB is nearer
+    second = policy.choose(B.snapshot(world.observe()), clock.now())
+    assert second.ptr == "doorA", "a same-rank rival must not steal the objective"
+
+
+def test_a_verified_switch_is_never_targeted_again(workdir):
+    """Verification is permanent for the session: the demote window compared a persisted timestamp against a
+    monotonic clock, so a switch verified at t=1e6 became 'due' again once 60 s of monotonic time had passed, and the
+    bot walked 111 units back to a switch whose flag bit was already set."""
+    clock = FakeClock()
+    world = FakeWorld(clock)
+    world.entities = [entity("TObjDoorKey", "80DB5650", 40.0, 0.0)]
+    policy = B.ProgressionPolicy()
+    snap = B.snapshot(world.observe())
+    assert policy.choose(snap, 1000.0).kind == "switch"
+    later = policy.choose(snap, 1000.0 + 3600.0, pressed={"80DB5650": 1000.0})
+    assert later is None, "a switch whose flag changed is done, however long ago that was"
+
+
+def test_a_door_is_a_passage_not_an_objective(workdir):
+    """Making a door an objective ping-ponged the character through it (280 ticks around one door): it crossed, the
+    aim-past point was then behind it, and it crossed back. Doors are crossed by routes; only switches are goals."""
+    world = FakeWorld(FakeClock())
+    world.entities = [entity("TObjDoor", "doorA", 20.0, 0.0), entity("TLazerFenceSw", "keyA", 300.0, 0.0)]
+    snapshot = B.snapshot(world.observe())
+    objective = B.ProgressionPolicy(door_state={"doorA": "open"}).choose(snapshot, 1000.0)
+    assert objective.kind == "switch", "a door is never a destination, even when it is known to be open"
+    only_door = B.snapshot(FakeWorld(FakeClock()).observe() | {"entities": [entity("TObjDoor", "doorB", 20.0, 0.0)]})
+    assert B.ProgressionPolicy().choose(only_door, 1000.0) is None, "a room with only a door has no objective"
+
+
+def test_an_anchor_inside_the_margin_is_skipped_not_ground_on(workdir):
+    """A grid cell in the eroded margin can be unreachable from the character's side, and the follower used to grind on
+    it until the run failed ("still 13 units away" for 20 s, room 8). It now gives an anchor a fixed patience and moves
+    on."""
+
+    class Router:
+        def __init__(self, points):
+            self.points = points
+
+        def route(self, start, goal):
+            return list(self.points)
+
+    points = [(0.0, 0.0), (10.0, 0.0), (20.0, 0.0), (40.0, 0.0)]
+    follower = B.RouteFollower(Router(points), arrive=6.0, spacing=0.0, anchor_patience=3)
+    # The character sits at the first anchor and never moves: the second anchor is 10 away and can never be reached.
+    seen = []
+    for _ in range(12):
+        point = follower.waypoint({"x": 0.0, "z": 0.0}, (40.0, 0.0))
+        seen.append(point)
+    assert follower.skipped >= 1, "the unreachable anchor is given up on"
+    assert seen[-1] != (10.0, 0.0), "and the follower is no longer aiming at it"
+
+
 def test_a_switch_outranks_a_nearer_container(workdir):
     clock = FakeClock()
     world = FakeWorld(clock)
@@ -426,6 +585,24 @@ def test_switch_press_records_the_stage_flag_delta(workdir):
     assert changed["turned_on"] == [{"group": 3, "index": 21}]
     assert "80DADF10" in box.pressed, "a verified press is what marks a switch done - not the press itself"
     assert "80DADF10" in box.switch_ok
+
+
+def test_a_press_waits_for_the_flag_write_instead_of_counting_a_false_miss(workdir):
+    """The flag write lands a frame or two after the input; the verifier must wait for it.
+
+    Measured live: the press that set Forest 1 bit 7 was read as three attempts because the array still matched the
+    pre-press digest 0.12 s later. Two such false misses would have ended a switch that had actually worked.
+    """
+    clock = FakeClock()
+    world = FakeWorld(clock)
+    world.switch_delay = 3              # the flag appears only on the third read after the press
+    world.entities = [entity("TLazerFenceSw", "80DADF10", 10.0, 0.0)]
+    box = automaton(world, workdir)
+    box.tick()
+
+    assert box.switch_ok == {"80DADF10"}, "the verifier must see the late flag write as success"
+    assert box.switch_misses == {}
+    assert box.switch_presses["80DADF10"] == 1
 
 
 def test_a_switch_that_changes_nothing_is_reported_as_no_change(workdir):
@@ -530,11 +707,13 @@ def test_a_door_is_walked_through_and_the_room_change_is_the_progress(workdir):
     world = FakeWorld(clock)
     world.door = (30.0, 0.0)
     world.entities = [entity("TObjDoor", "80DAD5C0", 30.0, 0.0)]
-    box = automaton(world, workdir, motion=B.HeadingMotion(arrive=10.0))
+    box = automaton(world, workdir, policy=_FixedWalk((30.0, 0.0), kind="door"),
+                    motion=B.HeadingMotion(arrive=10.0))
     for _ in range(80):
         box.tick()
         if world.room != 1:
             break
+    box.flush()          # the crossing movement is measured by the next read, so conclude it before asserting
 
     assert world.room == 2, "walking into the door must change the room; pressing A is not the mechanism"
     assert any(entry["kind"] == "tick" and entry["delta"]["room"] == [1, 2] for entry in _entries(box))
@@ -557,6 +736,48 @@ class StraightRouter:
         return [(start[0] + dx * i / steps + self.offset, start[1] + dz * i / steps) for i in range(1, steps + 1)]
 
 
+def test_a_routed_waypoint_never_makes_a_distant_switch_look_reachable(workdir):
+    """A route waypoint 8 units ahead must not be mistaken for the switch 70 units away.
+
+    Measured live in Forest 1: the routed policy pressed `TObjDoorKey` at tick 3 because the first waypoint was close,
+    while the switch itself was 70 units away, and three presses from there changed no flag.
+    """
+    clock = FakeClock()
+    world = FakeWorld(clock, mode="vector")
+    world.entities = [entity("TObjDoorKey", "80DB54C0", 120.0, 0.0)]
+    router = StraightRouter()
+    box = automaton(world, workdir, policy=B.RoutedPolicy(_ProgressionWrapper(), router, arrive=10.0),
+                    motion=B.VectorMotion(arrive=6.0, primitive="tap"),
+                    bounds=B.Bounds(max_objective_ticks=400))
+    for _ in range(3):
+        box.tick()
+
+    presses = [action for _, action in world.log if action.kind == "press" and action.key == "a"]
+    assert presses == [], "the switch is 120 units away: the first three ticks must walk, not press"
+    assert box.switch_presses == {}
+
+
+class _ProgressionWrapper:
+    """The real progression policy, with the switch as the only candidate."""
+
+    def __init__(self):
+        self.policy = B.ProgressionPolicy()
+
+    @property
+    def press_range(self):
+        return self.policy.press_range
+
+    @property
+    def attack_range(self):
+        return self.policy.attack_range
+
+    def choose(self, snap, now, *, pressed=None, avoid=None):
+        return self.policy.choose(snap, now, pressed=pressed, avoid=avoid)
+
+    def note(self, kind, progressed):
+        self.policy.note(kind, progressed)
+
+
 def test_a_routed_policy_follows_waypoints_instead_of_a_straight_line(workdir):
     clock = FakeClock()
     world = FakeWorld(clock, mode="vector")
@@ -571,9 +792,83 @@ def test_a_routed_policy_follows_waypoints_instead_of_a_straight_line(workdir):
         f"the follower should reach the goal (at {world.pos[0]:.0f},{world.pos[1]:.0f})"
 
 
+def test_carving_a_doorway_turns_a_static_wall_into_a_passage():
+    """The disc's collision mesh has every door closed, so a doorway is wall in the static grid.
+
+    Two rooms, a solid wall between them, and a door in the wall: the route is impossible until the doorway is carved,
+    and after carving it crosses exactly there.
+    """
+    cell = 2.5
+    cells = {(x, z) for x in range(0, 20) for z in range(0, 40)} | \
+            {(x, z) for x in range(22, 42) for z in range(0, 40)}
+    router = _GridRouter(cells, cell)
+    assert router.route((25.0, 50.0), (75.0, 50.0), limit=50000) is None, "the wall blocks the route"
+
+    carved = B.carve_doorways(cells, [(55.0, 50.0)], radius=6.0, cell=cell)
+    router = _GridRouter(carved, cell)
+    route = router.route((25.0, 50.0), (75.0, 50.0), limit=50000)
+    assert route, "carving the doorway must open the route"
+    crossed = any(abs(point[0] - 55.0) <= 8.0 for point in route)
+    assert crossed, "the route must pass through the carved doorway"
+
+
+class _GridRouter:
+    """A tiny 4-neighbour A* over integer cells, enough to prove a passage exists."""
+
+    def __init__(self, cells, cell=2.5):
+        self.safe = {(int(x), int(z)) for x, z in cells}
+        self.cell = cell
+
+    def _nearest(self, point):
+        base = (int(math.floor(point[0] / self.cell)), int(math.floor(point[1] / self.cell)))
+        best = None
+        for radius in range(1, 20):
+            for dx in range(-radius, radius + 1):
+                for dz in (-radius, radius):
+                    for candidate in ((base[0] + dx, base[1] + dz), (base[0] + dz, base[1] + dx)):
+                        if candidate in self.safe:
+                            distance = math.hypot(candidate[0] - base[0], candidate[1] - base[1])
+                            if best is None or distance < best[0]:
+                                best = (distance, candidate)
+            if best:
+                return best[1]
+        return None
+
+    def route(self, start, goal, limit=50000):
+        start_cell, goal_cell = self._nearest(start), self._nearest(goal)
+        if start_cell is None or goal_cell is None:
+            return None
+        frontier = [start_cell]
+        came = {start_cell: None}
+        while frontier and len(came) < limit:
+            current = frontier.pop(0)
+            if current == goal_cell:
+                path = [current]
+                while came[path[-1]] is not None:
+                    path.append(came[path[-1]])
+                return [((x + 0.5) * self.cell, (z + 0.5) * self.cell) for x, z in reversed(path)]
+            for dx, dz in ((1, 0), (-1, 0), (0, 1), (0, -1)):
+                neighbour = (current[0] + dx, current[1] + dz)
+                if neighbour in self.safe and neighbour not in came:
+                    came[neighbour] = current
+                    frontier.append(neighbour)
+        return None
+
+
+def test_route_following_advances_only_when_the_current_anchor_is_reached(workdir):
+    """The anchor must not move because a *nearer* waypoint exists; it moves on arrival. The nearest-waypoint rule
+    oscillated: 167 ticks ending 381 units from a target it started 390 away from."""
+    route = [(float(x), 0.0) for x in range(0, 61, 2)]
+    follower = B.RouteFollower(type("R", (), {"safe": set(), "route": lambda self, a, b: route})(),
+                              arrive=5.0, spacing=12.0)
+    goal = (60.0, 0.0)
+    assert follower.waypoint({"x": 0.0, "z": 0.0}, goal) == (12.0, 0.0), "resampled to 12-unit anchors"
+    assert follower.waypoint({"x": 13.0, "z": 0.0}, goal) == (24.0, 0.0), "advance exactly one anchor, no jumping"
+    assert follower.waypoint({"x": 30.0, "z": 0.0}, goal) == (36.0, 0.0), "the next anchor, not the nearest one"
+    assert follower.waypoint({"x": 59.0, "z": 0.0}, goal) is None, "the goal itself ends the route"
+
+
 def test_a_blocked_leg_is_replanned_rather_than_pushed(workdir):
-    clock = FakeClock()
-    world = FakeWorld(clock, mode="vector")
     router = StraightRouter()
     follower = B.RouteFollower(router, arrive=6.0, replan_after=2)
     player = {"x": 0.0, "z": 0.0}
@@ -646,6 +941,113 @@ def test_relative_motion_uses_the_character_frame_not_a_world_table(workdir):
     assert moves and all(action.kind == "press" for action in moves)
 
 
+class ShiftingWorld(FakeWorld):
+    """A world whose key mapping changes every few taps: the camera-following frame that caused the 1,050-unit orbit."""
+
+    def __init__(self, clock, **kwargs):
+        super().__init__(clock, mode="vector", **kwargs)
+        self.log_every = 3
+        self.taps = 0
+        self.rotation = 0
+
+    def act(self, action, deadline):
+        if action.kind == "press" and action.key in B.DIRECTIONS:
+            self.taps += 1
+            if self.taps % self.log_every == 0:
+                self.rotation = (self.rotation + 90) % 360
+        super().act(action, deadline)
+
+    def _move(self, key, seconds):
+        vectors = {"up": (0.0, 1.0), "down": (0.0, -1.0), "left": (-1.0, 0.0), "right": (1.0, 0.0)}
+        dx, dz = vectors[key]
+        radians = math.radians(self.rotation)
+        rdx = dx * math.cos(radians) - dz * math.sin(radians)
+        rdz = dx * math.sin(radians) + dz * math.cos(radians)
+        step = self.speed * seconds
+        self.pos[0] += rdx * step
+        self.pos[1] += rdz * step
+
+
+def test_commit_motion_learns_a_rotating_frame_and_gets_there(workdir):
+    """The key -> direction map rotates while walking (the camera snaps on every move), so a motion must learn it live.
+
+    The world here rotates the mapping by 90 degrees every 12 taps and blocks one direction with a wall; the committing
+    motion still reaches the target, because it re-learns each key's direction from the displacement it just saw.
+    """
+    frame = {"rot": 0}
+
+    def effect(key, rot):
+        base = {"up": (0.0, 8.0), "down": (0.0, -8.0), "left": (-8.0, 0.0), "right": (8.0, 0.0)}[key]
+        return B._rotate_world(base[0], base[1], rot)
+
+    def travel(motion, limit=400):
+        pos = [0.0, 0.0]
+        seen = 0
+        for _ in range(limit):
+            action = motion.step({"x": pos[0], "z": pos[1]}, (0.0, 120.0))
+            if action is None:
+                return tuple(pos)
+            seen += 1
+            if seen % 12 == 0:
+                frame["rot"] = (frame["rot"] + 90) % 360
+            dx, dz = effect(action.key, frame["rot"])
+            nxt = (pos[0] + dx, pos[1] + dz)
+            if abs(nxt[0]) > 6.0:                       # a wall either side, leaving a corridor along z
+                continue
+            pos = [nxt[0], nxt[1]]
+        return tuple(pos)
+
+    got = travel(B.CommitMotion(arrive=6.0))
+    assert math.dist(got, (0.0, 120.0)) <= 10.0, f"reached the target through a rotating frame, ended at {got}"
+
+
+def test_wall_follow_steps_around_a_wall_where_hill_climb_grinds(workdir):
+    """A wall dead ahead is not a gain-table problem: every key that closes the distance hits the wall, so the hill
+    climber grinds in place - which is exactly what the bot did in Forest 1 room 4. The wall follower aims sideways for
+    a few taps, then resumes the target."""
+    effects = {"up": (8.0, 0.0), "down": (-8.0, 0.0), "left": (0.0, 8.0), "right": (0.0, -8.0)}
+
+    def blocked(here, nxt):
+        # A wall at x = 40 spanning z -20..20: east is blocked, north/south is free.
+        return here[0] < 40.0 <= nxt[0] and -20.0 <= nxt[1] <= 20.0
+
+    def travel(motion, limit=120):
+        """The closest the motion gets to the target within `limit` taps (a wall can trap it far away)."""
+        pos = [0.0, 0.0]
+        best = math.dist(pos, (100.0, 0.0))
+        for _ in range(limit):
+            action = motion.step({"x": pos[0], "z": pos[1]}, (100.0, 0.0))
+            if action is None:
+                break
+            dx, dz = effects[action.key]
+            nxt = (pos[0] + dx, pos[1] + dz)
+            if not blocked(tuple(pos), nxt):
+                pos = [nxt[0], nxt[1]]
+            best = min(best, math.dist(pos, (100.0, 0.0)))
+        return best
+
+    assert travel(B.HillClimbMotion(arrive=6.0)) > 20.0, "the wall leaves the hill climber short, as it did live"
+    assert travel(B.WallFollowMotion(arrive=6.0, effects=effects)) <= 8.0, "the wall follower gets around it to the target"
+
+
+def test_hill_climbing_finds_the_closing_key_when_the_frame_keeps_shifting(workdir):
+    """The frame is unknowable here: the mapping rotates 90 degrees every three taps, so no inferred frame survives.
+
+    The controller must instead notice that a key stopped closing and switch to one that does.
+    """
+    clock = FakeClock()
+    world = ShiftingWorld(clock)
+    motion = B.HillClimbMotion(arrive=6.0)
+    for _ in range(120):
+        action = motion.step(world.observe()["player"], (90.0, 40.0), "target")
+        if action is None:
+            break
+        world.act(action, clock.now() + 3.0)
+    remaining = math.hypot(90.0 - world.pos[0], 40.0 - world.pos[1])
+    assert remaining <= 12.0, f"the hill climber should reach the target (at {remaining:.0f} units)"
+    assert motion.switches >= 2, "it must have changed keys as the frame shifted"
+
+
 def test_heading_motion_turns_with_bounded_taps_then_steps(workdir):
     clock = FakeClock()
     world = FakeWorld(clock, mode="vector")
@@ -688,12 +1090,34 @@ def test_calibration_recognises_a_turning_build(workdir):
 # ---------------------------------------------------------------------------------------------------------------------
 # The live session adapter: a hold always ends released, even when the job outlives the tick
 # ---------------------------------------------------------------------------------------------------------------------
-def test_session_world_always_releases_a_hold_even_when_the_job_never_finishes():
-    jobs = []
-    releases = []
-    sleeps = []
+def test_session_world_prefers_the_fast_input_queue_and_never_leaves_a_hold_down():
+    """The app input queue answers in 15 ms; the job queue in ~1 s. A hold must still end with every key released."""
+    posts, jobs = [], []
 
     def call(path, payload=None, method="GET", timeout=60):
+        if path.endswith("/input"):
+            posts.append(payload["events"])
+            return {"queued": len(payload["events"])}
+        if path == "/api/jobs":
+            jobs.append(payload)
+            return {"id": "job1"}
+        return {}
+
+    world = B.SessionWorld("abc-123", call, sleep=lambda seconds: None)
+    world.act(B.hold("up", 0.3, "test hold"), deadline=time.monotonic() + 3.0)
+
+    assert jobs == [], "the fast path must not fall back to a job when the queue accepted the input"
+    assert posts[0] == [{"key": "Up", "down": True}], "pad names are translated to the keyboard keys the app presses"
+    assert all(event["down"] is False for event in posts[-1]), "a hold always ends released"
+    assert {event["key"] for event in posts[-1]} == {B.SessionWorld.PAD_TO_KEYBOARD[k] for k in B.DIRECTIONS}
+
+
+def test_session_world_falls_back_to_the_job_queue_when_the_input_queue_refuses():
+    jobs, releases = [], []
+
+    def call(path, payload=None, method="GET", timeout=60):
+        if path.endswith("/input"):
+            return {"err": "Unsupported"}
         if path == "/api/jobs":
             events = payload["input"]["args"]["events"]
             job_id = f"job{len(jobs) + 1}"
@@ -702,17 +1126,15 @@ def test_session_world_always_releases_a_hold_even_when_the_job_never_finishes()
                 releases.append(events)
             return {"id": job_id}
         if path.startswith("/api/jobs/"):
-            job_id = path.rsplit("/", 1)[-1]
-            return {"state": "succeeded"} if job_id == "job2" else {"state": "running"}
+            return {"state": "succeeded"} if path.endswith("job2") else {"state": "running"}
         return {}
 
-    world = B.SessionWorld("abc-123", call, sleep=sleeps.append, poll_s=0.0)
+    world = B.SessionWorld("abc-123", call, sleep=lambda seconds: None, poll_s=0.0)
     world.act(B.hold("up", 0.3, "test hold"), deadline=time.monotonic() + 0.05)
 
-    assert jobs[0]["events"] == [{"key": "up", "down": True}]
+    assert jobs[0]["events"] == [{"key": "Up", "down": True}], "the job path carries the same translated key"
     assert releases and all(event["down"] is False for event in releases[-1])
-    assert {event["key"] for event in releases[-1]} == set(B.DIRECTIONS)
-    assert sleeps, "a hold sleeps between the down and the release"
+    assert world.job_sent >= 1
 
 
 # ---------------------------------------------------------------------------------------------------------------------
@@ -767,3 +1189,69 @@ def test_diff_reports_enemy_hp_room_and_flag_changes():
     assert delta["room"] == [1, 2]
     assert delta["enemies"][0]["hp"] == [40.0, 31.0] and delta["enemies"][0]["delta"] == -9.0
     assert delta["enemies"][0]["died"] is False
+
+def test_step_motion_takes_attack_steps_and_refuses_a_lock_point():
+    """The attack step is the fastest movement found (8.5 units per press), but it ignores walking collisions, so it
+    has to be refused when the landing is a known lock point - (604,-151) in Forest 1 room 8 froze the character exactly
+    that way after six presses with no movement and no heading change."""
+    motion = B.StepMotion(arrive=6.0, lock_points=[(360.0, 100.0)], lock_radius=16.0)
+    # heading 90 degrees is +x, so from (0,0) a step lands at (8.5, 0)
+    north = {"x": 0.0, "z": 0.0, "heading_deg": 90.0}
+    action = motion.step(north, (200.0, 0.0))
+    assert action is not None and action.key == "a", "a clear step toward the target is taken"
+    assert math.dist(motion.landing(north), (8.5, 0.0)) < 1e-6, "heading 90 degrees is +x"
+
+    # a step that would land on the lock point is refused, and taps take over
+    blocked = {"x": 351.5, "z": 100.0, "heading_deg": 90.0}
+    action = motion.step(blocked, (600.0, 100.0))
+    assert action is not None and action.key != "a", "the step that would land on (360,100) is refused"
+    assert motion.refused == 1
+
+    # once inside the arrive radius the motion stops
+    assert motion.step({"x": 100.0, "z": 50.0, "heading_deg": 0.0}, (100.0, 44.0)) is None
+
+def test_probe_motion_measures_then_moves_and_never_livelocks():
+    """Four probes, then the key whose result came closest - the behaviour that crossed the plaza, where the committing
+    motion wandered 187 units off its first waypoint."""
+    effects = {"up": (0.0, 8.0), "down": (0.0, -8.0), "left": (-8.0, 0.0), "right": (8.0, 0.0)}
+    motion = B.ProbeMotion(arrive=6.0)
+    pos = [0.0, 0.0]
+    keys = []
+    for _ in range(80):
+        action = motion.step({"x": pos[0], "z": pos[1]}, (40.0, 0.0))
+        if action is None:
+            break
+        keys.append(action.key)
+        if action.kind == "press":
+            dx, dz = effects[action.key]
+            pos[0] += dx
+            pos[1] += dz
+    assert math.dist(pos, (40.0, 0.0)) <= 6.0, f"the motion reaches its target, ended at {pos}"
+    assert keys[:4] == ["up", "down", "left", "right"], "it measures all four directions first"
+    assert keys.count("a") == 0
+
+
+def test_probe_motion_holds_when_nothing_helps_instead_of_turning_forever():
+    motion = B.ProbeMotion(arrive=6.0, hold_every=4)
+    # a world where no key moves at all: the motion must turn, then hold, not spin
+    kinds = []
+    for _ in range(24):
+        action = motion.step({"x": 0.0, "z": 0.0}, (100.0, 0.0))
+        if action is None:
+            break
+        kinds.append(action.kind)
+    assert "hold" in kinds, "a hold appears rather than an endless turn"
+    assert motion.turns >= 3
+
+def test_probe_motion_never_sends_the_same_direction_key_twice_in_a_row():
+    """Measured: a repeated direction key is ignored (three `up` presses moved the character once), and a probe cycle
+    ends by pressing the key it probed last, so the move was silently swallowed."""
+    motion = B.ProbeMotion(arrive=2.0)
+    keys = []
+    for _ in range(12):
+        action = motion.step({"x": 0.0, "z": 0.0}, (100.0, 0.0))
+        if action is None:
+            break
+        keys.append(action.key)
+    for a, b in zip(keys, keys[1:]):
+        assert a != b, f"two {a} presses in a row: {keys}"
