@@ -408,6 +408,13 @@ def run(mode: str, args) -> int:
                 result = world.act(action, time.monotonic() + 2.0)
                 after_player = ((world.observe(player_only=True) or {}).get("player")) or {}
                 landed = (float(after_player.get("x") or 0), float(after_player.get("z") or 0))
+                # Feed the measurement back. VectorMotion keeps its key table and its blocked counts in learn(), which
+                # the chain never called - so it pressed a key it had no reason to trust, over and over, until the
+                # wedge check fired on a body that could still move (measured: only `up` was blocked at (232,164) while
+                # right/down/left each moved 7+ units).
+                learn = getattr(motion, "learn", None)
+                if callable(learn):
+                    learn(action, player, after_player)
                 ledger.record("tick", action=action.as_dict(), before=before,
                               after={"player": after_player,
                                      "floor": int.from_bytes(world.read(0x805D5FC0, 4), "big")},
@@ -429,7 +436,10 @@ def run(mode: str, args) -> int:
                 # have finished moving before the next step call reads it. The hand-run loop that crossed the plaza
                 # waited 0.24 s; this runner waited 0.05 s and its chains missed by 200-250 units, which is the same
                 # measurement taken mid-stride.
-                clock2.sleep(0.22 if action.kind == "press" else 0.10)
+                # A repeated direction key is ignored when the presses are close together: three taps with 0.9 s gaps
+                # moved 8.0 units each, while the same key pressed at 0.22 s spacing moved nothing and tripped the wedge
+                # check. The gap is what releases the key.
+                clock2.sleep(0.45 if action.kind == "press" else 0.10)
             player = ((world.observe(player_only=True) or {}).get("player")) or {}
             here = (float(player.get("x") or 0), float(player.get("z") or 0))
             log(f"  hop {index + 1}/{len(points)} {tuple(round(v) for v in point)}: d={math.dist(here, point):.0f}"
