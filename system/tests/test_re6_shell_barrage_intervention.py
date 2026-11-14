@@ -36,8 +36,11 @@ def test_the_shell_barrage_runs_under_the_shared_owner_when_idle(monkeypatch, so
         pass
 
     stats = {'round_evidence_id': 'round-a'}
-    if pending:
+    if pending == 'blocked':
+        stats['mine_allocation_blocked_reason'] = 'uncertain native allocation; no further automatic bombs in this life'
+    elif pending:
         stats['mine_deadline_pending'] = 1
+        stats['mine_avoid_positions'] = [[0., 0., 0.]]
     ctl = FakeRE6(pid=123, identity=(123, 99), ready=lambda: (456, life[0]), ad=SimpleNamespace())
     monkeypatch.setattr(N, 'Controller', FakeRE6)
     monkeypatch.setattr(I, 'native_controller', lambda _: ctl)
@@ -77,7 +80,8 @@ def test_the_shell_barrage_runs_under_the_shared_owner_when_idle(monkeypatch, so
 
 @pytest.mark.parametrize('kind,pending,barrage_calls,ring_calls', [
     ('shell1304', False, 1, 0),
-    ('shell1303', True, 0, 0),
+    ('shell1304', True, 1, 0),          # pending remote bombs no longer refuse the operator's click
+    ('shell1303', 'blocked', 0, 0),     # an uncertain native allocation still does
     ('flash', False, 0, 1),
 ])
 @pytest.mark.parametrize('allow', [True, False])
@@ -92,8 +96,11 @@ def test_the_ring_button_routes_launcher_kinds_to_the_research_barrage(monkeypat
         pass
 
     stats = {'round_evidence_id': 'round-a'}
-    if pending:
+    if pending == 'blocked':
+        stats['mine_allocation_blocked_reason'] = 'uncertain native allocation; no further automatic bombs in this life'
+    elif pending:
         stats['mine_deadline_pending'] = 1
+        stats['mine_avoid_positions'] = [[0., 0., 0.]]
     ctl = FakeRE6(pid=123, identity=(123, 99), ready=lambda: (456, life[0]), ad=SimpleNamespace())
     ctl.grenade_ring = lambda k, allow_unverified=False: (rings.append(k) or
                                                           {'state': 'confirmed', 'verified': True, 'op': 'grenade_ring'})
@@ -127,7 +134,7 @@ def test_the_ring_button_routes_launcher_kinds_to_the_research_barrage(monkeypat
         assert results[0]['result']['op'] == 'grenade_ring'
         assert results[0]['result']['verified'] is False
         assert stats['shell_rings'] == 1 and stats['shell_ring_shells'] == 8
-    if pending:
+    if pending == 'blocked':
         assert results[0]['result']['state'] == 'failed'
     if ring_calls:
         assert rings == ['flash'] and stats['grenade_rings'] == 1

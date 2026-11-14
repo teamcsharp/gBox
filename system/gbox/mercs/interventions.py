@@ -714,11 +714,18 @@ def _worker_loop(sid, server, headers, ad, stats_of, alive, event, game=None):
                                         # identity, one took 450 damage. Idle-gated like the agent-only op, and the
                                         # receipt never claims the shell's own blast emission (allocation recycling).
                                         def shell_ring_idle():
+                                            # The operator's click is a spectacle request: waiting for the whole area
+                                            # to be clear of remote bombs made the button refuse for most of a round
+                                            # (live 2026-11-13: sixty honest retries, every one "waits for the area to
+                                            # be clear"). Only states that would make a native shell allocation
+                                            # unsafe or ambiguous refuse now: the operator holding the pad, a native
+                                            # ring flight already in progress, and the remote lane's own
+                                            # uncertain-allocation block. Pending remote bombs are fine - shells are a
+                                            # different native class.
                                             return stats is not None and not any(stats.get(key) for key in (
-                                                'operator_control', 'mine_bombs_since_detonate', 'mine_avoid_positions',
-                                                'mine_ring_pending', 'mine_deadline_pending', 'mine_allocation_blocked_reason'))
+                                                'operator_control', 'mine_ring_pending', 'mine_allocation_blocked_reason'))
                                         if not shell_ring_idle():
-                                            raise N.Unavailable('the launcher ring waits for the area to be clear of remote bombs; try again shortly')
+                                            raise N.Unavailable('the launcher ring waits a moment: an unfinished native ring or an uncertain bomb allocation is in the way; try again shortly')
                                         from .titles.re6_switch_shell_probe import barrage
                                         expected, round_id = ctl.ready(), stats.get('round_evidence_id')
                                         def allowed_shell_ring():
