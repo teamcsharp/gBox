@@ -2824,7 +2824,7 @@ COMBO_GUARD_DOINGS = ("walk", "no_foes", "bonus", "taunt")
 # kill has landed for COMBO_KEEP_S) and an enemy is near, the bot stops every non-kill detour - including a bomb
 # escape sprint - and takes the fastest kill it can: a rapid quick shot when the enemy is at COMBO_QUICK_R, else a
 # chase for the next combat decision. COMBO_HOT_R is how near the enemy must be for the override.
-COMBO_KEEP_S, COMBO_HOT_R, COMBO_QUICK_R, COMBO_QUICK_GAP_S = 3.2, 1200.0, 280.0, 0.22
+COMBO_KEEP_S, COMBO_HOT_R, COMBO_QUICK_R, COMBO_QUICK_GAP_S = 2.5, 3000.0, 280.0, 0.22
 KILL_GAP_MANDATE_S = 5.0                      # the operator's absolute limit between kills
 # Combat pressure (operator 2026-11-13: "the bot walking around not shooting enemies is unacceptable ... shooting
 # any and all enemies ... or they will crowd up and the combo will be lost"): with ANY alive enemy in sight
@@ -4981,11 +4981,17 @@ class Bot:
         if pressure:
             self.stats["combat_pressure_s"] = round(float(self.stats.get("combat_pressure_s", 0.0) or 0.0) + TICK_S, 2)
             self.stats["pressure_blocks"] = int(self.stats.get("pressure_blocks", 0)) + 1
-        ran = (None if (hot and not time_run) or pressure or not detours or self._bonus_wait(snap)
+        # Operator 2026-11-14, the match strategy: "initially go after the time bonuses throughout the level while
+        # building initial combo ... once the time is at 5 minutes, the strategy can go into fighting, traps and combo
+        # maintenance." So below the five-minute bank (clock under BONUS_CLOCK_LOW_S) the time bonuses are the
+        # objective - a distant enemy does not veto them - while anything inside FIRE_ZONE_R still pre-empts (hot).
+        # At or above the bank the bot is in fight/trap/combo mode and every bonus detour yields.
+        fight_mode = self._bonus_clock_ready(snap)
+        ran = (None if (hot or (pressure and fight_mode) or not detours or self._bonus_wait(snap))
                else self._bonus_run(p, live, flat, snap, now))
         if ran is not None:                                      # time bank first, even with a distant kill owed
             return ran
-        saved = None if hot or pressure or not detours else self._green_save(p, live, flat, snap, now)   # green bonus
+        saved = None if hot or (pressure and fight_mode) or not detours             else self._green_save(p, live, flat, snap, now)      # green bonus
         if saved is not None:                                                                  # running-out combo
             return saved
         high = self._off_floor(p, snap, now) if not live else []   # nobody on his floor: one above or below him
@@ -7315,8 +7321,8 @@ class Bot:
     def _bonus_run(self, p, live, flat, snap, now) -> dict | None:
         if getattr(self, '_combo_hot_now', False):
             return None                                      # the combo mandate: no bonus detour while a kill must land
-        if self._combat_pressure(live, now):
-            return None                                      # enemies in sight: fight them first (operator mandate)
+        if self._combat_pressure(live, now) and self._bonus_clock_ready(snap):
+            return None                                      # fight mode (bank reached): fight them first
         """Below the five-minute bank, the nearest time bonus (his floor first), walked to and attacked
         physically within BONUS_MELEE_R; only a zombie within BONUS_BLOCK_R is fought. None: phase 2 this tick (no bonus
         waiting, every waiting one left for now, a zombie in the way, or the bomb / an item in hand)."""

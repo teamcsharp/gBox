@@ -19,22 +19,25 @@ def scene(distance=None, timer=180.):
     return bot, clock, snap, writes
 
 
-def test_a_visible_enemy_stops_the_time_run_and_a_clear_floor_allows_it():
-    # Operator 2026-11-13: "the bot walking around not shooting enemies is unacceptable ... shooting any and all
-    # enemies ... or they will crowd up and the combo will be lost". Any enemy in sight within COMBAT_PRESSURE_R now
-    # wins over the capsule run; with the floor clear the current-clock time run still goes.
+def test_below_the_bank_a_distant_enemy_does_not_stop_the_time_run_and_a_close_one_does():
+    # Operator 2026-11-14, the match strategy: "initially go after the time bonuses throughout the level while
+    # building initial combo ... once the time is at 5 minutes, the strategy can go into fighting". Below the bank
+    # (timer 180) a distant enemy (beyond FIRE_ZONE_R) does not veto the time-bonus run; anything close (hot) does.
     bot, clock, snap, writes = scene(450.)
     run(bot, snap, clock, 1)
-    assert bot.stats['act'] != 'bonus_run' and bot.stats['pressure_blocks'] > 0
-    R.COMBAT_PRESSURE_R = 0.0
-    try:
-        bot, clock, snap, writes = scene(450.)
-        out = run(bot, snap, clock, 1)[0]
-        assert bot.combo_pace and bot.stats['act'] == 'bonus_run'
-        assert set(out.get('hold', ())) & {'lup', 'ldown', 'lleft', 'lright'}
-        assert 'zl' not in out.get('hold', ()) and not writes
-    finally:
-        R.COMBAT_PRESSURE_R = 2000.0
+    assert bot.stats['act'] != 'bonus_run'
+    bot, clock, snap, writes = scene(2500.)                    # visible, but past FIRE_ZONE_R
+    out = run(bot, snap, clock, 1)[0]
+    assert bot.combo_pace and bot.stats['act'] == 'bonus_run'
+    assert set(out.get('hold', ())) & {'lup', 'ldown', 'lleft', 'lright'}
+    assert 'zl' not in out.get('hold', ()) and not writes
+
+
+def test_at_the_five_minute_bank_the_bot_fights_instead_of_running_bonuses():
+    # "once the time is at 5 minutes, the strategy can go into fighting, traps and combo maintenance"
+    bot, clock, snap, writes = scene(2500., timer=350.)
+    run(bot, snap, clock, 1)
+    assert bot.stats['act'] != 'bonus_run' and bot._bonus_clock_ready(snap)
 
 
 @pytest.mark.parametrize('timer', [0., 120., 180., 299.99, None, float('nan'), True])
