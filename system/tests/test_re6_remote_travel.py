@@ -185,7 +185,10 @@ def test_a_released_qte_ring_may_be_laid_while_an_old_bomb_is_out(lane, monkeypa
     assert st['mine_qte_rings'] == 1 and 'qte_escape_mines_due' not in st
 
 @pytest.mark.parametrize('flash', [False, True])
-def test_unavailable_crowd_ring_cannot_starve_earned_travel_drop(lane, monkeypatch, flash):
+def test_pending_bombs_block_new_placements_then_travel_resumes_after_the_set_goes_off(lane, monkeypatch, flash):
+    # Operator 2026-11-14: "Always explode the remote bombs." A live escape never cleared its 15-bomb ring because each
+    # 20 ft of travel chained another bomb at the bot's feet (30 pending, 136 deadline misses). Now nothing new is
+    # placed while a set is pending; after it detonates, the travel drop resumes.
     step, st, flight = lane
     monkeypatch.setattr(N, 'bomb_detonate_now', lambda *a, **k: dict(verified=False, reason='old bomb pending'))
     for i, x in enumerate((0., 200., 400., 609.6)):
@@ -194,12 +197,17 @@ def test_unavailable_crowd_ring_cannot_starve_earned_travel_drop(lane, monkeypat
         if flash:
             st['ring_flash_at'] = 100. + .25 * i
         out = step(s, st, 100. + .25 * i)
-    assert out['op'] == 'bomb_trail' and out['pending']
-    assert flight.requests[0]['count'] == 1
-    assert flight.requests[0]['reason'] == 'travel'
-    assert st['mine_trail_chained'] == 1
+    assert not flight.requests and not out.get('pending')
+    # (the detonation section answers first with "escape first"; the placement contract is the empty request list)
     assert not st.get('mine_surround_rings') and not st.get('mine_flash_combos')
     assert not st.get('mine_flash_combo_at')
+    # the set goes off (the census loses it, the blast is observed): the next 20 ft earns its travel drop
+    step.observe(snap(609.6, units=[]), st, 101.0)
+    st.pop('mine_deadline_pending', None)
+    st.pop('ring_flash_at', None)
+    for i, x in enumerate((700., 900., 1100., 1300., 1500.)):
+        out = step(snap(x, units=[]), st, 102.5 + .25 * i, lambda _: None)
+    assert flight.requests and flight.requests[0]['reason'] == 'travel'
 
 
 @pytest.mark.parametrize('phase,allowed', [('wait', True), ('equip', False), ('throw', False), ('mind', False)])
@@ -216,7 +224,7 @@ def test_driver_passive_bomb_wait_does_not_block_new_native_ring(monkeypatch, ph
         assert out['op'] == 'bomb_ring' and flight.requests[0]['count'] == 15
 
 
-def test_driver_wait_can_chain_but_unknown_census_still_blocks(monkeypatch):
+def test_driver_wait_never_chains_while_a_bomb_is_pending(monkeypatch):
     flight = Flight()
     monkeypatch.setattr(C, 'RingFlight', lambda: flight)
     driver = types.SimpleNamespace(bomb_phase='wait', nade=None)
@@ -226,7 +234,8 @@ def test_driver_wait_can_chain_but_unknown_census_still_blocks(monkeypatch):
         step(snap(x, units=None), st, 100. + .25 * i)
     assert not flight.requests
     out = step(snap(620., units=[bomb(x=0.)]), st, 100.8)
-    assert out['op'] == 'bomb_trail' and st['mine_trail_chained'] == 1
+    assert not flight.requests and not out.get('pending')            # pending set: no chained placement
+    assert st['mine_deadline_pending'] == 1
 
 
 def test_chained_pair_must_clear_before_another_drop_then_crowd_ring_resumes(lane, monkeypatch):
@@ -251,32 +260,30 @@ def test_chained_pair_must_clear_before_another_drop_then_crowd_ring_resumes(lan
     assert out['op'] == 'bomb_ring' and flight.requests[0]['count'] == 15
 
 
-def test_a_bomb_left_behind_lets_the_next_twenty_feet_chain_while_it_lies(lane, monkeypatch):
-    """The operator's automine asks for a bomb every 20 ft of measured travel.
+def test_a_bomb_left_behind_blocks_the_next_drop_until_it_goes_off(lane, monkeypatch):
+    """Operator 2026-11-14: "Always explode the remote bombs."
 
-    Before this, one armed bomb starved the lane (a 4-minute live No Mercy round on 2026-11-13 produced a single
-    bomb): the bot fought and never covered the rule's 1100 cm escape distance in one run. A bomb already behind
-    him is escaped, so the next 20 ft travel drop chains while it lies there. Safety is unchanged: detonation
-    reads every actual bomb, and a bomb nearer than TRAIL_CHAIN_CM still blocks all production, as do the
-    emergency rings (they wait for the old set).
+    A pending bomb (even one far behind) must not be followed by another placement: chaining at the bot's feet reset
+    the nearest-bomb clearance and made detonation impossible live. Escape -> detonate -> then the next 20 ft drop.
     """
     step, st, flight = lane
     calls = []
     monkeypatch.setattr(C, 'single_drop_now', lambda *a, **k: calls.append(k) or
                         dict(op='bomb_trail', state='confirmed', placed=1, units=[placed()]))
-    # The bomb lies far behind him; no enemies (no emergency, no landing).
     for i, x in enumerate((0., 200., 400., 609.6)):
         step(snap(x, units=[bomb(x=-1200.)]), st, 100. + .25 * i, lambda _: None)
     assert st['mine_deadline_pending'] == 1
-    assert len(flight.requests) == 1 and flight.requests[0]['reason'] == 'travel'
-    flight.finish()                                   # the worker runs the native drop outside the input tick
-    assert calls and calls[0].get('allow_existing') is True
-    assert st['mine_trail_chained'] == 1
-    # An emergency ring still waits for the bomb out, even with it far behind.
-    sent = len(flight.requests)
+    assert not flight.requests and not calls                          # pending set blocks every new placement
+    # An emergency ring also waits for the bomb out.
     st['ring_flash_at'] = 102.
     step(snap(700., units=[bomb(x=-1200.)]), st, 102.1, lambda _: None)
-    assert len(flight.requests) == sent
+    assert not flight.requests
+    # the set detonates and leaves the census: the next 20 ft earns a travel drop on a clean field
+    step.observe(snap(700., units=[]), st, 102.2)
+    st.pop('ring_flash_at', None)
+    for i, x in enumerate((800., 1000., 1200., 1400., 1600., 1800.)):
+        step(snap(x, units=[]), st, 104.0 + .25 * i, lambda _: None)
+    assert flight.requests and flight.requests[0]['reason'] == 'travel'
 
 
 def test_late_receipt_and_unknown_census_keep_new_and_old_hazards(lane):
