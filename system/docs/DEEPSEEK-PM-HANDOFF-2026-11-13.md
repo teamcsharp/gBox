@@ -1877,3 +1877,22 @@ Suite: 457 passed across switch/mines/travel/landing/bonus/periodic/screensaver.
 Pending on host recovery: deploy 23cfea1fc (autodeploy will pick it up; manual deploy+restart once SSH is back), force
 RE6, and verify live: 1-hp survival (no "down at 1 health: staying down, no fight"), periodic mine ring
 (`mine_periodic_rings`), held flash (`held_flashes`), grenades (`combat_grenade_throws`), combo breaks/round outcome.
+
+### Round 43: goal blocked on the lilspark host outage (physical power-cycle needed)
+
+The blocking condition is unchanged and now spans three goal rounds: lilspark (10.89.1.246, the MercMode/RE4/RE5/RE6
+host and this session's control plane + Hermes gate) answers ICMP (TTL 64) but has **no listening service** - ports
+22, 8765, 623 (IPMI), 161 (SNMP), 5900, 3389 all refused/closed. No SSH, no gbox API, no out-of-band management port.
+Recovery avenues tried this round: SSH on all known hosts (lilspark2 10.89.1.20 - reachable, key refused; 10.89.1.43 -
+key refused; 10.89.1.225/125 - no SSH), WoL/IPMI probes (none), service restarts impossible (OS services down), and
+repeated MercMode dispatches before the outage (already documented). **Only a physical power-cycle (or BMC reset) of
+lilspark can restore it - the operator has been asked twice.**
+
+Work completed while down (committed, all tests green): launch-failure backoff (prevents recurrence of the GPU-context
+leak storm, commit 3105cb759), fully green remote-mine suite incl. the 3 long-red tests (81a969b89), grab flash on
+contact (23cfea1fc), periodic combo mine ring (43a65c8c0), 1-hp survival/tablet fixes (c7e9afd03). Latest pushed main:
+4ee411d3a. Suite: 457 passed. Pending deploy on the host: 23cfea1fc (host disk has 43a65c8c0).
+
+No live evidence is possible until the host returns; S-rank is not achieved and not claimed. The goal is being marked
+blocked on the physical host condition (not on difficulty or remaining work); on power-cycle the next round should:
+deploy, restart gbox.service, verify Hermes gate, force an RE6 window, and verify the pending live features.
