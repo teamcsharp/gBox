@@ -4307,6 +4307,11 @@ class Bot:
             rm = self.stats['remote_mines'] = {}
         rm.setdefault('drop_every_s', 10.0)
         rm.setdefault('drop_jitter_s', 1.0)
+        # Rings at the policy's widest radius (600 cm, not the shipped 200): the detonation rule needs 1200 cm from
+        # the nearest bomb, so a ring ejected at his feet (200 cm) forced a 1000 cm retreat on every cycle - live
+        # 2026-11-14 the bot spent 40-90 s per ring fleeing (blast_retreats 882 in 4 min) and the combo died while it
+        # ran. At 600 cm it is 600 cm from safety, which a sprint covers before the five-second deadline.
+        rm.setdefault('radius_cm', 600.0)
         if self.stats.get('mine_escape_required') and not self._combo_hot_now:
             # Placement starts a five-second deadline. A quick-turn sequence,
             # weapon handover or another grenade must not consume this route.
