@@ -73,3 +73,59 @@ def test_the_shell_barrage_runs_under_the_shared_owner_when_idle(monkeypatch, so
         assert results[0]['result']['verified'] is False
     elif pending:
         assert results[0]['result']['state'] == 'failed'
+
+
+@pytest.mark.parametrize('kind,pending,barrage_calls,ring_calls', [
+    ('shell1304', False, 1, 0),
+    ('shell1303', True, 0, 0),
+    ('flash', False, 0, 1),
+])
+def test_the_ring_button_routes_launcher_kinds_to_the_research_barrage(monkeypatch, kind, pending, barrage_calls, ring_calls):
+    # The operator's chooser row for a launcher shell kind carries allow_unverified; the worker turns it into the
+    # research barrage (idle-gated, honest receipt), while every other kind still uses the native grenade_ring.
+    from gbox.mercs.titles import re6_switch_native as N, re6_switch_shell_probe as P
+    life, running, calls, results, rings = [2], [True], [], [], []
+
+    class FakeRE6(SimpleNamespace):
+        pass
+
+    stats = {'round_evidence_id': 'round-a'}
+    if pending:
+        stats['mine_deadline_pending'] = 1
+    ctl = FakeRE6(pid=123, identity=(123, 99), ready=lambda: (456, life[0]), ad=SimpleNamespace())
+    ctl.grenade_ring = lambda k, allow_unverified=False: (rings.append(k) or
+                                                          {'state': 'confirmed', 'verified': True, 'op': 'grenade_ring'})
+    monkeypatch.setattr(N, 'Controller', FakeRE6)
+    monkeypatch.setattr(I, 'native_controller', lambda _: ctl)
+
+    def barrage(controller, *, count, radius_cm, kind, cancelled):
+        assert controller is ctl and count == 8 and radius_cm == 800.0
+        calls.append(kind)
+        return {'op': 'shell_barrage', 'kind': kind, 'requested': count, 'spawned': 8, 'armed': 8,
+                'detonated': 0, 'verified': False, 'state': 'uncertain', 'ring': []}
+
+    monkeypatch.setattr(P, 'barrage', barrage)
+
+    def handler(request):
+        body = json.loads(request.content)
+        if request.url.path.endswith('/claim'):
+            return httpx.Response(200, json={'requests': [{'id': 'ring', 'claim': 'once',
+                'op': 'grenade_ring', 'source': 'probe',
+                'args': {'kind': kind, 'allow_unverified': True},
+                'expires': time.time() + 10, 'epoch': body['epoch']}]})
+        results.extend(body['results'])
+        running[0] = False
+        return httpx.Response(200, json={})
+
+    original = httpx.Client
+    monkeypatch.setattr(httpx, 'Client', lambda **kw: original(**kw, transport=httpx.MockTransport(handler)))
+    I.worker_loop('sid', 'http://fixture', {}, SimpleNamespace(), lambda: stats, lambda: running[0])
+    assert len(calls) == barrage_calls and len(rings) == ring_calls
+    if barrage_calls:
+        assert results[0]['result']['op'] == 'grenade_ring'
+        assert results[0]['result']['verified'] is False
+        assert stats['shell_rings'] == 1 and stats['shell_ring_shells'] == 8
+    if pending:
+        assert results[0]['result']['state'] == 'failed'
+    if ring_calls:
+        assert rings == ['flash'] and stats['grenade_rings'] == 1

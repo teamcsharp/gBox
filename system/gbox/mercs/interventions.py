@@ -681,8 +681,36 @@ def _worker_loop(sid, server, headers, ad, stats_of, alive, event, game=None):
                                               'reason': "queued to the bot's mine-thrower ring: it sweeps ten darts "
                                                         "round him (mine_ring_shots), not the native harness"}
                                 elif row['op'] == 'grenade_ring':
-                                    result = ctl.grenade_ring(row['args'].get('kind', 'flash'),
-                                                              allow_unverified=row['args'].get('allow_unverified') is True)
+                                    kind = row['args'].get('kind', 'flash')
+                                    if kind in ('shell1302', 'shell1303', 'shell1304') and \
+                                            row['args'].get('allow_unverified') is True and type(ctl) is N.Controller:
+                                        # The operator's 360 launcher ring: research grade (see
+                                        # docs/research/re6-native-shell-ring.md). Live ring evidence 2026-11-13: eight
+                                        # shells spawned/armed on a 800 cm ring, three enemies entered DmgIce with stable
+                                        # identity, one took 450 damage. Idle-gated like the agent-only op, and the
+                                        # receipt never claims the shell's own blast emission (allocation recycling).
+                                        def shell_ring_idle():
+                                            return stats is not None and not any(stats.get(key) for key in (
+                                                'operator_control', 'mine_bombs_since_detonate', 'mine_avoid_positions',
+                                                'mine_ring_pending', 'mine_deadline_pending', 'mine_allocation_blocked_reason'))
+                                        if not shell_ring_idle():
+                                            raise N.Unavailable('the launcher ring waits for the area to be clear of remote bombs; try again shortly')
+                                        from .titles.re6_switch_shell_probe import barrage
+                                        expected, round_id = ctl.ready(), stats.get('round_evidence_id')
+                                        def allowed_shell_ring():
+                                            return (alive() and row['expires'] > time.time() and
+                                                    row['epoch'] == context(full=False)['epoch'] and
+                                                    stats.get('round_evidence_id') == round_id and shell_ring_idle())
+                                        result = barrage(ctl, count=8, radius_cm=800.0, kind=kind,
+                                                         cancelled=lambda: not allowed_shell_ring())
+                                        result['op'] = 'grenade_ring'
+                                        if stats is not None:
+                                            stats['shell_rings'] = int(stats.get('shell_rings', 0)) + 1
+                                            stats['shell_ring_shells'] = int(stats.get('shell_ring_shells', 0)) + int(
+                                                result.get('armed') or 0)
+                                    else:
+                                        result = ctl.grenade_ring(kind,
+                                                                  allow_unverified=row['args'].get('allow_unverified') is True)
                                     if stats is not None and result.get('state') == 'confirmed':
                                         # The same counters the bot's own rule keeps (gbox.mercs.grenade_ring):
                                         # a ring fired by a click is deployed like any other, and its kills are
