@@ -20,6 +20,20 @@ def scene(distance=None, timer=180.):
     return bot, clock, snap, writes
 
 
+def test_a_blue_time_crystal_waits_when_the_combo_is_about_to_lapse():
+    # Live 2026-11-14: "a time bonus at 2095 cm: the lock on it" was an attributed combo break. The kill comes first.
+    bot, clock, snap, writes = scene(2500., timer=180.)
+    snap['bonuses'] = [{'ptr': 1234, 'kind': 'time', 'pos': (0., 0., 1200.)}]
+    bot._time_bonus_priority = lambda *a, **k: True
+    bot._bonus_sight = lambda *a, **k: True
+    bot._bonus_shoot = lambda *a, **k: {'hold': ('zl', 'zr')}
+    bot._combo_hot_now = True
+    assert bot._time_bonus_shot(snap['player'], snap, clock[0]) is None
+    assert bot.stats['time_bonus_yields_combo'] == 1
+    bot._combo_hot_now = False
+    assert bot._time_bonus_shot(snap['player'], snap, clock[0]) == {'hold': ('zl', 'zr')}
+
+
 def test_a_blue_time_crystal_in_range_is_shot_instead_of_only_walked_to():
     # Operator 2026-11-14: "activating combo time via ... shooting / destroying blue time bonus crystals (RE6)".
     bot, clock, snap, writes = scene(2500., timer=180.)

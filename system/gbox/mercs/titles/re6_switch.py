@@ -7649,6 +7649,11 @@ class Bot:
         """
         if not BONUS_TIME_RANGED or self._bonus_clock_ready(snap) or not self._time_bonus_priority(snap, now):
             return None
+        if getattr(self, '_combo_hot_now', False):
+            # Live 2026-11-14 (attribution combo_break_bonus): "a time bonus at 2095 cm: the lock on it" broke a
+            # running chain. The kill the mandate wants comes first; the crystal is shot right after it.
+            self.stats['time_bonus_yields_combo'] = int(self.stats.get('time_bonus_yields_combo', 0)) + 1
+            return None
         cands = [b for b in snap.get('bonuses') or () if b.get('kind') == 'time'
                  and self.bonus_unseen.get(b['ptr'], -1e9) <= now
                  and math.dist(p['pos'], b['pos']) <= BONUS_SHOOT_R]
@@ -7689,7 +7694,7 @@ class Bot:
     def _bonus(self, p, live, flat, snap, now) -> dict | None:
         """A combo bonus in reach with nobody near (BONUS_SAFE_R): turned to, the gun up, the aim's ray closed
         onto it and the trigger down while the ray runs through it. None: no bonus to shoot (the fight goes on)."""
-        if self._time_bonus_priority(snap, now):
+        if self._time_bonus_priority(snap, now) or getattr(self, '_combo_hot_now', False):
             return None
         bs = snap.get("bonuses")
         eq = p.get("equipped")
