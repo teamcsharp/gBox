@@ -737,7 +737,13 @@ def load_lock_points():
 
 
 def record_lock_point(x: float, z: float, note: str = "") -> None:
-    """Append a position where the character stopped responding, so the next run's motion avoids it."""
+    """Append a position where the character stopped responding, so the next run's motion avoids it.
+
+    Refuses degenerate coordinates: a session that failed to boot has no player, so x and z read as 0 and the first
+    wedge check recorded (0,0) into the lock list, which would poison every later route.
+    """
+    if abs(x) < 1.0 and abs(z) < 1.0:
+        return
     rows = []
     try:
         existing = json.loads(LOCK_POINTS_FILE.read_text(encoding="utf-8"))
