@@ -4299,6 +4299,14 @@ class Bot:
             # The bomb sprint stands the gun down and never adds to the combo; while a kill must land the sprint waits
             # (the flag still detonates only when the live clearance passes the rule).
             self.stats['combo_over_bomb_sprints'] = int(self.stats.get('combo_over_bomb_sprints', 0)) + 1
+        # Operator 2026-11-14: "always moving and placing a mine every 10 seconds". The remote-mine lane (remote_mines
+        # policy) is paced through this stats override; the shipped 7.5 +/- 2.5 s cadence dropped a ring before the
+        # previous one had been cleared and detonated (live 00:11-00:15: rings every ~6 s, 40-90 s fleeing per ring).
+        rm = self.stats.get('remote_mines')
+        if not isinstance(rm, dict):
+            rm = self.stats['remote_mines'] = {}
+        rm.setdefault('drop_every_s', 10.0)
+        rm.setdefault('drop_jitter_s', 1.0)
         if self.stats.get('mine_escape_required') and not self._combo_hot_now:
             # Placement starts a five-second deadline. A quick-turn sequence,
             # weapon handover or another grenade must not consume this route.
