@@ -408,6 +408,17 @@ def run(mode: str, args) -> int:
                               extra={"moved": round(math.dist(here, landed), 2),
                                      "hop": f"{index + 1}/{len(points)}"})
                 moved += 1
+                step_distance = math.dist(here, landed)
+                still = still + 1 if step_distance < 0.5 else 0
+                # A wedge is fatal and cheap to recognise: the app accepts the input and nothing moves. Six hops were
+                # spent exactly that way at (145,218) in round 86, a position the lock list did not know about. Stop at
+                # eight, record the spot, and fail loudly instead of burning the budget.
+                if still >= 8:
+                    log(f"  WEDGE at ({here[0]:.0f},{here[1]:.0f}): {still} actions moved nothing; recording the point")
+                    record_lock_point(here[0], here[1], note=f"wedge in a {mode} run")
+                    world.release()
+                    release_ownership()
+                    return 2
                 # A probe's score is the distance from where it started to where the body ends up, so the body has to
                 # have finished moving before the next step call reads it. The hand-run loop that crossed the plaza
                 # waited 0.24 s; this runner waited 0.05 s and its chains missed by 200-250 units, which is the same
