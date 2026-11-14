@@ -1552,3 +1552,33 @@ for every switch window (RE6 reached the title once, never playing). `kill_gap_m
 16.98 s and over5 9: **the combo is not yet held; S-rank is not claimed.**
 
 State: queue `[]`, Hermes `enabled/available true`, deployed `5d4ba6a98`.
+
+### Round 31: every remaining live combo break was named, and each was answered by a rule
+
+Method this round: force a RE6 window with the MercMode `stop` + `start title=re6` dispatch (the PSO lane on lilspark
+was holding the host), then read the attribution counters the previous round added.
+
+**Live verified - build `5d4ba6a98` (RE6 02:16-02:19):** kills 0 -> 26 with the combo at 26 and the timer 117 -> 197 s
+(blue crystals breaking); the single attributed break was `combo_break_tablet` "health 442/900: a tablet" (49 %).
+
+**Live verified - build `1372f8964` (RE6 02:40-02:42):** the early-round hunt fix worked (kills 1 -> 24 within ~30 s,
+timer 91 -> 186 as the crystals broke, combo 23) and the attribution named the rest: `bonus` (locking a time bonus at
+2095 cm), `quick_shot` ("periodic burst: waiting for the native quick attack to finish"), `held` (the QTE grab hold).
+
+Fixes shipped (tested, pushed; latest deployed `5ac496931`):
+- `bc5037e50`: `_heal_window_ok` - a heal only starts while the combo window has >= TABLET_COMBO_WINDOW_S (3 s) left
+  (a kill refills it first), unless near-critical health; the 49 % tablet cannot eat a fresh 26-kill window any more.
+- `1372f8964`: a round with no kill after COMBO_KEEP_S triggers the combo mandate even before the first kill - it
+  hunts the nearest enemy instead of roaming the bonus phase (the `combo_break_walk` round that had 0 kills for ~45 s).
+- `5ac496931`: a periodic quick-attack's native-observation wait is dropped when the combo window is at or under 3 s
+  (`periodic_wait_combo_yields`); the wait only applies while the chain is comfortable.
+
+Tests: 337 pass in the switch/bonus/periodic suites (the heal-window cases, the round-start mandate, the wait yield).
+
+**Still open / not claimed:** `bonus` breaks in phase 1 (locking a time crystal while the chain runs out - the operator
+wants the bonuses AND the combo; a lock-then-kill ordering needs a decision), and QTE `held` breaks are unavoidable
+while grabbed. The final build `5ac496931` is deployed but not yet live-sampled. Combo losses are down to a handful
+per round, not zero; S-rank is not claimed.
+
+State: MercMode restarted into RE6 after the deploy, queue `[]`, Hermes `enabled/available true`, deployed
+`5ac496931`.
