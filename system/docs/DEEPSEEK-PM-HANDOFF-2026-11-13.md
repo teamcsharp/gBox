@@ -1235,3 +1235,39 @@ barely chains - the score lever is combo maintenance and checkpoint collection, 
 next pass: `_time_bonus_priority` only runs the time run when the clock is **below** `BONUS_CLOCK_LOW_S` (300 s),
 and any enemy within `FIRE_ZONE_R` (600 cm) with `hot` suppresses the bonus run - No Mercy keeps enemies in that
 radius almost continuously.
+
+### Round 23: the "can't click Nitrogen" bug found and fixed at three levels
+
+The operator's screenshot refusal ("the uWp1304 launcher round needs its native shell initialization and explosion
+path") had three causes, all now fixed:
+
+1. **The server stripped the row's `source`**: the interventions option sanitizer rebuilt `grenade_kinds` as
+   `{kind, available, reason}` and dropped `source`, so the PiP never learned a launcher kind is a probe row and
+   sent the click WITHOUT `allow_unverified`. `kind_rows()` now validates and preserves the source label.
+2. **`grenade_status.rows`** now keeps the launcher kinds labelled `source: "probe"` (with their research reason
+   beside the label) even when the controller reports them available, so the click carries the flag.
+3. **The worker's launcher branch** required `allow_unverified`; the research barrage is the only implementation of
+   those kinds, so a launcher-kind click routes to it either way now. The click gate was also too strict: it waited
+   for the whole area to be clear of remote bombs and refused through most of a round (sixty honest retries, all
+   "waits for the area to be clear"). It now refuses only when the operator holds the pad, a native ring flight is in
+   progress, or the remote lane reports an uncertain allocation - pending remote bombs are fine (shells are a
+   different native class).
+
+Tests: probe source preserved through the sanitizer and rows; launcher clicks route to the barrage with and without
+allow_unverified; pending bombs allowed, uncertain allocation refused, non-shell kinds unchanged. 86 pass in the
+affected suites; committed and pushed after merging 76 remote commits from the PSO lane (`626ff7d49`, deployed).
+
+**Live verification:** the live RE6 rows now read
+`[{"kind":"shell1304","available":true,"reason":"probe: ...","source":"probe"}, ...]` for launcher/shell1302/3/4, and
+an operator click with `args: {kind: shell1304}` (no allow_unverified) is accepted and routed to the barrage - the
+old native-refusal toast is gone. That click was refused by the relaxed gate this time ("an unfinished native ring
+or an uncertain bomb allocation is in the way") and the round's character had **no grenade launcher** in the
+inventory (launcher=0), so the ring could not fire; a launcher-bearing round with a clear state is the remaining
+verification.
+
+Also shipped earlier this round (`843f34b72`, live): the critical-crowd flash now fires with tablets too when
+critical health and 4+ enemies are within 2 m (the 20:26 death was downed at 1 health in a nine-strong crowd after
+240 damage events with 19 tablets taken and 34 presses / 18 ignored) - the flash breaks the crowd before the heal
+race.
+
+State: MercMode RE6 playing, queue `[]`, Hermes `enabled/available true`, deployed `626ff7d49`.
