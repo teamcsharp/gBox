@@ -9,7 +9,7 @@ from test_re6_switch import _fresh_caches, lock_brain, run
 from test_re6_switch_parity import command, square, mark
 
 
-def scene(distance=450., timer=180.):
+def scene(distance=None, timer=180.):
     enemies = () if distance is None else ((0., 0., distance, 700),)
     bot, clock, snap, writes = lock_brain(enemies)
     snap.update(timer=timer, bonuses=[{'ptr': 1234, 'kind': 'time', 'pos': (0., 0., 900.)}],
@@ -19,12 +19,22 @@ def scene(distance=450., timer=180.):
     return bot, clock, snap, writes
 
 
-def test_visible_enemy_and_overdue_combo_do_not_starve_time_run():
-    bot, clock, snap, writes = scene()
-    out = run(bot, snap, clock, 1)[0]
-    assert bot.combo_pace and bot.stats['act'] == 'bonus_run'
-    assert set(out.get('hold', ())) & {'lup', 'ldown', 'lleft', 'lright'}
-    assert 'zl' not in out.get('hold', ()) and not writes
+def test_a_visible_enemy_stops_the_time_run_and_a_clear_floor_allows_it():
+    # Operator 2026-11-13: "the bot walking around not shooting enemies is unacceptable ... shooting any and all
+    # enemies ... or they will crowd up and the combo will be lost". Any enemy in sight within COMBAT_PRESSURE_R now
+    # wins over the capsule run; with the floor clear the current-clock time run still goes.
+    bot, clock, snap, writes = scene(450.)
+    run(bot, snap, clock, 1)
+    assert bot.stats['act'] != 'bonus_run' and bot.stats['pressure_blocks'] > 0
+    R.COMBAT_PRESSURE_R = 0.0
+    try:
+        bot, clock, snap, writes = scene(450.)
+        out = run(bot, snap, clock, 1)[0]
+        assert bot.combo_pace and bot.stats['act'] == 'bonus_run'
+        assert set(out.get('hold', ())) & {'lup', 'ldown', 'lleft', 'lright'}
+        assert 'zl' not in out.get('hold', ()) and not writes
+    finally:
+        R.COMBAT_PRESSURE_R = 2000.0
 
 
 @pytest.mark.parametrize('timer', [0., 120., 180., 299.99, None, float('nan'), True])
@@ -38,13 +48,13 @@ def test_time_run_uses_current_finite_clock_without_truthy_zero(timer):
 def test_five_minute_bank_allows_score_then_resumes_time_run_below_threshold():
     bot, clock, snap, writes = scene(timer=300.)
     run(bot, snap, clock, 1)
-    assert bot.stats['act'] != 'bonus_run' and bot._bonus_wait(snap)
+    assert bot.stats['act'] != 'bonus_run'
     snap['timer'] = 299.9
     run(bot, snap, clock, 1)
     assert bot.stats['act'] == 'bonus_run'
 
 
-@pytest.mark.parametrize('mode,distance', [('fight', 450.), ('hunt', 1500.), ('hunt', 450.), ('score', 450.)])
+@pytest.mark.parametrize('mode,distance', [('fight', None), ('hunt', None), ('score', None)])
 def test_automatic_modes_yield_to_time_run(mode, distance):
     bot, clock, snap, writes = scene(distance)
     command(bot, mode)
@@ -52,7 +62,7 @@ def test_automatic_modes_yield_to_time_run(mode, distance):
     assert bot.mode == mode and bot.stats['act'] == 'bonus_run'
 
 
-@pytest.mark.parametrize('mode,distance', [('fight', 450.), ('hunt', 1500.), ('hunt', 450.), ('score', 450.), ('score', 900.)])
+@pytest.mark.parametrize('mode,distance', [('fight', None), ('hunt', None), ('score', None)])
 def test_explicit_modes_keep_priority_then_expire(mode, distance):
     bot, clock, snap, writes = scene(distance)
     command(bot, mode)

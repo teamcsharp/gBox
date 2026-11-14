@@ -1184,8 +1184,9 @@ def test_the_one_right_in_front_is_the_target_not_a_distant_sniper():
     assert bot._choose(p, 0.0, [far_sniper], 0.0) is far_sniper
 
 
-def test_surrounded_grenade_cluster_bomb_burst_lobs_five_at_burst_speed():
+def test_surrounded_grenade_cluster_bomb_burst_lobs_five_at_burst_speed(monkeypatch):
     # operator 2026-11-03: "take a moment every few minutes to spam some grenades (at least 5) in rapid succession via
+    monkeypatch.setattr(R, "PERIODIC_QA", False)                            # (the burst alone; the interval is separate)
     # 5x animation speed at the enemies when they are surrounded" / "cluster-bomb the crowd"
     ring = tuple((40.0 * i - 100, 0.0, 120.0 + 10 * i, 700) for i in range(6))     # six encircling him (within BURST_SURROUND_R)
     bot, clock, snap = brain(round_guest(enemies=ring, cam_yaw=0.0))
@@ -2732,6 +2733,7 @@ def test_the_bonus_run_walks_to_the_nearest_bonus_and_breaks_it_with_the_physica
 
 def test_the_bonus_run_fights_a_blocker_first_and_leaves_one_that_will_not_break(monkeypatch):
     monkeypatch.setattr(R, "FIRE_ZONE_R", 0.0)                              # (the run itself; shoot-first: off here)
+    monkeypatch.setattr(R, "COMBAT_PRESSURE_R", 0.0)                        # (the run itself; pressure: off here)
     g = round_guest(enemies=((0.0, 0.0, 200.0, 700),))                        # one at 2 m: in the way
     bonus_piece(g, "cSmTimeBonusAct_Wait", (0.0, 0.0, 800.0))
     bot, clock, snap = brain(g)

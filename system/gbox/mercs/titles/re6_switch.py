@@ -1955,6 +1955,11 @@ PERIODIC_QA_CONTACT_S, PERIODIC_QA_ACK_S = .6, 1.2
 # The carryover tolerances: 20 cm of player movement and 30 cm of target movement in a quarter second never
 # survived a live fight (one burst in 530 s, zero requests). The measured-contact/laser checks still gate it.
 PERIODIC_QA_MOVE_CM, PERIODIC_QA_TARGET_CM = 140.0, 220.0
+# The interval burst must not starve when the measured-contact window never lines up with a free gun action:
+# once it is PERIODIC_QA_OVERDUE_S late, a close enemy in sight (HIT_QS_R, mesh line clear) is enough to start
+# the burst, and that arm survives PERIODIC_QA_RELAXED_WINDOW_S while the release/turn settles. Live
+# 2026-11-13: the strict start gave one armed burst and zero requests in 530 s with the sidebar at 10 s.
+PERIODIC_QA_OVERDUE_S, PERIODIC_QA_RELAXED_WINDOW_S = 2.5, 2.0
 READY_S, LASER_WAIT_S, RAY_STALE_S = 0.12, 0.7, 1.0
 KEEP_TARGET, THREAT_R, COMMIT_S = 1.5, 250.0, 1.0
 HIT_S = 0.45                            # a zombie's health falls within this of the shot that hit him
@@ -2820,6 +2825,11 @@ COMBO_GUARD_DOINGS = ("walk", "no_foes", "bonus", "taunt")
 # escape sprint - and takes the fastest kill it can: a rapid quick shot when the enemy is at COMBO_QUICK_R, else a
 # chase for the next combat decision. COMBO_HOT_R is how near the enemy must be for the override.
 COMBO_KEEP_S, COMBO_HOT_R, COMBO_QUICK_R, COMBO_QUICK_GAP_S = 3.2, 1200.0, 350.0, 0.16
+KILL_GAP_MANDATE_S = 5.0                      # the operator's absolute limit between kills
+# Combat pressure (operator 2026-11-13: "the bot walking around not shooting enemies is unacceptable ... shooting
+# any and all enemies ... or they will crowd up and the combo will be lost"): with ANY alive enemy in sight
+# within COMBAT_PRESSURE_R on his floor the bot fights - capsule runs, green-bonus detours and taunts wait.
+COMBAT_PRESSURE_R = 2000.0
 WALL_ESCAPE_S = 1.5                      # Bot._wall_command: the walk away from the operator's wall
 _NAV_MESH = None
 FIRE_ZONE_R = 600.0                     # Bot._decide: one this near in sight on his level - the fight before any bonus
@@ -3345,6 +3355,25 @@ class Bot:
             return True
         if self._kill_at is not None and self.combo_prev <= 0:
             return True
+        return False
+
+    def _combat_pressure(self, live, now) -> bool:
+        """An alive enemy is in sight within COMBAT_PRESSURE_R on his floor: fight, do not go sightseeing.
+
+        Live 2026-11-13 (operator screenshot + "the bot walking around not shooting enemies is unacceptable"): during
+        the below-five-minute bonus phase the bot would walk to a capsule past visible enemies. Any enemy in the clear
+        this near now suppresses the bonus/taunt detours so the firefight keeps the combo.
+        """
+        me = self._ppos
+        if me is None:
+            return False
+        for e in live:
+            if abs(e["pos"][1] - me[1]) > MAX_DY:
+                continue
+            if math.hypot(e["pos"][0] - me[0], e["pos"][2] - me[2]) > COMBAT_PRESSURE_R:
+                continue
+            if not self.is_blocked(e, now):
+                return True
         return False
 
     def _combo_guard(self, p, live, flat, snap, now) -> dict | None:
@@ -4859,11 +4888,15 @@ class Bot:
             if chase is not None:
                 self.why = f"hunt: the nearest {near / 100:.0f} m off - " + str(self.why)
                 return chase
-        ran = (None if (hot and not time_run) or not detours or self._bonus_wait(snap)
+        pressure = self._combat_pressure(live, now)
+        if pressure:
+            self.stats["combat_pressure_s"] = round(float(self.stats.get("combat_pressure_s", 0.0) or 0.0) + TICK_S, 2)
+            self.stats["pressure_blocks"] = int(self.stats.get("pressure_blocks", 0)) + 1
+        ran = (None if (hot and not time_run) or pressure or not detours or self._bonus_wait(snap)
                else self._bonus_run(p, live, flat, snap, now))
         if ran is not None:                                      # time bank first, even with a distant kill owed
             return ran
-        saved = None if hot or not detours else self._green_save(p, live, flat, snap, now)   # a green bonus for a
+        saved = None if hot or pressure or not detours else self._green_save(p, live, flat, snap, now)   # green bonus
         if saved is not None:                                                                  # running-out combo
             return saved
         high = self._off_floor(p, snap, now) if not live else []   # nobody on his floor: one above or below him
@@ -5372,15 +5405,15 @@ class Bot:
         ready = p.get('state') == 0 and p.get('action') in FREE_ACTIONS
         finishing_shot = p.get('state') in (0, 2) and p.get('action') == 'cPlAction_pl_act_weapon_fire'
         if (not isinstance(eq, int) or not 0 <= eq < WEAPON_INDEXES or not isinstance(ammo, int) or ammo <= 0
-                or not (ready or finishing_shot)
                 or now - self.qshot_at < HIT_QS_GAP_S):
             self.periodic_qa_arm = None
             return None
+        overdue = now - self.periodic_qa_due
         life = (p.get('ptr'), p.get('generation'), eq, p.get('weapon_id'))
         arm = self.periodic_qa_arm
         if arm is not None:
             target = next((e for e in live if e.get('ptr', e.get('slot')) == arm['target']), None)
-            if (life != arm['life'] or target is None or now - arm['at'] > PERIODIC_QA_CONTACT_S
+            if (life != arm['life'] or target is None or now - arm['at'] > arm.get('window', PERIODIC_QA_CONTACT_S)
                     or math.dist(p['pos'], arm['player_pos']) > PERIODIC_QA_MOVE_CM
                     or math.dist(target['pos'], arm['target_pos']) > PERIODIC_QA_TARGET_CM
                     or flat(target) > HIT_QS_R or not self._sight(target, now)):
@@ -5397,16 +5430,27 @@ class Bot:
             self.stats['periodic_qa_remaining'] = self.periodic_qa_remaining
             return self._go('quick_shot', 'periodic_quick_shot', {'hold': ('zl', 'zr')},
                             f'periodic burst: verified nearby target, {self.periodic_qa_remaining} requests left')
+        relaxed = False
         target = next((e for e in sorted(live, key=flat) if flat(e) <= HIT_QS_R
                        and not self.is_blocked(e, now) and self._measured_contact(e, now)), None)
+        if target is None and overdue >= PERIODIC_QA_OVERDUE_S and p.get('state') == 0:
+            # Overdue: a close enemy in sight is enough (the arm waits for the gun action to become free below).
+            target = next((e for e in sorted(live, key=flat) if flat(e) <= HIT_QS_R
+                           and not self.is_blocked(e, now) and self._sight(e, now)), None)
+            relaxed = target is not None
         if target is None:
+            return None
+        if not (ready or finishing_shot) and not (relaxed and p.get('state') == 0):
             return None
         if self.periodic_qa_remaining == 0:
             self.periodic_qa_remaining = int(PERIODIC_QA_COUNT)
             self.periodic_qa_last, self.periodic_qa_due = now, now + PERIODIC_QA_INTERVAL_S
             self.stats['periodic_qa_bursts'] = self.stats.get('periodic_qa_bursts', 0) + 1
+        if relaxed:
+            self.stats['periodic_qa_relaxed'] = self.stats.get('periodic_qa_relaxed', 0) + 1
         self.periodic_qa_arm = {'at': now, 'life': life, 'target': target.get('ptr', target.get('slot')),
-                                'player_pos': tuple(p['pos']), 'target_pos': tuple(target['pos'])}
+                                'player_pos': tuple(p['pos']), 'target_pos': tuple(target['pos']),
+                                'window': PERIODIC_QA_RELAXED_WINDOW_S if relaxed else PERIODIC_QA_CONTACT_S}
         self._gun_down()
         return self._go('quick_shot', 'periodic_quick_release', {'hold': ()},
                         'periodic burst: release aim before the simultaneous quick-shot triggers')
@@ -6190,6 +6234,8 @@ class Bot:
                 gap = now - (self._kill_at or now)
                 self.stats["kill_gap_last_s"] = round(gap, 2)
                 self.stats["kill_gap_max_s"] = round(max(float(self.stats.get("kill_gap_max_s", 0.0) or 0.0), gap), 2)
+                if gap > KILL_GAP_MANDATE_S:
+                    self.stats["kill_gap_over_5s"] = int(self.stats.get("kill_gap_over_5s", 0)) + 1
                 self._kill_n, self._kill_at = k, now
             elif self._kill_at is None:
                 self._kill_at = now
@@ -7115,6 +7161,8 @@ class Bot:
     def _bonus_run(self, p, live, flat, snap, now) -> dict | None:
         if getattr(self, '_combo_hot_now', False):
             return None                                      # the combo mandate: no bonus detour while a kill must land
+        if self._combat_pressure(live, now):
+            return None                                      # enemies in sight: fight them first (operator mandate)
         """Below the five-minute bank, the nearest time bonus (his floor first), walked to and attacked
         physically within BONUS_MELEE_R; only a zombie within BONUS_BLOCK_R is fought. None: phase 2 this tick (no bonus
         waiting, every waiting one left for now, a zombie in the way, or the bomb / an item in hand)."""
