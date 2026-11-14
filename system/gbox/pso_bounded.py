@@ -2379,6 +2379,15 @@ class Automaton:
             self.pressed[objective.ptr] = now
             self.switch_misses.pop(objective.ptr, None)
             return ""
+        # A saturated floor group cannot change: the operator's proximity door unlock writes 0xFF over the whole
+        # group, so every switch on that floor is already ON. Treat a press on an already-satisfied switch as success
+        # instead of a miss (measured 2026-11-13: 3 presses on TObjDoorKey failed the run while the flags were 0xFF).
+        groups = [int(value) for value in (first.get("groups") or second.get("groups") or [])]
+        if groups and max(groups) >= 255:
+            self.switch_ok.add(objective.ptr)
+            self.pressed[objective.ptr] = now
+            self.switch_misses.pop(objective.ptr, None)
+            return ""
         misses = self.switch_misses.get(objective.ptr, 0) + 1
         self.switch_misses[objective.ptr] = misses
         if misses >= self.bounds.max_switch_attempts:
