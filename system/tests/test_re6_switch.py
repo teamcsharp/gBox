@@ -1165,6 +1165,18 @@ def test_the_combo_mandate_yields_to_a_live_bomb_clearance_margin():
     assert bot._inside_blast_margin() is False
 
 
+def test_before_the_first_kill_of_a_round_the_mandate_hunts_instead_of_roaming():
+    # Live 2026-11-14: kills stayed 0 for ~45 s after a round start while the bot roamed the bonus phase.
+    import math as _m
+    bot, clock, snap = brain(round_guest(enemies=((0., 0., 2000., 100),)))
+    live = snap["enemies"]
+    p = {"pos": (0., 0., 0.), "ammo": 7, "state": 0}
+    flat = lambda e: _m.hypot(e["pos"][0], e["pos"][2])
+    bot._round_started, bot._kill_at, bot._kill_n, bot.combo_prev = 10.0, None, None, 0
+    assert bot._combo_mandate_on(p, live, flat, 10.5) is False
+    assert bot._combo_mandate_on(p, live, flat, 13.0) is True
+
+
 def test_the_combo_mandate_pursues_the_nearest_enemy_no_matter_the_distance():
     # Operator 2026-11-14: "Every enemy is meant to be dispatched ... no matter the distance."
     import math as _m

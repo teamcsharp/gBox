@@ -3479,7 +3479,7 @@ class Bot:
         return self._go("bomb_escape", "blast_retreat", {"hold": self._stick(h, cam_yaw)},
                         f"bomb clearance {clear:.0f}/{need:.0f} cm: out of the blast before anything else")
 
-    def _combo_mandate_on(self, p, live, flat) -> bool:
+    def _combo_mandate_on(self, p, live, flat, now=None) -> bool:
         """The combo mandate is in force: a kill must land now, so a non-kill detour (a bomb sprint included) waits.
 
         In force when an enemy is within COMBO_HOT_R and either the running combo's clock is at or under COMBO_KEEP_S
@@ -3504,6 +3504,12 @@ class Bot:
         if isinstance(since, (int, float)) and since >= COMBO_KEEP_S:
             return True
         if self._kill_at is not None and self.combo_prev <= 0:
+            return True
+        # Live 2026-11-14 (attribution combo_break_walk, kills 0 for the first ~45 s of a round): before the first
+        # kill of the round the mandate was never in force, so the bot roamed the time-bonus phase with nothing dead.
+        # A round with no kill after COMBO_KEEP_S now hunts the nearest enemy like any other lapse.
+        if (now is not None and self._kill_at is None and self._round_started is not None
+                and now - self._round_started >= COMBO_KEEP_S):
             return True
         return False
 
@@ -4351,7 +4357,7 @@ class Bot:
         qte_shot = self._qte_recovery_shot(p, live, flat, snap, now)
         if qte_shot is not None:
             return qte_shot
-        self._combo_hot_now = self._combo_mandate_on(p, live, flat)
+        self._combo_hot_now = self._combo_mandate_on(p, live, flat, now)
         if self._combo_hot_now and self._inside_blast_margin():
             self._combo_hot_now = False          # a live bomb around him: out of the blast first, the combo after
             self.stats['combo_yields_to_blast'] = int(self.stats.get('combo_yields_to_blast', 0)) + 1
