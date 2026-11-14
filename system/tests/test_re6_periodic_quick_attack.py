@@ -261,3 +261,29 @@ def test_no_hp_change_is_not_misreported_as_off_target_or_used_for_aim_training(
     assert entry['outcome']=='miss:no_damage' and entry['measurement']=='trigger_request'
     assert 'unverified' in entry['damage_evidence']
     assert bot.stats['unattributed_shot_learning_skips']==1
+
+
+def test_an_overdue_burst_start_is_allowed_from_a_close_enemy_in_sight(monkeypatch):
+    # Live 2026-11-13: with the strict start the sidebar's 10 s burst never fired (1 armed, 0 requests in 530 s).
+    # Once the burst is PERIODIC_QA_OVERDUE_S late, a close enemy in the mesh's sight line starts it; it still waits
+    # for the gun action before firing, and the relaxed arm keeps its own longer window.
+    bot, p, enemy = ready_bot()
+    bot._snap['laser'] = None
+    bot._measured_contact = lambda e, now: False
+    assert act(bot, p, enemy, 24.0) is None                      # due time: no contact, not overdue yet
+    release = act(bot, p, enemy, 27.0)                           # overdue: a sighted close enemy arms the burst
+    assert release == {'hold': ()} and bot.stats['periodic_qa_relaxed'] == 1
+    assert bot.periodic_qa_remaining == R.PERIODIC_QA_COUNT
+    # the relaxed arm survives past the measured-contact window and fires once the gun action is free
+    assert act(bot, p, enemy, 27.6) == {'hold': ('zl', 'zr')}
+    assert bot.stats['periodic_qa_requests'] == 1
+
+
+def test_the_bomb_lane_being_busy_does_not_starve_the_interval_burst():
+    # Live 2026-11-13: one burst in a round because bomb_phase/bomb.out were set almost every tick by the bot's own
+    # bomb lane. The burst now only waits on a grenade in hand, a down, or a real prompt.
+    bot, p, enemy = ready_bot()
+    bot.bomb_phase = 'wait'
+    p['bomb'] = {'out': True}
+    assert act(bot, p, enemy, 24.0) == {'hold': ()}
+

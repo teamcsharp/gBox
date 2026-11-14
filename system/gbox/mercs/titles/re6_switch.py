@@ -1955,6 +1955,11 @@ PERIODIC_QA_CONTACT_S, PERIODIC_QA_ACK_S = .6, 1.2
 # The carryover tolerances: 20 cm of player movement and 30 cm of target movement in a quarter second never
 # survived a live fight (one burst in 530 s, zero requests). The measured-contact/laser checks still gate it.
 PERIODIC_QA_MOVE_CM, PERIODIC_QA_TARGET_CM = 140.0, 220.0
+# The interval burst must not starve when the measured-contact window never lines up with a free gun action:
+# once it is PERIODIC_QA_OVERDUE_S late, a close enemy in sight (HIT_QS_R, mesh line clear) is enough to start
+# the burst, and that arm survives PERIODIC_QA_RELAXED_WINDOW_S while the release/turn settles. Live
+# 2026-11-13: the strict start gave one armed burst and zero requests in 530 s with the sidebar at 10 s.
+PERIODIC_QA_OVERDUE_S, PERIODIC_QA_RELAXED_WINDOW_S = 2.5, 2.0
 READY_S, LASER_WAIT_S, RAY_STALE_S = 0.12, 0.7, 1.0
 KEEP_TARGET, THREAT_R, COMMIT_S = 1.5, 250.0, 1.0
 HIT_S = 0.45                            # a zombie's health falls within this of the shot that hit him
@@ -2543,6 +2548,10 @@ REPLAY_LOAD_S = 60.0                    # a death's YES replay loads this long a
 # left for BONUS_SKIP_S. Every break (his shot, a bomb, a kick) counts as taken, a bonus still waiting when the round
 # ends as missed: stats bonuses_taken / bonuses_missed (per round: round_*, bonus_log).
 BONUS_PURSUIT = False                   # (shooting them: off - operator 16:52, they break only to a physical attack)
+# Operator 2026-11-14: "activating combo time via ... shooting / destroying blue time bonus crystals (RE6)".
+# A time bonus below the five-minute bank inside BONUS_SHOOT_R with a clear line is now shot through the lock
+# as well as walked to; the walk kept costing the combo, the shot does not.
+BONUS_TIME_RANGED = True
 BONUS_R, BONUS_DY, BONUS_SAFE_R = 2500.0, 600.0, 600.0
 BONUS_H, BONUS_HIT_R = 130.0, 45.0     # the capsule's middle (a frame of one, 2026-10-27: a column ~2.6 m tall
                                         # with its glowing part around 1.3 m up; 40 cm aimed at its foot - live,
@@ -2819,7 +2828,26 @@ COMBO_GUARD_DOINGS = ("walk", "no_foes", "bonus", "taunt")
 # kill has landed for COMBO_KEEP_S) and an enemy is near, the bot stops every non-kill detour - including a bomb
 # escape sprint - and takes the fastest kill it can: a rapid quick shot when the enemy is at COMBO_QUICK_R, else a
 # chase for the next combat decision. COMBO_HOT_R is how near the enemy must be for the override.
-COMBO_KEEP_S, COMBO_HOT_R, COMBO_QUICK_R, COMBO_QUICK_GAP_S = 3.2, 1200.0, 350.0, 0.16
+COMBO_KEEP_S, COMBO_HOT_R, COMBO_QUICK_R, COMBO_QUICK_GAP_S = 2.5, 3000.0, 280.0, 0.22
+KILL_GAP_MANDATE_S = 5.0                      # the operator's absolute limit between kills
+# Combat pressure (operator 2026-11-13: "the bot walking around not shooting enemies is unacceptable ... shooting
+# any and all enemies ... or they will crowd up and the combo will be lost"): with ANY alive enemy in sight
+# within COMBAT_PRESSURE_R on his floor the bot fights - capsule runs, green-bonus detours and taunts wait.
+COMBAT_PRESSURE_R = 2000.0
+# Point blank (operator 2026-11-13: "every time the bot raises their gun and then fails to shoot the enemy or
+# misses with the enemy right in front of them"): with an enemy this close in the front arc the trigger is
+# pulled even if the wall/probe checks object - at 2 m the body is 30 cm across, and a raised gun that
+# holds is a gun that is not shooting. The envelope still bounds the angle to the body at that distance.
+POINT_BLANK_R, PB_YAW, PB_PITCH = 260.0, math.radians(10.0), math.radians(12.0)
+# Operator 2026-11-13 (screenshot of the muzzle pointing at the ceiling): "Watching the bot shoot at the
+# ceiling just makes no sense ... They need to be aware that their enemy is on another level ... they will never
+# get to the enemy shooting through the ground." Camera-geometry fire is limited to bodies within
+# FIRE_LEVEL_DY of his feet; a measured laser dot on the body still proves a real line (flying/ledges).
+FIRE_LEVEL_DY = 120.0
+# Operator 2026-11-14: "If the bot fights while placing mines, the goal becomes easier ... the combo is the true
+# meta." A quick shot at a close enemy during the bomb retreat is allowed while the deadline is not tight
+# (combo about to lapse): one aim+shot tick, then the retreat resumes. COMBO_QUICK_R still bounds it.
+COMBO_BLAST_SHOT_S, COMBO_BLAST_SHOT_R = 2.5, 700.0
 WALL_ESCAPE_S = 1.5                      # Bot._wall_command: the walk away from the operator's wall
 _NAV_MESH = None
 FIRE_ZONE_R = 600.0                     # Bot._decide: one this near in sight on his level - the fight before any bonus
@@ -3296,7 +3324,7 @@ class Bot:
         elif last == DYING_HP and hp > DYING_HP:
             stats['dying_recoveries'] = int(stats.get('dying_recoveries', 0)) + 1
 
-    def _qte_recovery_shot(self, p, live, flat, now) -> dict | None:
+    def _qte_recovery_shot(self, p, live, flat, snap, now) -> dict | None:
         """Three quick shots right after a survived QTE, before the flee (operator 2026-11-13).
 
         The recovery episode already drops mines (qte_escape.Recovery -> re6_remote_control's QTE ring); this keeps the
@@ -3312,9 +3340,10 @@ class Bot:
             return None
         if p.get('ammo') == 0 or now - getattr(self, 'qte_shot_last', -1e9) < QTE_SHOT_GAP_S:
             return None
-        target = min((e for e in live if flat(e) <= QTE_SHOT_R), key=flat, default=None)
+        target = self._quick_shot_target(snap, live, flat, now, QTE_SHOT_R)
         if target is None:
-            return None
+            # The ray is not on a body: turn to the nearest close enemy and take the quick shot once it is.
+            return self._face_for_quick_shot(p, live, flat, snap, QTE_SHOT_R, now)
         self.qte_shots_owed -= 1
         self.qte_shot_last = now
         self.stats['qte_recovery_quick_shots'] = int(self.stats.get('qte_recovery_quick_shots', 0)) + 1
@@ -3322,6 +3351,101 @@ class Bot:
         return self._go("quick_shot", "qte_recovery_shot", {"hold": ("zl", "zr")},
                         f"QTE recovery: a quick shot at the one {flat(target):.0f} cm off "
                         f"({self.qte_shots_owed} left)")
+
+    def _quick_shot_target(self, snap, live, flat, now, radius):
+        """The enemy the camera/laser ray is actually on within `radius` (None: the ray is on the ceiling/air).
+
+        Operator 2026-11-13, screenshot: "Why is the bot just shooting up at the ceiling, missing the enemies right
+        in front?" The combo/QTE quick-shot actions press both triggers in whatever direction the camera last faced, so
+        after an off-floor/aimed-up tick they fired into the ceiling. A quick shot is now only taken when the live ray
+        is on a body; otherwise the bot turns to the enemy first (or chases).
+        """
+        lz = snap.get("laser")
+        cam = snap.get("camera")
+        if lz is not None and lz.get("up"):
+            origin, dot, source = tuple(lz["from"]), tuple(lz["at"]), "laser"
+        elif cam is not None and cam.get("pos") and cam.get("target"):
+            origin, dot, source = tuple(cam["pos"]), tuple(cam["target"]), "camera"
+        else:
+            return None
+        on = self._on_line(origin, dot, source, live, now)
+        if on is None or flat(on) > radius:
+            return None
+        return on
+
+    def _face_for_quick_shot(self, p, live, flat, snap, radius, now) -> dict | None:
+        """Turn the camera to the nearest close enemy (no fire): the quick shot follows once the ray is on him."""
+        target = next((e for e in sorted(live, key=flat) if flat(e) <= radius and self._sight(e, now)), None)
+        if target is None:
+            return None
+        cam = snap.get("camera") or {}
+        yaw = cam.get("yaw", p.get("rot") or 0.0)
+        err = wrap(heading(target["pos"][0] - p["pos"][0], target["pos"][2] - p["pos"][2]) - yaw)
+        self._gun_down()
+        self.stats['quick_shot_turns'] = int(self.stats.get('quick_shot_turns', 0)) + 1
+        return self._go("turn", "face_for_quick_shot", {"hold": self._yaw(err)},
+                        f"quick shot: turning {math.degrees(err):+.0f} deg to the one {flat(target):.0f} cm off")
+
+    def _inside_blast_margin(self) -> bool:
+        """True when a placed mine's clearance rule says he is still inside the blast and must move out.
+
+        Live 2026-11-13 22:23: the bot died doing=bomb "inside the bomb clearance margin (218 of 1200 cm)" with eight
+        enemies within 2 m: the combo mandate had postponed the escape. Getting out of the blast outranks the combo (a
+        death ends the round, and with it every combo).
+        """
+        clear, need = self.stats.get('mine_clearance_cm'), self.stats.get('mine_required_clearance_cm')
+        return (bool(self.stats.get('mine_escape_required')) and isinstance(clear, (int, float))
+                and not isinstance(clear, bool) and isinstance(need, (int, float)) and not isinstance(need, bool)
+                and need > 0 and clear < need)
+
+    def _blast_retreat(self, p, live, snap, now) -> dict | None:
+        """Out of a live remote-bomb blast BEFORE any other action: the engine's detonation waits for 1200 cm and live
+        2026-11-14 the bot stood at 430 cm with the deadline 7.5 s past, still aiming (the movement-safety hook can only
+        steer a walking action; a shot/quick-shot/aim action leaves him in place). While the clearance is short by 500+
+        cm or the deadline is within 2 s this returns a pure walk out, and the wall/safety hook steers it around the
+        bombs (it reads mine_escape_required and the published escape heading).
+        """
+        if not self._inside_blast_margin():
+            return None
+        clear, need = self.stats.get('mine_clearance_cm'), self.stats.get('mine_required_clearance_cm')
+        if not (isinstance(clear, (int, float)) and isinstance(need, (int, float))):
+            return None
+        remaining = self.stats.get('mine_remaining_s')
+        tight = (isinstance(remaining, (int, float)) and not isinstance(remaining, bool) and remaining <= 1.0)
+        if not tight and p.get('ammo') != 0:
+            left = self.stats.get('combo_left_s')
+            if isinstance(left, (int, float)) and not isinstance(left, bool) and left <= COMBO_BLAST_SHOT_S:
+                px, py, pz = p["pos"]
+                flat_ = lambda e: math.hypot(e["pos"][0] - px, e["pos"][2] - pz)
+                tgt = self._quick_shot_target(snap, live, flat_, now, COMBO_BLAST_SHOT_R)
+                if tgt is not None:
+                    self.stats['blast_combo_shots'] = int(self.stats.get('blast_combo_shots', 0)) + 1
+                    return self._go("quick_shot", "blast_combo_shot", {"hold": ("zl", "zr")},
+                                    f"combo about to lapse in the bomb escape: a quick shot at the one "
+                                    f"{flat_(tgt):.0f} cm off, then out")
+                face = self._face_for_quick_shot(p, live, flat_, snap, COMBO_BLAST_SHOT_R, now)
+                if face is not None:
+                    self.stats['blast_combo_turns'] = int(self.stats.get('blast_combo_turns', 0)) + 1
+                    return face
+        urgent = tight or (need - clear) >= 500.0
+        if not urgent:
+            return None
+        # Live 2026-11-14: with the greedy open direction the bot stayed pinned 40-60 cm from the ring for minutes
+        # (blast_retreats 558, one detonation left). The mesh A* route to a bomb-clear goal is the planner that gets
+        # out of a ring dropped at his feet; it is published as _escape_heading so the wall/safety hook follows the
+        # same route around railings, and the greedy heading is only the fallback.
+        h = self._escape_route(p, now)
+        if h is None:
+            try:
+                h = self._push_heading(p, live, snap)
+            except Exception:                                # noqa: BLE001 - a retreat is never blocked by its planner
+                h = self._open_heading(p, live)
+        self._escape_heading = h
+        cam_yaw = (snap.get("camera") or {}).get("yaw", p.get("rot") or 0.0)
+        self._gun_down()
+        self.stats['blast_retreats'] = int(self.stats.get('blast_retreats', 0)) + 1
+        return self._go("bomb_escape", "blast_retreat", {"hold": self._stick(h, cam_yaw)},
+                        f"bomb clearance {clear:.0f}/{need:.0f} cm: out of the blast before anything else")
 
     def _combo_mandate_on(self, p, live, flat) -> bool:
         """The combo mandate is in force: a kill must land now, so a non-kill detour (a bomb sprint included) waits.
@@ -3331,8 +3455,12 @@ class Bot:
         """
         if not BOMBS or not live:
             return False
+        # Operator 2026-11-14: "the bot must not only fight enemies but locate and pursue them ... Every enemy is
+        # meant to be dispatched no matter the distance." The mandate no longer needs an enemy inside COMBO_HOT_R (the
+        # old 30 m gate): with the combo clock low or no kill for COMBO_KEEP_S, the nearest enemy on his floor - at any
+        # distance - is chased; the quick-shot step still needs COMBO_QUICK_R.
         near = min((flat(e) for e in live), default=None)
-        if near is None or near > COMBO_HOT_R:
+        if near is None:
             return False
         left = self.stats.get("combo_left_s")
         combo = self.stats.get("combo_prev") or 0
@@ -3347,6 +3475,47 @@ class Bot:
             return True
         return False
 
+    def _laser_sources(self, p, snap, now) -> list:
+        """Enemies whose laser sight / ranged wind-up is on him, nearest first ("backtrace the laser to the enemy").
+
+        Operator 2026-11-13 (screenshot of enemy laser lines at the bot): "if an enemy uses a laser, we need to
+        backtrace it and decommission that enemy." A wind-up read is the RAM's own confirmation that the one is
+        aiming his ranged attack; the source is prioritized as the target (out to LEDGE_RANGED_R) so the bot answers
+        the aimer instead of standing in the beam or shooting past him.
+        """
+        out = []
+        me = p["pos"]
+        for tid in list((getattr(self, "windups", None) or {}).keys()):
+            e = next((x for x in snap.get("enemies") or () if x.get("ptr", x.get("slot")) == tid), None)
+            if e is None or (e.get("hp") or 0) <= 0 or not e.get("pos"):
+                continue
+            if abs(e["pos"][1] - me[1]) > MAX_DY or math.dist(me, e["pos"]) > LEDGE_RANGED_R:
+                continue
+            if self.is_blocked(e, now):
+                continue
+            out.append(e)
+        out.sort(key=lambda e: math.dist(me, e["pos"]))
+        return out
+
+    def _combat_pressure(self, live, now) -> bool:
+        """An alive enemy is in sight within COMBAT_PRESSURE_R on his floor: fight, do not go sightseeing.
+
+        Live 2026-11-13 (operator screenshot + "the bot walking around not shooting enemies is unacceptable"): during
+        the below-five-minute bonus phase the bot would walk to a capsule past visible enemies. Any enemy in the clear
+        this near now suppresses the bonus/taunt detours so the firefight keeps the combo.
+        """
+        me = self._ppos
+        if me is None:
+            return False
+        for e in live:
+            if abs(e["pos"][1] - me[1]) > MAX_DY:
+                continue
+            if math.hypot(e["pos"][0] - me[0], e["pos"][2] - me[2]) > COMBAT_PRESSURE_R:
+                continue
+            if not self.is_blocked(e, now):
+                return True
+        return False
+
     def _combo_guard(self, p, live, flat, snap, now) -> dict | None:
         """Never idle while the combo is about to lapse (operator 2026-11-13, the absolute mandate: "never let the bot
         stop fighting and adding to the combo ... never go five seconds without accruing a kill").
@@ -3357,7 +3526,11 @@ class Bot:
         """
         if not getattr(self, '_combo_hot_now', False) or not live:
             return None
-        target = min((e for e in live if flat(e) <= COMBO_QUICK_R), key=flat, default=None)
+        # Only a close enemy UNDER THE LIVE RAY gets the mandate's quick shot: the operator's 2026-11-13 screenshot
+        # shows the bot firing into the ceiling while enemies stand in front (the quick-shot action presses both
+        # triggers in whatever direction the camera last faced). 280 cm, a sight check, a ray check and a 0.22 s gap
+        # keep the shots real; with no one on the ray the bot turns to the nearest enemy instead of firing.
+        target = self._quick_shot_target(snap, live, flat, now, COMBO_QUICK_R)
         if target is not None and p.get('ammo') != 0 and now - getattr(self, '_combo_quick_at', -1e9) >= COMBO_QUICK_GAP_S:
             self._combo_quick_at = now
             self.stats['combo_quick_shots'] = int(self.stats.get('combo_quick_shots', 0)) + 1
@@ -3366,6 +3539,9 @@ class Bot:
                             f"combo mandate: a quick shot at the one {flat(target):.0f} cm off")
         if self.doing not in COMBO_GUARD_DOINGS and self.doing not in ("aim", "raise"):
             return None
+        face = self._face_for_quick_shot(p, live, flat, snap, COMBO_QUICK_R, now)
+        if face is not None:
+            return face
         chase = self._pursue(p, snap, now)
         if chase is None:
             return None
@@ -4127,16 +4303,35 @@ class Bot:
             return self._go("held", "break_free", {"hold": WIGGLE[self.wiggle % len(WIGGLE)]},
                             f"held (action {state}): B mashed, the stick round")
         self.in_hold = False
-        qte_shot = self._qte_recovery_shot(p, live, flat, now)
+        blast = self._blast_retreat(p, live, snap, now)
+        if blast is not None:
+            return blast
+        qte_shot = self._qte_recovery_shot(p, live, flat, snap, now)
         if qte_shot is not None:
             return qte_shot
         self._combo_hot_now = self._combo_mandate_on(p, live, flat)
+        if self._combo_hot_now and self._inside_blast_margin():
+            self._combo_hot_now = False          # a live bomb around him: out of the blast first, the combo after
+            self.stats['combo_yields_to_blast'] = int(self.stats.get('combo_yields_to_blast', 0)) + 1
         if self._combo_hot_now:
             self.stats['combo_mandate_s'] = round(float(self.stats.get('combo_mandate_s', 0.0) or 0.0) + TICK_S, 2)
         if self._combo_hot_now and self.stats.get('mine_escape_required'):
             # The bomb sprint stands the gun down and never adds to the combo; while a kill must land the sprint waits
             # (the flag still detonates only when the live clearance passes the rule).
             self.stats['combo_over_bomb_sprints'] = int(self.stats.get('combo_over_bomb_sprints', 0)) + 1
+        # Operator 2026-11-14: "always moving and placing a mine every 10 seconds". The remote-mine lane (remote_mines
+        # policy) is paced through this stats override; the shipped 7.5 +/- 2.5 s cadence dropped a ring before the
+        # previous one had been cleared and detonated (live 00:11-00:15: rings every ~6 s, 40-90 s fleeing per ring).
+        rm = self.stats.get('remote_mines')
+        if not isinstance(rm, dict):
+            rm = self.stats['remote_mines'] = {}
+        rm.setdefault('drop_every_s', 10.0)
+        rm.setdefault('drop_jitter_s', 1.0)
+        # Rings at the policy's widest radius (600 cm, not the shipped 200): the detonation rule needs 1200 cm from
+        # the nearest bomb, so a ring ejected at his feet (200 cm) forced a 1000 cm retreat on every cycle - live
+        # 2026-11-14 the bot spent 40-90 s per ring fleeing (blast_retreats 882 in 4 min) and the combo died while it
+        # ran. At 600 cm it is 600 cm from safety, which a sprint covers before the five-second deadline.
+        rm.setdefault('radius_cm', 600.0)
         if self.stats.get('mine_escape_required') and not self._combo_hot_now:
             # Placement starts a five-second deadline. A quick-turn sequence,
             # weapon handover or another grenade must not consume this route.
@@ -4859,24 +5054,47 @@ class Bot:
             if chase is not None:
                 self.why = f"hunt: the nearest {near / 100:.0f} m off - " + str(self.why)
                 return chase
-        ran = (None if (hot and not time_run) or not detours or self._bonus_wait(snap)
+        pressure = self._combat_pressure(live, now)
+        if pressure:
+            self.stats["combat_pressure_s"] = round(float(self.stats.get("combat_pressure_s", 0.0) or 0.0) + TICK_S, 2)
+            self.stats["pressure_blocks"] = int(self.stats.get("pressure_blocks", 0)) + 1
+        # Operator 2026-11-14, the match strategy: "initially go after the time bonuses throughout the level while
+        # building initial combo ... once the time is at 5 minutes, the strategy can go into fighting, traps and combo
+        # maintenance." So below the five-minute bank (clock under BONUS_CLOCK_LOW_S) the time bonuses are the
+        # objective - a distant enemy does not veto them - while anything inside FIRE_ZONE_R still pre-empts (hot).
+        # At or above the bank the bot is in fight/trap/combo mode and every bonus detour yields.
+        fight_mode = self._bonus_clock_ready(snap)
+        time_shot = self._time_bonus_shot(p, snap, now)      # a blue time crystal in range: shoot it, do not walk
+        if time_shot is not None:
+            return time_shot
+        # "the bot meandered and didnt go find the enemies": with enemies alive somewhere else and none on his floor,
+        # the hunt outranks the capsule run (the bonus phase still wins when the floor is clear or the enemies are
+        # distant but on it - 'hot' already covers the close ones).
+        others_now = [e for e in snap.get("enemies") or () if (e.get("hp") or 0) > 0 and e.get("pos")]
+        hunt_elsewhere = bool(others_now) and not live
+        ran = (None if (hot or (pressure and fight_mode) or hunt_elsewhere or not detours or self._bonus_wait(snap))
                else self._bonus_run(p, live, flat, snap, now))
         if ran is not None:                                      # time bank first, even with a distant kill owed
             return ran
-        saved = None if hot or not detours else self._green_save(p, live, flat, snap, now)   # a green bonus for a
+        saved = None if hot or (pressure and fight_mode) or not detours             else self._green_save(p, live, flat, snap, now)      # green bonus
         if saved is not None:                                                                  # running-out combo
             return saved
         high = self._off_floor(p, snap, now) if not live else []   # nobody on his floor: one above or below him
+        if high:
+            self.stats['offlevel_targets'] = int(self.stats.get('offlevel_targets', 0)) + 1
         if self.hazard is not None and not live and not self._hazard_break_due(p, live, flat, now):  # nobody to fight and in smoke: out of it
             cam = snap.get("camera")
             return self._go("walk", "hazard_out", {"hold": self._stick(self._open_heading(p, live, self.hazard),
                                                                        cam["yaw"] if cam else p["rot"])},
                             "in a hazard: moving out")
+        others = [e for e in snap.get("enemies") or () if (e.get("hp") or 0) > 0 and e.get("pos")]
         if not live and not high:
-            taunt = self._taunt(p, live, flat, now) if detours else None
+            # Operator 2026-11-14: "the bot meandered and didn't go find the enemies." While any enemy lives anywhere
+            # in RAM the hunt outranks taunts and bonus pickups; only a truly empty stage idles/takes.
+            taunt = self._taunt(p, live, flat, now) if detours and not others else None
             if taunt is not None:
                 return taunt
-            took = self._bonus(p, live, flat, snap, now) if detours else None
+            took = self._bonus(p, live, flat, snap, now) if detours and not others else None
             if took is not None:
                 return took
             if self._mine_due(now) or self.bomb_phase in ("equip", "face", "aim", "throw", "thrown"):
@@ -4888,6 +5106,15 @@ class Bot:
             chase = self._pursue(p, snap, now)                   # none on his floor: after the stage's best one
             if chase is not None:
                 return chase
+            if others:
+                px, py, pz = p["pos"]
+                best = min(others, key=lambda e: math.dist((px, py, pz), e["pos"]))
+                heading_to = wrap(heading(best["pos"][0] - px, best["pos"][2] - pz))
+                cam_yaw = (snap.get("camera") or {}).get("yaw", p.get("rot") or 0.0)
+                self.stats["hunt_offlevel"] = int(self.stats.get("hunt_offlevel", 0)) + 1
+                return self._go("hunt", "hunt_offlevel", {"hold": self._stick(heading_to, cam_yaw)},
+                                f"no enemy on his floor: hunting the nearest alive one "
+                                f"{math.dist((px, py, pz), best['pos']):.0f} cm away")
             return self._go("no_foes", "idle", {"hold": ()}, "no zombie alive within reach")
         cam = snap.get("camera")
         yaw = cam["yaw"] if cam else p["rot"]                    # without the camera: the body's heading stands in
@@ -4958,8 +5185,21 @@ class Bot:
         thrown = None if burst_active else self._nade(p, vis, live, flat, yaw, snap, now)
         if thrown is not None:
             return thrown
+        lasers = self._laser_sources(p, snap, now)
+        if lasers:
+            src = lasers[0]
+            sid = src.get("ptr", src.get("slot"))
+            if self.stats.get("laser_target") != sid:
+                self.stats["laser_backtraces"] = int(self.stats.get("laser_backtraces", 0)) + 1
+                self.stats["laser_target"] = sid
+                self.stats["laser_target_cm"] = round(flat(src))
         if goal_tick and self._goal_target is not None and any(e is self._goal_target for e in live):
             pass                                             # the operator's target: no other pick
+        elif lasers:
+            tgt = lasers[0]                                  # the enemy whose laser is on him: decommission it first
+            self.target, self.target_at = tgt.get("ptr", tgt.get("slot")), now
+            foot, dist, err = tgt["pos"], flat(tgt), bearing(tgt)
+            self.stats["laser_targets"] = int(self.stats.get("laser_targets", 0)) + 1
         elif self.combo_urgent and vis:                      # the combo running out: the nearest open one
             tgt = min(vis, key=flat)
             self.target, self.target_at = tgt.get("ptr", tgt.get("slot")), now
@@ -5013,13 +5253,26 @@ class Bot:
         took = self._bonus(p, live, flat, snap, now)
         if took is not None:
             return took
-        if not self._aimable:                                    # every one in reach out of sight: a way round
+        point_blank_aim = None
+        if p.get('ammo') != 0:
+            point_blank_aim = next((e for e in live if flat(e) <= POINT_BLANK_R
+                                    and abs(bearing(e)) <= PB_YAW and (e.get('hp') or 0) > 0), None)
+        if not self._aimable and point_blank_aim is not None:
+            # Operator 2026-11-13: one right in front of him must be shot, not walked past because a cover probe
+            # objects. Aim straight at it and let the point-blank fire gate pull the trigger.
+            tgt, foot, dist, err = point_blank_aim, point_blank_aim["pos"], flat(point_blank_aim), bearing(point_blank_aim)
+            self.target, self.target_at = tgt.get("ptr", tgt.get("slot")), now
+            self.stats["point_blank_fires"] = int(self.stats.get("point_blank_fires", 0)) + 1
+        if not self._aimable and point_blank_aim is None:        # every one in reach out of sight: a way round
             self._gun_down()
             if NAV_WALK and snap.get("navmesh") is not None:
                 chase = self._pursue(p, snap, now)
                 if chase is not None:
                     return chase
-                return self._go("walk", "walk_no_route", {"hold": ()}, "no reachable enemy route: releasing forward")
+                heading_to = wrap(heading(tgt["pos"][0] - px, tgt["pos"][2] - pz))
+                cam_yaw = (snap.get("camera") or {}).get("yaw", p.get("rot") or 0.0)
+                return self._go("walk", "walk_no_route", {"hold": self._stick(heading_to, cam_yaw)},
+                                "no reachable enemy route: walking straight at him")
             if now - self.detour_at >= DETOUR_S:
                 self.detour_at, self.detour = now, "lright" if self.detour == "lleft" else "lleft"
                 self.stats["detours"] += 1
@@ -5035,13 +5288,29 @@ class Bot:
                 self.melee_at = now                              # one at arm's length in front: a kick
                 self.stats["melee"] += 1
                 return self._go("melee", "melee", {"tap": "zr"}, f"one at {near:.0f} cm in front: a kick")
-            if not front:
-                if dist > ENGAGE_R:                              # nobody in reach: walk to him along the camera
+            if not front and point_blank_aim is None:
+                # Operator 2026-11-13: "I want the bot pursuing and going after any and all enemies knowing where
+                # they are on the map and able to shoot unlimited distances" / "why is the bot just standing here and
+                # not shooting at the enemy across the map?" On a clear line out to SNIPER_LONG_R the gun comes up and
+                # the long shot is taken instead of only walking; walking (navmesh A*) is the fallback, and when the
+                # A* has no route the bot walks straight at the enemy rather than standing on an empty hold.
+                far_shot = (dist > ENGAGE_R and dist <= SNIPER_LONG_R and p.get('ammo') != 0
+                            and isinstance(p.get('equipped'), int) and p['equipped'] < WEAPON_INDEXES
+                            and not self.is_blocked(tgt, now) and self._sight(tgt, now))
+                if far_shot:
+                    self.stats['long_range_raises'] = int(self.stats.get('long_range_raises', 0)) + 1
+                    self.stats['long_range_raise_cm'] = round(dist)
+                elif dist > ENGAGE_R:                            # nobody in reach: walk to him along the camera
                     chase = self._pursue(p, snap, now)
                     if chase is not None:
                         return chase
-                    return self._go("walk", "walk_no_route", {"hold": ()}, "no reachable enemy route: releasing forward")
-                if abs(err) > QUICK_ERR and now - self.quick_at > QUICK_GAP_S:
+                    heading_to = wrap(heading(tgt["pos"][0] - px, tgt["pos"][2] - pz))
+                    cam_yaw = (snap.get("camera") or {}).get("yaw", p.get("rot") or 0.0)
+                    return self._go("walk", "walk_no_route", {"hold": self._stick(heading_to, cam_yaw)},
+                                    "no nav route: walking straight at him")
+                if far_shot:                                     # fall through to the raise/fire path below
+                    pass
+                elif abs(err) > QUICK_ERR and now - self.quick_at > QUICK_GAP_S:
                     self.stats["quick_turns"] += 1               # him behind: the quick turn
                     self.quick = 2
                     return self._go("quick_turn", "quick_turn", {"hold": ("ldown",)},
@@ -5127,9 +5396,20 @@ class Bot:
                 # 0.7 s wait. Nothing new can fire: a line this gate rejects still waits for the measured laser.
                 err = ray_error(cam["pos"], cam["target"], aim_point(tgt, p["pos"]))
                 proven = dist <= ENGAGE_R and (dist <= GEOM_CLOSE_R or self._mesh_clear(tgt, now))
-                if not (proven and abs(err[0]) <= GEOM_FIRE_ERR
-                        and abs(err[1]) <= GEOM_FIRE_PITCH and not self.is_blocked(tgt, now)):
+                point_blank = (dist <= POINT_BLANK_R and abs(err[0]) <= PB_YAW and abs(err[1]) <= PB_PITCH
+                               and (tgt.get('hp') or 0) > 0)
+                if point_blank:
+                    self.stats["point_blank_fires"] = self.stats.get("point_blank_fires", 0) + 1
+                level_ok = abs(tgt["pos"][1] - p["pos"][1]) <= FIRE_LEVEL_DY
+                if not level_ok:
+                    self.stats["offlevel_fire_veto"] = int(self.stats.get("offlevel_fire_veto", 0)) + 1
+                elif not (((proven and abs(err[0]) <= GEOM_FIRE_ERR and abs(err[1]) <= GEOM_FIRE_PITCH)
+                           or point_blank) and (point_blank or not self.is_blocked(tgt, now))):
                     return self._go("raise", "raise", {"hold": ("zl",) + back}, "the gun comes up (no laser yet)")
+                if not level_ok:
+                    # off his level: never shoot through the floor/ceiling - the aim waits while he goes to it
+                    return self._go("raise", "offlevel_raise", {"hold": ("zl",) + back},
+                                    "the gun up, the one above/below: no shot through the floor")
                 self.stats["raise_geometry_fires"] = self.stats.get("raise_geometry_fires", 0) + 1
             origin, dot, source = cam["pos"], cam["target"], "camera"
         cands = self._aimable if source == "laser" else (front or self._aimable)
@@ -5216,13 +5496,21 @@ class Bot:
                     if dist > LONG_R:
                         self.stats["re6_sniper_longshots"] = self.stats.get("re6_sniper_longshots", 0) + 1
         contact = on
-        correcting = (not on and p.get('ammo') != 0 and (aim_at.get('hp') or 0) > 0
-                      and dist <= ENGAGE_R and abs(yaw_err) <= SPRAY_YAW and abs(pitch_err) <= SPRAY_PITCH
-                      and self._fire_envelope(dist, yaw_err, pitch_err)
-                      and not self.is_blocked(aim_at, now)
-                      and not (source == 'laser' and self._ray_short(origin, dot, aim_at))
-                      and (source != 'laser' or math.dist(origin, dot) + body(aim_at).r >= math.dist(origin, foot))
-                      and (source == 'laser' or self._mesh_clear(aim_at, now)))
+        point_blank = (dist <= POINT_BLANK_R and abs(yaw_err) <= PB_YAW and abs(pitch_err) <= PB_PITCH
+                       and (aim_at.get('hp') or 0) > 0 and p.get('ammo') != 0)
+        if point_blank and not on:
+            self.stats["point_blank_fires"] = self.stats.get("point_blank_fires", 0) + 1
+        level_ok = (abs(aim_at["pos"][1] - p["pos"][1]) <= FIRE_LEVEL_DY or source == 'laser')
+        if not level_ok and not on:
+            self.stats["offlevel_fire_veto"] = int(self.stats.get("offlevel_fire_veto", 0)) + 1
+        correcting = ((not on and level_ok and p.get('ammo') != 0 and (aim_at.get('hp') or 0) > 0
+                       and dist <= ENGAGE_R and abs(yaw_err) <= SPRAY_YAW and abs(pitch_err) <= SPRAY_PITCH
+                       and self._fire_envelope(dist, yaw_err, pitch_err))
+                      and (point_blank or (
+                          not self.is_blocked(aim_at, now)
+                          and not (source == 'laser' and self._ray_short(origin, dot, aim_at))
+                          and (source != 'laser' or math.dist(origin, dot) + body(aim_at).r >= math.dist(origin, foot))
+                          and (source == 'laser' or self._mesh_clear(aim_at, now)))))
         if correcting:
             on, on_e, source = True, aim_at, 'correcting'
             self.stats['fire_while_correcting'] = self.stats.get('fire_while_correcting', 0) + 1
@@ -5345,9 +5633,11 @@ class Bot:
         self.stats['periodic_qa_remaining'] = self.periodic_qa_remaining
         if self.periodic_qa_remaining == 0 and self.periodic_qa_wait is None and now < self.periodic_qa_due:
             return None
-        if (self.down or self.nade is not None or self.bomb_phase is not None or
-                (p.get('bomb') or {}).get('out') or
-                any(q.get('key') not in (None, 'r', 'y') for q in self._prompt_shown)):
+        # Live 2026-11-13: the sidebar's 10 s burst fired once in a round because the bot's own bomb lane is busy
+        # almost every tick (bomb_phase / bomb out). Only a grenade actually in hand, a down or a real prompt blocks
+        # the burst now; the gun-state gate below still keeps it to a safe moment.
+        if (self.down or self.nade is not None
+                or any(q.get('key') not in (None, 'r', 'y') for q in self._prompt_shown)):
             self.periodic_qa_arm = None
             return None
         waiting = self.periodic_qa_wait
@@ -5372,15 +5662,15 @@ class Bot:
         ready = p.get('state') == 0 and p.get('action') in FREE_ACTIONS
         finishing_shot = p.get('state') in (0, 2) and p.get('action') == 'cPlAction_pl_act_weapon_fire'
         if (not isinstance(eq, int) or not 0 <= eq < WEAPON_INDEXES or not isinstance(ammo, int) or ammo <= 0
-                or not (ready or finishing_shot)
                 or now - self.qshot_at < HIT_QS_GAP_S):
             self.periodic_qa_arm = None
             return None
+        overdue = now - self.periodic_qa_due
         life = (p.get('ptr'), p.get('generation'), eq, p.get('weapon_id'))
         arm = self.periodic_qa_arm
         if arm is not None:
             target = next((e for e in live if e.get('ptr', e.get('slot')) == arm['target']), None)
-            if (life != arm['life'] or target is None or now - arm['at'] > PERIODIC_QA_CONTACT_S
+            if (life != arm['life'] or target is None or now - arm['at'] > arm.get('window', PERIODIC_QA_CONTACT_S)
                     or math.dist(p['pos'], arm['player_pos']) > PERIODIC_QA_MOVE_CM
                     or math.dist(target['pos'], arm['target_pos']) > PERIODIC_QA_TARGET_CM
                     or flat(target) > HIT_QS_R or not self._sight(target, now)):
@@ -5397,16 +5687,27 @@ class Bot:
             self.stats['periodic_qa_remaining'] = self.periodic_qa_remaining
             return self._go('quick_shot', 'periodic_quick_shot', {'hold': ('zl', 'zr')},
                             f'periodic burst: verified nearby target, {self.periodic_qa_remaining} requests left')
+        relaxed = False
         target = next((e for e in sorted(live, key=flat) if flat(e) <= HIT_QS_R
                        and not self.is_blocked(e, now) and self._measured_contact(e, now)), None)
+        if target is None and overdue >= PERIODIC_QA_OVERDUE_S and p.get('state') == 0:
+            # Overdue: a close enemy in sight is enough (the arm waits for the gun action to become free below).
+            target = next((e for e in sorted(live, key=flat) if flat(e) <= HIT_QS_R
+                           and not self.is_blocked(e, now) and self._sight(e, now)), None)
+            relaxed = target is not None
         if target is None:
+            return None
+        if not (ready or finishing_shot) and not (relaxed and p.get('state') == 0):
             return None
         if self.periodic_qa_remaining == 0:
             self.periodic_qa_remaining = int(PERIODIC_QA_COUNT)
             self.periodic_qa_last, self.periodic_qa_due = now, now + PERIODIC_QA_INTERVAL_S
             self.stats['periodic_qa_bursts'] = self.stats.get('periodic_qa_bursts', 0) + 1
+        if relaxed:
+            self.stats['periodic_qa_relaxed'] = self.stats.get('periodic_qa_relaxed', 0) + 1
         self.periodic_qa_arm = {'at': now, 'life': life, 'target': target.get('ptr', target.get('slot')),
-                                'player_pos': tuple(p['pos']), 'target_pos': tuple(target['pos'])}
+                                'player_pos': tuple(p['pos']), 'target_pos': tuple(target['pos']),
+                                'window': PERIODIC_QA_RELAXED_WINDOW_S if relaxed else PERIODIC_QA_CONTACT_S}
         self._gun_down()
         return self._go('quick_shot', 'periodic_quick_release', {'hold': ()},
                         'periodic burst: release aim before the simultaneous quick-shot triggers')
@@ -6177,6 +6478,13 @@ class Bot:
             self.stats["combo_best"] = max(self.stats["combo_best"], combo)
             if self.combo_prev > 0 and combo == 0 and any(flat(e) <= ENGAGE_R for e in live):
                 self.stats["combo_breaks"] += 1
+                # Operator 2026-11-14: "the combo should never be lost". Every real loss is attributed to the
+                # doing/act the bot was in (scalars: the PiP only carries scalars), so the next fix targets the
+                # actual cause instead of guessing.
+                tag = str(self.doing or self.stats.get("act") or "unknown")[:24].replace(" ", "_")
+                self.stats["combo_break_" + tag] = int(self.stats.get("combo_break_" + tag, 0)) + 1
+                self.stats["combo_break_last"] = tag
+                self.stats["combo_break_last_why"] = str(self.why or "")[:160]
             urgent = combo > 0 and isinstance(ct, (int, float)) and 0 < ct < COMBO_LOW_S
             if urgent and not self.combo_urgent:
                 self.stats["combo_pushes"] += 1
@@ -6190,6 +6498,8 @@ class Bot:
                 gap = now - (self._kill_at or now)
                 self.stats["kill_gap_last_s"] = round(gap, 2)
                 self.stats["kill_gap_max_s"] = round(max(float(self.stats.get("kill_gap_max_s", 0.0) or 0.0), gap), 2)
+                if gap > KILL_GAP_MANDATE_S:
+                    self.stats["kill_gap_over_5s"] = int(self.stats.get("kill_gap_over_5s", 0)) + 1
                 self._kill_n, self._kill_at = k, now
             elif self._kill_at is None:
                 self._kill_at = now
@@ -7115,6 +7425,8 @@ class Bot:
     def _bonus_run(self, p, live, flat, snap, now) -> dict | None:
         if getattr(self, '_combo_hot_now', False):
             return None                                      # the combo mandate: no bonus detour while a kill must land
+        if self._combat_pressure(live, now) and self._bonus_clock_ready(snap):
+            return None                                      # fight mode (bank reached): fight them first
         """Below the five-minute bank, the nearest time bonus (his floor first), walked to and attacked
         physically within BONUS_MELEE_R; only a zombie within BONUS_BLOCK_R is fought. None: phase 2 this tick (no bonus
         waiting, every waiting one left for now, a zombie in the way, or the bomb / an item in hand)."""
@@ -7215,10 +7527,11 @@ class Bot:
         """A bonus shot through the lock: its centre locked onto, the gun up, the trigger down while the laser's ray runs
         through it (not ending short); the ray short of it BONUS_SEE_S on with a clear nav-mesh line: out of sight for
         BONUS_UNSEEN_S (None: walk there). A wall by the nav mesh: out of sight at once (walk, don't wait on the laser)."""
-        if b.get("kind") != "combo" or p.get("ammo") == 0:
+        if b.get("kind") not in ("combo", "time") or p.get("ammo") == 0 \
+                or (b.get("kind") == "time" and not BONUS_TIME_RANGED):
             self.bshot = None
             self._gun_down()
-            return None                                         # time bonuses always require approach and melee
+            return None                                         # only a green (combo) bonus used to be shootable
         pt = (b["pos"][0], b["pos"][1] + BONUS_H, b["pos"][2])
         if self.bshot is None or self.bshot[0] != b["ptr"]:
             self.bshot = (b["ptr"], now)
@@ -7253,6 +7566,27 @@ class Bot:
         return self._go("bonus", "bonus_fire" if fire else "bonus_aim", {"hold": tuple(sorted({"zl"} | fire))},
                         f"a {kind} bonus at {math.dist(p['pos'], b['pos']):.0f} cm: "
                         + ("shooting it (lock)" if on else "the lock on it"))
+
+    def _time_bonus_shot(self, p, snap, now) -> dict | None:
+        """Below the five-minute bank: shoot a blue time bonus in range through the lock instead of only walking to it.
+
+        Operator 2026-11-14: "initially go after the time bonuses throughout the level while building initial combo
+        ... shooting / destroying blue time bonus crystals (RE6)". The walk costs the combo chain; a shot does not.
+        """
+        if not BONUS_TIME_RANGED or self._bonus_clock_ready(snap) or not self._time_bonus_priority(snap, now):
+            return None
+        cands = [b for b in snap.get('bonuses') or () if b.get('kind') == 'time'
+                 and self.bonus_unseen.get(b['ptr'], -1e9) <= now
+                 and math.dist(p['pos'], b['pos']) <= BONUS_SHOOT_R]
+        if not cands:
+            return None
+        b = min(cands, key=lambda c: math.dist(p['pos'], c['pos']))
+        if not self._bonus_sight(p, b, snap):
+            return None
+        out = self._bonus_shoot(p, b, snap, now)
+        if out is not None:
+            self.stats['time_bonus_shots'] = int(self.stats.get('time_bonus_shots', 0)) + 1
+        return out
 
     def _green_save(self, p, live, flat, snap, now) -> dict | None:
         """The match: the combo window under COMBO_LOW_S, a green (combo) bonus in sight within BONUS_SHOOT_R and nobody
@@ -8328,7 +8662,12 @@ class RE6Switch(Driver):
         if ad is None or getattr(m, "mercs_no_modifications", False):
             return
         from . import re6_switch_mods
-        if playing and QTE_INSTANT and (snap or {}).get("player"):  # the QTEs by RAM, on by default and read back
+        # Operator 2026-11-14: "I want the flag flipped for that immediately so they don't even have to go through
+        # that." The QTE option is written as soon as the session has an adapter - during the load and the menus too,
+        # not only once a player snapshot exists - so no QTE in the round can be reached before both the game's own
+        # automatic action button and the RAM escape are on and read back (ensure_qte retries every 1 s until then and
+        # re-applies every 5 s, since a save load can reset the option).
+        if QTE_INSTANT:
             qte = re6_switch_mods.ensure_qte(ad, snap)
             if self.stats is not None:
                 self.stats["qte_auto"] = bool(qte.get("verified") and qte.get("auto_qte") and qte.get("auto_qte_ram"))

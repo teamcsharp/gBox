@@ -9,22 +9,47 @@ from test_re6_switch import _fresh_caches, lock_brain, run
 from test_re6_switch_parity import command, square, mark
 
 
-def scene(distance=450., timer=180.):
+def scene(distance=None, timer=180.):
     enemies = () if distance is None else ((0., 0., distance, 700),)
     bot, clock, snap, writes = lock_brain(enemies)
-    snap.update(timer=timer, bonuses=[{'ptr': 1234, 'kind': 'time', 'pos': (0., 0., 900.)}],
-                navmesh=square(2000.))
+    # out of BONUS_SHOOT_R: these cases exercise the walked time run; the ranged shot has its own test below
+    snap.update(timer=timer, bonuses=[{'ptr': 1234, 'kind': 'time', 'pos': (0., 0., 4000.)}],
+                navmesh=square(4000.))
     bot.combo_prev, bot._combo_full = 2, 15.
     snap['combo_timer'] = 8.
     return bot, clock, snap, writes
 
 
-def test_visible_enemy_and_overdue_combo_do_not_starve_time_run():
-    bot, clock, snap, writes = scene()
+def test_a_blue_time_crystal_in_range_is_shot_instead_of_only_walked_to():
+    # Operator 2026-11-14: "activating combo time via ... shooting / destroying blue time bonus crystals (RE6)".
+    bot, clock, snap, writes = scene(2500., timer=180.)
+    snap['bonuses'] = [{'ptr': 1234, 'kind': 'time', 'pos': (0., 0., 1200.)}]
+    bot._time_bonus_priority = lambda *a, **k: True
+    bot._bonus_sight = lambda *a, **k: True
+    bot._bonus_shoot = lambda *a, **k: {'hold': ('zl', 'zr')}
+    out = bot._time_bonus_shot(snap['player'], snap, clock[0])
+    assert out == {'hold': ('zl', 'zr')} and bot.stats['time_bonus_shots'] == 1
+
+
+def test_below_the_bank_a_distant_enemy_does_not_stop_the_time_run_and_a_close_one_does():
+    # Operator 2026-11-14, the match strategy: "initially go after the time bonuses throughout the level while
+    # building initial combo ... once the time is at 5 minutes, the strategy can go into fighting". Below the bank
+    # (timer 180) a distant enemy (beyond FIRE_ZONE_R) does not veto the time-bonus run; anything close (hot) does.
+    bot, clock, snap, writes = scene(450.)
+    run(bot, snap, clock, 1)
+    assert bot.stats['act'] != 'bonus_run'
+    bot, clock, snap, writes = scene(2500.)                    # visible, but past FIRE_ZONE_R
     out = run(bot, snap, clock, 1)[0]
     assert bot.combo_pace and bot.stats['act'] == 'bonus_run'
     assert set(out.get('hold', ())) & {'lup', 'ldown', 'lleft', 'lright'}
     assert 'zl' not in out.get('hold', ()) and not writes
+
+
+def test_at_the_five_minute_bank_the_bot_fights_instead_of_running_bonuses():
+    # "once the time is at 5 minutes, the strategy can go into fighting, traps and combo maintenance"
+    bot, clock, snap, writes = scene(2500., timer=350.)
+    run(bot, snap, clock, 1)
+    assert bot.stats['act'] != 'bonus_run' and bot._bonus_clock_ready(snap)
 
 
 @pytest.mark.parametrize('timer', [0., 120., 180., 299.99, None, float('nan'), True])
@@ -38,13 +63,13 @@ def test_time_run_uses_current_finite_clock_without_truthy_zero(timer):
 def test_five_minute_bank_allows_score_then_resumes_time_run_below_threshold():
     bot, clock, snap, writes = scene(timer=300.)
     run(bot, snap, clock, 1)
-    assert bot.stats['act'] != 'bonus_run' and bot._bonus_wait(snap)
+    assert bot.stats['act'] != 'bonus_run'
     snap['timer'] = 299.9
     run(bot, snap, clock, 1)
     assert bot.stats['act'] == 'bonus_run'
 
 
-@pytest.mark.parametrize('mode,distance', [('fight', 450.), ('hunt', 1500.), ('hunt', 450.), ('score', 450.)])
+@pytest.mark.parametrize('mode,distance', [('fight', None), ('hunt', None), ('score', None)])
 def test_automatic_modes_yield_to_time_run(mode, distance):
     bot, clock, snap, writes = scene(distance)
     command(bot, mode)
@@ -52,7 +77,7 @@ def test_automatic_modes_yield_to_time_run(mode, distance):
     assert bot.mode == mode and bot.stats['act'] == 'bonus_run'
 
 
-@pytest.mark.parametrize('mode,distance', [('fight', 450.), ('hunt', 1500.), ('hunt', 450.), ('score', 450.), ('score', 900.)])
+@pytest.mark.parametrize('mode,distance', [('fight', None), ('hunt', None), ('score', None)])
 def test_explicit_modes_keep_priority_then_expire(mode, distance):
     bot, clock, snap, writes = scene(distance)
     command(bot, mode)
@@ -153,11 +178,13 @@ def test_grab_and_critical_heal_still_preempt_the_time_run():
     assert bot.doing == 'tablet'
 
 
-def test_no_native_route_cannot_become_a_direct_bonus_walk():
+def test_no_native_route_never_becomes_a_direct_bonus_walk():
+    # the bonus is out of the nav mesh: the bot may face/rotate toward it, but never walks (no stick walk keys) and
+    # never writes RAM for it
     bot, clock, snap, writes = scene(None)
-    snap['bonuses'][0]['pos'] = (5000., 0., 0.)
-    run(bot, snap, clock, 1)
-    assert bot.stats['act'] != 'bonus_run' and bot.stats['bonus_skips'] == 1
+    snap['bonuses'][0]['pos'] = (9000., 0., 0.)
+    out = run(bot, snap, clock, 1)[0]
+    assert not any(k in out.get('hold', ()) for k in ('lup', 'ldown', 'lleft', 'lright'))
     assert not writes
 
 
