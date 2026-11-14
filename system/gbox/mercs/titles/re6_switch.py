@@ -2843,6 +2843,11 @@ COMBAT_PRESSURE_R = 2000.0
 # pulled even if the wall/probe checks object - at 2 m the body is 30 cm across, and a raised gun that
 # holds is a gun that is not shooting. The envelope still bounds the angle to the body at that distance.
 POINT_BLANK_R, PB_YAW, PB_PITCH = 260.0, math.radians(10.0), math.radians(12.0)
+# Operator 2026-11-14: "still seeing situations where the bot is raising their gun and not shooting ... If
+# anyone is close to them, they need to be dispatching them." Inside CLOSE_FIRE_R the body-size fire envelope
+# authorizes the shot even when the nav-mesh/probe checks cannot prove the line; a raise that never proves
+# sprays at the nearest close enemy instead of standing.
+CLOSE_FIRE_R, STALL_SPRAY_S, STALL_SPRAY_GAP_S = 600.0, 2.0, 1.2
 # Operator 2026-11-13 (screenshot of the muzzle pointing at the ceiling): "Watching the bot shoot at the
 # ceiling just makes no sense ... They need to be aware that their enemy is on another level ... they will never
 # get to the enemy shooting through the ground." Camera-geometry fire is limited to bodies within
@@ -3589,6 +3594,13 @@ class Bot:
         # Live 2026-11-14 01:40-01:42: the round stalled on doing=raise for ~50 s with 1-2 kills while the combo
         # lapsed. When the A* has no route the guard never leaves him standing: walk straight at the nearest enemy.
         target = min(live, key=flat)
+        if flat(target) <= CLOSE_FIRE_R and p.get('ammo') != 0 \
+                and now - getattr(self, '_stall_spray_at', -1e9) >= STALL_SPRAY_GAP_S:
+            self._stall_spray_at = now
+            self.stats['stall_sprays'] = int(self.stats.get('stall_sprays', 0)) + 1
+            self._gun_down()
+            return self._go("quick_shot", "stall_spray", {"hold": ("zl", "zr")},
+                            f"the gun never proved at {flat(target):.0f} cm: spraying instead of standing")
         heading_to = wrap(heading(target["pos"][0] - p["pos"][0], target["pos"][2] - p["pos"][2]))
         cam_yaw = (snap.get("camera") or {}).get("yaw", p.get("rot") or 0.0)
         self.stats['combo_guard_walks'] = int(self.stats.get('combo_guard_walks', 0)) + 1
@@ -5324,8 +5336,10 @@ class Bot:
             return took
         point_blank_aim = None
         if p.get('ammo') != 0:
-            point_blank_aim = next((e for e in live if flat(e) <= POINT_BLANK_R
-                                    and abs(bearing(e)) <= PB_YAW and (e.get('hp') or 0) > 0), None)
+            # Operator 2026-11-14: a close enemy behind the cover probes must still be aimed at and shot; the aim
+            # fallback reaches CLOSE_FIRE_R (600 cm), not only arm's reach.
+            point_blank_aim = next((e for e in live if flat(e) <= CLOSE_FIRE_R
+                                    and (e.get('hp') or 0) > 0), None)
         if not self._aimable and point_blank_aim is not None:
             # Operator 2026-11-13: one right in front of him must be shot, not walked past because a cover probe
             # objects. Aim straight at it and let the point-blank fire gate pull the trigger.
@@ -5470,10 +5484,15 @@ class Bot:
                 if point_blank:
                     self.stats["point_blank_fires"] = self.stats.get("point_blank_fires", 0) + 1
                 level_ok = abs(tgt["pos"][1] - p["pos"][1]) <= FIRE_LEVEL_DY
+                close_ok = (level_ok and 50.0 < dist <= CLOSE_FIRE_R
+                            and abs(err[0]) <= math.atan(FIRE_BODY_HALF_CM / max(dist, 50.0))
+                            and abs(err[1]) <= math.atan(FIRE_BODY_HALF_V_CM / max(dist, 50.0)))
+                if close_ok:
+                    self.stats["close_fires"] = int(self.stats.get("close_fires", 0)) + 1
                 if not level_ok:
                     self.stats["offlevel_fire_veto"] = int(self.stats.get("offlevel_fire_veto", 0)) + 1
                 elif not (((proven and abs(err[0]) <= GEOM_FIRE_ERR and abs(err[1]) <= GEOM_FIRE_PITCH)
-                           or point_blank) and (point_blank or not self.is_blocked(tgt, now))):
+                           or point_blank or close_ok) and (point_blank or close_ok or not self.is_blocked(tgt, now))):
                     # Live 2026-11-14: a target whose line never proves had the bot raising the gun for ~50 s while
                     # the combo lapsed. Raising is capped at a second; then it repositions for a line instead.
                     key = (tgt.get("ptr", tgt.get("slot")), "raise")
@@ -5584,10 +5603,14 @@ class Bot:
         level_ok = (abs(aim_at["pos"][1] - p["pos"][1]) <= FIRE_LEVEL_DY or source == 'laser')
         if not level_ok and not on:
             self.stats["offlevel_fire_veto"] = int(self.stats.get("offlevel_fire_veto", 0)) + 1
+        close_shot = (level_ok and dist <= CLOSE_FIRE_R and self._fire_envelope(dist, yaw_err, pitch_err)
+                      and (aim_at.get('hp') or 0) > 0)
+        if close_shot and not on:
+            self.stats["close_fires"] = int(self.stats.get("close_fires", 0)) + 1
         correcting = ((not on and level_ok and p.get('ammo') != 0 and (aim_at.get('hp') or 0) > 0
                        and dist <= ENGAGE_R and abs(yaw_err) <= SPRAY_YAW and abs(pitch_err) <= SPRAY_PITCH
                        and self._fire_envelope(dist, yaw_err, pitch_err))
-                      and (point_blank or (
+                      and (point_blank or close_shot or (
                           not self.is_blocked(aim_at, now)
                           and not (source == 'laser' and self._ray_short(origin, dot, aim_at))
                           and (source != 'laser' or math.dist(origin, dot) + body(aim_at).r >= math.dist(origin, foot))

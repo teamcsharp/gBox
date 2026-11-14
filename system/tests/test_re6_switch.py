@@ -1101,6 +1101,38 @@ def test_the_combo_guard_takes_over_a_stalled_periodic_quick_attack_wait():
     assert out == {"hold": ("zl", "zr")}
 
 
+def test_a_close_enemy_is_fired_on_even_when_the_cover_checks_object():
+    # Operator 2026-11-14: "still seeing situations where the bot is raising their gun and not shooting ... If anyone
+    # is close to them, they need to be dispatching them."
+    import math as _m
+    g = round_guest(enemies=((0.0, 0.0, 500.0, 700),), cam_yaw=0.0)          # 5 m, camera line on him
+    bot, clock, snap = brain(g)
+    bot.held = lambda p, now: False
+    bot.is_blocked = lambda *a, **k: True
+    for _ in range(6):
+        run(bot, snap, clock, 1)
+        if bot.stats.get("close_fires", 0):
+            break
+    assert bot.stats.get("close_fires", 0) >= 1
+
+
+def test_a_raise_that_never_proves_sprays_instead_of_standing():
+    import math as _m
+    bot, clock, snap = brain(round_guest(enemies=((0., 0., 500., 100),)))
+    live = snap["enemies"]
+    p = {"pos": (0., 0., 0.), "ammo": 7, "state": 0, "rot": 0.0}
+    flat = lambda e: _m.hypot(e["pos"][0], e["pos"][2])
+    bot.stats.update(combo_left_s=1.0, combo_prev=6)
+    bot._kill_at, bot._kill_n = 1.0, 1
+    bot._combo_hot_now = True
+    bot.doing = "raise"
+    bot._quick_shot_target = lambda *a, **k: None
+    bot._face_for_quick_shot = lambda *a, **k: None
+    bot._pursue = lambda *a, **k: None
+    out = bot._combo_guard(p, live, flat, snap, 9.0)
+    assert out == {"hold": ("zl", "zr")} and bot.stats["stall_sprays"] == 1
+
+
 def test_the_combo_guard_never_stands_still_when_pursuit_finds_no_route():
     # Live 2026-11-14: doing=raise for ~50 s with the combo lapsed; the guard now walks straight at the nearest.
     import math as _m
