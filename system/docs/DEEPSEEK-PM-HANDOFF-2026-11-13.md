@@ -1636,3 +1636,28 @@ The death at 1 health inside a 16-enemy crowd while clearing a bomb needs the es
 broken before the clearance run). S-rank/five stars still not achieved or claimed.
 
 State: MercMode on lilspark started into RE6, queue `[]`, Hermes `enabled/available true`, deployed `da59cf02b`.
+
+### Round 34: 99+ kills in one unbroken live round, zero deaths - the breaks left are dodges and grabs
+
+Deployed this round and verified in a long forced RE6 window (MercMode stop + start, session f079e411):
+- `f5887dccb`: dying-health critical flash now fires in ANY state (the two late deaths were at 1 health with 8-16
+  enemies within 2 m; the flash was refused because the bot was down/standing at DYING_HP), and the in-blast combo
+  fight widened from 700 to 1000 cm of shortfall.
+- `69600bacd`: the downed dying bot flashes the crowd BEFORE the "staying down, no fight" branch (the 03:22 death was
+  `doing=down ... staying down, no fight` at 1 health with 8 within 2 m and the flash was unreachable).
+
+**Live evidence (RE6 03:31-03:38, ~7 minutes, build `69600bacd`):** the round reached **99 kills with the combo cycling
+and ZERO deaths** (still playing when the sampling window closed; previous live rounds died at 53 and 84 kills), timer
+climbed 113 -> 305 s through the blue crystals. The 9 combo breaks in that stretch are attributed:
+`walk` 3 ("uEm5400/other cEm5000Act...: an attack that hurt him through his shots (learned): out of its reach" - the
+learned dodge walk), `held` 3 (QTE grabs), `raise` 1, `crowd` 1, `tablet` 1.
+The heal-chain/combo protection and the round-start hunt continue to hold (no tablet-chain or bonus-lock breaks in this
+round's attribution).
+
+**Honest read:** the two dominant remaining break causes are now defensive: the learned dodge walk (an incoming attack
+that hits through his shots makes him leave) and QTE grab holds (no kills possible while held). Those need a design
+choice - e.g. a quick shot acknowledged before the dodge, and a flash-first grab answer - not a tuning tweak. The
+every-4-seconds/never-lose-the-combo mandate is still not met; S-rank/five stars are not achieved or claimed.
+
+State: MercMode on lilspark running RE6 (session f079e411 at the sampling close), queue `[]`, Hermes
+`enabled/available true`, deployed `69600bacd`.
