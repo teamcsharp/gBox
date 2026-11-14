@@ -864,3 +864,31 @@ that matters is on that ledge, not on the door's level. The height filter had be
 below) - correctly, while the character stood above them - and the way down was a walk of 50 units that crossed the
 door the moment it was open.
 
+
+
+## 28. The input fix, and the first verified world change
+
+The A button never reached the game. On Windows the app presses the names it is given straight onto the session's
+display; it does not translate gBox pad names first. Dolphin's keyboard map - which gBox itself writes - is
+`a->x, b->z, x->s, y->a`, so every `press("a")` was the GameCube **Y** button. Measured: `{"key": "x"}` produced an
+action state (1 -> 5) while `a`, `b`, `start` and `y` produced none. That is why no attack, switch press, container
+break or door confirmation ever worked.
+
+`SessionWorld` now translates pad names to those keys before posting, and the first live consequence is a **verified
+world change**:
+
+| | |
+|---|---|
+| before | 46 containers; `TObjContainerItem` ptr `80DB3590` at `(473.06, -6.62)` |
+| approach | walked to `(466, 8)` - 15 units from the box |
+| press | one `press("a")` |
+| after | 45 containers; `80DB3590` absent from the entity table |
+
+A second primitive came out of the same work: the attack **steps the character ~9 units in the camera heading**.
+Measured `heading 292.6 -> dx -8, dz +1`, repeatable. It carried the character through the channel at `z ~ 0` that every
+walk attempt hit (from `z -23` to `z +64` in ten presses, reaching 3 units from the `TObject` at `(534,36)`), so the
+lunge is a movement tool that bypasses walking collisions.
+
+The `TObject` at `(534,36)` is inert when pressed at 3 units, and two entities share that position - it is not a portal,
+lift or switch.
+
