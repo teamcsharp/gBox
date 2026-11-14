@@ -3611,11 +3611,15 @@ class Bot:
         missing) this returns None and the ordinary fight continues. Instrumentation: critical_flash_requests/at.
         """
         hp, hp_max = p.get('hp') or 0, p.get('hp_max') or 0
-        if not (hp_max and 1 < hp <= TABLET_CRITICAL_HP * hp_max):
-            return None
-        if self.down or p.get('state') not in (0, None):
+        if not (hp_max and ((1 < hp <= TABLET_CRITICAL_HP * hp_max)
+                            or (self.down and hp <= DYING_HP))):
             return None
         crowd = sum(1 for e in live if flat(e) <= 200.)
+        if self.down or p.get('state') not in (0, None):
+            # The 2026-11-14 02:53 death: downed at 1 health with 11 enemies within 2 m and no tablets - the flash was
+            # refused only because he was down, and he then stayed down until he died. Flash the crowd that is on him.
+            if not (self.down and hp <= DYING_HP and crowd >= 3):
+                return None
         tablets = p.get('tablets') or 0
         if tablets > 0:
             if crowd < 4:
@@ -5196,6 +5200,11 @@ class Bot:
         crowd = sum(1 for e in live if flat(e) < CROWD_R)
         hp, hp_max = p.get("hp") or 0, p.get("hp_max") or 0
         topping = self.heal_chain and hp_max and hp_max - hp >= HEAL_FILL * (self.heal_gain or HEAL_GAIN0 * hp_max)
+        combo_left_now = self.stats.get('combo_left_s')
+        if (topping and (self.stats.get('combo_prev') or 0) > 0
+                and isinstance(combo_left_now, (int, float)) and combo_left_now < 6.0):
+            topping = False                                      # one press per window while the chain is live
+            self.stats['topping_yields_combo'] = int(self.stats.get('topping_yields_combo', 0)) + 1
         if self.heal_chain and not topping:
             self.heal_chain = False                              # full enough: no tablet past his maximum
         gap = TABLET_CHAIN_S if topping else TABLET_RETRY_S if self.tablet_missed else TABLET_GAP_S
@@ -5463,7 +5472,7 @@ class Bot:
                     key = (tgt.get("ptr", tgt.get("slot")), "raise")
                     if getattr(self, "_raise_key", None) != key:
                         self._raise_key, self._raise_since = key, now
-                    if now - getattr(self, "_raise_since", now) < 1.0:
+                    if now - getattr(self, "_raise_since", now) < 0.6:
                         return self._go("raise", "raise", {"hold": ("zl",) + back}, "the gun comes up (no laser yet)")
                     self.stats['raise_repositions'] = int(self.stats.get('raise_repositions', 0)) + 1
                     heading_to = wrap(heading(tgt["pos"][0] - p["pos"][0], tgt["pos"][2] - p["pos"][2]))

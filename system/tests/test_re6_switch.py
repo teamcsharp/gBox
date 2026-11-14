@@ -1135,6 +1135,20 @@ def test_the_combo_gets_a_quick_shot_while_retreating_from_a_bomb_blast():
     assert out is not None and "zl" not in out.get("hold", ())
 
 
+def test_a_downed_one_health_bot_in_a_crowd_gets_the_critical_flash():
+    # Live 2026-11-14 02:53 death: doing=down at 1 health with 11 enemies within 2 m and no tablets; the flash was
+    # refused only because he was down.
+    import math as _m
+    bot, clock, snap = brain(round_guest(enemies=((0., 0., 120., 100), (100., 0., 150., 100), (-100., 0., 140., 100))))
+    live = snap["enemies"]
+    flat = lambda e: _m.hypot(e["pos"][0], e["pos"][2])
+    p = {"pos": (0., 0., 0.), "hp": 1, "hp_max": 900, "tablets": 0, "state": 8}
+    bot.down = True
+    bot._respond_flash = lambda *a, **k: True
+    out = bot._critical_no_tablet_flash(p, live, flat, 5.0)
+    assert out is not None and bot.doing == "flash" and bot.stats["critical_flash_requests"] == 1
+
+
 def test_a_live_bomb_blast_gets_a_hard_retreat_before_any_fight_action():
     # Live 2026-11-14: at 430 of 1200 cm with the deadline 7.5 s past the bot still aimed; the engine cannot detonate
     # until the clearance rule passes, so it never detonated enough. The retreat now comes before quick shots/combat.
