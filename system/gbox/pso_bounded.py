@@ -2425,6 +2425,16 @@ class Automaton:
                 self.no_close = 0
                 self.no_close_since = now
                 return ""                                # the escape in tick() gets another budget
+            if objective.kind in ("switch", "door", "container"):
+                # A point objective the character keeps moving toward without closing is not a reason to end the
+                # whole live run: skip it for `avoid_s` and let the policy pick the next thing (a different switch,
+                # a doorway, the next room). Measured 2026-11-13: one TLazerFenceSw 63 units away stopped a chunk
+                # every 45 s while the character kept moving.
+                self.avoid[objective.ptr] = now
+                self.no_close = 0
+                self.no_close_since = now
+                self.best_distance = None
+                return ""
             return (f"{objective.kind} {objective.cls or objective.ptr} not closed for {stalled:.0f}s after "
                     f"{self.escapes} hold escapes (still {distance:.0f} units away); the character is moving without "
                     f"approaching it")
