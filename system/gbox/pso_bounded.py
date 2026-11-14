@@ -1618,7 +1618,8 @@ class ProgressionPolicy:
     def __init__(self, *, engage: float = 40.0, reach: float = 400.0, press_range: float = 14.0,
                  attack_range: float = 8.0, avoid_s: float = 30.0, optional_limit: int = 3,
                  height_reach: float = 5.0,
-                 switch_demote_s: float = 60.0, door_state: dict | None = None) -> None:
+                 switch_demote_s: float = 60.0, door_state: dict | None = None,
+                 door_recent: dict | None = None, door_cooldown_s: float = 120.0) -> None:
         self.engage = float(engage)
         self.reach = float(reach)
         self.press_range = float(press_range)
@@ -1631,6 +1632,11 @@ class ProgressionPolicy:
         self.current_key = None
         # ptr -> "open" | "closed", learned by attempting a crossing (there is no readable door state).
         self.door_state = dict(door_state or {})
+        # ptr -> wall-clock epoch of the last crossing, carried across runs: a doorway the character has just walked
+        # through must not be its next objective, or two bordering rooms make every new chunk walk back through it
+        # (measured 2026-11-13 in Cave 1: rooms 1 and 30 alternated for minutes).
+        self.door_recent = dict(door_recent or {})
+        self.door_cooldown_s = float(door_cooldown_s)
 
     def choose(self, snap: dict, now: float, *, pressed=None, avoid=None) -> Objective | None:
         pressed = pressed or {}
@@ -1689,6 +1695,9 @@ class ProgressionPolicy:
                     # 280-tick ping-pong predates the avoid list).
                     if ptr in avoid and now - avoid[ptr] < self.avoid_s:
                         continue
+                    recent = self.door_recent.get(ptr)
+                    if recent is not None and time.time() - float(recent) < self.door_cooldown_s:
+                        continue                     # just crossed this doorway: do not walk straight back through it
                     candidates.append(Objective(3, "door", (float(entity["x"]), float(entity["z"])),
                                                 distance, cls, ptr, None, "doorway to the next room"))
                 elif kind == "object" and any(hint in cls for hint in CONTAINER_HINTS):
