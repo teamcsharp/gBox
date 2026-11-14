@@ -2081,6 +2081,9 @@ class Automaton:
         self.wave_best = None
         self.wave_since = 0.0
         self.wave_started = 0.0
+        # Facing tolerance from the operator's demonstrated hits (all within ~10 deg; 40 is the "swing anyway" line -
+        # past it, one movement step toward the enemy re-aims the character for free).
+        self.aim_tolerance_deg = 40.0
         self.stopped = ""
         self.failures = []
         self.last_objective: Objective | None = None
@@ -2254,6 +2257,18 @@ class Automaton:
         reach = objective.distance if objective.target_distance is None else objective.target_distance
         if objective.kind == "wave":
             if reach <= self.policy.attack_range:
+                # The operator's own demonstrations put every melee hit inside ~10 degrees of facing (see
+                # pso-combat-learn.py / mandate/combat-model.json: 10/10 hits at 9-22 units when facing the enemy).
+                # Swinging at an enemy that has drifted to the side wastes the combo, so re-aim with one step first.
+                heading = player.get("heading_deg")
+                if heading is not None:
+                    px, pz = float(player.get("x") or 0), float(player.get("z") or 0)
+                    bearing = math.degrees(math.atan2(target[0] - px, target[1] - pz)) % 360.0
+                    off = abs((float(heading) - bearing + 180.0) % 360.0 - 180.0)
+                    if off > self.aim_tolerance_deg:
+                        return self.motion.step(player, target,
+                                                f"re-aim at {objective.cls} ({off:.0f} deg off, "
+                                                f"{reach:.0f} units)")
                 return self.combat.next_action(now, reason=f"combo on {objective.cls}") or WAIT
             return self.motion.step(player, target, f"{objective.cls} at {reach:.0f} units")
         if objective.kind == "switch":

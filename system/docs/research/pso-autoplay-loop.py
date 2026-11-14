@@ -1,4 +1,4 @@
-"""autoplay-loop - hand the pad back and forth with the operator, with the two live guards applied throughout.
+﻿"""autoplay-loop - hand the pad back and forth with the operator, with the two live guards applied throughout.
 
 Operator's standing requests (2026-11-13):
   * "have the bot take over whenever I stop playing the game for three seconds" -- operator input (pad/keyboard/app pad)
@@ -46,7 +46,7 @@ BOT_SECONDS = 60.0
 # range; too far and every swing whiffs, too close and the character circles (measured: Saber + attack_range 20 whiffed
 # at 14-18 units). Names are the catalog's family_key suffixes; unknown kinds fall back to a short melee reach.
 REACH_BY_FAMILY = {
-    "saber": 13.0, "sword": 16.0, "partisan": 18.0, "dagger": 10.0, "twin_sword": 16.0, "double_saber": 16.0,
+    "saber": 13.0, "sword": 18.0, "partisan": 20.0, "dagger": 10.0, "twin_sword": 16.0, "double_saber": 16.0,
     "katana": 16.0, "claw": 10.0, "knuckle": 10.0, "slicer": 20.0, "handgun": 55.0, "rifle": 80.0,
     "mechgun": 35.0, "shot": 45.0, "launcher": 85.0, "card": 35.0, "wand": 12.0, "rod": 16.0, "cane": 12.0,
 }
@@ -339,6 +339,7 @@ def main(argv=None) -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
+
 
 
 

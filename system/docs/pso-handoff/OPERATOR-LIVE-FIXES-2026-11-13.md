@@ -222,3 +222,22 @@ With the restored session running, two things were measured/added:
   5 minutes and records each artifact in `mandate/snapshots.jsonl`. First live artifact:
   `ae54b7d976313456d540c9f495657ece7b5184e20228a13da56bc319c877108b` (22.9 MB Dolphin savestate). This is the
   safety net that made the earlier rescue possible, now running without a human remembering to press it.
+
+## 11. Round 6b - learning the hit rules from the operator's own demonstrations
+
+`pso-combat-learn.py` streams the recorded demonstrations (the operator plays on the keyboard, so every attack is a
+`{'src':'keyboard','keys':['A']}` rising edge in the trace), joins each press with the sample taken beside it (player
+position + heading, every entity with its HP) and resolves it against the following 2.5 s of samples. Across 18
+traces / 13 presses with a target / 10 resolved: **10 hits, hit rate 1.0**, with every hit at **9-22 units** and
+inside a tight facing cone. Output: `mandate/combat-model.json` and `system/docs/research/pso-combat-learn.py`.
+
+That changed two things in the bot:
+
+* **Face the enemy before swinging.** `Automaton._plan` for a wave objective now measures the angle between the
+  player's heading and the enemy's bearing when inside attack range; past `aim_tolerance_deg = 40` it spends one
+  movement step to re-aim instead of burning the combo. (The operator's hits were all within ~10 degrees.)
+* **Weapon reach from the demonstrated data.** The supervisor's family table now gives the sword class 18 units and
+  the partisan 20 (was 16/18), still conservative against the demonstrated 22-unit hits.
+
+Also verified live this round: the restored bot walked Caves 1 from the entrance (room 1, z ~ -50) to room 50
+(z ~ 985) across successive 60-second chunks with zero failures, status word kept at 0 the whole time.
