@@ -1169,3 +1169,35 @@ player moves).
 Next: with ring-level ice/damage evidence in hand, decide the operator-facing wiring of the chooser's launcher ring
 kinds to this research barrage (idle-gated, same honest receipt, no verified-blast claim), and try to capture the
 shell's own explosion pair with a faster native sampling path.
+
+### Round 21: the operator's launcher ring button is wired, and a full-timer deathless round
+
+**Operator ring wiring** (`19d41ccb7`). The chooser has always listed the launcher shell kinds as probe rows and sent
+`grenade_ring` with `allow_unverified`; the worker refused them. The worker now turns exactly that request into the
+research barrage (`re6_switch_shell_probe.barrage`): count 8, radius 800 cm, under the shared controller, idle-gated
+on the same keys as the agent-only op (operator input, pending/detonating remote bombs, the blocked-allocation
+state), with a cancelled callback that rechecks round ownership. The receipt is the research receipt reshaped as
+`grenade_ring` (per-shell spawned/armed/emitted, ice observations, `verified: false`); the shell's own blast emission
+is never claimed. Every other kind still uses the native `grenade_ring`. New counters `shell_rings` /
+`shell_ring_shells`. Tests: probe-source shell rings run the barrage when idle (8/8, unverified, counters), refuse
+before any native call with pending bombs, and flash still goes to the native ring - 31 pass with the worker tests.
+Deployed and the worker restarted, so the UI path is live; a fresh-round 8-shell ring through the operator path
+(`grenade_ring` + shell1304 + allow_unverified) is still awaiting a clean window (this round's real rounds never
+opened one while sampled).
+
+**Stale test corrected** (`b3cc0b245`): `test_mercs_flash_window` was written when RE5's `RING_KIND` was flash; it is
+now `launcher`, and `decide()` correctly does not hold a launcher ring on the flash minute (its rounds place at the
+kind's own floor). The test now proves both halves (flash waits the minute; launcher ring fires) and the suite is
+green (15 pass).
+
+**Full-timer deathless RE6 round observed:** timer ran to 0 with **299 kills / 320 700 score / combo 34 / accuracy
+42 % / 0 deaths** (outcome report says "lost", `completed_s_rank: false`, score-based estimate null). That is the
+first full-timer, no-death round measured under the current fixes - the survival side is now producing complete
+rounds, while the score/rank is still short of S and the report's rank verification is absent.
+
+State: MercMode enabled on its rotation (RE6 was playing; the session was ending at sample time), queue `[]`,
+deployed `19d41ccb7`, last commit `b3cc0b245`, Hermes task-mode `enabled/available true`.
+
+Next: capture the operator ring button's live receipt at a fresh round (the wiring is deployed); keep hunting the
+score/S-rank gap (320k vs the 885k best-ever round) - combo maintenance and bonus routing are the likely levers;
+and keep the ring emission question honest.
