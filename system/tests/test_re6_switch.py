@@ -1020,6 +1020,22 @@ def test_the_combo_mandate_turns_a_lapsing_chain_into_a_quick_shot():
     assert bot._combo_mandate_on(p, [], flat) is False
 
 
+def test_every_combo_break_is_attributed_to_the_doing_that_caused_it():
+    # Operator 2026-11-14: "losing / resetting the combo is a waste of a match and is a serious fail condition" - the
+    # live break counters now say which doing was responsible, so the next fix targets the real cause.
+    bot, clock, snap = brain(round_guest(enemies=()))
+    bot.doing = "bonus"
+    bot.why = "walking to a time capsule"
+    for value in (1, 1, 2):
+        snap.update(combo=0, combo_timer=0., combo_breaks=value, kills=0)
+        bot._combo_tick(snap, [], lambda e: 0., 10.0)
+    assert bot.stats["combo_break_bonus"] == 1 and bot.stats["combo_break_last"] == "bonus"
+    assert "time capsule" in bot.stats["combo_break_last_why"]
+    snap.update(combo=0, combo_timer=0., combo_breaks=3)
+    bot._combo_tick(snap, [], lambda e: 0., 10.0)
+    assert bot.stats["combo_break_bonus"] == 2
+
+
 def test_the_combo_gets_a_quick_shot_while_retreating_from_a_bomb_blast():
     # Operator 2026-11-14: "If the bot fights while placing mines, the goal becomes easier"; the combo may never lapse.
     import math as _m

@@ -2847,7 +2847,7 @@ FIRE_LEVEL_DY = 120.0
 # Operator 2026-11-14: "If the bot fights while placing mines, the goal becomes easier ... the combo is the true
 # meta." A quick shot at a close enemy during the bomb retreat is allowed while the deadline is not tight
 # (combo about to lapse): one aim+shot tick, then the retreat resumes. COMBO_QUICK_R still bounds it.
-COMBO_BLAST_SHOT_S, COMBO_BLAST_SHOT_R = 1.8, 500.0
+COMBO_BLAST_SHOT_S, COMBO_BLAST_SHOT_R = 2.5, 700.0
 WALL_ESCAPE_S = 1.5                      # Bot._wall_command: the walk away from the operator's wall
 _NAV_MESH = None
 FIRE_ZONE_R = 600.0                     # Bot._decide: one this near in sight on his level - the fight before any bonus
@@ -3411,7 +3411,7 @@ class Bot:
         if not (isinstance(clear, (int, float)) and isinstance(need, (int, float))):
             return None
         remaining = self.stats.get('mine_remaining_s')
-        tight = (isinstance(remaining, (int, float)) and not isinstance(remaining, bool) and remaining <= 2.0)
+        tight = (isinstance(remaining, (int, float)) and not isinstance(remaining, bool) and remaining <= 1.0)
         if not tight and p.get('ammo') != 0:
             left = self.stats.get('combo_left_s')
             if isinstance(left, (int, float)) and not isinstance(left, bool) and left <= COMBO_BLAST_SHOT_S:
@@ -3423,6 +3423,10 @@ class Bot:
                     return self._go("quick_shot", "blast_combo_shot", {"hold": ("zl", "zr")},
                                     f"combo about to lapse in the bomb escape: a quick shot at the one "
                                     f"{flat_(tgt):.0f} cm off, then out")
+                face = self._face_for_quick_shot(p, live, flat_, snap, COMBO_BLAST_SHOT_R, now)
+                if face is not None:
+                    self.stats['blast_combo_turns'] = int(self.stats.get('blast_combo_turns', 0)) + 1
+                    return face
         urgent = tight or (need - clear) >= 500.0
         if not urgent:
             return None
@@ -6462,6 +6466,18 @@ class Bot:
                 self.stats["combo_pushes"] += 1
             self.combo_urgent = urgent
             self.combo_prev = combo
+        breaks = snap.get("combo_breaks")
+        if isinstance(breaks, int) and not isinstance(breaks, bool):
+            if getattr(self, "_combo_breaks_prev", None) is None:
+                self._combo_breaks_prev = breaks
+            elif breaks > self._combo_breaks_prev:
+                self._combo_breaks_prev = breaks
+                # Operator 2026-11-14: "the combo should never be lost". Attribute every loss to the doing/act the
+                # bot was in, as scalar counters the PiP can show (lists/dicts do not reach the telemetry scalars).
+                tag = str(self.doing or self.stats.get("act") or "unknown")[:24].replace(" ", "_")
+                self.stats["combo_break_" + tag] = int(self.stats.get("combo_break_" + tag, 0)) + 1
+                self.stats["combo_break_last"] = tag
+                self.stats["combo_break_last_why"] = str(self.why or "")[:160]
         k = snap.get("kills")
         if isinstance(k, int):
             if self._kill_n is None:
