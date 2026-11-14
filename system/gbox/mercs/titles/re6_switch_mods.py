@@ -609,7 +609,8 @@ def bomb_armed(m, player: int) -> bool:
     return bool(m.rd(player + ARMED_BYTE, 1)[0] & ARMED_BIT)
 
 
-def detonate(ad, snap=None, unit=None, wait_s: float = 0.0, clock=time.monotonic, sleep=time.sleep) -> dict:
+def detonate(ad, snap=None, unit=None, wait_s: float = 0.0, clock=time.monotonic, sleep=time.sleep,
+             force: bool = False) -> dict:
     """Every remote bomb of his lying placed set off through the detonator's own flag (no detonator in his hand, no
     pad): only while a round plays, him alive, the bombs his and armed; the bit 0x20 of his byte +0x5A19 cleared (that
     byte alone, re-read just before the write and read back after). unit= a chosen one: checked to be his and placed
@@ -666,7 +667,12 @@ def detonate(ad, snap=None, unit=None, wait_s: float = 0.0, clock=time.monotonic
         out.update(clearance_cm=round(min(distances), 1), required_clearance_cm=safe_cm,
                    clearance_source='fresh native positions of every owned bomb; horizontal distance')
         if min(distances) < safe_cm:
-            return out | {'reason': 'retreat farther before detonating remote bombs', 'clearance_verified': False}
+            if not force:
+                return out | {'reason': 'retreat farther before detonating remote bombs', 'clearance_verified': False}
+            # Operator 2026-11-14: "make remote bombs detonate in 10 seconds or less if the bot has not flipped the
+            # switch." A deadline-forced set goes off inside the blast margin as an explicit, audited choice; every
+            # identity/armed/read-back check still runs, so this can never trigger a foreign or unarmed set.
+            out['forced'] = True
         if g.ad.read_memory(player + R.P_STATE, 1)[0] in R.HELD_STATES:
             raise ValueError('player is held; detonation deferred until escape')
         if R.u64(g.m, sp + R.P_FIRST) != player or (p.get('generation') is not None and

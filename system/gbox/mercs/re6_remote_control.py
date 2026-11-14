@@ -439,7 +439,14 @@ def control(ad, prof, bot_getter=None):
         last_attempt = now
         # This live reread checks every allocation, every bomb position, held
         # state and player life. No pad release or weapon change is needed.
-        receipt = native.bomb_detonate_now(ad, snap=snap)
+        # Operator 2026-11-14: "make remote bombs detonate in 10 seconds or less if the bot has not flipped the switch."
+        # Past the deadline the flag is forced even inside the margin when the player can take the blast (half health or
+        # better); below that the safe gate still wins, because a death would end the round entirely.
+        hp, hp_max = player.get('hp') or 0, player.get('hp_max') or 0
+        can_take = bool(hp_max and hp / hp_max >= 0.5)
+        if stats.get('mine_overdue_10s') and can_take:
+            stats['mine_forced_detonations'] = int(stats.get('mine_forced_detonations', 0)) + 1
+        receipt = native.bomb_detonate_now(ad, snap=snap, force=bool(stats.get('mine_overdue_10s')) and can_take)
         stats['mine_detonate_last'] = receipt
         stats['mine_detonate_reason'] = str(receipt.get('reason') or '')[:200]
         if not receipt.get('verified'):

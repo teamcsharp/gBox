@@ -128,7 +128,7 @@ def test_the_rule_drops_a_ring_then_detonates_the_set_through_the_flag(monkeypat
         calls.append(("ring", count, radius_cm))
         return {"op": "bomb_ring", "state": "confirmed", "placed": count, "requested": count}
 
-    def detonate_now(ad, snap=None):
+    def detonate_now(ad, snap=None, force=False):
         calls.append(("detonate",))
         return {"op": "bomb_detonate", "verified": True, "count": 1, 'detonated': [10]}
 
@@ -183,7 +183,7 @@ def test_a_flashbang_earns_the_fifteen_mine_ring_combo(monkeypatch):
         calls.append(("ring", count, radius_cm))
         return {"op": "bomb_ring", "state": "confirmed", "placed": count, "requested": count}
 
-    def detonate_now(ad, snap=None):
+    def detonate_now(ad, snap=None, force=False):
         calls.append(("detonate",))
         return {"op": "bomb_detonate", "verified": True, "count": 15}
 

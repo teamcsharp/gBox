@@ -1108,12 +1108,12 @@ def bomb_ring_now(ad, count=4, radius_cm=200.0, *, wait_s=0.5,
             "elapsed_ms": round(1000 * (time.monotonic() - started), 1)}
 
 
-def bomb_detonate_now(ad, snap=None) -> dict:
+def bomb_detonate_now(ad, snap=None, force=False) -> dict:
     """Every remote bomb of his lying placed set off through the detonator's own flag (re6_switch_mods.detonate):
     no animation, no remote in his hand, no pad. Never raises: a refusal is a receipt with its reason."""
     from . import re6_switch_mods
     try:
-        receipt = re6_switch_mods.detonate(ad, snap=snap)
+        receipt = re6_switch_mods.detonate(ad, snap=snap, force=bool(force))
     except Exception as exc:                                  # noqa: BLE001 - the bot never dies on a native receipt
         return {"op": "bomb_detonate", "verified": False, "count": 0,
                 "reason": f"{type(exc).__name__}: {exc}"[:300]}
