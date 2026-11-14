@@ -1189,3 +1189,23 @@ def test_diff_reports_enemy_hp_room_and_flag_changes():
     assert delta["room"] == [1, 2]
     assert delta["enemies"][0]["hp"] == [40.0, 31.0] and delta["enemies"][0]["delta"] == -9.0
     assert delta["enemies"][0]["died"] is False
+
+def test_step_motion_takes_attack_steps_and_refuses_a_lock_point():
+    """The attack step is the fastest movement found (8.5 units per press), but it ignores walking collisions, so it
+    has to be refused when the landing is a known lock point - (604,-151) in Forest 1 room 8 froze the character exactly
+    that way after six presses with no movement and no heading change."""
+    motion = B.StepMotion(arrive=6.0, lock_points=[(360.0, 100.0)], lock_radius=16.0)
+    # heading 90 degrees is +x, so from (0,0) a step lands at (8.5, 0)
+    north = {"x": 0.0, "z": 0.0, "heading_deg": 90.0}
+    action = motion.step(north, (200.0, 0.0))
+    assert action is not None and action.key == "a", "a clear step toward the target is taken"
+    assert math.dist(motion.landing(north), (8.5, 0.0)) < 1e-6, "heading 90 degrees is +x"
+
+    # a step that would land on the lock point is refused, and taps take over
+    blocked = {"x": 351.5, "z": 100.0, "heading_deg": 90.0}
+    action = motion.step(blocked, (600.0, 100.0))
+    assert action is not None and action.key != "a", "the step that would land on (360,100) is refused"
+    assert motion.refused == 1
+
+    # once inside the arrive radius the motion stops
+    assert motion.step({"x": 100.0, "z": 50.0, "heading_deg": 0.0}, (100.0, 44.0)) is None

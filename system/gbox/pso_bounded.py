@@ -411,6 +411,59 @@ def _bearing_degrees(a: tuple, b: tuple) -> float:
     return ((math.degrees(math.atan2(b[0], b[1])) - math.degrees(math.atan2(a[0], a[1])) + 540.0) % 360.0) - 180.0
 
 
+class StepMotion:
+    """Move with tap probes, and take an attack step when it is both useful and safe.
+
+    Measured: an attack steps the character ~8.5 units along the camera heading (heading 292.6 -> dx -8, dz +1; twenty
+    presses carried it 170 units where the tap walk covered 30 in the same time). It is the fastest way across open
+    ground, and its cost is that the lunge ignores walking collisions - which also means it can carry the character into
+    the geometry that locks it up. In Forest 1 room 8 it stopped dead at (604,-151), a position derived from 214
+    ledgers as a lock point, after six presses moved nothing and the heading stopped changing.
+
+    So a step is taken only when the landing point is clear of every known lock point by `lock_radius`; otherwise the
+    motion falls back to a probe tap, which is slow but safe.
+    """
+
+    def __init__(self, *, arrive: float = 10.0, step_units: float = 8.5, lock_points: Iterable | None = None,
+                 lock_radius: float = 16.0, keys: Iterable[str] = DIRECTIONS) -> None:
+        self.arrive = float(arrive)
+        self.step_units = float(step_units)
+        self.lock_points = [(float(p[0]), float(p[1])) for p in (lock_points or ())]
+        self.lock_radius = float(lock_radius)
+        self.keys = tuple(keys)
+        self.steps = 0
+        self.refused = 0
+        self._streak = 0
+
+    def landing(self, player: dict) -> tuple[float, float]:
+        """Where one attack step would put the character: 8.5 units along the camera heading."""
+        heading = math.radians(float(player.get("heading_deg") or 0.0))
+        return (float(player["x"]) + math.sin(heading) * self.step_units,
+                float(player["z"]) + math.cos(heading) * self.step_units)
+
+    def safe(self, point: tuple[float, float]) -> bool:
+        return all(math.dist(point, lock) > self.lock_radius for lock in self.lock_points)
+
+    def step(self, player: dict, target: Iterable[float], reason: str = "") -> Action | None:
+        x, z = float(player["x"]), float(player["z"])
+        tx, tz = float(target[0]), float(target[1])
+        distance = math.dist((x, z), (tx, tz))
+        if distance <= self.arrive:
+            return None
+        landing = self.landing(player)
+        gain = distance - math.dist(landing, (tx, tz))
+        if gain >= self.step_units * 0.35 and self.safe(landing):
+            self.steps += 1
+            return press("a", f"step-attack {gain:.0f} units closer{(' - ' + reason) if reason else ''}")
+        if gain >= self.step_units * 0.35:
+            self.refused += 1                      # the step would land on a lock point
+        self._streak += 1
+        if self._streak >= 4:
+            self._streak = 0
+            return hold(self.keys[self.steps % len(self.keys)], 0.45, "hold toward the target while steps are refused")
+        return press(self.keys[self.steps % len(self.keys)], "tap while the step is refused or misaligned")
+
+
 class RouteFollower:
     """Advance along a router's waypoints toward a goal, and re-plan when the current leg does not yield.
 
