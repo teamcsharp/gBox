@@ -1201,3 +1201,37 @@ deployed `19d41ccb7`, last commit `b3cc0b245`, Hermes task-mode `enabled/availab
 Next: capture the operator ring button's live receipt at a fresh round (the wiring is deployed); keep hunting the
 score/S-rank gap (320k vs the 885k best-ever round) - combo maintenance and bonus routing are the likely levers;
 and keep the ring emission question honest.
+
+### Round 22: the operator's launcher ring button works end to end, live
+
+The ring chooser's launcher kinds now actually fire. Through the exact UI request shape
+(`grenade_ring`, `{kind: shell1304, allow_unverified: true}`, operator actor) a live RE6 round returned:
+
+```
+OPERATOR-RING uncertain
+spawned 8, armed 8, detonated 0, ice_observed 2, targets_before 8
+ice: unit 401088982464 gen 457  cEm5000ActWaitWep        -> cEm5000ActDmgIce  hp 689 -> 689
+     unit 401090707616 gen 499  cEm5000ActWakeupAssault  -> cEm5000ActDmgIce  hp 694 -> 694
+reason: native shells spawned and armed; the blast emission and the ice reaction are unverified research
+```
+
+and the worker recorded the click's counters (`shell_rings: 1`, `shell_ring_shells: 8`). So the operator's
+"launch a 360 nitrogen round out from the character" is now a working button with an honest receipt: eight shells
+armed on an 800 cm ring, two enemies entered the nitrogen ice reaction with stable identity, and the shell's own
+explosion pair is still not claimed (allocation recycling).
+
+**How the click lands.** The worker's clean-area gate refuses while the remote-mine lane has bombs in flight
+("the launcher ring waits for the area to be clear of remote bombs"). The reliable procedure used live: temporarily
+turn the bot's own bomb lane off with a `re5_mods`/`bot_logic` job (`{"BOMB_DROP": 0}`), then click (retrying;
+accepted on the 18th attempt in ~40 s), then restore `{"BOMB_DROP": 1}`. The engine's remote-mine controller is
+separate from that knob, so retries are still needed; operator state was restored after the test.
+
+**Round health:** the live round at verification was 78 kills / combo 31 / 0 deaths / 3 flag detonations; MercMode
+on RE6, queue `[]`, Hermes `enabled/available true`, deployed `316e895f5`.
+
+**Score gap analysis for the S-rank goal** (from the full-timer 299-kill round's report): `bonuses_taken: 1`,
+`bonus_s: 0` and `max_combo: 34`. The report says the bot barely ran the checkpoint/bonus phase, and the combo
+barely chains - the score lever is combo maintenance and checkpoint collection, not the ring. Code notes for the
+next pass: `_time_bonus_priority` only runs the time run when the clock is **below** `BONUS_CLOCK_LOW_S` (300 s),
+and any enemy within `FIRE_ZONE_R` (600 cm) with `hot` suppresses the bonus run - No Mercy keeps enemies in that
+radius almost continuously.
