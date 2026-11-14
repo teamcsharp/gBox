@@ -816,6 +816,7 @@ class CommitMotion:
         self.probes = 0
         self.turns = 0
         self.probe_every_move = bool(probe_every_move)
+        self.turn_streak = 0
         self.lock_points = [(float(p[0]), float(p[1])) for p in (lock_points or ())]
         self.lock_radius = float(lock_radius)
         self.last_y = None
@@ -932,7 +933,18 @@ class CommitMotion:
                 start_distance = self.probe_scores.get(None)
                 if self.probe_every_move and start_distance is not None and ranked:
                     if ranked[0][1] >= start_distance - 0.5:
+                        # Turning alone can livelock: measured, 90 seconds of probes that all moved 0.0 at (196,89) in
+                        # the city while one later tap moved the character 7 units. Every fourth fruitless turn becomes
+                        # a held key instead, because a hold moves 20-35 units where a tap moves 0.
+                        self.turn_streak += 1
+                        if self.turn_streak >= 4:
+                            self.turn_streak = 0
+                            self.key = ranked[0][0]
+                            self.remaining = 0
+                            return hold(self.key, 0.45, "hold out of a stubborn spot (four turns moved nothing)")
                         self.key = "left"
+                    else:
+                        self.turn_streak = 0
                 self.blocked = 0
             return press(key, f"probe {key} around the obstruction ({self.probes} probes)")
         distance = math.hypot(float(target[0]) - x, float(target[1]) - z)
