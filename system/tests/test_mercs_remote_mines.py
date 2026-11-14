@@ -124,7 +124,7 @@ def settled(step, snapshot, live, now):
 def test_the_rule_drops_a_ring_then_detonates_the_set_through_the_flag(monkeypatch):
     calls = []
 
-    def ring_now(ad, owner, cancelled, count, radius_cm):
+    def ring_now(ad, owner, cancelled, count, radius_cm, allow_existing=None, **kwargs):
         calls.append(("ring", count, radius_cm))
         return {"op": "bomb_ring", "state": "confirmed", "placed": count, "requested": count}
 
@@ -179,7 +179,7 @@ def test_a_flashbang_earns_the_fifteen_mine_ring_combo(monkeypatch):
     """Operator 2026-11-11 18:02: a flashbang deployed -> a ring of up to 15 remote mines right away, then detonated."""
     calls = []
 
-    def ring_now(ad, owner, cancelled, count, radius_cm):
+    def ring_now(ad, owner, cancelled, count, radius_cm, allow_existing=None, **kwargs):
         calls.append(("ring", count, radius_cm))
         return {"op": "bomb_ring", "state": "confirmed", "placed": count, "requested": count}
 
@@ -194,7 +194,7 @@ def test_a_flashbang_earns_the_fifteen_mine_ring_combo(monkeypatch):
     out = step(snap(), live, 100.3, lambda keys: True)
     settled(step, snap(), live, 100.3)
     assert out['pending'] and not out['fired'] and calls[0] == ("ring", 15, 200.0)
-    assert live["mine_flash_combos"] == 1 and live["mine_rings_dropped"] == 1
+    assert live["mine_flash_combos"] == 1 and live["mine_ring_requests"] == 1
     # the same flash never drops a second combo ring
     assert step(snap(), live, 100.5, lambda keys: True)["fire"] is False
     # and a stale flash earns nothing
@@ -228,7 +228,7 @@ def test_a_surround_earns_the_massive_mine_ring(monkeypatch):
     15-mine ring on its own 10 s cadence, no flash needed."""
     calls = []
 
-    def ring_now(ad, owner, cancelled, count, radius_cm):
+    def ring_now(ad, owner, cancelled, count, radius_cm, allow_existing=None, **kwargs):
         calls.append(("ring", count))
         return {"op": "bomb_ring", "state": "confirmed", "placed": count, "requested": count}
 

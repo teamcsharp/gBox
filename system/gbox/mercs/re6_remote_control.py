@@ -549,10 +549,11 @@ def control(ad, prof, bot_getter=None):
             stats['mine_surround_rings'] = int(stats.get('mine_surround_rings', 0)) + 1
         if emergency and flash:
             stats['mine_flash_combo_at'] = flash_at
+            stats['mine_flash_combos'] = int(stats.get('mine_flash_combos', 0)) + 1
+            stats.pop('qte_escape_mines_due', None)
         if periodic and not flash and not surrounded:
             stats['mine_periodic_at'] = now
             stats['mine_periodic_rings'] = int(stats.get('mine_periodic_rings', 0)) + 1
-            stats['mine_flash_combos'] = int(stats.get('mine_flash_combos', 0)) + 1
             stats.pop('qte_escape_mines_due', None)
         if qte_ring:
             stats['mine_qte_rings'] = int(stats.get('mine_qte_rings', 0)) + 1
