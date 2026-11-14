@@ -1462,3 +1462,30 @@ PSO kept stealing lilspark between switches; the RE6 round above is the first cl
 
 State: RE6 round finished (43 kills sampled), MercMode rotating, queue `[]`, Hermes `enabled/available true`,
 deployed `63063ad61`.
+
+### Round 29: combo-break attribution and a looser combo shot inside the bomb escape (deployed; live window still pending)
+
+Operator 2026-11-14: "the combo should never be lost ... losing / resetting the combo is a waste of a match and is a
+serious fail condition"; plus the standing strategy (mine every 10 s, dispatch every 4 s, fight while placing mines,
+pursue every enemy at any distance).
+
+Shipped `6a1d8255f` (deployed + service restarted):
+- **Every native combo_breaks increment is now attributed** in `_combo_tick` to the doing/act the bot was in, as
+  scalar counters (`combo_break_<doing>`, `combo_break_last`, `combo_break_last_why`). This is the diagnostic the last
+  rounds lacked: instead of guessing why the chain resets (bonus walk, bomb retreat, grab, tablet, reload, no-foes),
+  the next RE6 round will say exactly which doing is responsible.
+- **The combo quick shot during a bomb retreat can fire now**: the guard demanded >2 s of deadline left and
+  COMBO_BLAST_SHOT_S 1.8 / R 500, and live it never fired (`blast_combo_shots` 0). It is now: deadline tight only
+  under 1 s, COMBO_BLAST_SHOT_S 2.5 s, radius 700 cm, and with nobody on the ray it quick-turns to the nearest close
+  enemy (`blast_combo_turns`) so the shot can land on the next tick while the escape continues.
+- Tests: the attribution counters (one break per native increment, the doing tag and its why) and the quick
+  shot/retreat cases; switch suite 266 pass.
+
+**Live verification: still pending.** The deploy and restart completed, but lilspark never reached RE6 playing in the
+sampling windows: PSO from another lane held it, then the MercMode rotation moved to RE4 (`Resident Evil 4 playing`
+for the whole last window). No new live numbers are claimed for this build; the last verified round remains round 28's
+(2 detonations, combo_breaks 2, kills 43 in ~170 s). The next RE6 window should read the `combo_break_*` counters and
+the `blast_combo_shots`/`blast_combo_turns` counters before any further tuning.
+
+State: MercMode working through its rotation (RE4 playing when the round closed), queue `[]`, Hermes
+`enabled/available true`, deployed `6a1d8255f`.
