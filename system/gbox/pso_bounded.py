@@ -522,7 +522,11 @@ class StepMotion:
             return None
         landing = self.landing(player)
         gain = distance - math.dist(landing, (tx, tz))
-        if gain >= self.step_units * 0.35 and self.safe(landing):
+        # A step moves 8.5 units, so it cannot do the last few: aiming a lunge at a point 4 units away overshoots to the
+        # far side and the next lunge goes further still - measured, a tolerance-1 approach to the pad at (360,26) ended
+        # 53 units away. Inside one step of the target the motion taps instead.
+        close = distance <= self.step_units * 1.6
+        if not close and gain >= self.step_units * 0.35 and self.safe(landing):
             self.steps += 1
             return press("a", f"step-attack {gain:.0f} units closer{(' - ' + reason) if reason else ''}")
         if gain >= self.step_units * 0.35:
