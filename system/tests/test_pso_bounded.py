@@ -1242,3 +1242,16 @@ def test_probe_motion_holds_when_nothing_helps_instead_of_turning_forever():
         kinds.append(action.kind)
     assert "hold" in kinds, "a hold appears rather than an endless turn"
     assert motion.turns >= 3
+
+def test_probe_motion_never_sends_the_same_direction_key_twice_in_a_row():
+    """Measured: a repeated direction key is ignored (three `up` presses moved the character once), and a probe cycle
+    ends by pressing the key it probed last, so the move was silently swallowed."""
+    motion = B.ProbeMotion(arrive=2.0)
+    keys = []
+    for _ in range(12):
+        action = motion.step({"x": 0.0, "z": 0.0}, (100.0, 0.0))
+        if action is None:
+            break
+        keys.append(action.key)
+    for a, b in zip(keys, keys[1:]):
+        assert a != b, f"two {a} presses in a row: {keys}"

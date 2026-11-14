@@ -437,9 +437,29 @@ class ProbeMotion:
         self.steps = 0
         self.turns = 0
         self.holds = 0
+        self.last_sent: str | None = None
+        self.pending: Action | None = None
 
     def safe(self, point: tuple[float, float]) -> bool:
         return all(math.dist(point, lock) > self.lock_radius for lock in self.lock_points)
+
+    def _out(self, action: Action) -> Action:
+        """Never send the same direction key twice in a row: measured, a repeated key is ignored by the game (three
+        `up` presses moved the character once, then not again; alternating keys all worked). A dropped release leaves
+        the key latched, so the second down is a no-op - which silently swallowed the move that every probe cycle ends
+        with, because the best key is often the one just probed (`right` is last in the probe order).
+        """
+        if self.pending is not None:
+            action, self.pending = self.pending, None
+            self.last_sent = action.key if action.kind == "press" else None
+            return action
+        if action.kind == "press" and action.key == self.last_sent:
+            spacer = next(key for key in self.keys if key != action.key)
+            self.pending = action
+            self.last_sent = spacer
+            return press(spacer, f"spacer before repeating {action.key}")
+        self.last_sent = action.key if action.kind == "press" else None
+        return action
 
     def step(self, player: dict, target: Iterable[float], reason: str = "") -> Action | None:
         here = (float(player["x"]), float(player["z"]))
@@ -457,7 +477,7 @@ class ProbeMotion:
         if self.queue:
             key = self.queue.pop(0)
             self.probe_key, self.probe_from = key, here
-            return press(key, f"probe {key}{(' - ' + reason) if reason else ''}")
+            return self._out(press(key, f"probe {key}{(' - ' + reason) if reason else ''}"))
         if self.scores:
             best_key, best_gain = max(self.scores.items(), key=lambda kv: kv[1])
             # never let the lock penalty make every direction look terrible; if it did, ignore the penalty
@@ -467,18 +487,18 @@ class ProbeMotion:
             if best_gain > self.min_gain:
                 self.steps += 1
                 self.turn_streak = 0
-                return press(best_key, f"move {best_key} (+{best_gain:.1f})")
+                return self._out(press(best_key, f"move {best_key} (+{best_gain:.1f})"))
             self.turn_streak += 1
             self.turns += 1
             if self.turn_streak >= self.hold_every:
                 self.turn_streak = 0
                 self.holds += 1
-                return hold(best_key, 0.45, "hold out of a spot where nothing helped")
-            return press("left", "turn: nothing improved")
+                return self._out(hold(best_key, 0.45, "hold out of a spot where nothing helped"))
+            return self._out(press("left", "turn: nothing improved"))
         self.queue = list(self.keys)
         key = self.queue.pop(0)
         self.probe_key, self.probe_from = key, here
-        return press(key, f"probe {key}{(' - ' + reason) if reason else ''}")
+        return self._out(press(key, f"probe {key}{(' - ' + reason) if reason else ''}"))
 
 
 class StepMotion:
@@ -512,7 +532,9 @@ class StepMotion:
         # doing it: from (269,64) with the heading facing west, the motion lunged west and a chain meant for (360,26)
         # finished 231 units away at (134,76). Turn effects are learned per key, because one tap can swing the camera
         # 80-175 degrees and the sign differs between sessions.
-        self.turn_tolerance = 25.0
+        # One turn can swing the camera 120-180 degrees, so a tight tolerance can never be met: the loop turns forever.
+        # 60 degrees still points the 8.5-unit step within ~7 units of the aim, and the next step re-aims.
+        self.turn_tolerance = 60.0
         self._last_error: float | None = None
         self._last_turn_key: str | None = None
 
