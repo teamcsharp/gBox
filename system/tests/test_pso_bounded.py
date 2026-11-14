@@ -1209,3 +1209,36 @@ def test_step_motion_takes_attack_steps_and_refuses_a_lock_point():
 
     # once inside the arrive radius the motion stops
     assert motion.step({"x": 100.0, "z": 50.0, "heading_deg": 0.0}, (100.0, 44.0)) is None
+
+def test_probe_motion_measures_then_moves_and_never_livelocks():
+    """Four probes, then the key whose result came closest - the behaviour that crossed the plaza, where the committing
+    motion wandered 187 units off its first waypoint."""
+    effects = {"up": (0.0, 8.0), "down": (0.0, -8.0), "left": (-8.0, 0.0), "right": (8.0, 0.0)}
+    motion = B.ProbeMotion(arrive=6.0)
+    pos = [0.0, 0.0]
+    keys = []
+    for _ in range(80):
+        action = motion.step({"x": pos[0], "z": pos[1]}, (40.0, 0.0))
+        if action is None:
+            break
+        keys.append(action.key)
+        if action.kind == "press":
+            dx, dz = effects[action.key]
+            pos[0] += dx
+            pos[1] += dz
+    assert math.dist(pos, (40.0, 0.0)) <= 6.0, f"the motion reaches its target, ended at {pos}"
+    assert keys[:4] == ["up", "down", "left", "right"], "it measures all four directions first"
+    assert keys.count("a") == 0
+
+
+def test_probe_motion_holds_when_nothing_helps_instead_of_turning_forever():
+    motion = B.ProbeMotion(arrive=6.0, hold_every=4)
+    # a world where no key moves at all: the motion must turn, then hold, not spin
+    kinds = []
+    for _ in range(24):
+        action = motion.step({"x": 0.0, "z": 0.0}, (100.0, 0.0))
+        if action is None:
+            break
+        kinds.append(action.kind)
+    assert "hold" in kinds, "a hold appears rather than an endless turn"
+    assert motion.turns >= 3

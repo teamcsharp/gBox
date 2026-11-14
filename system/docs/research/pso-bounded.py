@@ -295,8 +295,10 @@ def run(mode: str, args) -> int:
         # Attack steps for distance, taps when a step would land on a known lock point.
         motion = B.StepMotion(arrive=arrive, lock_points=load_lock_points())
     elif args.motion == "probe":
-        # Measure all four directions, then move the best one: the hand-run loop that crossed the Pioneer 2 plaza in six
-        # hops where the committing motion wandered.
+        # Measure all four directions, then move the best one. This is the loop that crossed the plaza (hops of 12, 9,
+        # 12, 25, 22); the committing motion's probe mode gave 187, 154, 120, 389 on the same waypoints.
+        motion = B.ProbeMotion(arrive=arrive, lock_points=load_lock_points())
+    elif args.motion == "commitprobe":
         motion = B.CommitMotion(arrive=arrive, probe_every_move=True, lock_points=load_lock_points())
     elif args.motion == "commit":
         # Commit to a heading, learn each key's direction live, slide when blocked: for long walks in unmapped rooms.
@@ -364,6 +366,56 @@ def run(mode: str, args) -> int:
                 log(f"no map coverage here: nearest grid cell is {nearest:.0f} units away "
                     f"(this room is outside {name}'s frame) - moving directly, without a route")
                 router = None
+
+    if mode == "chain":
+        clock2 = clock
+        # One implementation of the greedy behaviour - the library's - so a guard cannot be present in one copy and
+        # missing in another. That is exactly what happened: the all-penalised lock guard was fixed in CommitMotion and
+        # the hand-written copy in these scripts kept its unguarded version, and the city chain failed from then on.
+        motion = B.ProbeMotion(arrive=args.tolerance, lock_points=load_lock_points())
+        points = []
+        for item in args.via:
+            x, z = item.replace(",", " ").split()
+            points.append((float(x), float(z)))
+        started = time.monotonic()
+        moved = 0
+        for index, point in enumerate(points):
+            deadline = time.monotonic() + float(args.per_hop)
+            while time.monotonic() < deadline and time.monotonic() - started < float(args.seconds):
+                player = ((world.observe(player_only=True) or {}).get("player")) or {}
+                here = (float(player.get("x") or 0), float(player.get("z") or 0))
+                if math.dist(here, point) <= args.tolerance:
+                    break
+                action = motion.step({"x": here[0], "z": here[1], "heading_deg": player.get("heading_deg")},
+                                     point, f"hop {index + 1}/{len(points)}")
+                if action is None:
+                    break
+                world.act(action, time.monotonic() + 2.0)
+                moved += 1
+                clock2.sleep(0.05)
+            player = ((world.observe(player_only=True) or {}).get("player")) or {}
+            here = (float(player.get("x") or 0), float(player.get("z") or 0))
+            log(f"  hop {index + 1}/{len(points)} {tuple(round(v) for v in point)}: d={math.dist(here, point):.0f}"
+                f" at {tuple(round(v) for v in here)} room {player.get('room')}")
+            if args.press_at and math.dist(here, (float(args.press_at[0]), float(args.press_at[1]))) <= args.press_radius:
+                log("  in range of the pad - pressing A")
+                for _ in range(3):
+                    world.act(B.press("a", "activate the pad"), time.monotonic() + 3.0)
+                    clock2.sleep(1.2)
+                    after = ((world.observe(player_only=True) or {}).get("player")) or {}
+                    if int.from_bytes(world.read(0x805D5FC0, 4), "big") != 0:
+                        log(f"  WARPED: floor {int.from_bytes(world.read(0x805D5FC0, 4), 'big')}")
+                        world.release()
+                        release_ownership()
+                        return 0
+                break
+        player = ((world.observe(player_only=True) or {}).get("player")) or {}
+        floor = int.from_bytes(world.read(0x805D5FC0, 4), "big")
+        log(f"chain finished: {moved} actions, at ({float(player.get('x') or 0):.0f},{float(player.get('z') or 0):.0f}),"
+            f" floor {floor}")
+        world.release()
+        release_ownership()
+        return 0
 
     if mode == "sweep":
         # Serpentine the room. A bounded area has an exit somewhere on its edge, and random roaming does not find it:
@@ -649,6 +701,27 @@ def load_lock_points():
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(description="bounded PSO controller")
     sub = parser.add_subparsers(dest="mode", required=True)
+    chain = sub.add_parser("chain", help="walk a list of waypoints with one motion, then optionally press A")
+    chain.add_argument("--via", nargs="+", metavar="X,Z", required=True)
+    chain.add_argument("--per-hop", type=float, default=60.0)
+    chain.add_argument("--tolerance", type=float, default=13.0)
+    chain.add_argument("--motion", default="commit")
+    chain.add_argument("--press-at", type=float, nargs=2, metavar=("X", "Z"))
+    chain.add_argument("--press-radius", type=float, default=14.0)
+    chain.add_argument("--seconds", type=float, default=600.0)
+    chain.add_argument("--map", default="")
+    chain.add_argument("--map-name", default="")
+    chain.add_argument("--carve", action="store_true", default=False)
+    chain.add_argument("--no-carve", dest="carve", action="store_false")
+    chain.add_argument("--carve-radius", type=float, default=8.0)
+    chain.add_argument("--trace-spacing", type=float, default=8.0)
+    chain.add_argument("--calibration-ttl", type=float, default=900.0)
+    chain.add_argument("--no-calibrate", action="store_true")
+    chain.add_argument("--assisted", action="store_true")
+    chain.add_argument("--route-file", default="")
+    chain.add_argument("--through", action="store_true", default=False)
+    chain.add_argument("--session", default="")
+
     sweep = sub.add_parser("sweep", help="serpentine the current room to find its exits")
     sweep.add_argument("--half", type=float, default=150.0)
     sweep.add_argument("--center", type=float, nargs=2, metavar=("X", "Z"),
@@ -704,7 +777,7 @@ def main(argv=None) -> int:
         item.add_argument("--carve-radius", type=float, default=8.0)
         item.add_argument("--trace-spacing", type=float, default=8.0,
                           help="waypoint spacing when replaying a recorded trace")
-        item.add_argument("--motion", default="hill", choices=("hill", "wall", "probe", "step", "commit", "vector", "relative"),
+        item.add_argument("--motion", default="hill", choices=("hill", "wall", "probe", "commitprobe", "step", "commit", "vector", "relative"),
                           help="movement controller: hill climbs measured gains, vector/relative infer a frame")
         item.add_argument("--map-name", default="", help="substring of the grid entry to use (e.g. forest01)")
         item.add_argument("--calibration-ttl", type=float, default=900.0,

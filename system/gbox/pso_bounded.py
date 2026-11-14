@@ -411,6 +411,76 @@ def _bearing_degrees(a: tuple, b: tuple) -> float:
     return ((math.degrees(math.atan2(b[0], b[1])) - math.degrees(math.atan2(a[0], a[1])) + 540.0) % 360.0) - 180.0
 
 
+class ProbeMotion:
+    """Measure all four directions, then move the best one. The loop that actually crossed the plaza.
+
+    Measured head to head on the same route: this behaviour, written inline, gave hops of 12, 9, 12, 25, 22 and 52 units
+    and warped to the Forest; `CommitMotion(probe_every_move=True)` gave 187, 154, 120, 389, 479, 639 and 619 on the same
+    waypoints. The extra rules a committing motion carries - detour targets, slide counting, commit learning - interfere
+    with the probe cycle. This is deliberately the blunt version: four probe taps, move the key whose result was closest,
+    turn when none of them helped, and turn a hold every fourth time so the turning cannot livelock.
+    """
+
+    def __init__(self, *, arrive: float = 10.0, keys: Iterable[str] = DIRECTIONS, min_gain: float = 0.5,
+                 lock_points: Iterable | None = None, lock_radius: float = 12.0, hold_every: int = 4) -> None:
+        self.arrive = float(arrive)
+        self.keys = tuple(keys)
+        self.min_gain = float(min_gain)
+        self.lock_points = [(float(p[0]), float(p[1])) for p in (lock_points or ())]
+        self.lock_radius = float(lock_radius)
+        self.hold_every = int(hold_every)
+        self.queue: list[str] = []
+        self.scores: dict[str, float] = {}
+        self.probe_key: str | None = None
+        self.probe_from: tuple[float, float] | None = None
+        self.turn_streak = 0
+        self.steps = 0
+        self.turns = 0
+        self.holds = 0
+
+    def safe(self, point: tuple[float, float]) -> bool:
+        return all(math.dist(point, lock) > self.lock_radius for lock in self.lock_points)
+
+    def step(self, player: dict, target: Iterable[float], reason: str = "") -> Action | None:
+        here = (float(player["x"]), float(player["z"]))
+        aim = (float(target[0]), float(target[1]))
+        if math.dist(here, aim) <= self.arrive:
+            return None
+        # score the probe issued last tick from where it started to where the body actually is
+        if self.probe_key is not None and self.probe_from is not None:
+            gain = math.dist(self.probe_from, aim) - math.dist(here, aim)
+            if not self.safe(here):
+                gain -= 1000.0
+            self.scores[self.probe_key] = gain
+            self.probe_key = None
+            self.probe_from = None
+        if self.queue:
+            key = self.queue.pop(0)
+            self.probe_key, self.probe_from = key, here
+            return press(key, f"probe {key}{(' - ' + reason) if reason else ''}")
+        if self.scores:
+            best_key, best_gain = max(self.scores.items(), key=lambda kv: kv[1])
+            # never let the lock penalty make every direction look terrible; if it did, ignore the penalty
+            if best_gain <= -999.0:
+                best_key, best_gain = max(self.scores.items(), key=lambda kv: kv[1] + 1000.0)
+            self.scores = {}
+            if best_gain > self.min_gain:
+                self.steps += 1
+                self.turn_streak = 0
+                return press(best_key, f"move {best_key} (+{best_gain:.1f})")
+            self.turn_streak += 1
+            self.turns += 1
+            if self.turn_streak >= self.hold_every:
+                self.turn_streak = 0
+                self.holds += 1
+                return hold(best_key, 0.45, "hold out of a spot where nothing helped")
+            return press("left", "turn: nothing improved")
+        self.queue = list(self.keys)
+        key = self.queue.pop(0)
+        self.probe_key, self.probe_from = key, here
+        return press(key, f"probe {key}{(' - ' + reason) if reason else ''}")
+
+
 class StepMotion:
     """Move with tap probes, and take an attack step when it is both useful and safe.
 
