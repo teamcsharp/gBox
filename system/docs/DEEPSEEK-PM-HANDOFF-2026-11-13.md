@@ -1431,3 +1431,34 @@ escape cycles eat kill windows even now; firing while retreating is the next des
 round's work (they do not involve the changed code paths) and need a look. PSO contention keeps stealing lilspark.
 
 State: MercMode rotating, queue `[]`, Hermes `enabled/available true`, deployed `853a7d577`.
+
+### Round 28: detonations verified in a real round; the combo escape costs less
+
+Round 27 left two unverified things (the 600 cm mine-ring radius build and whether detonations actually happen in a
+normal round) and one design gap (the hard blast retreat ate kill windows). This round verified the first and worked
+the third.
+
+Shipped `63063ad61` (deployed + restarted):
+- `_blast_retreat` now gives the combo one quick shot while the five-second bomb deadline is not tight (> 2 s): if
+  the combo clock is at or under COMBO_BLAST_SHOT_S 1.8 s and an enemy is on the live ray within COMBO_BLAST_SHOT_R
+  500, it fires a quick shot and then resumes the pure walk out; near the deadline it always walks. New stat
+  blast_combo_shots.
+- Tests: the quick shot at 4 s remaining, the pure retreat at 1 s remaining; switch/bonus/periodic suites 328 pass.
+
+**Live verification of the round-27 radius build (`853a7d577`), RE6 session 64f75e28, 00:50-00:53):**
+- Remote rings ejected at 600 cm: `mine_ring_requests` 4, `mine_flag_detonations` **2 in ~2.5 minutes** (round 27's
+  sampled span had 0-1); clearance reached the 1200 cm rule for both.
+- `blast_retreats` 243 ticks (~12 s of retreating over the whole sample) versus 882 ticks in the 4-minute sample before
+  the radius change - the escape is now a fraction of the round instead of most of it.
+- `combo_breaks` **2** in the round (was 4-6 per ~4 min), kills 43 in ~170 s (about one dispatch every 4 s on
+  average), combo reached 18 while detonations were firing, shots 7 / hits 3 in the early sample.
+- `blast_combo_shots` 0 live: the combo-lapse moment never coincided with a non-tight deadline plus a target on the
+  ray; the guard needs loosening (allow while remaining > ~1.0 s, or radius 700) - not yet tuned.
+
+**Open, honestly:** the combo still resets at times (kill_gap_max 30.86 s, combo_breaks 2 and the round ended with the
+combo at 0); the "an enemy every 4 seconds, combo never lost" absolute goal is still not met. `test_mercs_remote_mines`
+still has the 3 red tests from another lane's engine drift (flash-combo ring, surround ring, ring-then-detonate).
+PSO kept stealing lilspark between switches; the RE6 round above is the first clean window this round.
+
+State: RE6 round finished (43 kills sampled), MercMode rotating, queue `[]`, Hermes `enabled/available true`,
+deployed `63063ad61`.
