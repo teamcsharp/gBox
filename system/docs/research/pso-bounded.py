@@ -372,7 +372,15 @@ def run(mode: str, args) -> int:
         # One implementation of the greedy behaviour - the library's - so a guard cannot be present in one copy and
         # missing in another. That is exactly what happened: the all-penalised lock guard was fixed in CommitMotion and
         # the hand-written copy in these scripts kept its unguarded version, and the city chain failed from then on.
-        motion = B.ProbeMotion(arrive=args.tolerance, lock_points=load_lock_points())
+        if args.motion == "vector":
+            # No probes: every press moves the body, so measuring by probing random-walks in the city (154 actions of
+            # 3.5-5 units each bought 60 units of net progress). This one learns each key's world direction from the
+            # press it just made and steers with that.
+            motion = B.VectorMotion(arrive=args.tolerance, primitive="tap")
+        elif args.motion == "step":
+            motion = B.StepMotion(arrive=args.tolerance, lock_points=load_lock_points())
+        else:
+            motion = B.ProbeMotion(arrive=args.tolerance, lock_points=load_lock_points())
         points = []
         for item in args.via:
             x, z = item.replace(",", " ").split()
@@ -390,7 +398,15 @@ def run(mode: str, args) -> int:
                                      point, f"hop {index + 1}/{len(points)}")
                 if action is None:
                     break
-                world.act(action, time.monotonic() + 2.0)
+                before = {"player": player, "floor": int.from_bytes(world.read(0x805D5FC0, 4), "big")}
+                result = world.act(action, time.monotonic() + 2.0)
+                after_player = ((world.observe(player_only=True) or {}).get("player")) or {}
+                landed = (float(after_player.get("x") or 0), float(after_player.get("z") or 0))
+                ledger.record("tick", action=action.as_dict(), before=before,
+                              after={"player": after_player,
+                                     "floor": int.from_bytes(world.read(0x805D5FC0, 4), "big")},
+                              extra={"moved": round(math.dist(here, landed), 2),
+                                     "hop": f"{index + 1}/{len(points)}"})
                 moved += 1
                 # A probe's score is the distance from where it started to where the body ends up, so the body has to
                 # have finished moving before the next step call reads it. The hand-run loop that crossed the plaza
