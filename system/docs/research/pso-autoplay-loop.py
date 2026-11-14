@@ -1,4 +1,4 @@
-﻿"""autoplay-loop - hand the pad back and forth with the operator, with the two live guards applied throughout.
+"""autoplay-loop - hand the pad back and forth with the operator, with the two live guards applied throughout.
 
 Operator's standing requests (2026-11-13):
   * "have the bot take over whenever I stop playing the game for three seconds" -- operator input (pad/keyboard/app pad)
@@ -37,6 +37,7 @@ STOP_DEMO = OUT / "stop-demo"
 RECORDER = pathlib.Path(r"C:\_tools\gBox\system\docs\research\pso-demo-recorder.py")
 BOUNDED = pathlib.Path(r"C:\_tools\gBox\system\docs\research\pso-bounded.py")
 GUARD = pathlib.Path(r"C:\_tools\gBox\system\docs\research\pso-operator-guard.py")
+LIVE_MAP = pathlib.Path(r"C:\_tools\gBox\system\docs\research\pso-live-map.py")
 PYTHON = sys.executable
 OPERATOR_IDLE_S = 3.0
 BOT_SECONDS = 60.0
@@ -188,14 +189,38 @@ class Supervisor:
         if STOP_DEMO.exists():
             STOP_DEMO.unlink()
 
+    def live_map(self) -> tuple:
+        """Dump the current floor's collision grid and return (path, key) for the bounded player's --map.
+
+        This is the RAM side of the map bridge: pso-live-map.py re-parses the game's loaded collision allocation, so
+        the router sees the exact floor the character is on (any area, any randomized layout) without a disc match.
+        """
+        try:
+            result = subprocess.run([PYTHON, str(LIVE_MAP), "--json"], capture_output=True, text=True, timeout=45,
+                                    env=dict(os.environ, GBOX_API=BASE))
+            if result.returncode != 0:
+                log(f"live map dump failed: {(result.stderr or result.stdout).strip()[-300:]}")
+                return None, None
+            summary = json.loads(result.stdout.strip().splitlines()[-1])
+            log(f"live map: floor {summary['floor']} {summary['triangles']} triangles -> {summary['cells']} cells "
+                f"({summary['key']})")
+            return summary["map"], summary["key"]
+        except Exception as error:                                   # noqa: BLE001
+            log(f"live map dump error: {type(error).__name__}: {error}")
+            return None, None
+
     def run_bot(self) -> None:
         env = dict(os.environ, GBOX_API=BASE)
         log_path = OUT / "autoplay-bot.log"
+        command = [PYTHON, str(BOUNDED), "play", "--seconds", str(BOT_SECONDS), "--motion", "hill"]
+        map_path, map_key = self.live_map()
+        if map_path:
+            command += ["--map", map_path, "--map-name", map_key]
         with log_path.open("a", encoding="utf-8") as handle:
             handle.write(f"\n=== bot chunk {time.strftime('%H:%M:%S')} ===\n")
-            self.bot = subprocess.Popen([PYTHON, str(BOUNDED), "play", "--seconds", str(BOT_SECONDS),
-                                         "--motion", "hill"], env=env, stdout=handle, stderr=subprocess.STDOUT)
-        log(f"operator idle {OPERATOR_IDLE_S:.0f}s - bot took the pad (bounded play {BOT_SECONDS:.0f}s)")
+            self.bot = subprocess.Popen(command, env=env, stdout=handle, stderr=subprocess.STDOUT)
+        log(f"operator idle {OPERATOR_IDLE_S:.0f}s - bot took the pad (bounded play {BOT_SECONDS:.0f}s"
+            f"{', routed over the live collision grid' if map_path else ', no live map'})")
         started = time.monotonic()
         while True:
             if self.bot.poll() is not None:

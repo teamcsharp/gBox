@@ -360,8 +360,11 @@ def run(mode: str, args) -> int:
             if offset != (0.0, 0.0):
                 router = OffsetRouter(router, offset)
                 log(f"room {room} sits at file offset {tuple(int(v) for v in offset)}: routing in the mesh's frame")
-            nearest = min(math.dist((float(here["x"]) + offset[0], float(here["z"]) + offset[1]), cell)
-                          for cell in cells)
+            # The map's cells are grid cells (2.5 units), not world coordinates, so the coverage test must convert the
+            # character to a cell first. Comparing world coordinates to cell numbers made a live-map dump look 101
+            # "units" away from the player's own cell and the router was dropped for no reason.
+            here_cell = router.cell((float(here["x"]), float(here["z"])))
+            nearest = min(math.hypot(here_cell[0] - cell[0], here_cell[1] - cell[1]) for cell in cells) * 2.5
             if nearest > 30.0:
                 log(f"no map coverage here: nearest grid cell is {nearest:.0f} units away "
                     f"(this room is outside {name}'s frame) - moving directly, without a route")

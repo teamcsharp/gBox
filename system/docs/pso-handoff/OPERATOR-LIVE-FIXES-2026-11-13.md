@@ -119,3 +119,34 @@ that doorway open, and the status word stayed `0` throughout.
 Remaining known weakness: the character has been sitting at 1 HP (the game did not raise it after the earlier damage
 dump), and combat still reports 0 hits - the approach/range model needs the operator's recorded demonstrations to
 calibrate facing and reach per weapon, which is the next use of `pso-demo-recorder.py`.
+
+## 7. Round 4 - the RAM half of the map bridge: live collision grid -> 2D route map -> routed bot
+
+The co-op geometry provider (`gbox.pso_coop_geometry`) already knew how to read the game's loaded collision REL out
+of memory, but its `Provider` refuses any floor outside town/Forest and requires two players, so the single-player
+live session had no map at all. The same internals work fine for one player - and for any area - when called
+directly:
+
+* **`pso-live-map.py`** - reads the collision roots (`0x805D4E68/0x805D6000/0x805D6014/0x805D5650`), the manager
+  mesh table and the 380 KiB allocation (Cave 1's allocation is larger than the 256 KiB co-op budget, so it reads it
+  in 64 KiB pieces), re-parses the triangles with `psomap`, projects the player with `Atlas`, and writes the floor's
+  walkable cells as a `forest_route.MapRouter` grid. Live Cave 1 receipt: **8,487 triangles, digest
+  `90afe75e8627`, 210,116 walkable 2.5-unit cells** - and the character's own cell is guaranteed present because it
+  was projected by the same atlas.
+* **`pso-route-plan.py`** - A* over that live grid to the nearest door/switch/enemy/warp or a coordinate; prints
+  waypoints the existing `pso-bounded.py walk --route-file` can replay. First plan: nearest `TODoorCave02` 217 units
+  straight, 233 units of walkable route, 76 cells.
+* **`pso-autoplay-loop.py`** - now dumps the live map before every bot chunk and passes `--map/--map-name` to
+  `pso-bounded.py play`, so the bounded player's objectives are pursued along real collision instead of a hill-climb
+  straight line. Receipt in `autoplay-bot.log`: `routing over live-floor3-90afe75e8627: 210116 safe cells`.
+
+One bug surfaced and is fixed: the route CLI's coverage test compared **world coordinates to cell numbers**, so it
+declared the live map "101 units away" and dropped the router. It now converts the player through `router.cell()`
+first; the same chunk then logs the routing line with no coverage warning. In the same window the routed bot produced
+its **first verified combat hit** (`combos: attempts 5, hits 1, progress enemy-hp`) and kept moving across the room
+instead of orbiting.
+
+The operator also asked for proximity door unlocking; `pso-doors-always.py` now saturates the current floor's whole
+stage-flag group as soon as any door/barrier/fence is within **30 units** (permanent - nothing clears it), after the
+measured fact that setting only the room's switch bits left the Cave door at (-600,805) shut while the full-group
+write opened it and the character crossed room 34 -> 8 within two seconds.
