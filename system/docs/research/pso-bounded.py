@@ -225,6 +225,33 @@ class DoorState:
         self.path.write_text(json.dumps(self.data, indent=1, sort_keys=True), encoding="utf-8")
 
 
+class DoorCrossings:
+    """Wall-clock time each door was last crossed, carried across runs so a chunk does not walk straight back.
+
+    The per-run avoid list cannot stop the ping-pong across room borders: every new 60 s chunk starts with an empty
+    list and its nearest door is the one it just came through (measured: Cave 1 rooms 1 and 30 alternated).
+    """
+
+    def __init__(self, path: pathlib.Path) -> None:
+        self.path = path
+        self.data = {}
+        if path.exists():
+            try:
+                self.data = json.loads(path.read_text(encoding="utf-8"))
+            except ValueError:
+                self.data = {}
+
+    def get(self, sid: str) -> dict:
+        return dict(self.data.get(sid) or {})
+
+    def put(self, sid: str, ptr: str, when: float) -> None:
+        if not ptr:
+            return
+        self.data.setdefault(sid, {})[str(ptr)] = float(when)
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        self.path.write_text(json.dumps(self.data, indent=1, sort_keys=True), encoding="utf-8")
+
+
 def run(mode: str, args) -> int:
     sid = args.session or live_session()
     if not sid:
@@ -243,7 +270,11 @@ def run(mode: str, args) -> int:
     operator = B.OperatorGuard(OPERATOR_FLAG)
     doors = DoorState(OUT / "door-state.json")
     known_doors = doors.get(sid)
-    policy = B.ProgressionPolicy(door_state=known_doors)
+    crossings = DoorCrossings(OUT / "door-crossings.json")
+    recent_doors = crossings.get(sid)
+    policy = B.ProgressionPolicy(door_state=known_doors,
+                                  door_recent=recent_doors,
+                                  attack_range=(float(args.attack_range) if getattr(args, "attack_range", None) else 11.0))
     bound_mode = B.RunMode.ASSISTED if args.assisted else B.RunMode.NORMAL
 
     # Calibrate the input primitives BEFORE choosing a motion model, which is the lesson the handoff records most
@@ -360,8 +391,11 @@ def run(mode: str, args) -> int:
             if offset != (0.0, 0.0):
                 router = OffsetRouter(router, offset)
                 log(f"room {room} sits at file offset {tuple(int(v) for v in offset)}: routing in the mesh's frame")
-            nearest = min(math.dist((float(here["x"]) + offset[0], float(here["z"]) + offset[1]), cell)
-                          for cell in cells)
+            # The map's cells are grid cells (2.5 units), not world coordinates, so the coverage test must convert the
+            # character to a cell first. Comparing world coordinates to cell numbers made a live-map dump look 101
+            # "units" away from the player's own cell and the router was dropped for no reason.
+            here_cell = router.cell((float(here["x"]), float(here["z"])))
+            nearest = min(math.hypot(here_cell[0] - cell[0], here_cell[1] - cell[1]) for cell in cells) * 2.5
             if nearest > 30.0:
                 log(f"no map coverage here: nearest grid cell is {nearest:.0f} units away "
                     f"(this room is outside {name}'s frame) - moving directly, without a route")
@@ -680,6 +714,7 @@ def run(mode: str, args) -> int:
                 log(f"  door {objective.ptr} marked closed (could not be crossed)")
             elif final_room != start_room and final_position is not None and math.dist(final_position, objective.point) <= 15.0:
                 doors.put(sid, objective.ptr, "open")
+                crossings.put(sid, objective.ptr, time.time())
                 log(f"  door {objective.ptr} marked open (room {start_room} -> {final_room}, "
                     f"at {math.dist(final_position, objective.point):.0f} units)")
         release_ownership()
@@ -855,6 +890,8 @@ def main(argv=None) -> int:
                           help="seconds a cached calibration stays valid (it moves the character)")
         item.add_argument("--no-calibrate", action="store_true",
                           help="skip the one-tap-per-key calibration (it costs about five seconds)")
+        item.add_argument("--attack-range", type=float, default=None,
+                          help="weapon reach in game units for the combo decision (default: policy default)")
         item.add_argument("--assisted", action="store_true",
                           help="label the run as assisted: never evidence for a normal-play gate")
     args = parser.parse_args(argv)
@@ -865,3 +902,4 @@ def main(argv=None) -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
+

@@ -1616,9 +1616,10 @@ class ProgressionPolicy:
     """
 
     def __init__(self, *, engage: float = 40.0, reach: float = 400.0, press_range: float = 14.0,
-                 attack_range: float = 20.0, avoid_s: float = 30.0, optional_limit: int = 3,
+                 attack_range: float = 8.0, avoid_s: float = 30.0, optional_limit: int = 3,
                  height_reach: float = 5.0,
-                 switch_demote_s: float = 60.0, door_state: dict | None = None) -> None:
+                 switch_demote_s: float = 60.0, door_state: dict | None = None,
+                 door_recent: dict | None = None, door_cooldown_s: float = 120.0) -> None:
         self.engage = float(engage)
         self.reach = float(reach)
         self.press_range = float(press_range)
@@ -1631,6 +1632,11 @@ class ProgressionPolicy:
         self.current_key = None
         # ptr -> "open" | "closed", learned by attempting a crossing (there is no readable door state).
         self.door_state = dict(door_state or {})
+        # ptr -> wall-clock epoch of the last crossing, carried across runs: a doorway the character has just walked
+        # through must not be its next objective, or two bordering rooms make every new chunk walk back through it
+        # (measured 2026-11-13 in Cave 1: rooms 1 and 30 alternated for minutes).
+        self.door_recent = dict(door_recent or {})
+        self.door_cooldown_s = float(door_cooldown_s)
 
     def choose(self, snap: dict, now: float, *, pressed=None, avoid=None) -> Objective | None:
         pressed = pressed or {}
@@ -1677,11 +1683,23 @@ class ProgressionPolicy:
                     # targeting them ping-pongs: measured (366,8) -> (574,486) -> (336,14) through two pads in one run.
                     candidates.append(Objective(0, "warp", (float(entity["x"]), float(entity["z"])),
                                                 distance, cls, ptr, None, "warp pad"))
-                elif cls in DOOR_CLASSES:
-                    # A door is a passage, not a destination. Carved routes already cross open doorways, and making a
-                    # door an objective produced a ping-pong through it: the character crossed, the aim-past point was
-                    # then behind it, and it turned round and crossed back (measured: 280 ticks around one door).
-                    continue
+                elif cls in DOOR_CLASSES or "Door" in cls or "Fence" in cls or "Barrier" in cls:
+                    # The DOOR_CLASSES set only has the generic parent names; the field instances are subclasses like
+                    # TODoorCave02/TODoorCave03 (13 of them were in the room-34 snapshot), so match the family instead
+                    # of the exact three names or the doorway is invisible to the policy.
+                    # A door is a passage, but when nothing forward is reachable it is the best exploration target
+                    # there is: the operator's live door guard sets the native stage flags whenever the character comes
+                    # near one, so walking at a door turns it into 'walk through the open doorway'. It ranks below
+                    # waves/switches and above optional loot, is aimed past by `_plan`, and a door that produced a
+                    # room change is added to the avoid list so the bot cannot ping-pong through it (the earlier
+                    # 280-tick ping-pong predates the avoid list).
+                    if ptr in avoid and now - avoid[ptr] < self.avoid_s:
+                        continue
+                    recent = self.door_recent.get(ptr)
+                    if recent is not None and time.time() - float(recent) < self.door_cooldown_s:
+                        continue                     # just crossed this doorway: do not walk straight back through it
+                    candidates.append(Objective(3, "door", (float(entity["x"]), float(entity["z"])),
+                                                distance, cls, ptr, None, "doorway to the next room"))
                 elif kind == "object" and any(hint in cls for hint in CONTAINER_HINTS):
                     if self.optional_streak < self.optional_limit:
                         candidates.append(Objective(4, "container", (float(entity["x"]), float(entity["z"])),
@@ -2057,6 +2075,15 @@ class Automaton:
         self.switch_misses = {}
         self.switch_ok = set()
         self.avoid = {}
+        # Wave approach bookkeeping (see _account): an enemy that cannot be closed on must not be orbited for the
+        # whole run; after 8 s without closing, it goes to `avoid` so the policy picks something reachable.
+        self.wave_ptr = None
+        self.wave_best = None
+        self.wave_since = 0.0
+        self.wave_started = 0.0
+        # Facing tolerance from the operator's demonstrated hits (all within ~10 deg; 40 is the "swing anyway" line -
+        # past it, one movement step toward the enemy re-aims the character for free).
+        self.aim_tolerance_deg = 40.0
         self.stopped = ""
         self.failures = []
         self.last_objective: Objective | None = None
@@ -2230,6 +2257,18 @@ class Automaton:
         reach = objective.distance if objective.target_distance is None else objective.target_distance
         if objective.kind == "wave":
             if reach <= self.policy.attack_range:
+                # The operator's own demonstrations put every melee hit inside ~10 degrees of facing (see
+                # pso-combat-learn.py / mandate/combat-model.json: 10/10 hits at 9-22 units when facing the enemy).
+                # Swinging at an enemy that has drifted to the side wastes the combo, so re-aim with one step first.
+                heading = player.get("heading_deg")
+                if heading is not None:
+                    px, pz = float(player.get("x") or 0), float(player.get("z") or 0)
+                    bearing = math.degrees(math.atan2(target[0] - px, target[1] - pz)) % 360.0
+                    off = abs((float(heading) - bearing + 180.0) % 360.0 - 180.0)
+                    if off > self.aim_tolerance_deg:
+                        return self.motion.step(player, target,
+                                                f"re-aim at {objective.cls} ({off:.0f} deg off, "
+                                                f"{reach:.0f} units)")
                 return self.combat.next_action(now, reason=f"combo on {objective.cls}") or WAIT
             return self.motion.step(player, target, f"{objective.cls} at {reach:.0f} units")
         if objective.kind == "switch":
@@ -2306,6 +2345,9 @@ class Automaton:
             # the policy can loop between two areas: measured, a Forest run stepped onto a warp and came back to
             # Pioneer 2, then spent the run walking to the warp door it had just used. Leave it alone for a while.
             self.avoid[objective.ptr] = now
+        if objective is not None and objective.kind == "door" and kind == "room":
+            # Crossed a doorway: do not immediately aim back through it (the old 280-tick door ping-pong).
+            self.avoid[objective.ptr] = now
         failure = ""
         if objective is not None:
             self.policy.note(objective.kind, progressed)
@@ -2319,6 +2361,23 @@ class Automaton:
                 if self.combat.give_up():
                     self.avoid[objective.ptr] = now
                     self.combat.reset()
+                # Closing check for the approach itself: if the enemy stays outside attack range and the distance stops
+                # improving, hand it to the avoid list instead of orbiting it (an enemy across water cannot be reached
+                # by walking, and the policy re-picks it every tick while it is the nearest wave).
+                distance = objective.distance
+                if objective.ptr != self.wave_ptr:
+                    self.wave_ptr, self.wave_best = objective.ptr, distance
+                    self.wave_since = self.wave_started = now
+                elif distance < (self.wave_best if self.wave_best is not None else distance) - 2.0:
+                    self.wave_best, self.wave_since = distance, now
+                elif now - (self.wave_since or now) > 8.0 or now - (self.wave_started or now) > 20.0:
+                    # No closing for 8 s, or 20 s on the same enemy in total: it is unreachable by walking (across
+                    # water / behind a barrier) or too evasive; hand it to `avoid` so doors and other objectives
+                    # become reachable choices instead of orbiting one shark for the whole chunk.
+                    self.avoid[objective.ptr] = now
+                    self.combat.reset()
+                    self.wave_ptr, self.wave_best = None, None
+                    self.wave_since = self.wave_started = now
         return delta["moved"], failure
 
     def _verify_switch(self, objective: Objective, action: Action, before: dict, after: dict, now: float) -> str:
@@ -2340,6 +2399,15 @@ class Automaton:
         if not (first and second):
             return ""
         if first.get("sha256") != second.get("sha256"):
+            self.switch_ok.add(objective.ptr)
+            self.pressed[objective.ptr] = now
+            self.switch_misses.pop(objective.ptr, None)
+            return ""
+        # A saturated floor group cannot change: the operator's proximity door unlock writes 0xFF over the whole
+        # group, so every switch on that floor is already ON. Treat a press on an already-satisfied switch as success
+        # instead of a miss (measured 2026-11-13: 3 presses on TObjDoorKey failed the run while the flags were 0xFF).
+        groups = [int(value) for value in (first.get("groups") or second.get("groups") or [])]
+        if groups and max(groups) >= 255:
             self.switch_ok.add(objective.ptr)
             self.pressed[objective.ptr] = now
             self.switch_misses.pop(objective.ptr, None)
@@ -2390,6 +2458,16 @@ class Automaton:
                 self.no_close = 0
                 self.no_close_since = now
                 return ""                                # the escape in tick() gets another budget
+            if objective.kind in ("switch", "door", "container"):
+                # A point objective the character keeps moving toward without closing is not a reason to end the
+                # whole live run: skip it for `avoid_s` and let the policy pick the next thing (a different switch,
+                # a doorway, the next room). Measured 2026-11-13: one TLazerFenceSw 63 units away stopped a chunk
+                # every 45 s while the character kept moving.
+                self.avoid[objective.ptr] = now
+                self.no_close = 0
+                self.no_close_since = now
+                self.best_distance = None
+                return ""
             return (f"{objective.kind} {objective.cls or objective.ptr} not closed for {stalled:.0f}s after "
                     f"{self.escapes} hold escapes (still {distance:.0f} units away); the character is moving without "
                     f"approaching it")
@@ -2564,3 +2642,6 @@ class Automaton:
                 "combos": {"attempts": self.combat.attempts, "hits": self.combat.hits,
                            "whiffs": self.combat.whiffs, "stage_transitions": self.combat.stage_transitions},
                 "stopped": self.stopped, "failures": len(self.failures)}
+
+
+
