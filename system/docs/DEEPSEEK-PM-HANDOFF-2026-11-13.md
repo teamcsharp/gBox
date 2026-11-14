@@ -1730,3 +1730,29 @@ achieved or claimed.
 
 State: MercMode on lilspark running RE6 (`1eb0948d`), queue `[]`, Hermes `enabled/available true`, deployed
 `aaf6e3219`, bot suites 350 + shell 69 pass.
+
+### Round 38: mercmode_explained.md (the system guide) + grenade rule
+
+Operator asked for a complete, expansive document of the MercMode combat system: all classes/functions/subroutines,
+hierarchy tables, every command, how priorities are delineated, how the bot reads RAM/hex/bytes, how it sees without a
+vision model, how the laser raycast and aimbot work, why the gun has been reported raised without firing, operator
+quotes next to the systems that actualize them, and how each request played out in subsequent rounds.
+
+Delivered `system/docs/mercmode_explained.md` (about 1,700 lines / 150 KB): 12 sections + 3 appendices - architecture
+layers, game-differentiation matrix (RE4/RE5/RE6), tick model and action vocabulary, the survival / combo-keeper /
+engagement / trigger-authorization priority ladders (with every constant), RAM truth and byte-level decode examples
+(module bases, pointer chains, struct decoding, caches), no-vision-model explanation, laser raycast internals
+(uLaserSight +0x60 dot / +0x440 muzzle / +0x12C up, owner check, stale-cache guard, ray_error/near_line/line_hits/
+segment_hits), the full aim pipeline (lock at <=1500 cm + sticks fallback + envelope + trigger cadence), the complete
+"gun up but not firing" anatomy with the history of causes and fixes, every operator directive (11), every intervention
+operation (14), the 91 (doing, act) action pairs, all visible bot-logic knobs (51 RE6 / 40 RE5 / 19 RE4 with shipped
+defaults), guidance->implementation->evidence->next-complaint ledger, round-report performance table, game-by-game
+differences, known limits, and complete class/method/function appendices (RE6 Bot 183 methods, RE6 native Controller 34,
+RE5 Bot 208, RE4 Bot 97, engine modules, module-level functions).
+
+Also landed the operator's "why is the bot never throwing grenades?" fix (commit c3893b42f): NADES default on, and a
+combat grenade every GRENADE_EVERY_S (8 s) into a mob in 500-1500 cm with the move/last-throw/fire-first pacing relaxed
+for that call (combat_grenade_throws counter). 351 switch/bonus/periodic tests green. Live verification of the grenade
+counter was cut short by the document request (MercMode was on PSO); it remains the first item for the next round.
+
+State: deployed c3893b42f; Hermes healthy; task doc committed; S-rank still not achieved and not claimed.
