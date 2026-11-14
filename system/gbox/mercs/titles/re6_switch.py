@@ -2844,6 +2844,10 @@ POINT_BLANK_R, PB_YAW, PB_PITCH = 260.0, math.radians(10.0), math.radians(12.0)
 # get to the enemy shooting through the ground." Camera-geometry fire is limited to bodies within
 # FIRE_LEVEL_DY of his feet; a measured laser dot on the body still proves a real line (flying/ledges).
 FIRE_LEVEL_DY = 120.0
+# Operator 2026-11-14: "If the bot fights while placing mines, the goal becomes easier ... the combo is the true
+# meta." A quick shot at a close enemy during the bomb retreat is allowed while the deadline is not tight
+# (combo about to lapse): one aim+shot tick, then the retreat resumes. COMBO_QUICK_R still bounds it.
+COMBO_BLAST_SHOT_S, COMBO_BLAST_SHOT_R = 1.8, 500.0
 WALL_ESCAPE_S = 1.5                      # Bot._wall_command: the walk away from the operator's wall
 _NAV_MESH = None
 FIRE_ZONE_R = 600.0                     # Bot._decide: one this near in sight on his level - the fight before any bonus
@@ -3407,8 +3411,20 @@ class Bot:
         if not (isinstance(clear, (int, float)) and isinstance(need, (int, float))):
             return None
         remaining = self.stats.get('mine_remaining_s')
-        urgent = (isinstance(remaining, (int, float)) and not isinstance(remaining, bool) and remaining <= 2.0)
-        if not urgent and (need - clear) < 500.0:
+        tight = (isinstance(remaining, (int, float)) and not isinstance(remaining, bool) and remaining <= 2.0)
+        if not tight and p.get('ammo') != 0:
+            left = self.stats.get('combo_left_s')
+            if isinstance(left, (int, float)) and not isinstance(left, bool) and left <= COMBO_BLAST_SHOT_S:
+                px, py, pz = p["pos"]
+                flat_ = lambda e: math.hypot(e["pos"][0] - px, e["pos"][2] - pz)
+                tgt = self._quick_shot_target(snap, live, flat_, now, COMBO_BLAST_SHOT_R)
+                if tgt is not None:
+                    self.stats['blast_combo_shots'] = int(self.stats.get('blast_combo_shots', 0)) + 1
+                    return self._go("quick_shot", "blast_combo_shot", {"hold": ("zl", "zr")},
+                                    f"combo about to lapse in the bomb escape: a quick shot at the one "
+                                    f"{flat_(tgt):.0f} cm off, then out")
+        urgent = tight or (need - clear) >= 500.0
+        if not urgent:
             return None
         # Live 2026-11-14: with the greedy open direction the bot stayed pinned 40-60 cm from the ring for minutes
         # (blast_retreats 558, one detonation left). The mesh A* route to a bomb-clear goal is the planner that gets

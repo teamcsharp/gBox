@@ -1020,6 +1020,23 @@ def test_the_combo_mandate_turns_a_lapsing_chain_into_a_quick_shot():
     assert bot._combo_mandate_on(p, [], flat) is False
 
 
+def test_the_combo_gets_a_quick_shot_while_retreating_from_a_bomb_blast():
+    # Operator 2026-11-14: "If the bot fights while placing mines, the goal becomes easier"; the combo may never lapse.
+    import math as _m
+    bot, clock, snap = brain(round_guest(enemies=((0., 0., 300., 100),)))
+    live = snap["enemies"]
+    p = {"pos": (0., 0., 0.), "ammo": 7, "state": 0}
+    bot.stats.update(mine_escape_required=True, mine_clearance_cm=430.0, mine_required_clearance_cm=1200.0,
+                     mine_remaining_s=4.0, combo_left_s=1.0)
+    bot._quick_shot_target = lambda *a, **k: live[0]
+    out = bot._blast_retreat(p, live, snap, 3.0)
+    assert out == {"hold": ("zl", "zr")} and bot.stats["blast_combo_shots"] == 1
+    bot.stats["mine_remaining_s"] = 1.0                    # deadline tight: no shot, out first
+    bot.stats["combo_left_s"] = 0.5
+    out = bot._blast_retreat(p, live, snap, 3.5)
+    assert out is not None and "zl" not in out.get("hold", ())
+
+
 def test_a_live_bomb_blast_gets_a_hard_retreat_before_any_fight_action():
     # Live 2026-11-14: at 430 of 1200 cm with the deadline 7.5 s past the bot still aimed; the engine cannot detonate
     # until the clearance rule passes, so it never detonated enough. The retreat now comes before quick shots/combat.
