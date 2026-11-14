@@ -504,6 +504,10 @@ class StepMotion:
         self.steps = 0
         self.refused = 0
         self._streak = 0
+        # The last stretch is ProbeMotion's job: cycling keys blindly walked away from the pad (a tolerance-2 approach
+        # ended 98 units out), while measuring each direction is the behaviour that closes within a few units.
+        self.fine = ProbeMotion(arrive=self.arrive, keys=self.keys, lock_points=self.lock_points,
+                                lock_radius=self.lock_radius)
 
     def landing(self, player: dict) -> tuple[float, float]:
         """Where one attack step would put the character: 8.5 units along the camera heading."""
@@ -526,7 +530,9 @@ class StepMotion:
         # far side and the next lunge goes further still - measured, a tolerance-1 approach to the pad at (360,26) ended
         # 53 units away. Inside one step of the target the motion taps instead.
         close = distance <= self.step_units * 1.6
-        if not close and gain >= self.step_units * 0.35 and self.safe(landing):
+        if close:
+            return self.fine.step(player, target, reason)
+        if gain >= self.step_units * 0.35 and self.safe(landing):
             self.steps += 1
             return press("a", f"step-attack {gain:.0f} units closer{(' - ' + reason) if reason else ''}")
         if gain >= self.step_units * 0.35:
