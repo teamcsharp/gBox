@@ -1135,6 +1135,20 @@ def test_the_combo_gets_a_quick_shot_while_retreating_from_a_bomb_blast():
     assert out is not None and "zl" not in out.get("hold", ())
 
 
+def test_the_downed_dying_bot_flashes_before_the_down_fight():
+    # Live 2026-11-14 03:22 death: "doing=down ... staying down, no fight" at 1 health with 8 within 2 m.
+    import math as _m
+    bot, clock, snap = brain(round_guest(enemies=((0., 0., 120., 100), (100., 0., 150., 100), (-100., 0., 140., 100)),
+                                      hp=1))
+    bot.held = lambda p, now: False
+    bot._respond_flash = lambda *a, **k: True
+    snap["player"]["action"] = "cPlAction_pl_act_lying_down_weapon_ready_loop"     # down at dying health
+    snap["player"]["tablets"] = 0                                                # the empty-case flash rule
+    acts = run(bot, snap, clock, 1)
+    assert bot.down and bot.down_dying
+    assert bot.doing == "flash" and bot.stats["critical_flash_requests"] >= 1
+
+
 def test_a_standing_one_health_bot_in_a_crowd_gets_the_critical_flash():
     # Live 2026-11-14 03:12: doing=bomb_escape at 1 health with 16 enemies within 2 m died without a flash.
     import math as _m

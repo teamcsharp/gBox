@@ -5006,6 +5006,13 @@ class Bot:
             if out is not None:
                 return out
         if self.down:
+            # Live 2026-11-14: both late deaths were "doing=down ... staying down, no fight" at 1 health inside
+            # 8-16 enemies, and the critical flash was unreachable because the down branch returned first. At dying
+            # health with a crowd on him the flash fires from the downed state before the down fight (it is refused
+            # when no flash is left, and then the down fight continues).
+            down_flash = self._critical_no_tablet_flash(p, live, flat, now)
+            if down_flash is not None:
+                return down_flash
             return self._down_fight(p, snap, now)
         # request #5060 (low_hp_heal_unused): at or under TABLET_CRITICAL_HP with a tablet in the case, the tablet fires
         # before the fight below. The cluster's 63 hits and 6 deaths sit at 30 % or less while the quick attacks, hot
