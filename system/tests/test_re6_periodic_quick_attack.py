@@ -278,3 +278,12 @@ def test_an_overdue_burst_start_is_allowed_from_a_close_enemy_in_sight(monkeypat
     assert act(bot, p, enemy, 27.6) == {'hold': ('zl', 'zr')}
     assert bot.stats['periodic_qa_requests'] == 1
 
+
+def test_the_bomb_lane_being_busy_does_not_starve_the_interval_burst():
+    # Live 2026-11-13: one burst in a round because bomb_phase/bomb.out were set almost every tick by the bot's own
+    # bomb lane. The burst now only waits on a grenade in hand, a down, or a real prompt.
+    bot, p, enemy = ready_bot()
+    bot.bomb_phase = 'wait'
+    p['bomb'] = {'out': True}
+    assert act(bot, p, enemy, 24.0) == {'hold': ()}
+

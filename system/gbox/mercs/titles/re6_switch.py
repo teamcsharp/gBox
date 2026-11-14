@@ -3368,6 +3368,18 @@ class Bot:
         return self._go("turn", "face_for_quick_shot", {"hold": self._yaw(err)},
                         f"quick shot: turning {math.degrees(err):+.0f} deg to the one {flat(target):.0f} cm off")
 
+    def _inside_blast_margin(self) -> bool:
+        """True when a placed mine's clearance rule says he is still inside the blast and must move out.
+
+        Live 2026-11-13 22:23: the bot died doing=bomb "inside the bomb clearance margin (218 of 1200 cm)" with eight
+        enemies within 2 m: the combo mandate had postponed the escape. Getting out of the blast outranks the combo (a
+        death ends the round, and with it every combo).
+        """
+        clear, need = self.stats.get('mine_clearance_cm'), self.stats.get('mine_required_clearance_cm')
+        return (bool(self.stats.get('mine_escape_required')) and isinstance(clear, (int, float))
+                and not isinstance(clear, bool) and isinstance(need, (int, float)) and not isinstance(need, bool)
+                and need > 0 and clear < need)
+
     def _combo_mandate_on(self, p, live, flat) -> bool:
         """The combo mandate is in force: a kill must land now, so a non-kill detour (a bomb sprint included) waits.
 
@@ -4224,6 +4236,9 @@ class Bot:
         if qte_shot is not None:
             return qte_shot
         self._combo_hot_now = self._combo_mandate_on(p, live, flat)
+        if self._combo_hot_now and self._inside_blast_margin():
+            self._combo_hot_now = False          # a live bomb around him: out of the blast first, the combo after
+            self.stats['combo_yields_to_blast'] = int(self.stats.get('combo_yields_to_blast', 0)) + 1
         if self._combo_hot_now:
             self.stats['combo_mandate_s'] = round(float(self.stats.get('combo_mandate_s', 0.0) or 0.0) + TICK_S, 2)
         if self._combo_hot_now and self.stats.get('mine_escape_required'):
@@ -5474,9 +5489,11 @@ class Bot:
         self.stats['periodic_qa_remaining'] = self.periodic_qa_remaining
         if self.periodic_qa_remaining == 0 and self.periodic_qa_wait is None and now < self.periodic_qa_due:
             return None
-        if (self.down or self.nade is not None or self.bomb_phase is not None or
-                (p.get('bomb') or {}).get('out') or
-                any(q.get('key') not in (None, 'r', 'y') for q in self._prompt_shown)):
+        # Live 2026-11-13: the sidebar's 10 s burst fired once in a round because the bot's own bomb lane is busy
+        # almost every tick (bomb_phase / bomb out). Only a grenade actually in hand, a down or a real prompt blocks
+        # the burst now; the gun-state gate below still keeps it to a safe moment.
+        if (self.down or self.nade is not None
+                or any(q.get('key') not in (None, 'r', 'y') for q in self._prompt_shown)):
             self.periodic_qa_arm = None
             return None
         waiting = self.periodic_qa_wait

@@ -1020,6 +1020,17 @@ def test_the_combo_mandate_turns_a_lapsing_chain_into_a_quick_shot():
     assert bot._combo_mandate_on(p, [], flat) is False
 
 
+def test_the_combo_mandate_yields_to_a_live_bomb_clearance_margin():
+    # Live 2026-11-13 22:23 death: doing=bomb "inside the bomb clearance margin (218 of 1200 cm)" with eight enemies
+    # within 2 m - the mandate had postponed the escape. Inside the blast margin survival outranks the combo.
+    bot = R.Bot(stats={})
+    assert bot._inside_blast_margin() is False
+    bot.stats.update(mine_escape_required=True, mine_clearance_cm=218.0, mine_required_clearance_cm=1200.0)
+    assert bot._inside_blast_margin() is True
+    bot.stats['mine_clearance_cm'] = 1400.0
+    assert bot._inside_blast_margin() is False
+
+
 def test_the_combo_mandate_never_fires_a_quick_shot_at_the_ceiling():
     # Operator 2026-11-13, screenshot: "Why is the bot just shooting up at the ceiling, missing the enemies right in
     # front?" With no enemy under the camera/laser ray the guard turns to the enemy instead of pressing both triggers.
