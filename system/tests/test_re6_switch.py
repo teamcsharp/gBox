@@ -1020,6 +1020,23 @@ def test_the_combo_mandate_turns_a_lapsing_chain_into_a_quick_shot():
     assert bot._combo_mandate_on(p, [], flat) is False
 
 
+def test_a_live_bomb_blast_gets_a_hard_retreat_before_any_fight_action():
+    # Live 2026-11-14: at 430 of 1200 cm with the deadline 7.5 s past the bot still aimed; the engine cannot detonate
+    # until the clearance rule passes, so it never detonated enough. The retreat now comes before quick shots/combat.
+    import math as _m
+    bot, clock, snap = brain(round_guest(enemies=((0., 0., 300., 100),)))
+    live = snap["enemies"]
+    p = {"pos": (0., 0., 0.), "ammo": 7, "state": 0}
+    flat = lambda e: _m.hypot(e["pos"][0], e["pos"][2])
+    bot.stats.update(mine_escape_required=True, mine_clearance_cm=430.0, mine_required_clearance_cm=1200.0,
+                     mine_remaining_s=1.0)
+    out = bot._blast_retreat(p, live, snap, 5.0)
+    assert out is not None and bot.doing == "bomb_escape" and out.get("hold")
+    assert bot.stats["blast_retreats"] == 1
+    bot.stats.update(mine_clearance_cm=1100.0, mine_remaining_s=4.0)      # only 100 cm short, deadline far: no override
+    assert bot._blast_retreat(p, live, snap, 6.0) is None
+
+
 def test_the_combo_mandate_yields_to_a_live_bomb_clearance_margin():
     # Live 2026-11-13 22:23 death: doing=bomb "inside the bomb clearance margin (218 of 1200 cm)" with eight enemies
     # within 2 m - the mandate had postponed the escape. Inside the blast margin survival outranks the combo.

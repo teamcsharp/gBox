@@ -3394,6 +3394,32 @@ class Bot:
                 and not isinstance(clear, bool) and isinstance(need, (int, float)) and not isinstance(need, bool)
                 and need > 0 and clear < need)
 
+    def _blast_retreat(self, p, live, snap, now) -> dict | None:
+        """Out of a live remote-bomb blast BEFORE any other action: the engine's detonation waits for 1200 cm and live
+        2026-11-14 the bot stood at 430 cm with the deadline 7.5 s past, still aiming (the movement-safety hook can only
+        steer a walking action; a shot/quick-shot/aim action leaves him in place). While the clearance is short by 500+
+        cm or the deadline is within 2 s this returns a pure walk out, and the wall/safety hook steers it around the
+        bombs (it reads mine_escape_required and the published escape heading).
+        """
+        if not self._inside_blast_margin():
+            return None
+        clear, need = self.stats.get('mine_clearance_cm'), self.stats.get('mine_required_clearance_cm')
+        if not (isinstance(clear, (int, float)) and isinstance(need, (int, float))):
+            return None
+        remaining = self.stats.get('mine_remaining_s')
+        urgent = (isinstance(remaining, (int, float)) and not isinstance(remaining, bool) and remaining <= 2.0)
+        if not urgent and (need - clear) < 500.0:
+            return None
+        try:
+            h = self._push_heading(p, live, snap)
+        except Exception:                                    # noqa: BLE001 - a retreat is never blocked by its planner
+            h = self._open_heading(p, live)
+        cam_yaw = (snap.get("camera") or {}).get("yaw", p.get("rot") or 0.0)
+        self._gun_down()
+        self.stats['blast_retreats'] = int(self.stats.get('blast_retreats', 0)) + 1
+        return self._go("bomb_escape", "blast_retreat", {"hold": self._stick(h, cam_yaw)},
+                        f"bomb clearance {clear:.0f}/{need:.0f} cm: out of the blast before anything else")
+
     def _combo_mandate_on(self, p, live, flat) -> bool:
         """The combo mandate is in force: a kill must land now, so a non-kill detour (a bomb sprint included) waits.
 
@@ -4250,6 +4276,9 @@ class Bot:
             return self._go("held", "break_free", {"hold": WIGGLE[self.wiggle % len(WIGGLE)]},
                             f"held (action {state}): B mashed, the stick round")
         self.in_hold = False
+        blast = self._blast_retreat(p, live, snap, now)
+        if blast is not None:
+            return blast
         qte_shot = self._qte_recovery_shot(p, live, flat, snap, now)
         if qte_shot is not None:
             return qte_shot
