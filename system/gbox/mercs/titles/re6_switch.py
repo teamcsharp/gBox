@@ -2830,6 +2830,11 @@ KILL_GAP_MANDATE_S = 5.0                      # the operator's absolute limit be
 # any and all enemies ... or they will crowd up and the combo will be lost"): with ANY alive enemy in sight
 # within COMBAT_PRESSURE_R on his floor the bot fights - capsule runs, green-bonus detours and taunts wait.
 COMBAT_PRESSURE_R = 2000.0
+# Point blank (operator 2026-11-13: "every time the bot raises their gun and then fails to shoot the enemy or
+# misses with the enemy right in front of them"): with an enemy this close in the front arc the trigger is
+# pulled even if the wall/probe checks object - at 2 m the body is 30 cm across, and a raised gun that
+# holds is a gun that is not shooting. The envelope still bounds the angle to the body at that distance.
+POINT_BLANK_R, PB_YAW, PB_PITCH = 260.0, math.radians(10.0), math.radians(12.0)
 WALL_ESCAPE_S = 1.5                      # Bot._wall_command: the walk away from the operator's wall
 _NAV_MESH = None
 FIRE_ZONE_R = 600.0                     # Bot._decide: one this near in sight on his level - the fight before any bonus
@@ -5138,7 +5143,17 @@ class Bot:
         took = self._bonus(p, live, flat, snap, now)
         if took is not None:
             return took
-        if not self._aimable:                                    # every one in reach out of sight: a way round
+        point_blank_aim = None
+        if p.get('ammo') != 0:
+            point_blank_aim = next((e for e in live if flat(e) <= POINT_BLANK_R
+                                    and abs(bearing(e)) <= PB_YAW and (e.get('hp') or 0) > 0), None)
+        if not self._aimable and point_blank_aim is not None:
+            # Operator 2026-11-13: one right in front of him must be shot, not walked past because a cover probe
+            # objects. Aim straight at it and let the point-blank fire gate pull the trigger.
+            tgt, foot, dist, err = point_blank_aim, point_blank_aim["pos"], flat(point_blank_aim), bearing(point_blank_aim)
+            self.target, self.target_at = tgt.get("ptr", tgt.get("slot")), now
+            self.stats["point_blank_fires"] = int(self.stats.get("point_blank_fires", 0)) + 1
+        if not self._aimable and point_blank_aim is None:        # every one in reach out of sight: a way round
             self._gun_down()
             if NAV_WALK and snap.get("navmesh") is not None:
                 chase = self._pursue(p, snap, now)
@@ -5163,7 +5178,7 @@ class Bot:
                 self.melee_at = now                              # one at arm's length in front: a kick
                 self.stats["melee"] += 1
                 return self._go("melee", "melee", {"tap": "zr"}, f"one at {near:.0f} cm in front: a kick")
-            if not front:
+            if not front and point_blank_aim is None:
                 # Operator 2026-11-13: "I want the bot pursuing and going after any and all enemies knowing where
                 # they are on the map and able to shoot unlimited distances" / "why is the bot just standing here and
                 # not shooting at the enemy across the map?" On a clear line out to SNIPER_LONG_R the gun comes up and
@@ -5271,8 +5286,12 @@ class Bot:
                 # 0.7 s wait. Nothing new can fire: a line this gate rejects still waits for the measured laser.
                 err = ray_error(cam["pos"], cam["target"], aim_point(tgt, p["pos"]))
                 proven = dist <= ENGAGE_R and (dist <= GEOM_CLOSE_R or self._mesh_clear(tgt, now))
-                if not (proven and abs(err[0]) <= GEOM_FIRE_ERR
-                        and abs(err[1]) <= GEOM_FIRE_PITCH and not self.is_blocked(tgt, now)):
+                point_blank = (dist <= POINT_BLANK_R and abs(err[0]) <= PB_YAW and abs(err[1]) <= PB_PITCH
+                               and (tgt.get('hp') or 0) > 0)
+                if point_blank:
+                    self.stats["point_blank_fires"] = self.stats.get("point_blank_fires", 0) + 1
+                if not (((proven and abs(err[0]) <= GEOM_FIRE_ERR and abs(err[1]) <= GEOM_FIRE_PITCH)
+                         or point_blank) and (point_blank or not self.is_blocked(tgt, now))):
                     return self._go("raise", "raise", {"hold": ("zl",) + back}, "the gun comes up (no laser yet)")
                 self.stats["raise_geometry_fires"] = self.stats.get("raise_geometry_fires", 0) + 1
             origin, dot, source = cam["pos"], cam["target"], "camera"
@@ -5360,13 +5379,18 @@ class Bot:
                     if dist > LONG_R:
                         self.stats["re6_sniper_longshots"] = self.stats.get("re6_sniper_longshots", 0) + 1
         contact = on
-        correcting = (not on and p.get('ammo') != 0 and (aim_at.get('hp') or 0) > 0
-                      and dist <= ENGAGE_R and abs(yaw_err) <= SPRAY_YAW and abs(pitch_err) <= SPRAY_PITCH
-                      and self._fire_envelope(dist, yaw_err, pitch_err)
-                      and not self.is_blocked(aim_at, now)
-                      and not (source == 'laser' and self._ray_short(origin, dot, aim_at))
-                      and (source != 'laser' or math.dist(origin, dot) + body(aim_at).r >= math.dist(origin, foot))
-                      and (source == 'laser' or self._mesh_clear(aim_at, now)))
+        point_blank = (dist <= POINT_BLANK_R and abs(yaw_err) <= PB_YAW and abs(pitch_err) <= PB_PITCH
+                       and (aim_at.get('hp') or 0) > 0 and p.get('ammo') != 0)
+        if point_blank and not on:
+            self.stats["point_blank_fires"] = self.stats.get("point_blank_fires", 0) + 1
+        correcting = ((not on and p.get('ammo') != 0 and (aim_at.get('hp') or 0) > 0
+                       and dist <= ENGAGE_R and abs(yaw_err) <= SPRAY_YAW and abs(pitch_err) <= SPRAY_PITCH
+                       and self._fire_envelope(dist, yaw_err, pitch_err))
+                      and (point_blank or (
+                          not self.is_blocked(aim_at, now)
+                          and not (source == 'laser' and self._ray_short(origin, dot, aim_at))
+                          and (source != 'laser' or math.dist(origin, dot) + body(aim_at).r >= math.dist(origin, foot))
+                          and (source == 'laser' or self._mesh_clear(aim_at, now)))))
         if correcting:
             on, on_e, source = True, aim_at, 'correcting'
             self.stats['fire_while_correcting'] = self.stats.get('fire_while_correcting', 0) + 1

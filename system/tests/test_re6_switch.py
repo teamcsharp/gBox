@@ -2832,6 +2832,18 @@ def test_melee_for_one_at_arms_length_and_the_quick_shot_for_one_close():
     assert acts[0]["hold"] == ("zl", "zr") and acts[1]["hold"] == () and bot.stats["quick_shots"] == 1
 
 
+def test_point_blank_the_trigger_is_pulled_even_if_cover_checks_object():
+    # Operator 2026-11-13: "Every time the bot raises their gun and then fails to shoot the enemy or misses with the
+    # enemy right in front of them, it just makes me sad." At 2 m the body is 30 cm across: the raised gun fires.
+    g = round_guest(enemies=((0.0, 0.0, 200.0, 700),), cam_yaw=0.0)     # no laser read: the camera raise path
+    bot, clock, snap = brain(g)
+    bot.held = lambda p, now: False
+    bot.is_blocked = lambda *a, **k: True
+    acts = run(bot, snap, clock, 6)
+    assert bot.stats["point_blank_fires"] >= 1
+    assert any("zl" in a.get("hold", ()) for a in acts)
+
+
 def test_an_enemys_laser_is_backtraced_and_that_enemy_is_decommissioned_first():
     # Operator 2026-11-13 (enemy laser lines on the bot): "if an enemy uses a laser. We need to backtrace it and
     # decommission that enemy".
