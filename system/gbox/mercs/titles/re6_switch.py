@@ -3763,6 +3763,20 @@ class Bot:
                 return None
             why = f"health {hp}/{hp_max}, no tablets, {crowd} within 2 m: the native flash covers him"
         if not self._respond_flash(why):
+            # Operator 2026-11-14: a spent flash at 1 hp with no tablet must never leave him backing away to die.
+            if hp <= DYING_HP and tablets == 0:
+                near = [e for e in live if flat(e) <= POINT_BLANK_R and not self.is_blocked(e, now)]
+                if near and p.get('ammo') != 0 and now - getattr(self, '_critical_fight_at', -1e9) >= 0.5:
+                    self._critical_fight_at = now
+                    self.stats['critical_dying_fights'] = int(self.stats.get('critical_dying_fights', 0)) + 1
+                    self._gun_down()
+                    return self._go("quick_shot", "critical_dying_fight", {"hold": ("zl", "zr")},
+                                    "dying at 1 hp with no tablet and the flash spent: fighting the one on him")
+                if any(flat(e) <= MELEE_R for e in live) and now - getattr(self, '_critical_kick_at', -1e9) >= 0.5:
+                    self._critical_kick_at = now
+                    self.stats['critical_dying_fights'] = int(self.stats.get('critical_dying_fights', 0)) + 1
+                    return self._go("quick_shot", "critical_dying_kick", {"tap": "zr"},
+                                    "dying at 1 hp with no tablet: a kick at the one on him")
             return None
         self._gun_down()
         self.stats['critical_flash_requests'] = int(self.stats.get('critical_flash_requests', 0)) + 1
@@ -5419,7 +5433,9 @@ class Bot:
                 and (topping or hp <= TABLET_LOW_HP * hp_max or (hp <= TABLET_HP * hp_max and near > TABLET_CLEAR_R)
                      or (hp <= CROWD_TABLET_HP * hp_max
                          and sum(1 for e in live if flat(e) <= CROWD_TABLET_R) >= CROWD_TABLET_N))
-                and not (hp == DYING_HP and any(flat(e) <= MELEE_R for e in live))
+                # Operator 2026-11-14 (live death 05:44: 7 s at 1 hp with 3 tablets while an enemy was at 63 cm,
+                # doing=crowd cc_space -> death): the melee-range exclusion is dropped - the tablet goes in at 1 hp
+                # anyway, because standing there is certain death.
                 # Operator 2026-11-14: "the combo should never be lost". A heal tick guns down for a second; above
                 # the critical band it waits for the after-a-kill window instead of breaking a live chain.
                 and not (getattr(self, '_combo_hot_now', False) and not topping
