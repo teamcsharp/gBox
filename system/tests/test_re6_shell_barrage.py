@@ -83,7 +83,7 @@ def test_a_barrage_reports_the_nearby_ice_reactions_it_observed(ring, monkeypatc
     # are spawned and armed. The baseline is read before the spawn so an already-iced enemy never counts.
     ring.put(ring.action + 0x28, "B", 1)
     baseline = [{"unit": 7, "generation": 1, "vtable": 2, "action": "cEm1000ActWait", "hp": 500}]
-    monkeypatch.setattr(P, "nearby_targets", lambda ctl, point: list(baseline))
+    monkeypatch.setattr(P, "nearby_targets", lambda ctl, point, **kw: list(baseline))
     monkeypatch.setattr(P, "ice_changes", lambda ctl, before: [
         {"unit": 7, "generation": 1, "before": "cEm1000ActWait", "after": "cEm1000ActDmgIce",
          "hp_before": 500, "hp_after": 125}])

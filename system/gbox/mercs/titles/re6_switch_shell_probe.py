@@ -22,7 +22,7 @@ def _is_ice(action):
     return isinstance(action, str) and action.startswith("cEm") and action.endswith(("DmgIce", "DeadIce"))
 
 
-def nearby_targets(ctl, point):
+def nearby_targets(ctl, point, radius_cm=1000.0):
     """Bounded, read-only baseline for susceptible enemies near the proposed effect."""
     manager = ctl.q(ctl.base + R.S_ENEMY)
     if not R.ptr_ok(manager):
@@ -37,7 +37,7 @@ def nearby_targets(ctl, point):
         generation, vt = ctl.w(unit + 0x1308), ctl.q(unit)
         pos = struct.unpack("<3f", ctl.rd(unit + R.E_POS, 12))
         hp = struct.unpack("<h", ctl.rd(unit + R.E_HP, 2))[0]
-        if hp <= 0 or not all(math.isfinite(v) for v in pos) or math.dist(point, pos) > 1000.:
+        if hp <= 0 or not all(math.isfinite(v) for v in pos) or math.dist(point, pos) > float(radius_cm):
             continue
         if (ctl.w(unit + 0x1308), ctl.q(unit)) != (generation, vt):
             continue
@@ -326,7 +326,10 @@ def barrage(ctl, *, count=8, radius_cm=700.0, kind="shell1304", timeout_s=0.6, c
         # a new DmgIce/DeadIce transition with stable identity can be reported per barrage (same evidence rule as the
         # probe). A telemetry failure never blocks the native ring.
         try:
-            baseline = nearby_targets(ctl, (px, py, pz))
+            # A ring reaches radius_cm from him: the baseline must cover the ring plus the observation reach, or an
+            # enemy frozen on the ring is invisible to the receipt (live 2026-11-13: a 6-shell ring reported no ice
+            # while the enemies it froze stood just outside the probe 1000 cm default).
+            baseline = nearby_targets(ctl, (px, py, pz), radius_cm=min(2500.0, radius_cm + 900.0))
         except (Unavailable, OSError, ValueError, struct.error):
             baseline = []
         ice = []
