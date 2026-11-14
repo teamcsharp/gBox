@@ -150,3 +150,27 @@ The operator also asked for proximity door unlocking; `pso-doors-always.py` now 
 stage-flag group as soon as any door/barrier/fence is within **30 units** (permanent - nothing clears it), after the
 measured fact that setting only the room's switch bits left the Cave door at (-600,805) shut while the full-group
 write opened it and the character crossed room 34 -> 8 within two seconds.
+
+## 8. Round 4 - max-grind weapon guarantee, and recovering the game from a Dolphin panic dialog
+
+The operator: "This weapon is so weak. Make sure that any weapon you give the character is grinded to the maximum
+level." Two measured facts made this a one-byte problem and a process problem:
+
+* A weapon's grind is **byte 3 of its 20-byte item record**, and the disc's ItemPMT exposes each weapon's own
+  maximum through `GET /api/pso/items?version=gc` (`max_grind`). The old randomized rotation created its rares
+  through the game's give path with that byte at 0, which is why every rotated weapon was +0.
+* The live record the game reads is stored in the **TItem object**; heap copies of the record (save image etc.) are
+  stale, and poking them changes what a scan shows but not what F_INVENTORY reports. Trying to resolve the object
+  with F_FIND_ITEM/F_ITEM_OBJECT by hand **crashed the emulator** (Dolphin modal: "Invalid read from 0xdb037816,
+  PC = 0x801d56e0") - the game sat frozen behind that dialog for ~25 minutes while every clock in RAM stayed
+  constant. The dialog was dismissed by clicking "Ignore for this session" (screen capture of the dialog kept as
+  `mandate/dolphin-warning.png`); the game resumed and the queue drained immediately.
+
+`pso-grind-max.py` now avoids the item-object route entirely: it creates the weapon through the game's own 6x2B
+create path (prepare record in BUF -> create TItem -> attach -> equip -> F_STATS) with the grind byte already at the
+PMT maximum, then verifies the equipped row's `data[3]`. `--equip-best` picks the strongest class-compatible
+grindeable weapon by `atp_max + 2*max_grind`. The randomized rotation was stopped (it was the +0 weapon source);
+`--watch` keeps any grindeable equipped weapon at its PMT maximum.
+
+Live receipt: **TSUMIKIRI J-SWORD (003200), grind 50 (= its PMT maximum), equipped and verified**, inventory
+returned to 22 rows by removing unequipped generated gear.
