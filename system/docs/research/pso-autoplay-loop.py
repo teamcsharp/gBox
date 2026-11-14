@@ -194,7 +194,7 @@ class Supervisor:
         with log_path.open("a", encoding="utf-8") as handle:
             handle.write(f"\n=== bot chunk {time.strftime('%H:%M:%S')} ===\n")
             self.bot = subprocess.Popen([PYTHON, str(BOUNDED), "play", "--seconds", str(BOT_SECONDS),
-                                         "--motion", "probe"], env=env, stdout=handle, stderr=subprocess.STDOUT)
+                                         "--motion", "hill"], env=env, stdout=handle, stderr=subprocess.STDOUT)
         log(f"operator idle {OPERATOR_IDLE_S:.0f}s - bot took the pad (bounded play {BOT_SECONDS:.0f}s)")
         started = time.monotonic()
         while True:
@@ -273,5 +273,7 @@ def main(argv=None) -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
+
+
 
 

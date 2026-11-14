@@ -91,3 +91,31 @@ preconditions/actions/results.
 
 Evidence: `D:\gBox\pso-ds\mandate\` (`status\ram-*.bin`, `native-equip-*.json`, `operator-guard.jsonl`,
 `autoplay-loop.jsonl`, `autoplay-bot.log`), `D:\gBox\pso-ds\bounded\play-*.jsonl`.
+
+## 6. Round 2 - the autonomous player stops orbiting and changes room (same night)
+
+The bounded player had three measurable reasons to stand still, each fixed in `gbox/pso_bounded.py` and verified live:
+
+1. **It chased unreachable enemies forever.** In Cavern 1 room 34 a `TObjEneShark` sat at 15-23 units for minutes (37
+   consecutive ticks on that one objective) with **0 combo attempts**, because the loop never got inside attack range -
+   the enemy was unreachable by walking. `Automaton._account` now tracks the best distance to the current wave: no
+   closing for 8 s, or 20 s on the same enemy in total, hands it to the policy's `avoid` list so a door or another
+   target becomes choosable.
+2. **Its melee range was too long.** `ProgressionPolicy.attack_range` was 20 units, then 11, against a starting Saber;
+   it is now **8.0**, so a combo starts only inside real melee reach (the operator's earlier handoff measured the real
+   PMT ranges at 13-30 for the weapon classes, but the starting Saber is the short end and whiffs outside ~10).
+3. **Doors were not objectives at all.** `DOOR_CLASSES` holds only the generic names `TObjDoor`, `TObjLazerFenceNorm`
+   and `TOBarrierEnergy01`; every Cave-1 door instance is `TODoorCave02`/`TODoorCave03`, so the policy never saw them
+   and the character wandered in place. The policy now matches the **door family** ("Door"/"Fence"/"Barrier" in the
+   class) as a rank-3 exploration objective (below waves/switches, above optional loot), aims past it through the
+   existing door plan, and a door that produced a settled room change is added to `avoid` so the old 280-tick
+   ping-pong cannot return.
+
+Live result, verified in the session and the hash-chained ledger: the bot crossed from **room 34 to room 40** in Cave 1
+(positions `(-165,792)` -> `(26,704)` -> `(73,713)`; `progress room` in `play-20261113-223942.jsonl`), and then picked
+the room's **`TLazerFenceSw`** switch as its next objective. The door-unlock guard logged the stage-flag sets that let
+that doorway open, and the status word stayed `0` throughout.
+
+Remaining known weakness: the character has been sitting at 1 HP (the game did not raise it after the earlier damage
+dump), and combat still reports 0 hits - the approach/range model needs the operator's recorded demonstrations to
+calibrate facing and reach per weapon, which is the next use of `pso-demo-recorder.py`.
