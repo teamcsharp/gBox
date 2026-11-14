@@ -2869,7 +2869,7 @@ STRAFE_S, BOSS_STEP_R = 0.8, 650.0
 # ... taking quick shots ... blasting ... have the bot fully aware of the combo and how long it is lasting."
 # COMBO_URGENT_S is the keeper's pre-lapse line (beyond the mandate's own COMBO_KEEP_S), and a combo-urgent
 # throw ignores the throw-pacing gaps (the combo is the meta).
-COMBO_URGENT_S, URGENT_NADE_GAP_S = 3.0, 1.5
+COMBO_URGENT_S, URGENT_NADE_GAP_S = 4.0, 1.5
 # Operator 2026-11-14: "if the bot places mines, that means the bot is now seeking to relocate ... the bot should
 # always be relocating himself to avoid getting crowded ... if they stand in the same place they will be
 # crowded and decimated." No more than RELOCATE_S near the same spot while enemies are close: a relocate walk.
@@ -4617,7 +4617,11 @@ class Bot:
             return goal
         act = self._decide(p, live, flat, near_e, near, snap, now)
         guard = self._combo_guard(p, live, flat, snap, now)
-        if guard is not None:
+        # Survival actions keep their priority (the guard's own contract): healing, prompts/holds, downed play, the
+        # blast/relocate escapes and the boss step-out are never replaced by a combo chase.
+        SURVIVAL_DOINGS = ("tablet", "prompt", "held", "down", "bomb_escape", "flash", "relocate", "boss_step_out",
+                           "bomb")
+        if guard is not None and self.doing not in SURVIVAL_DOINGS:
             act = guard
         if set(act.get("hold", ())) & {"lup", "ldown", "lleft", "lright"}:
             self.move_at = now
