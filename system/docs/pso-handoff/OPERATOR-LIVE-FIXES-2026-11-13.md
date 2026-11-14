@@ -207,3 +207,18 @@ mapped to attack range 16, and the bot resumed room traversal (room 1 -> 30).
 Lessons recorded for future rounds: the button that ends a session is the worker's death, not Dolphin's; a killed
 `desktop_local` is respawned by the Electron app but its sessions are reaped; and any long play session should be
 periodically snapshotted with `state_transfer op=snapshot` so a worker loss costs minutes, not hours.
+
+## 10. Round 6 - combat starts hitting, and the snapshot safety net becomes automatic
+
+With the restored session running, two things were measured/added:
+
+* **Weapon-family attack reach.** The bot's combo decision used one fixed range, which was wrong for every weapon but
+  the starting Saber (it whiffed at 14-18 units against a Saber's short reach). The supervisor now reads the equipped
+  weapon's `family_key` from the disc catalog and passes `--attack-range` to the bounded player
+  (`system/docs/research/pso-autoplay-loop.py: REACH_BY_FAMILY`). Live verification with the TSUMIKIRI J-SWORD
+  (`Weapons:tsumikirijsword`) at range 16: `combos: {"attempts": 6, "hits": 2, ...}` and the target
+  `TObjEneShark` vanished (combat kill) - the first real hits in the live session.
+* **Automatic moment snapshots.** `pso-snapshot.py` submits `state_transfer op=snapshot` for the live session every
+  5 minutes and records each artifact in `mandate/snapshots.jsonl`. First live artifact:
+  `ae54b7d976313456d540c9f495657ece7b5184e20228a13da56bc319c877108b` (22.9 MB Dolphin savestate). This is the
+  safety net that made the earlier rescue possible, now running without a human remembering to press it.
