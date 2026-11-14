@@ -1,0 +1,772 @@
+{
+ "forest01": {
+  "label": "Forest 1 (Episode I)",
+  "disc": "/home/ehm_eckx/gBox_alt/gbox-cache/436e0bb84d5337d1/Phantasy Star Online Episode I & II Plus (USA).gcz",
+  "c_rel": {
+   "file": "Scene/map_forest01c.rel",
+   "bytes": 72096,
+   "meshes": 69,
+   "triangles": 1455,
+   "vertices_total": 1372,
+   "vertices_unique": 1070,
+   "flags": {
+    "257": 591,
+    "2336": 540,
+    "32768": 164,
+    "272": 94,
+    "260": 39,
+    "320": 21,
+    "273": 6
+   },
+   "bounds_mm": {
+    "x": [
+     -683.4,
+     685.2
+    ],
+    "y": [
+     -23.0,
+     215.2
+    ],
+    "z": [
+     -654.0,
+     659.6
+    ]
+   },
+   "walkable_cells": {
+    "walkable": 6463,
+    "blocked": 2599
+   }
+  },
+  "n_rel": {
+   "status": "not determined",
+   "reason": "gbox.pso_rom_export reader returned empty geometry (0 meshes) on this disc; n.rel layout not yet parsed"
+  },
+  "gsl_archive": {
+   "file": "gsl_forest01.gsl",
+   "entries": 51,
+   "entry_format": "0x30-byte entries: char name[0x20], u32 BE offset, u32 BE size",
+   "enemy_types": {
+    "count": 6,
+    "packs": [
+     "bm_ene_common_all.bml",
+     "bm_ene_re8_b_beast.bml",
+     "bm_ene_lappy.bml",
+     "bm_ene_bm3_fly.bml",
+     "bm_ene_bm5_wolf.bml",
+     "bm_ene_npc_chao.bml"
+    ]
+   },
+   "object_types": {
+    "count": 40,
+    "packs": [
+     "fe_obj_doa_kanban.bml",
+     "fe_obj_door.gvm",
+     "bm_fe_obj_komo.bml",
+     "bm_o_abe_butterfly.bml",
+     "abeno_fs_obj001_fosuno.bml",
+     "fe_obj_switch.gvm",
+     "fe_obj_baiku.bml",
+     "obj_motorcycle.GVM",
+     "fe_obj_hako01_hahen02.bml",
+     "fs_obj_hako01_n.gvm",
+     "fe_obj_con_hahen1.bml",
+     "obj_abecon.gvm",
+     "fe_obj_lazer2_4m.bml",
+     "fe_obj_lazer2.gvm",
+     "fe_obj_switch_laz.bml",
+     "fe_obj_switch_laz.gvm",
+     "fs_obj_tank.bml",
+     "fs_obj_tank.GVM",
+     "fe_obj_tanmatu02.bml",
+     "fe_obj_computer.gvm",
+     "fe_obj_hako_i_rail.bml",
+     "obj_containerido.GVM",
+     "fs_obj_warp.bml",
+     "fs_obj_warp.gvm",
+     "bm_fe_obj_o_capsule01.bml",
+     "bm_fs_obj_lazerguard.bml",
+     "fs_obj_laz_guard_r.gvm",
+     "fe_obj_hashi.bml",
+     "fs_obj_hanyousu_body1.bml",
+     "fs_obj_hanyousu_light.bml",
+     "fs_obj_hanyousu_light_ao.GVM",
+     "bm_o_mine.bml",
+     "bm_fs_obj_sensor.bml",
+     "fs_obj_sensor_r.gvm",
+     "bm_fe_obj_kaifuku_moto.bml",
+     "symbolchatcolli.prs",
+     "bm_fs_obj_ki_doa_panel.bml",
+     "fs_obj_ki_doa_panel_r.gvm",
+     "ChatSensor.prs",
+     "re3_b_lappy_base_ao.gvm"
+    ]
+   }
+  },
+  "map_bins": [
+   {
+    "file": "map_forest_e.bin",
+    "size": 4340,
+    "byte_offset": 12288,
+    "first_32_hex": "d4010000840d0000f4100000ffffffffff00ffff7469746c652064756d6d7900",
+    "record_layout": "not determined (undocumented; no repository parser)"
+   },
+   {
+    "file": "map_forest_f.bin",
+    "size": 4540,
+    "byte_offset": 18432,
+    "first_32_hex": "d40100004c0e0000bc110000ffffffffff00ffff7469746c652064756d6d7900",
+    "record_layout": "not determined (undocumented; no repository parser)"
+   },
+   {
+    "file": "map_forest_g.bin",
+    "size": 4532,
+    "byte_offset": 24576,
+    "first_32_hex": "d4010000440e0000b4110000ffffffffff00ffff7469746c652064756d6d7900",
+    "record_layout": "not determined (undocumented; no repository parser)"
+   },
+   {
+    "file": "map_forest_j.bin",
+    "size": 4300,
+    "byte_offset": 30720,
+    "first_32_hex": "d40100005c0d0000cc100000ffffffffff00ffff7469746c652064756d6d7900",
+    "record_layout": "not determined (undocumented; no repository parser)"
+   },
+   {
+    "file": "map_forest_s.bin",
+    "size": 4160,
+    "byte_offset": 36864,
+    "first_32_hex": "d4010000d00c000040100000ffffffffff00ffff7469746c652064756d6d7900",
+    "record_layout": "not determined (undocumented; no repository parser)"
+   }
+  ],
+  "provenance": {
+   "c_rel": "gbox.psomap.collision on map_forest01_c.rel extracted from disc; measurement artifact scratch pso9184/measurements_all_c_rel.json",
+   "enemy_object": "gsl_forest01.gsl entry table; archive layout per docs/pso_gc.md \"GSL area archives\"",
+   "map_bins": "same gsl entry tables; offsets and first 32 bytes dumped from raw archive",
+   "record_layouts": "undocumented in docs/pso_gc.md; no repository parser",
+   "n_rel": "parser returned empty geometry on this disc"
+  }
+ },
+ "cave01": {
+  "label": "Cave 1 (Episode I)",
+  "disc": "/home/ehm_eckx/gBox_alt/gbox-cache/436e0bb84d5337d1/Phantasy Star Online Episode I & II Plus (USA).gcz",
+  "c_rel": {
+   "file": "Scene/map_cave01_00c.rel",
+   "bytes": 363776,
+   "meshes": 85,
+   "triangles": 7934,
+   "vertices_total": 6181,
+   "vertices_unique": 4926,
+   "flags": {
+    "288": 3555,
+    "257": 2725,
+    "32768": 1008,
+    "8192": 584,
+    "320": 62
+   },
+   "bounds_mm": {
+    "x": [
+     -441.0,
+     3166.0
+    ],
+    "y": [
+     -10.0,
+     159.2
+    ],
+    "z": [
+     -2141.0,
+     438.4
+    ]
+   },
+   "walkable_cells": {
+    "walkable": 17877,
+    "blocked": 7458
+   }
+  },
+  "n_rel": {
+   "status": "not determined",
+   "reason": "gbox.pso_rom_export reader returned empty geometry (0 meshes) on this disc; n.rel layout not yet parsed"
+  },
+  "gsl_archive": {
+   "file": "gsl_cave01.gsl",
+   "entries": 46,
+   "entry_format": "0x30-byte entries: char name[0x20], u32 BE offset, u32 BE size",
+   "enemy_types": {
+    "count": 6,
+    "packs": [
+     "bm_ene_common_all.bml",
+     "bm_ene_grass.bml",
+     "bm_ene_cgrass.bml",
+     "bm_ene_re2_flower.bml",
+     "bm_ene_nanodrago.bml",
+     "bm_ene_bm1_shark.bml"
+    ]
+   },
+   "object_types": {
+    "count": 35,
+    "packs": [
+     "fs_obj_warp.bml",
+     "fs_obj_warp.gvm",
+     "bm_fe_obj_o_capsule01.bml",
+     "bm_o_mine.bml",
+     "abeno_fs_obj001_fosuno.bml",
+     "fe_obj_switch.gvm",
+     "bm_fs_obj_do_doa_panel.bml",
+     "fs_obj_do_doa_panelr.gvm",
+     "bm_fs_obj_do_doa01.bml",
+     "fs_obj_do_doa01r.gvm",
+     "bm_fs_obj_do_doa02.bml",
+     "fs_obj_do_doa02r.gvm",
+     "bm_fs_obj_do_doa03.bml",
+     "fe_obj_turiten_moto.bml",
+     "fs_obj_turiten_singo.gvm",
+     "fs_obj_turiten_singo_r.gvm",
+     "bm_o_rock_cave01.bml",
+     "bm_fe_obj_rb_liwa.bml",
+     "fe_obj_lazer2_4m.bml",
+     "fe_obj_lazer2.gvm",
+     "fe_obj_switch_laz.bml",
+     "fe_obj_switch_laz.gvm",
+     "fe_obj_hako01_hahen02.bml",
+     "fs_obj_hako01_n.gvm",
+     "fe_obj_con_hahen1.bml",
+     "obj_abecon.gvm",
+     "bm_fe_obj_kaifuku_moto.bml",
+     "bm_o_bind.bml",
+     "symbolchatcolli.prs",
+     "fe_obj_hako_i_rail.bml",
+     "obj_containerido.GVM",
+     "fe_obj_tanmatu02.bml",
+     "fe_obj_computer.gvm",
+     "ChatSensor.prs",
+     "bm7_s_paa_body.bml"
+    ]
+   }
+  },
+  "map_bins": [
+   {
+    "file": "map_cave_e.bin",
+    "size": 7444,
+    "byte_offset": 12288,
+    "first_32_hex": "d40100005c170000141d0000ffffffffff00ff007469746c652064756d6d7900",
+    "record_layout": "not determined (undocumented; no repository parser)"
+   },
+   {
+    "file": "map_cave_f.bin",
+    "size": 7804,
+    "byte_offset": 20480,
+    "first_32_hex": "d4010000c41800007c1e0000ffffffffff00ff007469746c652064756d6d7900",
+    "record_layout": "not determined (undocumented; no repository parser)"
+   },
+   {
+    "file": "map_cave_g.bin",
+    "size": 7896,
+    "byte_offset": 28672,
+    "first_32_hex": "d401000020190000d81e0000ffffffffff00ff007469746c652064756d6d7900",
+    "record_layout": "not determined (undocumented; no repository parser)"
+   },
+   {
+    "file": "map_cave_j.bin",
+    "size": 7876,
+    "byte_offset": 36864,
+    "first_32_hex": "d40100000c190000c41e0000ffffffffff00ff007469746c652064756d6d7900",
+    "record_layout": "not determined (undocumented; no repository parser)"
+   },
+   {
+    "file": "map_cave_s.bin",
+    "size": 7348,
+    "byte_offset": 45056,
+    "first_32_hex": "d4010000fc160000b41c0000ffffffffff00ff007469746c652064756d6d7900",
+    "record_layout": "not determined (undocumented; no repository parser)"
+   }
+  ],
+  "provenance": {
+   "c_rel": "gbox.psomap.collision on map_cave01_c.rel extracted from disc; measurement artifact scratch pso9184/measurements_all_c_rel.json",
+   "enemy_object": "gsl_cave01.gsl entry table; archive layout per docs/pso_gc.md \"GSL area archives\"",
+   "map_bins": "same gsl entry tables; offsets and first 32 bytes dumped from raw archive",
+   "record_layouts": "undocumented in docs/pso_gc.md; no repository parser",
+   "n_rel": "parser returned empty geometry on this disc"
+  }
+ },
+ "machine01": {
+  "label": "Mine 1 (Episode I)",
+  "disc": "/home/ehm_eckx/gBox_alt/gbox-cache/436e0bb84d5337d1/Phantasy Star Online Episode I & II Plus (USA).gcz",
+  "c_rel": {
+   "file": "Scene/map_machine01_00c.rel",
+   "bytes": 280736,
+   "meshes": 110,
+   "triangles": 5821,
+   "vertices_total": 5502,
+   "vertices_unique": 4078,
+   "flags": {
+    "288": 2484,
+    "32768": 1664,
+    "257": 1321,
+    "8192": 248,
+    "320": 104
+   },
+   "bounds_mm": {
+    "x": [
+     -59.3,
+     3319.3
+    ],
+    "y": [
+     -10.0,
+     100.0
+    ],
+    "z": [
+     -729.3,
+     1809.3
+    ]
+   },
+   "walkable_cells": {
+    "walkable": 13235,
+    "blocked": 4429
+   }
+  },
+  "n_rel": {
+   "status": "not determined",
+   "reason": "gbox.pso_rom_export reader returned empty geometry (0 meshes) on this disc; n.rel layout not yet parsed"
+  },
+  "gsl_archive": {
+   "file": "gsl_machine01.gsl",
+   "entries": 52,
+   "entry_format": "0x30-byte entries: char name[0x20], u32 BE offset, u32 BE size",
+   "enemy_types": {
+    "count": 5,
+    "packs": [
+     "bm_ene_common_all.bml",
+     "bm_ene_dubchik.bml",
+     "bm_ene_gyaranzo.bml",
+     "bm_ene_me3_shinowa.bml",
+     "bm_ene_me1_mb.bml"
+    ]
+   },
+   "object_types": {
+    "count": 42,
+    "packs": [
+     "fs_obj_hanyousu_body1.bml",
+     "fs_obj_hanyousu_light.bml",
+     "fs_obj_hanyousu_light_ao.GVM",
+     "fs_obj_warp.bml",
+     "fs_obj_warp.gvm",
+     "bm_fe_obj_o_capsule01.bml",
+     "bm_fs_obj_lazerguard.bml",
+     "fs_obj_laz_guard_r.gvm",
+     "bm_o_mine.bml",
+     "bm_fs_obj_sensor.bml",
+     "fs_obj_sensor_r.gvm",
+     "fe_obj_hako01_hahen02.bml",
+     "fs_obj_hako01_n.gvm",
+     "fe_obj_con_hahen1.bml",
+     "obj_abecon.gvm",
+     "bm_fe_obj_kaifuku_moto.bml",
+     "bm_fs_obj_ki_doa.bml",
+     "fs_obj_ki_doa_r.gvm",
+     "bm_fs_obj_ki_doa2.bml",
+     "fs_obj_ki_doa2_r.gvm",
+     "bm_fs_obj_ki_doa_panel.bml",
+     "fs_obj_ki_doa_panel_r.gvm",
+     "bm_o_bind.bml",
+     "bm_fs_obj_cap_moto.bml",
+     "bm_fs_obj_kenkyu_com.bml",
+     "bm_fs_obj_monitor.bml",
+     "bm_fs_obj_mekatombo.bml",
+     "bm_o_light_machine01.bml",
+     "bm_o_explosive_machine.bml",
+     "bm_fe_obj_tank_hikari.bml",
+     "bm_fs_obj_hanger_moto.bml",
+     "fe_obj_lazer2_4m.bml",
+     "fe_obj_lazer2.gvm",
+     "fe_obj_switch_laz.bml",
+     "fe_obj_switch_laz.gvm",
+     "symbolchatcolli.prs",
+     "fe_obj_tanmatu02.bml",
+     "fe_obj_computer.gvm",
+     "ChatSensor.prs",
+     "bm_fs_obj_o_torabasami.bml",
+     "me2_y_me2_z.gvm",
+     "bm_fs_obj_zombie_con.bml"
+    ]
+   }
+  },
+  "map_bins": [
+   {
+    "file": "map_machine_e.bin",
+    "size": 4108,
+    "byte_offset": 12288,
+    "first_32_hex": "d4010000f00b00000c100000ffffffffff00ffff7469746c652064756d6d7900",
+    "record_layout": "not determined (undocumented; no repository parser)"
+   },
+   {
+    "file": "map_machine_f.bin",
+    "size": 4412,
+    "byte_offset": 18432,
+    "first_32_hex": "d4010000200d00003c110000ffffffffff00ffff7469746c652064756d6d7900",
+    "record_layout": "not determined (undocumented; no repository parser)"
+   },
+   {
+    "file": "map_machine_g.bin",
+    "size": 4380,
+    "byte_offset": 24576,
+    "first_32_hex": "d4010000000d00001c110000ffffffffff00ffff7469746c652064756d6d7900",
+    "record_layout": "not determined (undocumented; no repository parser)"
+   },
+   {
+    "file": "map_machine_j.bin",
+    "size": 4204,
+    "byte_offset": 30720,
+    "first_32_hex": "d4010000500c00006c100000ffffffffff00ffff7469746c652064756d6d7900",
+    "record_layout": "not determined (undocumented; no repository parser)"
+   },
+   {
+    "file": "map_machine_s.bin",
+    "size": 4024,
+    "byte_offset": 36864,
+    "first_32_hex": "d40100009c0b0000b80f0000ffffffffff00ffff7469746c652064756d6d7900",
+    "record_layout": "not determined (undocumented; no repository parser)"
+   }
+  ],
+  "provenance": {
+   "c_rel": "gbox.psomap.collision on map_machine01_c.rel extracted from disc; measurement artifact scratch pso9184/measurements_all_c_rel.json",
+   "enemy_object": "gsl_machine01.gsl entry table; archive layout per docs/pso_gc.md \"GSL area archives\"",
+   "map_bins": "same gsl entry tables; offsets and first 32 bytes dumped from raw archive",
+   "record_layouts": "undocumented in docs/pso_gc.md; no repository parser",
+   "n_rel": "parser returned empty geometry on this disc"
+  }
+ },
+ "jungle01": {
+  "label": "Jungle 1 (Episode II) (designated Ep II area per task plan)",
+  "disc": "/home/ehm_eckx/gBox_alt/gbox-cache/436e0bb84d5337d1/Phantasy Star Online Episode I & II Plus (USA).gcz",
+  "c_rel": {
+   "file": "Scene/map_jungle01_00c.rel",
+   "bytes": 46624,
+   "meshes": 61,
+   "triangles": 899,
+   "vertices_total": 948,
+   "vertices_unique": 576,
+   "flags": {
+    "288": 316,
+    "257": 244,
+    "32768": 220,
+    "8192": 102,
+    "320": 17
+   },
+   "bounds_mm": {
+    "x": [
+     -2610.0,
+     263.8
+    ],
+    "y": [
+     -150.0,
+     200.0
+    ],
+    "z": [
+     -610.0,
+     1010.0
+    ]
+   },
+   "walkable_cells": {
+    "walkable": 5830,
+    "blocked": 1357
+   }
+  },
+  "n_rel": {
+   "status": "not determined",
+   "reason": "gbox.pso_rom_export reader returned empty geometry (0 meshes) on this disc; n.rel layout not yet parsed"
+  },
+  "gsl_archive": {
+   "file": "gsl_jungle01.gsl",
+   "entries": 60,
+   "entry_format": "0x30-byte entries: char name[0x20], u32 BE offset, u32 BE size",
+   "enemy_types": {
+    "count": 9,
+    "packs": [
+     "bm_ene_common_all.bml",
+     "bm_ene_me3_stelthshinowa.bml",
+     "bm_ene_re8_merill_lia.bml",
+     "bm_ene_bm9_s_mericarol.bml",
+     "bm_ene_bm5_gibon_u.bml",
+     "bm_ene_gibbles.bml",
+     "bm_ene_me1_gee.bml",
+     "bm_ene_gi_gue.bml",
+     "bm_ene_lappy.bml"
+    ]
+   },
+   "object_types": {
+    "count": 41,
+    "packs": [
+     "bm_obj_hako01.bml",
+     "bm_obj_warp_jung.bml",
+     "bm_obj_beamdoa.bml",
+     "bm_fe_obj_komo.bml",
+     "bm_o_mine.bml",
+     "fs_obj_tanmatu02.bml",
+     "fs_obj_tanmatu02.gvm",
+     "fe_obj_lazer2_2.bml",
+     "fe_obj_lazer2_2.gvm",
+     "fe_obj_switch_laz_j.bml",
+     "fe_obj_switch_laz_j.gvm",
+     "fe_obj_kaifuku_moto_2.bml",
+     "fs_obj_hanyousu_body1_j.bml",
+     "fs_obj_hanyousu_light_j.bml",
+     "fs_obj_hanyousu_light_ao_j.GVM",
+     "fs_obj_key_jungle.bml",
+     "fs_obj_key_jungle_red.gvm",
+     "fe_obj_hako02.bml",
+     "bm_o_jungle_doormain.bml",
+     "o_jungle_doormain.gvm",
+     "bm_obj_jungle_mkey.bml",
+     "bm_o_rock_jungle.bml",
+     "o_rock_jungle_123.GVM",
+     "bm_o_grass_jungle.bml",
+     "o_grass_jungle.gvm",
+     "bg_lightning.gvm",
+     "bm_obj_geenest.bml",
+     "bm_obj_labo_infocapsule.bml",
+     "bm_obj_seabed_turigane.bml",
+     "obj_seabed_turigane.gvm",
+     "fs_obj_warp.bml",
+     "fs_obj_warp.gvm",
+     "bm_obj_warpboss_jungle.bml",
+     "bm_obj_jungle_nokogiri.bml",
+     "bm_obj_jungle_biwamushi.bml",
+     "bm_obj_jungle_kamome.bml",
+     "obj_jungle_kamome.gvm",
+     "bm_obj_seabed_pillar.bml",
+     "PlyMotionNpcTown.cpt",
+     "bm_n_delta_w_body.bml",
+     "bm_nctrunk_body.bml"
+    ]
+   }
+  },
+  "map_bins": [
+   {
+    "file": "map_jungle_j.bin",
+    "size": 18404,
+    "byte_offset": 12288,
+    "first_32_hex": "d4010000ec3c0000e4470000ffffffffff00ff007469746c652064756d6d7900",
+    "record_layout": "not determined (undocumented; no repository parser)"
+   },
+   {
+    "file": "map_jungle_e.bin",
+    "size": 19260,
+    "byte_offset": 30720,
+    "first_32_hex": "d4010000444000003c4b0000ffffffffff00ff007469746c652064756d6d7900",
+    "record_layout": "not determined (undocumented; no repository parser)"
+   },
+   {
+    "file": "map_jungle_g.bin",
+    "size": 20564,
+    "byte_offset": 51200,
+    "first_32_hex": "d40100005c45000054500000ffffffffff00ff007469746c652064756d6d7900",
+    "record_layout": "not determined (undocumented; no repository parser)"
+   },
+   {
+    "file": "map_jungle_f.bin",
+    "size": 20148,
+    "byte_offset": 73728,
+    "first_32_hex": "d4010000bc430000b44e0000ffffffffff00ff007469746c652064756d6d7900",
+    "record_layout": "not determined (undocumented; no repository parser)"
+   },
+   {
+    "file": "map_jungle_s.bin",
+    "size": 20016,
+    "byte_offset": 94208,
+    "first_32_hex": "d401000038430000304e0000ffffffffff00ff007469746c652064756d6d7900",
+    "record_layout": "not determined (undocumented; no repository parser)"
+   },
+   {
+    "file": "map_jungle_j_u.bin",
+    "size": 18404,
+    "byte_offset": 114688,
+    "first_32_hex": "d4010000ec3c0000e4470000ffffffffff00ff007469746c652064756d6d7900",
+    "record_layout": "not determined (undocumented; no repository parser)"
+   },
+   {
+    "file": "map_jungle_e_u.bin",
+    "size": 19260,
+    "byte_offset": 133120,
+    "first_32_hex": "d4010000444000003c4b0000ffffffffff00ff007469746c652064756d6d7900",
+    "record_layout": "not determined (undocumented; no repository parser)"
+   },
+   {
+    "file": "map_jungle_g_u.bin",
+    "size": 20564,
+    "byte_offset": 153600,
+    "first_32_hex": "d40100005c45000054500000ffffffffff00ff007469746c652064756d6d7900",
+    "record_layout": "not determined (undocumented; no repository parser)"
+   },
+   {
+    "file": "map_jungle_f_u.bin",
+    "size": 20148,
+    "byte_offset": 176128,
+    "first_32_hex": "d4010000bc430000b44e0000ffffffffff00ff007469746c652064756d6d7900",
+    "record_layout": "not determined (undocumented; no repository parser)"
+   },
+   {
+    "file": "map_jungle_s_u.bin",
+    "size": 20016,
+    "byte_offset": 196608,
+    "first_32_hex": "d401000038430000304e0000ffffffffff00ff007469746c652064756d6d7900",
+    "record_layout": "not determined (undocumented; no repository parser)"
+   }
+  ],
+  "provenance": {
+   "c_rel": "gbox.psomap.collision on map_jungle01_c.rel extracted from disc; measurement artifact scratch pso9184/measurements_all_c_rel.json",
+   "enemy_object": "gsl_jungle01.gsl entry table; archive layout per docs/pso_gc.md \"GSL area archives\"",
+   "map_bins": "same gsl entry tables; offsets and first 32 bytes dumped from raw archive",
+   "record_layouts": "undocumented in docs/pso_gc.md; no repository parser",
+   "n_rel": "parser returned empty geometry on this disc"
+  }
+ },
+ "ruins01": {
+  "label": "Ruins 1 (Episode I)",
+  "disc": "/home/ehm_eckx/gBox_alt/gbox-cache/436e0bb84d5337d1/Phantasy Star Online Episode I & II Plus (USA).gcz",
+  "c_rel": {
+   "file": "Scene/map_ruins01_00c.rel",
+   "bytes": 421152,
+   "meshes": 150,
+   "triangles": 8798,
+   "vertices_total": 8119,
+   "vertices_unique": 6812,
+   "flags": {
+    "288": 4349,
+    "32768": 2496,
+    "1": 1612,
+    "320": 134,
+    "2048": 108,
+    "4": 64,
+    "32": 16,
+    "16": 11,
+    "2049": 8
+   },
+   "bounds_mm": {
+    "x": [
+     -1349.0,
+     975.0
+    ],
+    "y": [
+     -120.0,
+     160.0
+    ],
+    "z": [
+     -1340.0,
+     940.0
+    ]
+   },
+   "walkable_cells": {
+    "walkable": 12795,
+    "blocked": 5270
+   }
+  },
+  "n_rel": {
+   "status": "not determined",
+   "reason": "gbox.pso_rom_export reader returned empty geometry (0 meshes) on this disc; n.rel layout not yet parsed"
+  },
+  "gsl_archive": {
+   "file": "gsl_ruins01.gsl",
+   "entries": 50,
+   "entry_format": "0x30-byte entries: char name[0x20], u32 BE offset, u32 BE size",
+   "enemy_types": {
+    "count": 9,
+    "packs": [
+     "bm_ene_common_all.bml",
+     "bm_ene_lappy.bml",
+     "bm_ene_bm2_moja.bml",
+     "bm_ene_grass.bml",
+     "bm_ene_cgrass.bml",
+     "bm_ene_re2_flower.bml",
+     "bm_ene_bm3_fly.bml",
+     "bm_ene_df3_dimedian.bml",
+     "bm_ene_re7_berura.bml"
+    ]
+   },
+   "object_types": {
+    "count": 36,
+    "packs": [
+     "bm_fe_obj_kaifuku_moto.bml",
+     "fs_obj_warp.bml",
+     "fs_obj_warp.gvm",
+     "bm_obj_warpboss.bml",
+     "bm_o_mine.bml",
+     "fe_obj_lazer2_4m.bml",
+     "fe_obj_lazer2.gvm",
+     "fe_obj_switch_laz.bml",
+     "fe_obj_switch_laz.gvm",
+     "abeno_fs_obj001_fosuno.bml",
+     "fe_obj_switch.gvm",
+     "fs_obj_hanyousu_body1.bml",
+     "fs_obj_hanyousu_light.bml",
+     "fs_obj_hanyousu_light_ao.GVM",
+     "bm_fs_obj_do_doa_panel.bml",
+     "fs_obj_do_doa_panelr.gvm",
+     "bm_fs_obj_ki_doa_panel.bml",
+     "fs_obj_ki_doa_panel_r.gvm",
+     "fe_obj_tanmatu02.bml",
+     "fe_obj_computer.gvm",
+     "ChatSensor.prs",
+     "fs_obj_o_vs2door01l.bml",
+     "fs_obj_o_vs2door01lr.gvm",
+     "fe_obj_o_vs2container.bml",
+     "fs_obj_o_vs2container_r.gvm",
+     "fe_obj_o_vs2cont_hahen1_r.gvm",
+     "fe_obj_o_vs2cont_hahen2_r.gvm",
+     "bm_o_vs2.bml",
+     "fe_obj306_hashi.bml",
+     "fe_obj321_hashi.bml",
+     "bm_obj_ruins_turiten.bml",
+     "bm_obj_ruins_pillar.bml",
+     "bm_o_trap_ancient01.bml",
+     "bm_obj_door_ruins.bml",
+     "obj_door_ruins_green.gvm",
+     "bm_obj_labo_infocapsule.bml"
+    ]
+   }
+  },
+  "map_bins": [
+   {
+    "file": "map_ruin_j.bin",
+    "size": 13864,
+    "byte_offset": 12288,
+    "first_32_hex": "d40100008c31000028360000ffffffffff00ff007469746c652064756d6d7900",
+    "record_layout": "not determined (undocumented; no repository parser)"
+   },
+   {
+    "file": "map_ruin_e.bin",
+    "size": 14164,
+    "byte_offset": 26624,
+    "first_32_hex": "d4010000b832000054370000ffffffffff00ff007469746c652064756d6d7900",
+    "record_layout": "not determined (undocumented; no repository parser)"
+   },
+   {
+    "file": "map_ruin_g.bin",
+    "size": 14428,
+    "byte_offset": 40960,
+    "first_32_hex": "d4010000c03300005c380000ffffffffff00ff007469746c652064756d6d7900",
+    "record_layout": "not determined (undocumented; no repository parser)"
+   },
+   {
+    "file": "map_ruin_f.bin",
+    "size": 14596,
+    "byte_offset": 57344,
+    "first_32_hex": "d40100006834000004390000ffffffffff00ff007469746c652064756d6d7900",
+    "record_layout": "not determined (undocumented; no repository parser)"
+   },
+   {
+    "file": "map_ruin_s.bin",
+    "size": 14416,
+    "byte_offset": 73728,
+    "first_32_hex": "d4010000b433000050380000ffffffffff00ff007469746c652064756d6d7900",
+    "record_layout": "not determined (undocumented; no repository parser)"
+   }
+  ],
+  "provenance": {
+   "c_rel": "gbox.psomap.collision on map_ruins01_c.rel extracted from disc; measurement artifact scratch pso9184/measurements_all_c_rel.json",
+   "enemy_object": "gsl_ruins01.gsl entry table; archive layout per docs/pso_gc.md \"GSL area archives\"",
+   "map_bins": "same gsl entry tables; offsets and first 32 bytes dumped from raw archive",
+   "record_layouts": "undocumented in docs/pso_gc.md; no repository parser",
+   "n_rel": "parser returned empty geometry on this disc"
+  }
+ }
+}
