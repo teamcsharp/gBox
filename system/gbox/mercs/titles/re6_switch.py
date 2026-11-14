@@ -6254,6 +6254,13 @@ class Bot:
         want_pitch = math.atan2(pt[1] - c[1], max(math.hypot(pt[0] - c[0], pt[2] - c[2]), 1.0))
         if (self.close_threat or self.survival) and point is None:
             want_pitch = min(want_pitch, CLOSE_PITCH)            # one close by: never aimed up past this
+        if point is None:
+            # Operator 2026-11-14 ("why does the bot aim at the ceiling and not at enemies?"): the camera is never
+            # tilted up at a target at or under his own level - only a genuinely elevated enemy (a ledge/hanging
+            # attacker) may pull the pitch above the close-fire line.
+            tp = tgt.get('pos') or (0.0, 0.0, 0.0)
+            if tp[1] <= p['pos'][1] + FIRE_LEVEL_DY:
+                want_pitch = min(want_pitch, CLOSE_PITCH)
         tid = tgt.get("ptr", tgt.get("slot"))
         if tid != self.lock_tid:
             self.lock_tid, self.lock_at = tid, now

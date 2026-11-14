@@ -406,6 +406,14 @@ def control(ad, prof, bot_getter=None):
                    native.R.BOMB_RADIUS_MAX + native.R.BOMB_MARGIN_CM)
         stats['mine_clearance_cm'] = round(clearance, 1)
         stats['mine_required_clearance_cm'] = safe
+        # Operator 2026-11-14: "make remote bombs detonate in 10 seconds or less". The native flag refuses below the
+        # blast-safe distance, so the loop that can meet the deadline is: never stack a set, escape with top priority,
+        # detonate the moment the clearance passes. The age and the overdue flag make that measurable per tick.
+        placed_at = stats.get('mine_oldest_placed_at')
+        if finite(placed_at):
+            age = max(0.0, now - placed_at)
+            stats['mine_set_age_s'] = round(age, 2)
+            stats['mine_overdue_10s'] = bool(age >= 10.0)
         try:
             nearest = min(positions, key=lambda at: math.hypot(pos[0] - at[0], pos[2] - at[2]))
             stats['mine_nearest_dx'] = round(pos[0] - nearest[0], 1)
