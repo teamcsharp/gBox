@@ -735,6 +735,24 @@ def load_lock_points():
             out.append((float(row["x"]), float(row["z"])))
     return out
 
+
+def record_lock_point(x: float, z: float, note: str = "") -> None:
+    """Append a position where the character stopped responding, so the next run's motion avoids it."""
+    rows = []
+    try:
+        existing = json.loads(LOCK_POINTS_FILE.read_text(encoding="utf-8"))
+        rows = existing if isinstance(existing, list) else []
+    except (OSError, ValueError):
+        rows = []
+    for row in rows:
+        if isinstance(row, dict) and abs(float(row.get("x", 0)) - x) < 8 and abs(float(row.get("z", 0)) - z) < 8:
+            row["count"] = int(row.get("count") or 1) + 1
+            break
+    else:
+        rows.append({"x": round(x, 1), "z": round(z, 1), "count": 1, "note": note})
+    LOCK_POINTS_FILE.write_text(json.dumps(rows, indent=1), encoding="utf-8")
+
+
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(description="bounded PSO controller")
     sub = parser.add_subparsers(dest="mode", required=True)
