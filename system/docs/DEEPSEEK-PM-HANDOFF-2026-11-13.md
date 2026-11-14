@@ -1756,3 +1756,36 @@ for that call (combat_grenade_throws counter). 351 switch/bonus/periodic tests g
 counter was cut short by the document request (MercMode was on PSO); it remains the first item for the next round.
 
 State: deployed c3893b42f; Hermes healthy; task doc committed; S-rank still not achieved and not claimed.
+
+### Round 39: grenades verified live, 1-hp survival fixed, combo keeper hardened
+
+Operator's open items carried into this round: "why is the bot never throwing grenades?", the repeated "standing around
+and failing to attack" deaths at 1 hp, and combo breaks.
+
+**Verified live (build c3893b42f): grenades throw.** A RE6 round sample showed combat_grenade_throws 6 by ~150 s (the
+operator's "grenades are so effective" rule is now live, not just unit-tested). The same sample: hit_flashes 1 (first
+live flash ring from the hit answer), hit_nitrogen_requests 21 but the loadout had no launcher ("native grenade
+launcher resources are not present in this loadout"), which is now handled: nitrogen-unavailable loads fall back to the
+flash ring (engine stamps nitrogen_ring_unavailable_at, bot checks it for 120 s).
+
+**Live death analysis found the exact "standing around, no fight" hole.** 05:26 death: "down at 1 health: staying down,
+no fight" with 18 enemies within 2 m; 05:44 death: doing=crowd cc_space, hp3s=[1,1,1,1,1,1,1] - seven seconds at 1 hp
+while 3 tablets sat unused because the tablet rule excluded any melee-range enemy at 1 hp. The critical flash was
+already spent/refused, so the bot backed away until it died.
+
+**Fixes shipped this round (all tested, 351 switch/bonus/periodic green):**
+- c5edb12e7: downed at 1 hp now kicks/fires at the near ones instead of `down_dying_stay`; tablet gun-down window
+  0.3 -> 0.6 s (live had 14 ignored presses) and a 0.45 s retry at critical health; nitrogen-less loadouts fall back
+  to the flash ring.
+- 644374605: combo keeper's urgency line 3.0 -> 4.0 s, and survival actions (tablet, prompt/hold, down, blast/relocate/
+  boss escapes) keep their priority over a combo chase (the guard no longer replaces a heal with a chase).
+- c7e9afd03: the 1-hp death hole - the tablet goes in even with a melee-range enemy on him (standing there is certain
+  death), and with no tablet left the spent-flash bot fights the close one instead of backing away.
+
+**Live round evidence after the survival builds:** 05:32 round 39 kills / 4 breaks (died); 05:41 round 39 kills / 3
+breaks (died), tablets 27 presses / 13 misses (up from 11/14), down_kick active, breaks attributed held/prompt/walk.
+The remaining deaths are at 1 hp in crowds (flashes/tablets exhausted) - the c7e9afd03 build was deployed and restarted,
+but the verification sample could not run: lilspark is occupied by the PSO lane and MercMode stop/switch/queue did not
+displace it during 10+ minutes (RE6 stays queued for when it frees).
+
+State: deployed c7e9afd03, Hermes healthy, RE6 queued; S-rank still not achieved and not claimed.
