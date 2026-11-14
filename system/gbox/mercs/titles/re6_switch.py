@@ -3271,27 +3271,39 @@ class Bot:
             stats['dying_recoveries'] = int(stats.get('dying_recoveries', 0)) + 1
 
     def _critical_no_tablet_flash(self, p, live, flat, now) -> dict | None:
-        """Critical health, empty tablet case, a melee crowd on him: the native flash and a gun-down moment instead of
-        raising the gun (the 2026-11-13 15:37 death: 1 health, heals tablets 0, 5 enemies within 2 m, doing=raise).
+        """Critical health in a melee crowd: the native flash and a gun-down moment instead of raising the gun.
+
+        Evidence: the 2026-11-13 15:37 death (1 health, tablets 0, 5 enemies within 2 m, doing=raise) and the
+        20:26 death (1 health, downed, 9 enemies within 2 m after 240 damage events with 19 tablets taken and 34
+        presses / 18 ignored). A heavy crowd at critical health needs the crowd broken before a tablet can land - the
+        tablet retry rules alone lose the race. So the flash fires at critical health either with an empty case
+        (3+ within 2 m) or with tablets but a real crowd (4+ within 2 m); with tablets and a smaller crowd the
+        healing rule still wins.
 
         Rate-limited by _respond_flash's own gate; when the flash cannot fire (refused twice this life, resources
         missing) this returns None and the ordinary fight continues. Instrumentation: critical_flash_requests/at.
         """
         hp, hp_max = p.get('hp') or 0, p.get('hp_max') or 0
-        if not (hp_max and 1 < hp <= TABLET_CRITICAL_HP * hp_max) or (p.get('tablets') or 0) > 0:
+        if not (hp_max and 1 < hp <= TABLET_CRITICAL_HP * hp_max):
             return None
         if self.down or p.get('state') not in (0, None):
             return None
         crowd = sum(1 for e in live if flat(e) <= 200.)
-        if crowd < 3:
-            return None
-        if not self._respond_flash('critical health, no tablets, the crowd is on him'):
+        tablets = p.get('tablets') or 0
+        if tablets > 0:
+            if crowd < 4:
+                return None                                  # a tablet in the case handles a smaller critical crowd
+            why = f"health {hp}/{hp_max}, {tablets} tablets, {crowd} within 2 m: the flash breaks the crowd first"
+        else:
+            if crowd < 3:
+                return None
+            why = f"health {hp}/{hp_max}, no tablets, {crowd} within 2 m: the native flash covers him"
+        if not self._respond_flash(why):
             return None
         self._gun_down()
         self.stats['critical_flash_requests'] = int(self.stats.get('critical_flash_requests', 0)) + 1
         self.stats['critical_flash_at'] = round(now, 2)
-        return self._go("flash", "critical_flash", {"hold": ()},
-                        f"health {hp}/{hp_max}, no tablets, {crowd} within 2 m: the native flash covers him")
+        return self._go("flash", "critical_flash", {"hold": ()}, why)
 
     def _dying(self, p, now) -> dict | None:
         """At 1 health (RE6's dying crawl): R for a tablet every DYING_GAP_S while the case holds one. None: no press
