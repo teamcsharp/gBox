@@ -173,8 +173,12 @@ def guard(bot, snap, action, now):
                 if way is None:
                     return False
                 end = (pos[0] + lookahead * math.sin(way), pos[1], pos[2] + lookahead * math.cos(way))
+                # Remote bombs have no proximity trigger (see BOMB_TRAVEL_MIN_CM); while escaping the floor proof is
+                # what matters. Refusing every step near a bomb froze the radial run live on 2026-11-14: the clearance
+                # oscillated at 150-540 cm for minutes while the bot fought inside its own ring. Detonation still
+                # rereads every live bomb and refuses the flag below the full safe distance, so walking past one is safe.
                 return (mesh.clear(pos, end) is True and walk_segment(mesh, pos, end)
-                        and (not (detour or escaping) or _bomb_clear(bot, snap, pos, end)))
+                        and (escaping or not detour or _bomb_clear(bot, snap, pos, end)))
             if not escaping and safe(held):
                 return action
             # Evaluate the exact eight pad directions; do not validate a

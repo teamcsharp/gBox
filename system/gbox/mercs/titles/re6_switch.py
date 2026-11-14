@@ -3613,11 +3613,14 @@ class Bot:
             if last_clear is None or gained >= BLAST_AWAY_GAIN_CM:
                 self._blast_clear_at, self._blast_clear_t = clear, now
             elif now - last_at >= BLAST_SLIDE_S:
-                # no progress for a while: slide along the ring instead of pushing into the same blocker
+                # no progress for a while: a quarter turn instead of pushing into the same blocker, staying on the
+                # away-side of the ring (live 2026-11-14 the 60-degree slide still orbited inside the ring)
                 self._blast_slide = not getattr(self, '_blast_slide', False)
                 self._blast_clear_at, self._blast_clear_t = clear, now
-                away = wrap(away + (math.radians(60) if self._blast_slide else math.radians(-60)))
+                away = wrap(away + (math.radians(90) if self._blast_slide else math.radians(-90)))
                 self.stats['blast_slides'] = int(self.stats.get('blast_slides', 0)) + 1
+        self.stats['escape_heading_deg'] = round(math.degrees(away), 1)
+        self.stats['escape_pos'] = f'{pos[0]:.0f},{pos[2]:.0f}'
         return away
 
     def _blast_retreat(self, p, live, snap, now) -> dict | None:
@@ -5837,6 +5840,15 @@ class Bot:
     def _on_line(self, origin, dot, source, cands, now=None):
         """The first body intersected by the measured laser segment. Camera alignment only guides acquisition;
         neither old damage nor floor connectivity proves that a shot clears the current wall."""
+
+        # Operator 2026-11-14: "Always explode the remote bombs" - a tick inside the blast margin is an escape tick.
+        # This makes the escape authoritative even if an earlier pass was skipped; it can only replace a shot, never a
+        # hold/QTE (those return before this method).
+        if not self.down and self._inside_blast_margin():
+            escape = self._blast_retreat(p, live, snap, now)
+            if escape is not None:
+                return escape
+
         now = self.clock() if now is None else now
         if source != "laser":
             me = self._ppos or origin

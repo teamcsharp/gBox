@@ -406,6 +406,12 @@ def control(ad, prof, bot_getter=None):
                    native.R.BOMB_RADIUS_MAX + native.R.BOMB_MARGIN_CM)
         stats['mine_clearance_cm'] = round(clearance, 1)
         stats['mine_required_clearance_cm'] = safe
+        try:
+            nearest = min(positions, key=lambda at: math.hypot(pos[0] - at[0], pos[2] - at[2]))
+            stats['mine_nearest_dx'] = round(pos[0] - nearest[0], 1)
+            stats['mine_nearest_dz'] = round(pos[2] - nearest[2], 1)
+        except (TypeError, ValueError, IndexError):
+            pass
         stats['mine_escape_required'] = clearance < safe
         if clearance < safe:
             stats['mine_detonate_reason'] = f'escape first: nearest actual bomb {clearance:.0f} cm; need {safe:.0f} cm'
