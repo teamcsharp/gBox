@@ -1356,3 +1356,40 @@ accuracy is ~50-58 % (the two best rounds this run: completed 741,304 / 300 kill
 an interrupted 415,080 / 284 kills / combo 61 / 57.7 % / 0 deaths). S-rank/five stars still not proven.
 
 State: MercMode RE6 playing, queue `[]`, Hermes `enabled/available true`, deployed `24f9cf255`.
+
+### Round 26: the operator's match strategy (bonuses first, then fight), time-crystal shooting, QTE flag, combo pursuit
+
+Operator 2026-11-14 restated the whole match strategy: start on the time bonuses while building the initial combo;
+activate combo time via RE4/RE5 chests and RE6 blue crystals; once the time is at 5 minutes switch to fighting, traps
+and combo maintenance; keep the combo growing at any cost (an enemy dispatched every 4 s, moving and mine-dropping);
+pursue every enemy on the map at any distance; and: "The bot continues to fell the QTE events ... I want the flag
+flipped for that immediately. So they don't even have to go through that ... I'm not seeing them detonate enough
+remote bombs ... It is imperative that they always maintain the combo."
+
+Shipped (all tested, deployed, service restarted; latest `b972f7878`):
+- **Phase policy** (`5573443fa`): below BONUS_CLOCK_LOW_S (300 s) the time-bonus run is the objective and only a
+  close enemy (inside FIRE_ZONE_R, in sight = hot) pre-empts it; the blanket combat-pressure veto is now fight-mode
+  only, so the bot no longer stands on a drained clock with zero bonuses taken (observed live: timer 182 s,
+  bonuses_taken 0, pressure_blocks 607). At/above the bank it fights.
+- **Blue time crystals are shot** (`6c6d47231`): BONUS_TIME_RANGED lets the bonus lock/shoot path handle TIME bonuses;
+  below the bank a crystal inside BONUS_SHOOT_R with a clear line is shot through the lock (`time_bonus_shots`)
+  instead of only walked to. Live after activation: time_bonus_shots climbed 5 -> 16 in ~3 minutes and the clock
+  jumped 93 -> 258 s as crystals broke (the old live round had time_shots 0).
+- **QTE flag flipped immediately** (`b972f7878`): the live state already read `qte_auto: true` (both cSystemInfo
+  copies + the RAM escape, verified). `ensure_qte` is now attempted as soon as the session has an adapter - during
+  the load/menus too, not only once a player snapshot exists - so no QTE site can be reached before the flag is on
+  and read back; it retries every 1 s until read back and re-applies every 5 s (a save load can reset it). Live:
+  qte_auto true for the whole round, `qte_seen` 9, `qte_failed` 0.
+- **Combo mandate at any distance** (`b972f7878`): the old COMBO_HOT_R 30 m gate is gone - with the combo clock low
+  or no kill for COMBO_KEEP_S (2.5 s) the nearest enemy on his floor is chased at ANY distance; quick shots still
+  need COMBO_QUICK_R. Earlier in the round the mandate also went to 2.5 s/30 m from 3.2 s/12 m (`5573443fa`) so a
+  kill is due before the 4-second limit.
+
+**Live evidence** (round 23:45-23:48, session bda65ac0): time_bonus_shots 5 -> 16 with the clock climbing
+93 -> 258 s; qte_seen 9 / qte_failed 0 with qte_auto true; combo reached 46 with 4 breaks; kills 58; periodic bursts
+8. Still open, reported honestly: **combo breaks 4 in ~3 minutes and kill_gap_over_5s 9** (the every-4-seconds
+mandate is not yet held); **bombs placed/detonated 0 in that round** (the remote lane did not fire - the operator's
+"not detonating enough" has no live detonation evidence yet); PSO sessions on lilspark repeatedly displaced the RE6
+switches (host contention from another lane), so round evidence is from a short window.
+
+State: RE6 playing (`bda65ac0`), queue `[]`, Hermes `enabled/available true`, deployed `b972f7878`.
