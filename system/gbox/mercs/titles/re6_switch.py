@@ -2824,7 +2824,7 @@ COMBO_GUARD_DOINGS = ("walk", "no_foes", "bonus", "taunt")
 # kill has landed for COMBO_KEEP_S) and an enemy is near, the bot stops every non-kill detour - including a bomb
 # escape sprint - and takes the fastest kill it can: a rapid quick shot when the enemy is at COMBO_QUICK_R, else a
 # chase for the next combat decision. COMBO_HOT_R is how near the enemy must be for the override.
-COMBO_KEEP_S, COMBO_HOT_R, COMBO_QUICK_R, COMBO_QUICK_GAP_S = 3.2, 1200.0, 350.0, 0.16
+COMBO_KEEP_S, COMBO_HOT_R, COMBO_QUICK_R, COMBO_QUICK_GAP_S = 3.2, 1200.0, 280.0, 0.22
 KILL_GAP_MANDATE_S = 5.0                      # the operator's absolute limit between kills
 # Combat pressure (operator 2026-11-13: "the bot walking around not shooting enemies is unacceptable ... shooting
 # any and all enemies ... or they will crowd up and the combo will be lost"): with ANY alive enemy in sight
@@ -3386,7 +3386,10 @@ class Bot:
         """
         if not getattr(self, '_combo_hot_now', False) or not live:
             return None
-        target = min((e for e in live if flat(e) <= COMBO_QUICK_R), key=flat, default=None)
+        # Only a close enemy in the mesh's sight line gets the mandate's quick shot: live 2026-11-13 the 350 cm
+        # version fired 214 quick shots in a round and still lost the combo (most were outside the quick shot's reach
+        # and added no kill, only misses). 280 cm, a sight check and a 0.22 s gap keep the shots real.
+        target = next((e for e in sorted(live, key=flat) if flat(e) <= COMBO_QUICK_R and self._sight(e, now)), None)
         if target is not None and p.get('ammo') != 0 and now - getattr(self, '_combo_quick_at', -1e9) >= COMBO_QUICK_GAP_S:
             self._combo_quick_at = now
             self.stats['combo_quick_shots'] = int(self.stats.get('combo_quick_shots', 0)) + 1
