@@ -296,7 +296,7 @@ def control(ad, prof, bot_getter=None):
                                 if ctl is None:
                                     ctl = ad._re6_native_shell = native.Controller(ad)
                             receipt = probe.barrage(ctl, count=8, radius_cm=800.0, kind='shell1304',
-                                                    cancelled=lambda: False)
+                                                    cancelled=lambda: False, max_remotes=16)
                             stats['nitrogen_ring_last'] = {k: receipt.get(k) for k in
                                                            ('state', 'spawned', 'armed', 'detonated', 'verified', 'reason')}
                             stats['nitrogen_rings'] = int(stats.get('nitrogen_rings', 0)) + 1

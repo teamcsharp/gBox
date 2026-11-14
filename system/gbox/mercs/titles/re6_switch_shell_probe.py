@@ -154,7 +154,7 @@ def _install_images(ctl):
             raise Unavailable("shell research image installation unconfirmed")
 
 
-def _no_owned_remotes(ctl, epoch):
+def _no_owned_remotes(ctl, epoch, max_remotes=SHELL_RING_MAX_REMOTES):
     """Called under the shared native lock; stale/partial telemetry is no census."""
     units = R.owned_throwables(ctl, ctl.base, epoch[0])
     if ctl.ready() != epoch:
@@ -162,15 +162,16 @@ def _no_owned_remotes(ctl, epoch):
     if not isinstance(units, list) or any(not isinstance(u, dict) for u in units):
         raise Unavailable("shell probe requires a fresh complete native bomb census")
     remotes = sum(1 for u in units if u.get('kind') == 'remote')
-    if remotes > SHELL_RING_MAX_REMOTES:
+    if remotes > max_remotes:
         # Operator 2026-11-14: clicking the Nitrogen chooser row while a few remote mines were still out was refused
         # outright ("waits for every native remote bomb to resolve"). A small outstanding count is safe for the shell
         # class - the ring is the only implementation of these kinds, so the click should fire instead of failing.
         raise Unavailable(f"shell probe waits for the remote bombs to resolve ({remotes} outstanding; at most "
-                          f"{SHELL_RING_MAX_REMOTES} is safe for the shell class)")
+                          f"{max_remotes} is safe for this caller)")
 
 
-def probe_one(ctl, point, *, kind="shell1304", timeout_s=1.0, expected=None, allowed=None):
+def probe_one(ctl, point, *, kind="shell1304", timeout_s=1.0, expected=None, allowed=None,
+              max_remotes=SHELL_RING_MAX_REMOTES):
     """Explicit research only: one shell per player generation, never replayed.
 
 Returns an unverified receipt even after native emission. A live observer must
@@ -191,7 +192,7 @@ separately establish the ice reaction and player clearance before rollout. There
         ctl.sp = ctl.q(ctl.base + R.S_PLAYER)
         ctl.manager = ctl.player + 0x13A8
         ctl.check()
-        _no_owned_remotes(ctl, epoch)
+        _no_owned_remotes(ctl, epoch, max_remotes)
         if allowed is not None and not allowed():
             raise Unavailable("native bomb allocator became busy during shell probe admission")
         if 0x112 not in (R.inventory_guns(ctl, ctl.player) or {}):
@@ -226,7 +227,7 @@ separately establish the ice reaction and player clearance before rollout. There
             # Image preparation and resource/baseline reads can outlast the
             # admission snapshot. Recheck under the same lock immediately
             # before consuming this life's single allocation opportunity.
-            _no_owned_remotes(ctl, epoch)
+            _no_owned_remotes(ctl, epoch, max_remotes)
             remaining()
             _safe_point(ctl, point)
             packet = ctl.heap + PACKET_OFFSET
@@ -294,7 +295,8 @@ separately establish the ice reaction and player clearance before rollout. There
         return result
 
 
-def barrage(ctl, *, count=8, radius_cm=700.0, kind="shell1304", timeout_s=0.6, cancelled=None):
+def barrage(ctl, *, count=8, radius_cm=700.0, kind="shell1304", timeout_s=0.6, cancelled=None,
+            max_remotes=SHELL_RING_MAX_REMOTES):
     """Research barrage: `count` launcher shells spawned on a ring radius_cm around the player and armed at their
     ring points - the operator's 360 launcher ring (2026-11-13, "launch a 360 nitrogen round out from the
     character into the scene").
@@ -324,7 +326,7 @@ def barrage(ctl, *, count=8, radius_cm=700.0, kind="shell1304", timeout_s=0.6, c
         ctl.sp = ctl.q(ctl.base + R.S_PLAYER)
         ctl.manager = ctl.player + 0x13A8
         ctl.check()
-        _no_owned_remotes(ctl, epoch)
+        _no_owned_remotes(ctl, epoch, max_remotes)
         if 0x112 not in (R.inventory_guns(ctl, ctl.player) or {}):
             raise Unavailable("native grenade launcher resources are not present in this loadout")
         px, py, pz = struct.unpack("<3f", ctl.rd(ctl.player + R.P_POS, 12))
@@ -346,7 +348,7 @@ def barrage(ctl, *, count=8, radius_cm=700.0, kind="shell1304", timeout_s=0.6, c
             attached = True
             ctl.attach()
             _install_images(ctl)
-            _no_owned_remotes(ctl, epoch)
+            _no_owned_remotes(ctl, epoch, max_remotes)
             if ctl.ready() != epoch:
                 raise Unavailable("player changed during the shell barrage admission")
             packet = ctl.heap + PACKET_OFFSET
