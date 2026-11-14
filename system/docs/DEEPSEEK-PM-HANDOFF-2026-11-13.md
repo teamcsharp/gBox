@@ -1819,3 +1819,31 @@ attributed held/prompt/walk.
 Next round: check the launch dispatch (and repair the MercMode launch path if it is still stuck - it worked before the
 06:03 restart); then sample RE6 for the c7e9afd03 1-hp survival build and the 43a65c8c0 periodic mine ring
 (`mine_periodic_rings`, death causes no longer "down at 1 health: staying down"). S-rank still not achieved.
+
+### Round 41 INCIDENT: lilspark host down after reboot (pingable, sshd/gbox not up)
+
+**Shipped before the incident (commit 43a65c8c0, 420 tests green):** periodic combat mine ring - two or more enemies
+inside the surround radius and the live combo clock at/below 4 s earns a 15-mine ring every policy drop interval, on
+top of travel singles, flash ring, surround ring and QTE ring (`mine_periodic_rings`, reason `periodic`; test
+`test_a_low_combo_clock_earns_a_periodic_combat_ring`). Deployed to lilspark at 12:02 (deployed marker 43a65c8c0).
+
+**Then the live window was lost to an infrastructure failure, and the recovery action took the host down:**
+- MercMode RE6 dispatches stayed un-applied; `/api/mercmode` `scheduler_note` gave the real cause: `launch failed:
+  BootHung: eden exited during boot ... Device: NVIDIA GB10 ... Vulkan 1.4.312 ... Available VRAM: 4.00 GiB` (Eden
+  exits during RomFS patch).
+- `dmesg` showed the underlying problem: `NVRM: nvAssertOkFailedNoLog: Assertion failed: Out of memory
+  [NV_ERR_NO_MEMORY] ... kgrctxAllocMainCtxBuffer` at 04:35, with stale GPU contexts from repeated launch attempts
+  (fuser showed persistent nvidia-device PIDs). Repeated Eden boot attempts kept failing.
+- Recovery action at 06:14: `sudo -n systemctl reboot` on lilspark (10.89.1.246) to clear the leaked GPU contexts.
+- **Current state (06:45):** the host answers ICMP (TTL 64, ~3 ms) but ports 22, 8765, and all probed services are
+  closed/refused; `ssh spark` gets "Connection refused"; no gbox API. It has been ~30+ minutes since the reboot. This
+  looks like a hung shutdown/boot (systemd stopped services before a stuck unmount/service and never reached
+  multi-user/sshd) - not something recoverable over SSH. **The host needs a physical power-cycle (or BMC reset) by
+  the operator.**
+
+**Consequence:** no live RE6 verification this round (the previous live evidence remains: grenades 6, hit flash 1,
+down_kick, tablets 27/13, 39 kills / 3 breaks). Deployed build on lilspark disk is 43a65c8c0. Hermes gate was healthy
+before the host went down; it is down with the host. S-rank is not achieved and not claimed.
+
+**Next round:** if the host is back, start RE6 and verify the c7e9afd03 1-hp survival and the 43a65c8c0 periodic mine
+ring; if not, keep the goal active and report the host outage.
