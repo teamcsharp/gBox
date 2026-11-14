@@ -1196,6 +1196,18 @@ def test_a_combat_grenade_is_thrown_into_a_mob_in_range():
     assert bot._combat_grenade(p, live, flat, snap, 9.0) is None        # the 8 s pacing holds
 
 
+def test_the_raised_gun_does_not_fire_at_the_sky():
+    # Live 2026-11-14: 392 raise-fire rounds went into the sky with 59 kills and 7 combo breaks. A target behind the
+    # camera (or off the laser ray) is never fired at by a raise.
+    bot, clock, snap = brain(round_guest(enemies=((0.0, 0.0, 400.0, 700),), cam_yaw=math.pi))   # target BEHIND
+    bot.held = lambda p, now: False
+    bot._mesh_clear = lambda *a, **k: False
+    bot.is_blocked = lambda *a, **k: False
+    run(bot, snap, clock, 20)
+    assert bot.stats.get("raise_trigger_requests", 0) == 0
+    assert bot.stats.get("scatter_forced", 0) == 0
+
+
 def test_a_raised_gun_fires_its_twenty_bullet_scatter_burst():
     # Operator 2026-11-14: "If they raise their gun, they need to fire off at least twenty bullets in a scatter shot."
     import math as _m

@@ -3548,6 +3548,34 @@ class Bot:
             return out
         return None
 
+    def _raise_shot_ok(self, p, tgt, snap, now) -> bool:
+        """The raised gun may fire only when the target is in front of the camera (or on the laser ray).
+
+        Live 2026-11-14: `raise_fire`/scatter fired 392 rounds into the sky while the kills sat at 59 and the combo
+        broke 7 times - the old gate only checked distance/health/line-clear, never where the gun was pointing. With
+        the laser up the ray error to the aim point gates it; without a laser read the camera bearing cone does.
+        """
+        if not isinstance(tgt, dict) or (tgt.get("hp") or 0) <= 0 or not tgt.get("pos"):
+            return False
+        me = p.get("pos")
+        if me is None:
+            return False
+        lz = snap.get("laser")
+        if isinstance(lz, dict) and lz.get("up") and lz.get("from") and lz.get("at"):
+            try:
+                yaw, pitch = ray_error(tuple(lz["from"]), tuple(lz["at"]), aim_point(tgt, me))
+            except (TypeError, ValueError, OverflowError):
+                return False
+            return abs(yaw) <= SPRAY_YAW and abs(pitch) <= SPRAY_PITCH
+        cam = snap.get("camera")
+        if not isinstance(cam, dict):
+            return False
+        try:
+            err = wrap(heading(tgt["pos"][0] - me[0], tgt["pos"][2] - me[2]) - cam.get("yaw", 0.0))
+        except (TypeError, ValueError, IndexError):
+            return False
+        return abs(err) <= math.radians(35)
+
     def _nitrogen_unavailable(self, now) -> bool:
         """A loadout without the grenade launcher can never serve a nitrogen ring (engine error 2026-11-14), so the
         alternating hit answer falls back to the flash ring for NITROGEN_RETRY_S."""
@@ -5632,6 +5660,7 @@ class Bot:
             # And the raised gun fires at it at once while the line is clear - never a bare wave of the gun.
             if (not self.is_blocked(tgt, now) and (tgt.get("hp") or 0) > 0
                     and math.dist(p["pos"], tgt["pos"]) <= POINT_BLANK_R
+                    and self._raise_shot_ok(p, tgt, snap, now)
                     and p.get('ammo') != 0):
                 trig0 = self._trigger(True, now, p.get("weapon_id") in AUTO_IDS)
                 if trig0:
@@ -5722,7 +5751,8 @@ class Bot:
                     if getattr(self, "_raise_key", None) != key:
                         self._raise_key, self._raise_since = key, now
                     front_ok = (not self.is_blocked(tgt, now) and (tgt.get("hp") or 0) > 0
-                                and math.dist(p["pos"], tgt["pos"]) <= POINT_BLANK_R)
+                                and math.dist(p["pos"], tgt["pos"]) <= POINT_BLANK_R
+                                and self._raise_shot_ok(p, tgt, snap, now))
                     if front_ok and int(self.stats.get('raise_bullets', 0)) < RAISE_MIN_BULLETS:
                         trig0 = self._trigger(True, now, p.get("weapon_id") in AUTO_IDS)
                         if trig0:
@@ -5867,7 +5897,8 @@ class Bot:
             spray_ok = (aim_at is not None and (aim_at.get("hp") or 0) > 0
                         and abs(aim_at["pos"][1] - py) <= MAX_DY
                         and math.dist(p["pos"], aim_at["pos"]) <= RAISE_SPRAY_R
-                        and not self.is_blocked(aim_at, now))
+                        and not self.is_blocked(aim_at, now)
+                        and abs(yaw_err) <= SPRAY_YAW and abs(pitch_err) <= SPRAY_PITCH)
             if spray_ok:
                 trig = self._trigger(True, now, auto)
                 if trig:
