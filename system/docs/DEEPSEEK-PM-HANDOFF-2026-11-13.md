@@ -1582,3 +1582,33 @@ per round, not zero; S-rank is not claimed.
 
 State: MercMode restarted into RE6 after the deploy, queue `[]`, Hermes `enabled/available true`, deployed
 `5ac496931`.
+
+### Round 32: the first live stretch where the combo matched the kill count exactly
+
+Forced a RE6 window with the MercMode stop/start dispatch and sampled build `5ac496931` (the heal-window, round-start
+hunt and periodic-wait-yield build from round 31).
+
+**Live evidence (RE6 02:50-02:53, session c371ce17):**
+- From the third kill on, **`combo_breaks` stayed 0 for over two minutes** while kills ran 3 -> 40 and the **combo
+  matched the kill count exactly** (40 kills / combo 40 - the operator's "combo matches the kill count due to being
+  intrinsic and consistent"), with the timer 118 -> 242 s as the blue time crystals broke (`periodic_wait_combo_yields`
+  1: a native quick-attack wait was dropped to keep the chain).
+- The round then died at 53 kills (max combo 40, score 64 280) with two breaks attributed late: `raise` ("the gun comes
+  up") and `held` (QTE grab). The next round showed the remaining set: `tablet` at 600/900 health (the crowd-heal rule
+  at 70 % with 4+ within 3 m), `walk` (a learned dodge: "uEm5200 cEm5000ActCatch: an attack that hurt him through his
+  shots: out of its reach"), `raise`, `held`.
+
+**Shipped `cf46174e3`** (deployed; runtime marker matches): a time-crystal lock no longer outranks a lapsing combo -
+the previously attributed `combo_break_bonus` ("a time bonus at 2095 cm: the lock on it") now yields
+(`time_bonus_yields_combo`) and the kill comes first, the crystal right after; the green-bonus pickups yield too. Tests:
+the crystal yields at a lapsing combo and shoots when free; switch/bonus suites pass.
+
+**Open, honestly:** combo breaks are down to 2-4 per round but not zero. The remaining named causes: the crowd-heal
+chain (heal starts at 66-70 % with four in 3 m and can chain into the window), short raise stalls, learned dodge walks
+(an attack that hits through his shots), and grab/QTE holds (no kills possible). `kill_gap_over_5s` is inflated by the
+round-start gap (it counts the time before the first kill); `combo_breaks` plus the kill==combo check are the real
+metrics. S-rank/five stars still not achieved or claimed.
+
+State: MercMode on lilspark restarted into RE6 (`da8a853b`), queue `[]`, Hermes `enabled/available true`, deployed
+`cf46174e3`, suite green (337 in the switch/bonus/periodic sets before the last two small commits; their focused tests
+passed).
