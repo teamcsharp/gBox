@@ -1,4 +1,4 @@
-"""bounded - the cancellable, evidence-writing replacement for `endless.py`'s play loop.
+﻿"""bounded - the cancellable, evidence-writing replacement for `endless.py`'s play loop.
 
 `endless.py` decides and moves inside one non-yielding loop: a single branch can walk for minutes, and the only
 record of what happened is a log line. This driver inverts that. Every action is one bounded tick issued by
@@ -243,7 +243,8 @@ def run(mode: str, args) -> int:
     operator = B.OperatorGuard(OPERATOR_FLAG)
     doors = DoorState(OUT / "door-state.json")
     known_doors = doors.get(sid)
-    policy = B.ProgressionPolicy(door_state=known_doors)
+    policy = B.ProgressionPolicy(door_state=known_doors,
+                                  attack_range=(float(args.attack_range) if getattr(args, "attack_range", None) else 11.0))
     bound_mode = B.RunMode.ASSISTED if args.assisted else B.RunMode.NORMAL
 
     # Calibrate the input primitives BEFORE choosing a motion model, which is the lesson the handoff records most
@@ -858,6 +859,8 @@ def main(argv=None) -> int:
                           help="seconds a cached calibration stays valid (it moves the character)")
         item.add_argument("--no-calibrate", action="store_true",
                           help="skip the one-tap-per-key calibration (it costs about five seconds)")
+        item.add_argument("--attack-range", type=float, default=None,
+                          help="weapon reach in game units for the combo decision (default: policy default)")
         item.add_argument("--assisted", action="store_true",
                           help="label the run as assisted: never evidence for a normal-play gate")
     args = parser.parse_args(argv)
@@ -868,3 +871,4 @@ def main(argv=None) -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
+

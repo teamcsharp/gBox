@@ -28,6 +28,7 @@ import subprocess
 import sys
 import time
 import urllib.request
+import uuid
 from ctypes import wintypes
 
 BASE = os.environ.get("GBOX_API") or "http://127.0.0.1:18765"
@@ -41,6 +42,15 @@ LIVE_MAP = pathlib.Path(r"C:\_tools\gBox\system\docs\research\pso-live-map.py")
 PYTHON = sys.executable
 OPERATOR_IDLE_S = 3.0
 BOT_SECONDS = 60.0
+# Weapon family -> attack reach in game units. The combo decision fires when the distance to the enemy is inside this
+# range; too far and every swing whiffs, too close and the character circles (measured: Saber + attack_range 20 whiffed
+# at 14-18 units). Names are the catalog's family_key suffixes; unknown kinds fall back to a short melee reach.
+REACH_BY_FAMILY = {
+    "saber": 13.0, "sword": 16.0, "partisan": 18.0, "dagger": 10.0, "twin_sword": 16.0, "double_saber": 16.0,
+    "katana": 16.0, "claw": 10.0, "knuckle": 10.0, "slicer": 20.0, "handgun": 55.0, "rifle": 80.0,
+    "mechgun": 35.0, "shot": 45.0, "launcher": 85.0, "card": 35.0, "wand": 12.0, "rod": 16.0, "cane": 12.0,
+}
+DEFAULT_REACH = 12.0
 KEY_KEYS = (0x58, 0x5A, 0x53, 0x41, 0x45, 0x0D, 0x26, 0x28, 0x25, 0x27, 0x4B, 0x49, 0x4A, 0x4C,
             0x51, 0x57, 0x54, 0x47, 0x46, 0x48)
 
@@ -132,6 +142,7 @@ class Supervisor:
         self.guard = load_guard()
         self.session = None
         self.sid = None
+        self.catalog = None
         self.last_operator = 0.0
         self.recorder = None
         self.bot = None
@@ -209,6 +220,33 @@ class Supervisor:
             log(f"live map dump error: {type(error).__name__}: {error}")
             return None, None
 
+    def weapon_reach(self):
+        """The equipped weapon's attack reach for the bot's combo decision, from the disc catalog's family name."""
+        try:
+            if self.session is None:
+                return None
+            if self.catalog is None:
+                request = urllib.request.Request(
+                    BASE + "/api/pso/items?version=gc",
+                    headers={"authorization": "Bearer " + _token(), "x-gbox-actor": "agent"})
+                rows = json.loads(urllib.request.urlopen(request, timeout=120).read() or b"[]")
+                self.catalog = {row.get("code"): row for row in rows if isinstance(row, dict)}
+            command = {"command_id": str(uuid.uuid4()), "expires": time.time() + 12, "input": {"op": "list"}}
+            result = self.session.rpc("pso_controls", **command) or {}
+            inventory = result.get("inventory") or []
+            weapon = next((row for row in inventory
+                           if row.get("equipped") and str(row.get("code", "")).startswith("00")), None)
+            if not weapon:
+                return None
+            family = str((self.catalog.get(weapon.get("code")) or {}).get("family_key") or "")
+            reach = next((value for key, value in REACH_BY_FAMILY.items() if key in family), DEFAULT_REACH)
+            log(f"equipped weapon {weapon.get('name') or weapon.get('code')} ({family or 'unknown family'}) "
+                f"-> attack range {reach:.0f}")
+            return reach
+        except Exception as error:                                   # noqa: BLE001
+            log(f"weapon reach lookup failed: {type(error).__name__}: {error}")
+            return None
+
     def run_bot(self) -> None:
         env = dict(os.environ, GBOX_API=BASE)
         log_path = OUT / "autoplay-bot.log"
@@ -216,6 +254,9 @@ class Supervisor:
         map_path, map_key = self.live_map()
         if map_path:
             command += ["--map", map_path, "--map-name", map_key]
+        reach = self.weapon_reach()
+        if reach:
+            command += ["--attack-range", f"{reach:.1f}"]
         with log_path.open("a", encoding="utf-8") as handle:
             handle.write(f"\n=== bot chunk {time.strftime('%H:%M:%S')} ===\n")
             self.bot = subprocess.Popen(command, env=env, stdout=handle, stderr=subprocess.STDOUT)

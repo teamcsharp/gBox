@@ -174,3 +174,36 @@ grindeable weapon by `atp_max + 2*max_grind`. The randomized rotation was stoppe
 
 Live receipt: **TSUMIKIRI J-SWORD (003200), grind 50 (= its PMT maximum), equipped and verified**, inventory
 returned to 22 rows by removing unequipped generated gear.
+
+## 9. Round 5 - the local server died, and the session was rescued from the operator's own snapshot
+
+While restarting the autoplay supervisor I killed its process group and the Windows local authority
+(`gbox.desktop_local`, which hosts the worker **in-process** and is the parent of Dolphin) stopped serving: the
+TCP listener on 127.0.0.1:18765 disappeared while the process stayed alive, the control plane reaped the session
+(`{"reason": "worker offline", "via": "reap"}`), and the game could no longer be controlled even though Dolphin
+itself was still running.
+
+The rescue worked because the operator had taken a `state_transfer op=snapshot` at 23:28:34 (artifact
+`4ccd99fe106a684d5ef51a1c00adf922f745717cb48d2690222b6d4200f9fc1f`, 21.7 MB). A snapshot artifact is a **Dolphin
+savestate** (`GPOE8P` header), not a cloud blob, and the tool's `import` operation copies it to
+`User/StateSaves/GPOE8P.s01` and presses the adapter's load-state hotkey. Sequence, all scripted in
+`pso-rescue-session.py`:
+
+1. kill the orphan Dolphin and the dead `desktop_local` pair; the Electron app **respawned its own local server**
+   on 18765 within seconds (it supervises that child);
+2. `launch_game` with the cached catalog entry (`mandate/pso-catalog-entry.json`, worker `ee68c2f40f10443b`) -
+   new session `ee68c2f40f10443b-a5dc25262b4f4765`, running in ~20 s;
+3. `state_transfer op=import artifact=4ccd99...` - the import reports `slot_verified: true` and
+   `bytes: 22,777,915`;
+4. verify through the new session's own RPC: player back at `(525.2, -53.7)` room 1, HP 1, status word `0`,
+   and the equipped **TSUMIKIRI J-SWORD at grind 50** - the exact moment from 23:28;
+5. a fresh safety snapshot of the restored moment was taken immediately (artifact
+   `87041c7be1439e9ea25955ac87cdd2deaf3eca93eeb3b9db6c1e992ab6e4ef83`).
+
+The autoplay supervisor, the proximity door unlock and the max-grind watchdog were then restarted against the new
+session: live map `live-floor3-90afe75e8627` (8,487 triangles / 210,116 cells), weapon family `Weapons:tsumikirijsword`
+mapped to attack range 16, and the bot resumed room traversal (room 1 -> 30).
+
+Lessons recorded for future rounds: the button that ends a session is the worker's death, not Dolphin's; a killed
+`desktop_local` is respawned by the Electron app but its sessions are reaped; and any long play session should be
+periodically snapshotted with `state_transfer op=snapshot` so a worker loss costs minutes, not hours.
