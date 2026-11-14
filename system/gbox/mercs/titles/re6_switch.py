@@ -2232,6 +2232,11 @@ FLASH_GAP_S = 5.0                       # 115 fever kicks in 12 min, kills a min
 # tier) never count toward a flash: weapons for them. Stats flash_gap_skips, flash_untight_skips, flash_skip_<path>,
 # flash_reason_last, flash_reasons, flash_paths.
 FLASH_MIN_GAP_S = 60.0
+# Operator 2026-11-14: "flash on every hit / QTE" and the live round with 21 holds / 43.55 s held / 159
+# grab panics had the respond gate refusing the native flash 282 times (flash_skip_respond 346): the
+# emergency native flash is NOT the wheel flash, so it gets its own short cooldown instead of the wheel's
+# one-minute/tight-reason gate (RESPOND_FLASH_GAP_S).
+RESPOND_FLASH_GAP_S = 2.5
 FLASH_TIGHT = True
 FLASH_TIGHT_N, FLASH_TIGHT_R, FLASH_TIGHT_LOW = 4, 300.0, 0.35
 # Fire first (the same request): a new grenade cycle (the wheel, the gun down for seconds) is not started while a
@@ -4152,6 +4157,10 @@ class Bot:
                 and abs(e["pos"][1] - py) <= MAX_DY and not self.is_blocked(e, now)]
         return min(near, key=flat, default=None)
 
+    def _respond_flash_ready(self, now) -> bool:
+        """The emergency native flash is rate-limited only by its own RESPOND_FLASH_GAP_S (never by the wheel's gate)."""
+        return now - getattr(self, '_respond_flash_at', -1e9) >= RESPOND_FLASH_GAP_S
+
     def _respond_flash(self, why) -> bool:
         """The native flash at his position (re6_switch_native, the operator's flash_now: no item screen, no input),
         asked on a thread like RE5's; confirmed, native_flash_confirmed_at starts the fever's follow-through
@@ -4166,10 +4175,14 @@ class Bot:
         off = d.get("_resp_flash_off")
         if off is not None and off == player.get("ptr"):
             return False
-        ok, reason = self._flash_ok("respond", snap, self.clock())
-        if not ok:
-            return False                                     # on its gap / no tight reason: the doctrine fires instead
-        self._flash_gate().stamp("respond", reason)
+        now = self.clock()
+        if not self._respond_flash_ready(now):
+            return False
+        live = [e for e in snap.get("enemies") or () if (e.get("hp") or 0) > 0 and e.get("pos")]
+        reason = self._flash_reason(player, live, snap, now)
+        self._flash_reason_now = reason
+        self._respond_flash_at = now
+        self.stats["native_flash_asks"] = int(self.stats.get("native_flash_asks", 0)) + 1
         d["_resp_flash_inflight"] = True
         stats = self.stats
 

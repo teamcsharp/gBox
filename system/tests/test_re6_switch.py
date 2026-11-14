@@ -1272,6 +1272,17 @@ def test_a_lapsing_combo_does_not_pause_the_blast_escape_any_more():
     assert bot.stats.get("blast_combo_shots", 0) == 0 and bot.stats.get("blast_combo_fights", 0) == 0
 
 
+def test_the_emergency_native_flash_is_not_held_by_the_wheel_gate():
+    # Live 2026-11-14: 282 refused respond flashes / 43.55 s held in one round. The emergency flash has its own 2.5 s
+    # cooldown and is not refused by the wheel's minute/tight-reason gate.
+    bot, clock, snap = brain(round_guest(enemies=((0.0, 0.0, 200.0, 700),)))
+    now = bot.clock()
+    assert bot._respond_flash_ready(now)
+    bot._respond_flash_at = now
+    assert not bot._respond_flash_ready(now + R.RESPOND_FLASH_GAP_S / 2)
+    assert bot._respond_flash_ready(now + R.RESPOND_FLASH_GAP_S + 0.01)
+
+
 def test_a_grab_gets_the_native_flash_on_the_tick_it_starts():
     # Operator 2026-11-14: "flash on every hit / QTE"; a grab is a QTE - the flash breaks it without mash timing.
     bot, clock, snap = brain(round_guest(enemies=((0.0, 0.0, 150.0, 700),)))
