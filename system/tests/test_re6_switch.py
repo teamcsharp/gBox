@@ -1516,6 +1516,18 @@ def test_dying_at_one_health_he_presses_for_a_tablet_and_counts_whether_it_took(
     assert bot.stats["tablet_dying_taken"] == 1 and bot.stats["dyings"] == 1 and bot.dying_since is None
 
 
+def test_a_heal_waits_for_a_fresh_combo_window_above_the_critical_band():
+    # Live 2026-11-14: a tablet at 49 % health broke a 26-kill combo; the heal now waits for a freshly refilled window.
+    bot, clock, snap = brain(round_guest(enemies=((0., 0., 400., 100),), hp=442))
+    assert bot._heal_window_ok(442, 900) is True                # no combo running: heal freely
+    bot.stats.update(combo_prev=26, combo_left_s=1.5)
+    assert bot._heal_window_ok(442, 900) is False               # window running out: defer the heal
+    bot.stats["combo_left_s"] = 4.0
+    assert bot._heal_window_ok(442, 900) is True                # a kill refilled it: heal now
+    bot.stats["combo_left_s"] = 0.8
+    assert bot._heal_window_ok(200, 900) is True                # near-critical: survival still wins
+
+
 def test_a_crowd_heals_at_seventy_percent_not_at_eighty_and_crowd_control_backs_out_as_it_attacks():
     four = ((0.0, 0.0, 120.0, 700), (100.0, 0.0, 200.0, 700), (-100.0, 0.0, 220.0, 700), (0.0, 0.0, 280.0, 700))
     bot, clock, snap = brain(round_guest(enemies=four, hp=740, cam_yaw=0.0))   # 82 % with four within 3 m

@@ -2015,6 +2015,10 @@ DYING_TABLETS, DYING_HP, DYING_GAP_S = False, 1, 1.0   # off: RE6 takes no table
 # crowd control with CC_BACK_N within CC_BACK_R the kicks and quick shots carry the stick back (stats cc_backouts).
 CROWD_TABLET_N, CROWD_TABLET_R, CROWD_TABLET_HP = 4, 300.0, 0.70
 TABLET_LOWER_S = 0.3                    # R only this long after ZL was last held
+# Operator 2026-11-14 (live break attribution): a tablet at 442/900 health (49 %) broke a 26-kill combo - the heal
+# guns down for ~1 s straight out of the window. Above the critical band a heal only starts while the combo
+# window has at least this much left (a fresh kill refills it first).
+TABLET_COMBO_WINDOW_S = 3.0
 # Eat enough, never more (operator 2026-10-28: "he's not eating enough health capsules to heal himself. Make sure that
 # they eat enough health capsules to regain their health when they eat them, but not any more than that"): a tablet is
 # confirmed by the health it gave back (infinite_tablets refills the case at once, so the count alone never fell: 30 of
@@ -3394,6 +3398,19 @@ class Bot:
         self.stats['quick_shot_turns'] = int(self.stats.get('quick_shot_turns', 0)) + 1
         return self._go("turn", "face_for_quick_shot", {"hold": self._yaw(err)},
                         f"quick shot: turning {math.degrees(err):+.0f} deg to the one {flat(target):.0f} cm off")
+
+    def _heal_window_ok(self, hp, hp_max) -> bool:
+        """A heal may start only with a fresh combo window (or none running), unless near-critical health.
+
+        Live 2026-11-14 (attribution): a tablet at 442/900 health broke a 26-kill combo - the gun-down heal ate the
+        window straight after the last kill. Above the critical band the heal waits for a window of at least
+        TABLET_COMBO_WINDOW_S, which the next kill refills.
+        """
+        combo = self.stats.get("combo_prev") or 0
+        left = self.stats.get("combo_left_s")
+        if not isinstance(combo, int) or combo <= 0 or not isinstance(left, (int, float)):
+            return True
+        return left >= TABLET_COMBO_WINDOW_S or (bool(hp_max) and hp <= TABLET_CRITICAL_HP * hp_max)
 
     def _inside_blast_margin(self) -> bool:
         """True when a placed mine's clearance rule says he is still inside the blast and must move out.
@@ -5187,7 +5204,8 @@ class Bot:
                 # Operator 2026-11-14: "the combo should never be lost". A heal tick guns down for a second; above
                 # the critical band it waits for the after-a-kill window instead of breaking a live chain.
                 and not (getattr(self, '_combo_hot_now', False) and not topping
-                         and hp > TABLET_CRITICAL_HP * hp_max * 1.5)):
+                         and hp > TABLET_CRITICAL_HP * hp_max * 1.5)
+                and self._heal_window_ok(hp, hp_max)):
             # the lethal heal tick (#5052): down and at 1 health within MELEE_R is never tablet time - the heal chain
             # lowers the gun, and the lower window is what the fall/knockdown/dying chain's deaths are made of
             self._gun_down()                                     # 60 % health or less, free: a tablet (R),
