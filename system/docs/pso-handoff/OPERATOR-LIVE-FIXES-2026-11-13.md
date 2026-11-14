@@ -322,3 +322,68 @@ What the live session taught the driver:
 Each verified leg records the floor register before/after, the player entity position and room, and the input count in
 `mandate/t0-trial.jsonl`; the run ends with `mandate/t0-receipt.json` (`controller_only: true`, `memory_writes: 0`,
 `dev_warps: 0`). First cycle verified live: town->forest floor 0->1 and forest->town floor 1->0.
+
+## 16. Round 11 - the door latch: what Ghidra proves, and what the live session proved
+
+Operator's standing request (2026-11-14, live): *"The game should have a Ghidra hook and latch on it that anytime I
+play this game, it automatically unlocks any door I walk up to."*
+
+**Working behaviour right now:** `pso-doors-always.py` polls the door-family entities around the player and, within 30
+units of any of them, saturates the current floor's stage-flag group (0x80515CC8 + floor*32, 32 bytes of 0xFF) through
+the audited write path. Measured live at 01:35: the operator stood 16 units from a `TObjDoor` in Forest 1; the pass
+saturated group 0x80515CE8 and the operator walked through into Forest 2 seconds later. It is automatic and permanent,
+but it is a **RAM latch polled by the agent**, not yet an in-engine hook.
+
+**What Ghidra established for the native hook** (decompiled from D:\gBox\ghidra-pso\PSO, program pso_v3.elf, image base
+0x8000C000):
+
+* The player actor's vtable pointer is set by the constructor `FUN_801bd424` - it writes `player+0x18 = 0x804C3BBC`.
+* The player-update function pointer is vtable slot `0x804C3BBC + 0x0C = 0x804C3BC8` ("VT_UPDATE"), and it holds
+  `ORIGINAL_UPDATE = 0x801BB330`. `FUN_801BB330` is a normal function: it calls ~10 subsystem updaters then branches
+  through its own action dispatch.
+* Four functions reference the vtable base: `FUN_801bd424`, `FUN_801bd570`, `FUN_801bd70c`, `FUN_801bd928` (the first
+  two are constructors; the other two are state/vtable selectors).
+* Only the vtable data refers to `0x801BB330` - no direct branch exists - so the update must be invoked through the
+  vtable slot or a cached copy of it.
+
+**Negative result (important):** replacing `0x804C3BC8` with a small MIPS wrapper that writes a RAM marker and then
+tail-jumps to gBox's cave at 0x80004C00 does **not** execute while the game is already running: the pointer stays
+patched for seconds and the marker never changes, while a normal gBox command still runs in 0.17 s with the cave
+pointer restored. Conclusion: the snapshot of the slot is not re-read on every update by the running actor - the game
+appears to have resolved the update entry already (likely copied at actor construction or into the JIT-warmed vtable
+path). A live latch therefore needs a **code patch at a real entry point** - `ORIGINAL_UPDATE` 0x801BB330's first 16
+bytes replaced by an absolute jump into a trampoline that runs the saturation routine, executes the displaced
+prologue, then continues at 0x801BB340, with a guest icbi flush (gBox's FLUSH_CODE at CAVE+0x300 shows the pattern)
+so Dolphin recompiles the patched block. That is the next step; the decompilation facts above are its map.
+
+The mis-install that froze the guest for a few minutes is also instructive: a wrapper that reloads VT_UPDATE after
+hooking it tail-calls itself forever, and the recovery that worked without losing the operator's run was to break the
+loop **in memory** (write `blr` over the routine's loop branch) and restore the original pointer - the CPU was
+executing our code from RAM, so the patch took effect on the next iteration.
+
+## 17. Round 12 - native door hook: guest code execution proven, full update trampoline not yet safe
+
+After round 11's negative result (replacing vtable slot 0x804C3BC8 on a running actor does not execute), the hook moved
+to patching the stock update **entry** 0x801BB330 itself: an absolute jump into a trampoline in unused RAM that runs
+the flag saturation, replays the displaced prologue (stwu/mflr/stw/stw) and continues at 0x801BB340. Guest code
+execution is now **proven**: a probe routine placed at 0x80005000 (zero page between gBox's cave, which ends at
+0x80005000, and the DOL text base 0x8000C000) and called through gBox's native queue ran correctly - marker written,
+counter incremented, clean return. That validates the register-save frame, the counter/marker stores and the queue
+protocol.
+
+The full trampoline is **not safe yet**: calling it through the queue with r3=player (the exact call the patched entry
+will make) leaves the queue entry pending forever - the guest stops consuming the queue, no marker is written, and the
+session has to be booted again. Two guest freezes were recovered by clean boot; notably, **importing a savestate into a
+freshly launched emulator re-froze the guest twice in a row**, so clean boot (not snapshot import) is the reliable
+recovery path for a hung guest.
+
+The tool (`pso-door-hook.py`) is committed with the safe staged verification: `--probe` for the queue-execution proof,
+then relocation phase (marker 0x5A, counter) before the saturation body, with an automatic rollback that restores the
+16 original bytes and re-flushes. The remaining question for the next round: why does executing the update call from
+queue/dispatcher context wedge the guest - the trampoline likely needs to preserve more call state (or the patch must
+run in the real update path, with its caller's CR/FPR state, rather than the queue path), so the next attempt should
+test the relocation phase **only** with the entry patch and a minimal trampoline that does nothing but replay the
+prologue and continue.
+
+Working behaviour meanwhile is unchanged: the agent-side 30-unit proximity unlock (`pso-doors-always.py`) is still the
+live door latch, and it is what opened the Forest 1 door for the operator.
