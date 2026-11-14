@@ -9,10 +9,26 @@ from __future__ import annotations
 import math
 
 from .re6_floor import floor_at
+from .re6_walk_floor import triangle_walkable_all_directions, walk_segment
 from .re6_switch_wall import STICK_REL, stick_heading
 from ..re6_traversal import TRAVERSAL_ACTIONS
 
 LOOKAHEAD_CM = 150.
+#: When no 150 cm step is on verified floor, retry the same eight pad directions with this shorter step (see
+#: guard()): a narrow catwalk corner can leave the 150 cm lookahead off-mesh while 60 cm is still solid floor.
+LOOKAHEAD_FALLBACK_CM = 60.
+#: A third, tiny step for tight corners where even 60 cm leaves the mesh (live 2026-11-13: the bot sat frozen in a
+#: bonus run with "no verified floor escape direction" for many seconds). Still mesh-proven and never longer.
+LOOKAHEAD_TINY_CM = 30.
+#: A bomb inside the planning margin used to forbid ANY step with a component toward it ("never decrease
+#: clearance"), which froze the bot outright when the only walkable floor out of a spot ran past a bomb:
+#: live 2026-11-13, a single trail bomb at 427 cm held it in place for 183 s with floor_safety_why
+#: "no verified floor escape direction" 930+ times, the gun down, the combo gone and the 5 s deadline missed.
+#: Movement may now cross the planning margin but never come within this of a bomb; the blast itself is still
+#: decided only by re6_switch_mods.detonate, which rereads every live bomb and refuses the flag below the full
+#: detonate_safe_cm. Remote bombs have no proximity trigger - the flag is the only fuse - so walking past one
+#: cannot set it off, while standing trapped next to it cost every round that placed a bomb at a dead end.
+BOMB_TRAVEL_MIN_CM = 250.
 LEFT = frozenset(('lup', 'ldown', 'lleft', 'lright'))
 MOVEMENT = LEFT | {'b', 'rleft', 'rright'}
 MANDATORY = frozenset(('break_free', 'held_auto_qte', 'grab_detonate', 'prompt_stick',
@@ -42,6 +58,8 @@ def _all_headings_on_floor(mesh, pos):
         if k in seen:
             continue
         seen.add(k)
+        if not triangle_walkable_all_directions(mesh, k):
+            return False
         triangle = mesh.T[k]
         for i in range(3):
             a, b = triangle[i], triangle[(i + 1) % 3]
@@ -64,36 +82,51 @@ def _bomb_clear(bot, snap, start, end):
         return True
     # A confirmed ring's centre is known from its native constructor order.
     # Its remote bombs do not contact-trigger: leaving the middle necessarily
-    # approaches some bombs first. Allow radial escape from that identified
-    # ring; all external bombs keep their nondecreasing clearance requirement.
-    receipt = bot.stats.get('mine_ring_last') or {}
-    units, radius = receipt.get('units') or (), receipt.get('radius_cm')
-    if (receipt.get('op') == 'bomb_ring' and units and isinstance(radius, (int, float))
-            and math.isfinite(radius) and 0 < radius <= 600. and units[0].get('armed') is True):
-        first = units[0].get('pos')
-        if isinstance(first, (list, tuple)) and len(first) == 3:
-            offset = math.pi / 4 if receipt.get('requested') == 4 else 0.
-            center = (first[0] - radius * math.cos(offset), first[2] - radius * math.sin(offset))
-            radial = start[0] - center[0], start[2] - center[1]
-            delta = end[0] - start[0], end[2] - start[2]
-            if (math.hypot(*radial) <= radius + 20. and radial[0] * delta[0] + radial[1] * delta[1] >= 0
-                    and math.hypot(end[0] - center[0], end[2] - center[1]) > math.hypot(*radial)):
-                own = [u['pos'] for u in units if u.get('armed') is True and u.get('pos')]
-                sites = [p for p in sites if not any(math.dist(p, q) < 2. for q in own)]
-                if not sites:
-                    return True
-    margin = policy(bot.stats)['detonate_safe_cm']
+    # approaches some bombs first. Allow radial escape from any identified ring
+    # still around him (a later travel receipt overwrites mine_ring_last, so the
+    # ring geometry kept in mine_rings is used too); all external bombs keep
+    # their nondecreasing clearance requirement.
     dx, dz = end[0] - start[0], end[2] - start[2]
+    rings = [r for r in (bot.stats.get('mine_rings') or ()) if isinstance(r, dict)]
+    receipt = bot.stats.get('mine_ring_last') or {}
+    if isinstance(receipt, dict) and receipt.get('op') == 'bomb_ring':
+        rings = [receipt] + [r for r in rings if r is not receipt]
+    for ring in rings:
+        units, radius = ring.get('units') or (), ring.get('radius_cm')
+        if not (isinstance(units, (list, tuple)) and units
+                and isinstance(radius, (int, float)) and math.isfinite(radius) and 0 < radius <= 600.):
+            continue
+        first = units[0].get('pos') if isinstance(units[0], dict) else None
+        if not (isinstance(first, (list, tuple)) and len(first) == 3 and units[0].get('armed') is True):
+            continue
+        offset = math.pi / 4 if ring.get('requested') == 4 else 0.
+        center = (first[0] - radius * math.cos(offset), first[2] - radius * math.sin(offset))
+        radial = start[0] - center[0], start[2] - center[1]
+        if (math.hypot(*radial) <= radius + 20. and radial[0] * dx + radial[1] * dz >= 0
+                and math.hypot(end[0] - center[0], end[2] - center[1]) > math.hypot(*radial)):
+            own = [u['pos'] for u in units if isinstance(u, dict) and u.get('armed') is True and u.get('pos')]
+            sites = [p for p in sites if not any(math.dist(p, q) < 2. for q in own)]
+            if not sites:
+                return True
+    margin = policy(bot.stats)['detonate_safe_cm']
+    required = bot.stats.get('mine_required_clearance_cm')
+    if isinstance(required, (int, float)) and math.isfinite(required):
+        margin = max(margin, required)
     for p in sites:
         rx, rz = start[0] - p[0], start[2] - p[2]
         before = math.hypot(rx, rz)
         if before >= margin:
             if _segment_distance(p, start, end) < margin:
                 return False
+        elif before >= BOMB_TRAVEL_MIN_CM:
+            # Inside the planning margin walking is allowed (only the flag gate detonates, and it rereads the live
+            # clearance for every bomb); a step may cross the margin but must not end within BOMB_TRAVEL_MIN_CM
+            # of a bomb.
+            if math.hypot(end[0] - p[0], end[2] - p[2]) < BOMB_TRAVEL_MIN_CM:
+                return False
         elif rx * dx + rz * dz < 0:
-            # Squared distance along a straight segment has derivative
-            # 2*(radial dot step + t*|step|^2). A nonnegative initial dot
-            # proves it never decreases, even while still inside the margin.
+            # Already closer than the no-step floor (a bomb dropped at his feet): only a step that does not
+            # approach it further may go, so he climbs out instead of standing on it.
             return False
     return True
 
@@ -127,20 +160,69 @@ def guard(bot, snap, action, now):
             heading = stick_heading(held, yaw)
             if heading is None:
                 return action
-            def safe(keys, *, detour=False):
+            sites = [tuple(s) for s in (bot.stats.get('mine_avoid_positions') or ())
+                     if isinstance(s, (list, tuple)) and len(s) == 3]
+            def end_of(keys, lookahead=LOOKAHEAD_CM):
                 way = stick_heading(keys, yaw)
-                end = (pos[0] + LOOKAHEAD_CM * math.sin(way), pos[1], pos[2] + LOOKAHEAD_CM * math.cos(way))
-                return (mesh.clear(pos, end) is True
+                return (pos[0] + lookahead * math.sin(way), pos[1], pos[2] + lookahead * math.cos(way))
+            def clearance(keys, lookahead=LOOKAHEAD_CM):
+                end = end_of(keys, lookahead)
+                return min((math.hypot(end[0] - s[0], end[2] - s[2]) for s in sites), default=math.inf)
+            def safe(keys, *, detour=False, lookahead=LOOKAHEAD_CM):
+                way = stick_heading(keys, yaw)
+                if way is None:
+                    return False
+                end = (pos[0] + lookahead * math.sin(way), pos[1], pos[2] + lookahead * math.cos(way))
+                return (mesh.clear(pos, end) is True and walk_segment(mesh, pos, end)
                         and (not (detour or escaping) or _bomb_clear(bot, snap, pos, end)))
-            if safe(held):
+            if not escaping and safe(held):
                 return action
             # Evaluate the exact eight pad directions; do not validate a
             # continuous heading and then quantize it back toward the ledge.
             options = sorted(STICK_REL, key=lambda keys: abs(R.wrap(stick_heading(keys, yaw) - heading)))
-            keys = next((keys for keys in options if safe(keys, detour=True)), ())
-            result = dict(action, hold=rest + keys)
-            why = ('redirecting to verified floor and bomb clearance' if escaping else 'redirecting to verified floor') if keys else 'no verified floor escape direction'
+            short = False
+            want_route = getattr(bot, '_escape_heading', None) if escaping else None
+            if escaping and sites:
+                # Follow the planned escape route's heading when the bot published one (re6_switch._escape_route):
+                # it plans around railings. Without a route, take the verified direction with the largest clearance
+                # at the step's end - a radial run - because a safe parallel step never leaves the blast.
+                opts, look, short = [], LOOKAHEAD_CM, False
+                for look_try in (LOOKAHEAD_CM, LOOKAHEAD_FALLBACK_CM, LOOKAHEAD_TINY_CM):
+                    if look_try <= 0:
+                        continue
+                    opts = [k for k in options if safe(k, detour=True, lookahead=look_try)]
+                    if opts:
+                        look, short = look_try, look_try != LOOKAHEAD_CM
+                        break
+                if opts and want_route is not None:
+                    keys = min(opts, key=lambda k: abs(R.wrap(stick_heading(k, yaw) - want_route)))
+                elif opts:
+                    keys = max(opts, key=lambda k: clearance(k, look))
+                else:
+                    keys = ()
+            else:
+                keys, short = (), False
+                for look_try in (LOOKAHEAD_CM, LOOKAHEAD_FALLBACK_CM, LOOKAHEAD_TINY_CM):
+                    if look_try <= 0:
+                        continue
+                    keys = next((k for k in options if safe(k, detour=True, lookahead=look_try)), ())
+                    if keys:
+                        short = look_try != LOOKAHEAD_CM
+                        break
+            if keys and set(keys) == set(k for k in held if k in MOVEMENT):
+                # Same direction as requested: keep the caller's hold order (and still record the block below).
+                result = dict(action)
+            else:
+                result = dict(action, hold=rest + keys)
+            why = (('redirecting to verified floor and bomb clearance' if escaping else 'redirecting to verified floor')
+                   if keys else 'no verified floor escape direction')
+            if short:
+                why += ' (short verified step)'
     bot.stats['floor_safety_blocks'] = int(bot.stats.get('floor_safety_blocks', 0)) + 1
+    # The telemetry mirror keeps scalars only; this scalar carries the why (and the directive of the applied hold)
+    # to the live panel and the round audit instead of the nested floor_safety_last object.
+    bot.stats['floor_safety_why'] = why
+    bot.stats['floor_safety_applied'] = ''.join(sorted(k for k in result['hold'] if k in MOVEMENT))[:24]
     bot.stats['floor_safety_last'] = dict(at=now, mesh=getattr(mesh, 'name', None), pos=list(pos),
                                         requested_hold=list(held), applied_hold=list(result['hold']), reason=why,
                                         native_heading_write=heading_written)

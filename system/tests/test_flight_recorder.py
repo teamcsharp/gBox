@@ -20,11 +20,17 @@ def test_re5_camera_weapon_motion_and_aim_feedback_are_preserved():
             'inventory': [{'hand': False, 'item': 2}, {'hand': True, 'item': 11}],
             'aim_cam': {'pitch': .3, 'heading': -.2}, 'laser': {'up': False}}
     stats = {'target_feedback_yaw_deg': 22., 'target_feedback_write_failures': 3,
-             'target_feedback_gate': 'no current laser'}
+             'target_feedback_gate': 'no current laser', 'bonus_priority': 'time bonuses before combo',
+             'throw_equip_blocked_count': 1,
+             'throw_equip_blocked_items': '0x106',
+             'throw_equip_refusal': {'owner': ['round', 10, 20], 'item': 262,
+                                     'reason': 'previous_request_unconfirmed'}}
     f.observe(1, snap, {}, stats)
     out = f.snapshot(); row = out['tail'][0]
     assert row['weapon'] == 11 and row['native_action'] == 26 and row['game_phase'] == 1
     assert row['camera'] == snap['aim_cam'] and row['diagnostics'] == stats
+    stats['throw_equip_refusal']['owner'][0] = 'next-round'
+    assert row['diagnostics']['throw_equip_refusal']['owner'][0] == 'round'
     assert out['signal_quality']['tail_field_samples']['camera'] == 1
 
 
@@ -37,11 +43,19 @@ def test_native_defensive_requests_are_bounded_and_detached_from_later_receipts(
              'reactive_escape_requests': 2, 'automine_request_count': 5,
              'native_mine_deployed_hazards': 5, 'native_mine_escape_required': True,
              'native_mine_escape_clearance_cm': 420., 'native_mine_escape_replans': 1,
+             'native_mine_refusal_retry': {'state': 'verified_inactive', 'owner': ['round', 10, 20],
+                                           'verified_actors': 5},
+             'native_mine_refusal_recoveries': 1, 'crowd_roulette_coalesced': 2,
+             'automine_credit_restorations': 1,
+             'automine_credit_restore': {'id': 'floor-refused', 'owner': ['round', 10, 20],
+                                        'restored_cm': 279.4, 'carried_cm': 340., 'total_cm': 609.6},
              'native_mine_escape_blocked': {'required_cm': 1500., 'center': [100, 0, 200]}}
     f.observe(10, {'player': {'hp': 900, 'pos': [100, 0, 200]}},
               {'controls': {'keys': ['b', 'lup']}}, stats)
     event['damage'] = 999
     event['owner'][0] = 'next round'
+    stats['native_mine_refusal_retry']['owner'][0] = 'next round'
+    stats['automine_credit_restore']['owner'][0] = 'next round'
     stats.update(native_mine_pending=False, native_mines_placed=3)
     row = f.snapshot()['tail'][0]
     assert row['diagnostics']['reactive_ring_event']['damage'] == 100
@@ -50,6 +64,12 @@ def test_native_defensive_requests_are_bounded_and_detached_from_later_receipts(
     assert row['diagnostics']['native_mines_placed'] == 2
     assert row['diagnostics']['native_mine_escape_required'] is True
     assert row['diagnostics']['native_mine_escape_blocked']['required_cm'] == 1500.
+    assert row['diagnostics']['native_mine_refusal_retry']['owner'] == ['round', 10, 20]
+    assert row['diagnostics']['native_mine_refusal_recoveries'] == 1
+    assert row['diagnostics']['crowd_roulette_coalesced'] == 2
+    assert row['diagnostics']['automine_credit_restorations'] == 1
+    assert row['diagnostics']['automine_credit_restore']['owner'] == ['round', 10, 20]
+    assert row['diagnostics']['automine_credit_restore']['total_cm'] == 609.6
     assert row['diagnostics']['rapid_fire_configured_x'] == 20 and row['controls']['keys'] == ['b', 'lup']
     json.dumps(row, allow_nan=False)
 
@@ -77,6 +97,44 @@ def test_missing_ground_mine_observation_is_distinct_from_confirmed_empty():
     f.observe(2, {'ground_mines': []}, {}, {})
     rows = f.snapshot()['tail']
     assert rows[0]['ground_mines'] is None and rows[1]['ground_mines'] == []
+
+
+def test_mine_census_and_actual_planner_hazards_remain_distinct():
+    f = FlightRecorder()
+    live = {'ptr': 66, 'generation': 7, 'active': True, 'pos': [0, 0, 0]}
+    refused = {'ptr': 78, 'generation': 8, 'active': False, 'pos': [0, 0, 100]}
+    f.observe(1, {'ground_mines': [live], 'ground_mine_observations': [live, refused]}, {}, {})
+    live['generation'] = 99
+    f.observe(2, {'ground_mine_observations': [refused]}, {}, {})
+    f.observe(3, {'ground_mines': []}, {}, {})
+    a, b, c = f.snapshot()['tail']
+    assert a['ground_mines_source'] == 'ground_mine_observations'
+    assert a['ground_mine_hazards'] == [{'ptr': 66, 'generation': 7}]
+    assert len(a['ground_mines']) == 2 and a['ground_mines'][1]['active'] is False
+    assert b['ground_mine_hazards'] is None  # unknown, not a confirmed empty hazard list
+    assert c['ground_mines_source'] == 'ground_mines' and c['ground_mine_hazards'] == []
+
+
+def test_native_capture_and_pitch_failure_evidence_retains_separate_raw_signals():
+    f = FlightRecorder()
+    snap = {'player': {'ptr': 10, 'generation': 2, 'pos': [0, 0, 0], 'state': 0,
+                       'motion': 4012, 'action': 'cEm1000ActAtkSokusiCatchHit_PL'},
+            'enemies': [{'ptr': 20, 'generation': 3, 'pos': [0, 0, 10], 'hp': 800,
+                         'state': 9, 'action': 'native_attack'}]}
+    stats = {'target_feedback_dt_ms': 0., 'target_feedback_camera_pitch_deg': -.06,
+             'target_feedback_wanted_pitch_deg': -28., 'target_feedback_refresh_ms': 2.5,
+             'qte_auto': True, 'qte_solved_ram': 4, 'qte_escapes_observed': 0,
+             'qte_escape_flash': {'state': 'unavailable', 'reason': 'native owner unavailable'}}
+    f.observe(1, snap, {}, stats)
+    snap['enemies'][0]['action'] = 'next_action'
+    row = f.snapshot()['tail'][0]
+    assert row['native_state'] == 0 and row['native_motion'] == 4012
+    assert row['native_action'] == 'cEm1000ActAtkSokusiCatchHit_PL'
+    assert row['nearby_enemies'][0]['generation'] == 3
+    assert row['nearby_enemies'][0]['state'] == 9
+    assert row['nearby_enemies'][0]['action'] == 'native_attack'
+    assert row['diagnostics'] == stats
+    json.dumps(row, allow_nan=False)
 
 
 def record(phase='walk', step=0, turns=False, scale=1):

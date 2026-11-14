@@ -190,3 +190,17 @@ def test_a_controller_that_attaches_on_demand_is_advertised_not_refused():
     assert rows["incendiary"]["available"] is False, "a real refusal keeps its reason"
     other = {r["kind"]: r for r in G.rows(game, NoAttach())}
     assert other["flash"]["available"] is False and "not attached" in other["flash"]["reason"]
+
+
+def test_a_probe_kind_keeps_its_source_even_when_the_controller_reports_it_available():
+    # Live 2026-11-13: the launcher-shell rows reached the PiP without their source, so the Nitrogen click was sent
+    # without allow_unverified and hit the native refusal instead of the research barrage.
+    ctl = Ctl([{"kind": "shell1304", "available": True, "reason": ""},
+               {"kind": "shell1302", "available": True, "reason": ""},
+               {"kind": "flash", "available": True, "reason": ""}])
+    rows = rows_by_kind({"game_id": "115f9cdbba115432"}, ctl)
+    assert rows["shell1304"]["source"] == "probe" and rows["shell1304"]["available"] is True
+    assert rows["shell1304"]["reason"].startswith("probe:")
+    assert rows["shell1302"]["source"] == "probe"
+    assert rows["flash"]["source"] == "native"
+

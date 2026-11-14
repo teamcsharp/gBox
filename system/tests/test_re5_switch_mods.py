@@ -334,10 +334,12 @@ def test_composed_templates_give_every_character_the_bomb():
     struct.pack_into("<I", t, 0 * SM.TEMPLATE_REC, 0x11A)                 # a magnum
     struct.pack_into("<I", t, 2 * SM.TEMPLATE_REC, SM.GRENADE_ID)         # hand grenades at record 2 (not Chris's 1)
     assert SM._mine_block(t) is True
-    assert struct.unpack_from("<I", t, 2 * SM.TEMPLATE_REC)[0] == SM.MINE_ID
+    assert struct.unpack_from("<I", t, 2 * SM.TEMPLATE_REC)[0] == SM.GRENADE_ID
+    assert SM._quick_mine(t)
     assert SM._mine_block(t) is False                                     # already carries it
     flash = bytearray(SM.TEMPLATE_REC * SM.TEMPLATE_RECS)
     for k in range(SM.TEMPLATE_RECS):
         struct.pack_into("<I",flash,k*SM.TEMPLATE_REC+SM.REC_GRID,k)
-    struct.pack_into("<I", flash, 3 * SM.TEMPLATE_REC, 0x108)             # only flash grenades: they become the bomb
-    assert SM._mine_block(flash) and struct.unpack_from("<I", flash, 3 * SM.TEMPLATE_REC)[0] == SM.MINE_ID
+    struct.pack_into("<I", flash, 3 * SM.TEMPLATE_REC, 0x108)             # keep the flash beside the mine
+    assert SM._mine_block(flash) and struct.unpack_from("<I", flash, 3 * SM.TEMPLATE_REC)[0] == 0x108
+    assert SM._quick_mine(flash)

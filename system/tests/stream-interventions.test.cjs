@@ -1,5 +1,5 @@
 const {test}=require('node:test'); const assert=require('node:assert/strict');
-const {create,RING_KINDS,ringKindLabel,readRingKind,ammoView,createAmmoControl,ringKindOptions,bindRing}=require('../clients/web/viz/stream-interventions.js');
+const {create,RING_KINDS,ringKindLabel,readRingKind,ammoView,createAmmoControl,ringKindOptions,bindRing,bindProximityMine,bindRemoteMines}=require('../clients/web/viz/stream-interventions.js');
 const {current}=require('../clients/web/viz/mercs-current.js');
 
 test('RE4 detonate darts sends one durable request and reports native initiation accurately',async()=>{
@@ -290,5 +290,57 @@ test('model swap: one UUID per click, honest states from the control plane, refu
   await listener({preventDefault(){},stopPropagation(){}});
   assert.match(status.textContent,/Model swap refused: not a donor build/);
   assert.equal(swapText({state:'failed',error:'X-fix1 already exists'}),'Model swap failed: X-fix1 already exists');
+  c.dispose();
+});
+
+test('a title without the proximity-mine lane shows no dead mine buttons',async()=>{
+  // operator 2026-11-13, watching RE6: the RE5-only "Mine ring . 5 ft" icon sat in the topbar and did nothing.
+  // A control this worker does not advertise must be hidden, not shown dead; the RE5 lane still shows it.
+  const mk=()=>({hidden:false,disabled:false,title:'',innerHTML:'',textContent:'',
+    addEventListener(){},removeEventListener(){},setAttribute(){}});
+  let report={available:true,capabilities:['flash_now','grenade_ring','remote_mines'],options:{}};
+  let tick=null;
+  const button=mk();
+  const c=bindProximityMine(button,{ring:true,api:async()=>report,sid:()=> 're6',enabled:()=>true,
+    action:async()=>{throw Error('a hidden control must never send');},
+    schedule:fn=>{tick=fn;return 1;},cancel:()=>{}});
+  await new Promise(r=>setImmediate(r));
+  assert.equal(button.hidden,true);assert.equal(button.disabled,true);
+  report={available:true,capabilities:['proximity_mine_ring'],options:{proximity_mines:{available:true}}};
+  await tick();
+  assert.equal(button.hidden,false);assert.equal(button.disabled,false);
+  c.dispose();
+});
+test('remote mine ring sends the native ring request and reports placed/armed from the receipt',async()=>{
+  // RE6's manual ring places ARMED NATIVE REMOTE BOMBS (op remote_mines); the bot's own deadline controller then
+  // escapes and detonates the set. The topbar control the operator called dead must use this lane, not the RE5 one.
+  const posts=[],notes=[];
+  const c=create({uuid:()=> 'rm-id',schedule:()=>1,cancel:()=>{},notify:t=>notes.push(t),
+    api:async(path,body)=>{if(body){posts.push(body);return {request:{id:body.request_id,state:'queued'}};}
+      return {requests:[{id:'rm-id',op:'remote_mines',state:'confirmed',
+        result:{state:'confirmed',op:'bomb_ring',requested:5,placed:5,radius_cm:152.4}}]};}});
+  await c.remoteMines('re6',{action:'ring',count:5,radius_cm:152.4});
+  assert.deepEqual(posts,[{op:'remote_mines',request_id:'rm-id',args:{action:'ring',count:5,radius_cm:152.4}}]);
+  await c.poll();
+  assert.match(notes[0],/Armed remote bombs: 5\/5/);
+  c.dispose();
+});
+
+test('the remote mine ring control is offered only where the worker advertises it',async()=>{
+  const mk=()=>({hidden:false,disabled:false,title:'',innerHTML:'',textContent:'',
+    addEventListener(type,fn){if(type==='click')this.click=fn},removeEventListener(){},setAttribute(){}});
+  let report={available:true,capabilities:['flash_now','grenade_ring'],options:{}};
+  let tick=null;const sent=[];
+  const button=mk();
+  const c=bindRemoteMines(button,{api:async()=>report,sid:()=> 're6',enabled:()=>true,
+    action:(sid,args)=>{sent.push({sid,args});return Promise.resolve({});},
+    schedule:fn=>{tick=fn;return 1;},cancel:()=>{}});
+  await new Promise(r=>setImmediate(r));
+  assert.equal(button.hidden,true);
+  report={available:true,capabilities:['remote_mines'],options:{}};
+  await tick();
+  assert.equal(button.hidden,false);assert.equal(button.disabled,false);
+  await button.click({preventDefault(){},stopPropagation(){}});
+  assert.deepEqual(sent,[{sid:'re6',args:{action:'ring',count:5,radius_cm:152.4}}]);
   c.dispose();
 });

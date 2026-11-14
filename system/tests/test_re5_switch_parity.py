@@ -216,14 +216,16 @@ def test_profile_round_ops_forward_magnums_and_preserve_supplies_before_native_i
     for i in SM.MERC_DESC:
         guns = [wid for wid in ids(g, i) if SM._is_gun(wid) and wid & 0xFF not in SM.THROWN_ITEMS]
         assert guns and set(guns) <= set(draw["pool"])               # each slot its own draw: shotgun AND magnum
-        supplies = bytearray(before[i])
-        SM._mine_block(supplies)                                  # boot now prepares quick mines before native inventory
         assert SM._quick_mine(g.rd(block_at(i),SM.TEMPLATE_REC*SM.TEMPLATE_RECS))
+        assert SM._has_damage_grenade(g.rd(block_at(i),SM.TEMPLATE_REC*SM.TEMPLATE_RECS))
         for k in range(SM.TEMPLATE_RECS):
             original = before[i][k * SM.TEMPLATE_REC:(k + 1) * SM.TEMPLATE_REC]
             old_id = struct.unpack_from("<I", original)[0]
-            if not SM._is_gun(old_id) or old_id & 0xFF in SM.THROWN_ITEMS:
-                assert g.rd(block_at(i) + k * SM.TEMPLATE_REC, SM.TEMPLATE_REC) == supplies[k*SM.TEMPLATE_REC:(k+1)*SM.TEMPLATE_REC]
+            if old_id and (not SM._is_gun(old_id) or old_id & 0xFF in SM.THROWN_ITEMS):
+                actual = g.rd(block_at(i) + k * SM.TEMPLATE_REC, SM.TEMPLATE_REC)
+                # Existing supplies retain identity/count; mine quick-slot placement may swap grid positions.
+                assert actual[:SM.REC_GRID] == original[:SM.REC_GRID]
+                assert actual[SM.REC_GRID+4:] == original[SM.REC_GRID+4:]
     assert 0x115 not in ids(g, 16)
     assert all(BASE <= address < BASE + SM.MAIN_SPAN for address, _ in ad.writes)
 
@@ -242,9 +244,10 @@ def test_template_ops_and_the_bombs_compose_and_revert_all_puts_every_block_back
     ad = Adapter(g)
     SM.run(ad, "mine_loadout", on=True)
     SM.tool_run(ad, "weapon_override", None, True, weapon=0x0F, only=True)
-    assert ids(g, 14)[1] == SM.MINE_ID and ids(g, 24)[1] == SM.MINE_ID and ids(g, 14)[3] == 0x10F   # bombs and bows
+    assert all(SM.MINE_ID in ids(g, i) and ids(g, i)[1] == SM.GRENADE_ID for i in (14,24))
+    assert ids(g, 14)[3] == 0x10F   # mines, original grenades and bows
     SM.tool_run(ad, "weapon_override", None, False)
-    assert ids(g, 14)[1] == SM.MINE_ID and ids(g, 14)[3] == 0x102          # the bombs outlive the override
+    assert SM.MINE_ID in ids(g, 14) and ids(g, 14)[3] == 0x102          # the bombs outlive the override
     SM.tool_run(ad, "weapon_override", None, True, weapon=0x0F, only=True)
     out = SM.run(ad, "mine_loadout", on=True)                             # live 2026-10-27: Chris's block, bows in it
     assert out["verified"] and out["blocks"] == [hex(o) for o in SM.CHRIS_TEMPLATES]
@@ -277,7 +280,8 @@ def test_the_mines_op_sets_the_bots_cadence_through_the_driver_and_can_switch_pl
     ad = Adapter(g)
     out = SM.tool_run(ad, "mines", 15, True)
     assert out["verified"] and out["mine_settings"] == {"enabled": True, "interval_s": 15.0, "only": False}
-    assert ids(g, 14)[1] == SM.MINE_ID and SM.mine_settings(ad)["interval_s"] == 15.0
+    assert SM.MINE_ID in ids(g, 14) and ids(g, 14)[1] == SM.GRENADE_ID
+    assert SM.mine_settings(ad)["interval_s"] == 15.0
     assert "not yet on Switch" in SM.tool_run(ad, "mines", "only", True)["note"]
     snap = R.snapshot(g)
     R.RE5Switch()._mods(SimpleNamespace(adapter=ad), snap, True)

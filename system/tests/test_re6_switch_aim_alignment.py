@@ -6,6 +6,30 @@ from gbox.mercs.titles import re6_switch as R
 from test_re6_switch import _fresh_caches, brain, lock_brain, round_guest, run
 
 
+def test_escape_aim_updates_leave_fresh_heading_ticks_for_guarded_movement():
+    from gbox.mercs.titles import re6_movement_safety as safety
+    from tests.test_re6_movement_safety import square
+    bot, clock, snap, writes = lock_brain(((0., 0., 900., 700),))
+    p, target = snap['player'], snap['enemies'][0]
+    snap.update(mercenaries_phase=R.PHASE_PLAYING, navmesh=square(4000.))
+    p['pos'] = (2000., 0., 2000.)
+    bot.stats.update(mine_escape_required=True, mine_avoid_positions=[[2000., 0., 1800.]])
+    assert bot._lock(p, target, snap, 100.)
+    action = {'hold': ('lup', 'zl', 'zr')}
+    assert not set(safety.guard(bot, snap, action, 100.)['hold']) & safety.LEFT
+    count = len(writes)
+    assert not bot._lock(p, target, snap, 100.1)
+    assert len(writes) == count
+    # This snapshot's yaw is fresh: final floor and bomb checks permit retreat
+    # while keeping the combat buttons. No requested native yaw is guessed.
+    assert safety.guard(bot, snap, action, 100.1) == action
+    assert bot.stats['bomb_escape_aim_yields'] == 1
+    bot._gun_down()
+    assert not bot._lock(p, target, snap, 100.2)
+    assert bot._lock(p, target, snap, 100.3)
+
+
+
 @pytest.mark.parametrize("height", [0.0, 600.0])
 def test_a_laser_stopped_before_the_body_never_confirms_a_hit(height):
     bot = R.Bot(stats={})
@@ -92,11 +116,18 @@ def test_point_blank_emergency_quick_shots_survive_without_a_laser():
     bot, clock, snap = brain(round_guest(enemies=((0.0, 0.0, 150.0, 700),), cam_yaw=0.0))
     bot.held = lambda p, now: False
     acts = run(bot, snap, clock, int(2 * R.CC_QSHOT_GAP_S / 0.05))
-    # Close range does not establish a clear projectile path. Acquire the gun's
-    # measured line before requesting emergency quick shots.
+    # Close range does not establish a clear projectile path, so no emergency quick
+    # shot is requested. The close geometry pull is a different, already-verified
+    # shot (GEOM_CLOSE_R band, cone and is_blocked test): it used to wait LASER_WAIT_S
+    # and is what this test's old blanket "no trigger" assertion measured. The
+    # no-trigger rule belongs to a target outside that proven band.
     assert bot.stats["cc_quick_shots"] == 0
     assert any('zl' in a.get('hold', ()) for a in acts)
-    assert all('zr' not in a.get('hold', ()) and a.get('tap') != 'zr' for a in acts)
+    assert bot.stats.get('re6_geometry_fires', 0) >= 1
+    far, clock2, snap2 = brain(round_guest(enemies=((0.0, 0.0, 900.0, 700),), cam_yaw=0.0))
+    far.held = lambda p, now: False
+    acts2 = run(far, snap2, clock2, int(2 * R.CC_QSHOT_GAP_S / 0.05))
+    assert all('zr' not in a.get('hold', ()) and a.get('tap') != 'zr' for a in acts2)
 
 
 def test_a_material_camera_redirect_cannot_fire_using_the_pre_write_ray():

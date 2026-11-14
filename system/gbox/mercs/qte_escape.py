@@ -80,8 +80,10 @@ class Recovery:
         episode['released'] = True
         stats['qte_escapes_observed'] = stats.get('qte_escapes_observed', 0) + 1
         stats['qte_escape_episode'] = episode['id']
-        if episode.get('flash_confirmed') is not None and now - episode['flash_confirmed'] <= 5:
-            stats['qte_escape_mines_due'] = episode['id']
+        # The operator's ask is the recovery ring, not the flash: request the mine ring on every released QTE even
+        # when the cover flash could not fire (no flash resource, bombs already out, a crowded slot). Admission and
+        # rate limiting live in the remote-mine controller (QTE_RING_MAX_OUTSTANDING).
+        stats['qte_escape_mines_due'] = episode['id']
         self._dispatch(stats, now, key, episode)
 
     def _dispatch(self, stats, now, key, episode):

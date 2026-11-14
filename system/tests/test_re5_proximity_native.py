@@ -300,7 +300,7 @@ def test_repeated_floor_refusal_reuses_bounded_inactive_allocations_then_arms_va
     assert len(ctl.units) == 5 and not ctl._proximity_prepared['rows']
 
 
-@pytest.mark.parametrize('change', ['generation', 'owner', 'active', 'attachment', 'primary_volume'])
+@pytest.mark.parametrize('change', ['generation', 'owner', 'active', 'attachment', 'primary_volume', 'proximity_volume'])
 def test_cached_inactive_unit_cannot_be_reused_after_ownership_or_state_changes(monkeypatch, change):
     ctl = mine_controller(monkeypatch)
     original = ctl.call
@@ -311,6 +311,7 @@ def test_cached_inactive_unit_cannot_be_reused_after_ownership_or_state_changes(
     elif change == 'owner': ctl.put(unit+0x1A10, struct.pack('<Q', ctl.player+0x1000))
     elif change == 'active': ctl.put(unit+0x27B9, b'\1')
     elif change == 'primary_volume': ctl.put(unit+0x4014, b'\1')
+    elif change == 'proximity_volume': ctl.put(unit+0x3014, b'\1')
     else: ctl.put(unit+0x48, struct.pack('<Q', ctl.player))
     before = len(ctl.native_calls), len(ctl.writes)
     out = M.place(ctl, allow_unverified=True)

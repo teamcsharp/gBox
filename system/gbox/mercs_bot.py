@@ -553,6 +553,11 @@ def apply_ops(ad, ops, prof: dict | None = None, stats: dict | None = None) -> l
                 if summary:
                     runs = stats.get("round_ops") if isinstance(stats.get("round_ops"), list) else []
                     stats["round_ops"] = (runs + [summary])[-6:]
+                    # The telemetry mirror drops lists/dicts, so the list above never reached the live panel: the last
+                    # round op's own one-line receipt is mirrored as a scalar so the spread's verified/writes/reason
+                    # are readable without the worker log (live 2026-11-13: no launcher in any round and no way to
+                    # tell whether the spread ran, wrote, or refused the build's table).
+                    stats["round_ops_last"] = summary[:300]
             if stats is not None and isinstance(res, dict) and res.get("telemetry"):
                 stats["cheats"] = res["telemetry"]
         except Exception as e:                              # noqa: BLE001 - one failed mod never stops the run

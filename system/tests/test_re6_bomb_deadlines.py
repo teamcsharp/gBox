@@ -132,6 +132,21 @@ def test_overdue_bomb_never_bypasses_clearance_and_disabled_drops_still_service_
     assert M.policy(st)['detonate_after_s'] == 5
 
 
+def test_tuned_native_clearance_keeps_escape_active_until_flag_gate_can_pass(monkeypatch):
+    calls = []
+    monkeypatch.setattr(N.R, 'BOMB_MARGIN_CM', 300.)
+    monkeypatch.setattr(N, 'bomb_detonate_now', lambda *a, **k: calls.append(1) or
+                        {'verified': False, 'reason': 'player is held'})
+    step, st = M.control(None, {'map_id': TITLE}), stats()
+    step.observe(snap(1150, [bomb()]), st, 100.)
+    assert st['mine_required_clearance_cm'] == 1200.
+    assert st['mine_escape_required'] and not calls
+    step.observe(snap(1200, [bomb()]), st, 100.2)
+    assert calls == [1] and st['mine_deadline_pending'] == 1
+    assert st['mine_detonate_last_failure'] == 'player is held'
+    assert not st['mine_detonate_last']['verified']
+
+
 def test_ring_worker_never_releases_movement_or_waits_for_native_allocation(monkeypatch):
     entered, release = threading.Event(), threading.Event()
     def ring(*a, **kw):
@@ -242,6 +257,64 @@ def test_ring_escape_anchor_does_not_flip_when_nearest_bomb_changes():
         assert bot._bomb_escape(p, s, 100)['hold'] == ('ldown',)
     assert anchors == [(0, 0), (0, 0)]
 
+
+def test_timed_out_deadline_escape_returns_the_gun_to_the_fight_and_keeps_the_route():
+    """A timed escape that cannot clear must not walk the round away with the gun down.
+
+    Live 2026-11-13 (RE6 No Mercy, round 33cba3ca): the combo went 24 -> 0 while the bot was 'out first' inside a
+    1100 cm bomb clearance it could not reach, with six zombies within 4.6 m and the gun never firing again. After
+    ESCAPE_TIMEOUT_S the pure-movement monopoly ends: the retreat route is kept and the aim/fire gates run. The
+    blast is never waived - it is still set off only from the rule's clearance, and the missed deadline remains in
+    mine_deadline_incidents.
+    """
+    from tests.test_re6_fire_commitment import crowd
+    bot, s = crowd()
+    p = s['player']
+    p.update(equipped=0, ammo=10)
+    bot._open_heading = lambda *a, **kw: 0
+    # Enemies 4 m to the side: outside ESCAPE_FIGHT_R, inside ESCAPE_TIMEOUT_FIGHT_R.
+    s['enemies'][0]['pos'] = (400., 0., 0.)
+    s['enemies'][1]['pos'] = (450., 0., 20.)
+    bot.stats.update(mine_escape_required=True, mine_oldest_placed_at=100., mine_elapsed_s=13.)
+    out = bot._bomb_walk(p, (0, -200), 0, 500, 0, 113., act='bomb_escape', live=s['enemies'])
+    assert out is None                                          # the normal combat tick runs, not a gun-down walk
+    assert bot.stats['escape_timeouts'] == 1
+    assert bot._combat_escape_move                              # the retreat direction is kept for _escape_fire_inputs
+    # Still inside the five-second deadline: pure movement, no aim, no trigger.
+    bot.stats.update(mine_elapsed_s=1.)
+    out = bot._bomb_walk(p, (0, -200), 0, 200, 0, 101., act='bomb_escape', live=s['enemies'])
+    assert out is not None and not ({'zl', 'zr'} & set(out['hold']))
+    # One timeout per bomb set, not one per tick.
+    bot.stats.update(mine_elapsed_s=20.)
+    bot._bomb_walk(p, (0, -200), 0, 200, 0, 120., act='bomb_escape', live=s['enemies'])
+    assert bot.stats['escape_timeouts'] == 1
+
+
+def test_a_missed_escape_keeps_retrying_sprints_instead_of_giving_up():
+    """One sprint window was not a plan.
+
+    Live 2026-11-13: after the single 12 s window expired the bot fought near the bomb for the rest of the round
+    and never made another pure-movement attempt, so a set stayed pending for 183 s and the 5 s deadline was never
+    once met. The escape now cycles: sprint ESCAPE_SPRINT_S toward open floor, fight in between, detonate the
+    instant the live clearance passes the rule.
+    """
+    from tests.test_re6_fire_commitment import crowd
+    bot, s = crowd()
+    p = s['player']
+    p.update(equipped=0, ammo=10)
+    bot._open_heading = lambda *a, **kw: 0
+    s['enemies'][0]['pos'] = (400., 0., 0.)
+    s['enemies'][1]['pos'] = (450., 0., 20.)
+    bot.stats.update(mine_escape_required=True, mine_oldest_placed_at=100., mine_escape_started_at=100.)
+    # first sprint window: pure movement, no aim, no trigger
+    out = bot._bomb_walk(p, (0, -200), 0, 200, 0, 103., act='bomb_escape', live=s['enemies'])
+    assert out is not None and not ({'zl', 'zr'} & set(out['hold']))
+    # fight phase: the normal combat tick decides; one timeout counted for this window
+    out = bot._bomb_walk(p, (0, -200), 0, 500, 0, 110., act='bomb_escape', live=s['enemies'])
+    assert out is None and bot.stats['escape_timeouts'] == 1
+    # next cycle starts a fresh sprint (24 s cycle, 3 s in)
+    out = bot._bomb_walk(p, (0, -200), 0, 200, 0, 127., act='bomb_escape', live=s['enemies'])
+    assert out is not None and not ({'zl', 'zr'} & set(out['hold']))
 
 def test_engine_services_deadlines_before_prompt_only_ticks(monkeypatch, tmp_path):
     from gbox.mercs import engine, lessons, grenade_ring

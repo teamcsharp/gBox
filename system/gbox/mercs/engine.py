@@ -794,6 +794,7 @@ def play_round(prof, m, send, stopped, stats: dict, lessons=None, sleep=time.sle
                 except Exception as exc:             # noqa: BLE001 - a mine rule never ends the round
                     stats["remote_mines_error"] = f"{type(exc).__name__}: {exc}"[:200]
                 else:
+                    stats['remote_mines_status'] = str(remote_out.get('reason') or '')[:200]
                     if remote_out.get("fired"):
                         # Native remote flags need no pad release. Preserve the
                         # bot's measured escape route instead of replacing it

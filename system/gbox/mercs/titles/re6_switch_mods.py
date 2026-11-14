@@ -224,10 +224,15 @@ MAGNUM_TYPES = frozenset({0x107, 0x108})
 # The spread (operator 18:00: "change what weapon is being used by the bot actively ... instantly use that weapon"): a
 # gun's model loads only for the round's loadout, so the empty weapon slots of every loadout get these at round set-up
 # (merc_loadout spread=): the magnums and the shotguns, ready for the live switch and the grab swap.
-SPREAD = ((0x108, 5), (0x112, 6), (0x107, 7), (0x104, 8), (0x105, 7), (0x106, 3))   # magnums, the launcher
+SPREAD = ((0x112, 6), (0x108, 5), (0x107, 7), (0x104, 8), (0x105, 7), (0x106, 3))   # launcher, magnums, shotguns
 # (0x112 the grenade launcher, item 18: spread into every loadout so the arsenal swap always has it loaded to equip,
-#  second in the fill order because the operator's 360 launcher ring reads the launcher's presence - live 2026-11-11
-#  18:40 a launcher-less character refused every shell ring)
+#  and the 360 launcher ring's shell branch reads it. LIVE 2026-11-13: filling only EMPTY slots was not enough - a
+#  character whose wheel is three full guns (Lightning Hawk / Triple Shot / Stun Rod every round) never showed the
+#  launcher the spread put in a later slot, and the agent shell probe refused "launcher resources are not present".
+#  The launcher now goes first into an empty slot AND, when the first three slots are full, replaces his last
+#  non-melee gun (never his first gun, never an explicitly asked weapon) so it is always inside the wheel.)
+LAUNCHER_TYPE, LAUNCHER_MAG = 0x112, 6
+MELEE_TYPES = frozenset({0x100, 0x118, 0x119, 0x11A})
 ASKED: set = set()                                       # the (type, magazine) pairs live_weapon put in the loadouts
 # No pistols (operator 2026-10-27 ~20:00: "for the characters in no mercy, replace the pistol with any random shotgun or
 # magnum"; "i want the characters using random weapons from the game and campaign in mercenaries"): with the spread,
@@ -771,7 +776,17 @@ def loadout_plan(entry: int, rocket: bool, thrown: int, rng, magnum: bool = Fals
                 picks = [q for q in PISTOL_SWAPS if all(q[0] != u for u, _c2 in w)]
                 if picks:
                     w[i] = rng.choice(picks)
-        for pair in SPREAD:                                  # the magnums and shotguns into the empty slots
+        if all(t != LAUNCHER_TYPE for t, _c in w[:3]):
+            # The wheel only offers the character's own slots: a loadout with three full slots never shows the
+            # launcher spread into slot 4+ (live 2026-11-13: every launcher-less round was a 3-gun character). Keep
+            # his first gun and any asked weapon; the last non-melee gun among the first three becomes the launcher.
+            avoid = {want} if want is not None else set()
+            spot = next((i for i in (2, 1) if w[i][0] not in MELEE_TYPES and w[i][0] not in avoid), None)
+            if spot is None:
+                spot = next((i for i in (2, 1) if w[i][0] not in avoid), None)
+            if spot is not None:
+                w[spot] = (LAUNCHER_TYPE, LAUNCHER_MAG)
+        for pair in SPREAD:                                  # the launcher first, then magnums/shotguns into the empties
             if all(t != pair[0] for t, _c in w):
                 free = next((i for i, q in enumerate(w) if q == EMPTY), None)
                 if free is None:

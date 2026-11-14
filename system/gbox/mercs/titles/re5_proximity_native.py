@@ -113,9 +113,11 @@ def place(ctl, count=1, *, allow_unverified=False, allowed=None, expected=None, 
         def inactive(row):
             unit = actor(row)
             primary = ctl.q(unit + 0x2710)
+            proximity = ctl.q(unit + 0x28C8)
             if (ctl.rd(unit + 0x27B9, 1) != b'\0' or ctl.rd(unit + 0x28C1, 1) != b'\0'
                     or ctl.q(unit + 0x48) != 0
-                    or (primary and (not R.ptr_ok(primary) or ctl.rd(primary + 0x14, 1) != b'\0'))):
+                    or (primary and (not R.ptr_ok(primary) or ctl.rd(primary + 0x14, 1) != b'\0'))
+                    or (proximity and (not R.ptr_ok(proximity) or ctl.rd(proximity + 0x14, 1) != b'\0'))):
                 raise Uncertain('prepared mine is active or attached; placement refused')
             return actor(row)  # reject allocation recycling during the flag/attachment reads
 

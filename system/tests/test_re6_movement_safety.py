@@ -51,7 +51,7 @@ def test_firing_is_preserved_while_unsafe_backstep_is_redirected():
 
 
 def test_no_safe_floor_direction_stops_movement_but_retains_gunfire():
-    b, snap = bot(), view(square(100.), (50., 0., 50.))
+    b, snap = bot(), view(square(40.), (20., 0., 20.))     # even a 60 cm step leaves this floor everywhere
     out = S.guard(b, snap, {'hold': ('lup', 'b', 'rleft', 'zl', 'zr')}, 100.)
     assert out['hold'] == ('zl', 'zr')
     assert 'no verified floor' in b.stats['floor_safety_last']['reason']
@@ -116,6 +116,23 @@ def test_safe_original_bomb_escape_is_preserved_and_floor_detour_avoids_external
     assert S._bomb_clear(b, snap, snap['player']['pos'], end(snap, out['hold']))
 
 
+def test_a_bomb_escape_runs_radially_to_the_largest_clearance():
+    # Live 2026-11-13: sprinting along a safe parallel step only gained ~130 cm in 20 s. While a bomb is pending the
+    # guard must pick the verified direction that actually leaves the blast, not merely the one that was requested.
+    b, snap = bot(), view()
+    b.stats.update(mine_escape_required=True, mine_avoid_positions=[[330., 0., 330.]])   # 130 cm to the east
+    out = S.guard(b, snap, {'hold': ('lup',)}, 100.)
+    assert out['hold'] == ('lright',)              # world left: 280 cm from it, versus 198 cm stepping north
+
+def test_a_planned_escape_heading_wins_over_the_radial_step():
+    # re6_switch._escape_route plans around railings; when it publishes a heading the guard follows the plan among
+    # the floor-proven options instead of taking the merely-radial step (which can be a dead end).
+    b, snap = bot(), view(pos=(200., 0., 200.))
+    b.stats.update(mine_escape_required=True, mine_avoid_positions=[[330., 0., 200.]])
+    b._escape_heading = 0.0            # north, toward the planned clear point
+    out = S.guard(b, snap, {'hold': ('lup',)}, 100.)
+    assert out['hold'] == ('lup',)     # the plan (198 cm from the bomb), not the radial west (280 cm)
+
 def test_identified_surrounding_remote_ring_permits_escape_without_weakening_external_clearance():
     b, snap = bot(), view()
     center = snap['player']['pos']
@@ -133,13 +150,69 @@ def test_identified_surrounding_remote_ring_permits_escape_without_weakening_ext
     assert not S._bomb_clear(b, snap, center, point)
 
 
-def test_departure_from_nearest_bomb_cannot_approach_another_unsafe_bomb():
+def test_ring_kept_in_mine_rings_stays_escapable_after_a_later_travel_receipt():
+    # The controller publishes every confirmed ring's constructor geometry to mine_rings. A later travel drop
+    # overwrites mine_ring_last; without the retained geometry the movement guard loses its radial-escape proof
+    # while the ring still lies around him (live 2026-11-13: floor_safety_blocks climbing, armed ring left pending).
+    b, snap = bot(), view()
+    center = snap['player']['pos']
+    sites = [[center[0] + 200 * math.cos(i * math.tau / 15), 0.,
+              center[2] + 200 * math.sin(i * math.tau / 15)] for i in range(15)]
+    travel = dict(op='bomb_trail', requested=1, radius_cm=0.,
+                  units=[dict(pos=[center[0] + 5., 0., center[2]], armed=True)])
+    b.stats.update(mine_avoid_positions=sites,
+                   mine_rings=[dict(op='bomb_ring', requested=15, radius_cm=200.,
+                                    units=[dict(pos=p, armed=True) for p in sites])],
+                   mine_ring_last=travel)
+    out = S.guard(b, snap, {'hold': ('lup',)}, 100.)
+    point = end(snap, out['hold'])
+    assert set(out['hold']) & S.LEFT
+    assert S._bomb_clear(b, snap, center, point)
+    # The identical step is refused when the ring geometry was not retained (the pre-fix behaviour).
+    b2, snap2 = bot(), view()
+    b2.stats.update(mine_avoid_positions=sites, mine_ring_last=travel)
+    assert not S._bomb_clear(b2, snap2, center, point)
+
+
+def test_inside_the_planning_margin_travel_is_allowed_but_never_onto_a_bomb():
     b = bot()
     b.stats['mine_avoid_positions'] = [[-100., 0., 0.], [600., 0., 0.]]
-    # Nearest clearance improves 100->250, but the other bomb closes 600->450.
-    assert not S._bomb_clear(b, {}, (0., 0., 0.), (150., 0., 0.))
-    assert S._bomb_clear(b, {}, (0., 0., 0.), (0., 0., 150.))
+    # Crossing the planning margin is fine: nearest 100 -> 250, the other 600 -> 450, both above the no-step floor.
+    # Only the flag gate detonates, and it rereads the live clearance for every bomb.
+    assert S._bomb_clear(b, {}, (0., 0., 0.), (150., 0., 0.))
+    # A step that ends within the no-step floor of a bomb is still refused.
+    assert not S._bomb_clear(b, {}, (0., 0., 0.), (-70., 0., 0.))     # ends 30 cm from the bomb at -100
+    # A bomb already at his feet: only a step that does not approach it further may go, so he climbs out.
+    b2 = bot()
+    b2.stats['mine_avoid_positions'] = [[80., 0., 0.]]
+    assert S._bomb_clear(b2, {}, (0., 0., 0.), (-100., 0., 0.))
+    assert not S._bomb_clear(b2, {}, (0., 0., 0.), (100., 0., 0.))
 
+
+def test_a_nearby_bomb_in_a_dead_end_no_longer_freezes_the_walk():
+    # Live 2026-11-13: one trail bomb 427 cm away held the bot for 183 s with floor_safety_why "no verified floor
+    # escape direction", because every step toward it was refused even when the walkable floor out of the corner
+    # ran past it. Crossing the margin is allowed now; standing on top of a bomb is not.
+    b = bot()
+    b.stats['mine_avoid_positions'] = [[0., 0., -427.]]
+    assert S._bomb_clear(b, {}, (0., 0., 0.), (0., 0., -150.))       # ends 277 cm away: above the floor
+    assert not S._bomb_clear(b, {}, (0., 0., 0.), (0., 0., -220.))   # ends 207 cm away: inside the floor
+
+
+def test_no_150cm_floor_step_retries_a_short_verified_step(monkeypatch):
+    # Live 2026-11-13: on a narrow walkway corner every 150 cm lookahead left the floor mesh, so the guard stripped
+    # movement for the rest of the round ("no verified floor escape direction") while the bot stood and fought.
+    import gbox.mercs.titles.re6_movement_safety as S
+    b, snap = bot(), view()
+    class Narrow:
+        name, V, T, grid = 'narrow', [], [], {}
+        def clear(self, a, d):
+            return math.hypot(d[0] - a[0], d[2] - a[2]) <= 100.
+    snap['navmesh'] = Narrow()
+    monkeypatch.setattr(S, 'walk_segment', lambda mesh, a, b: True)
+    out = S.guard(b, snap, {'hold': ('lup',)}, 100.)
+    assert set(out['hold']) & S.LEFT                      # a short verified step, not a stripped movement
+    assert 'short verified step' in b.stats['floor_safety_why']
 
 def test_already_safe_external_bomb_keeps_margin_along_whole_detour_segment():
     b = bot()
@@ -155,6 +228,13 @@ def test_external_bomb_margin_honors_larger_configured_clearance():
     b.stats.update(mine_avoid_positions=[[0., 0., 0.]], remote_mines={'detonate_safe_cm': 1500.})
     assert not S._bomb_clear(b, {}, (1550., 0., 0.), (1400., 0., 0.))
     assert S._bomb_clear(b, {}, (1400., 0., 0.), (1450., 0., 0.))
+
+
+def test_external_bomb_margin_honors_native_stage_tuning():
+    b = bot()
+    b.stats.update(mine_avoid_positions=[[0., 0., 0.]], mine_required_clearance_cm=1200.)
+    assert not S._bomb_clear(b, {}, (1250., 0., 0.), (1150., 0., 0.))
+    assert S._bomb_clear(b, {}, (1150., 0., 0.), (1250., 0., 0.))
 
 
 def test_deadline_final_move_checks_bomb_clearance_even_on_open_floor():

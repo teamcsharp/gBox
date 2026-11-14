@@ -18,6 +18,7 @@ from ..follow_report_delivery import _write
 
 ROOT = Path(__file__).resolve().parents[3] / 'gbox-data' / 'mercs' / 'native-mine-receipts'
 DEADLINE_S, OBSERVER_FRESH_S = 24., 2.
+REFUSAL_RECHECK_S = .5
 GUARD_ATTRIBUTE = '_re5_native_mine_guard'
 DISTANCE_CM, REACTION_S, REQUEST_GAP_S = 609.6, 8., 3.
 TRAVEL_MOTIONS = frozenset({1, 4, 7})  # walk, observed B+LUP sprint, backing
@@ -36,6 +37,7 @@ class Cadence:
         self.event_id = None
         self.traversal_id = None
         self.roulette_id = None
+        self.reserved_credit = None
 
     def observe(self, snap, stats, now, enabled=True):
         from . import re5_switch as R
@@ -57,6 +59,7 @@ class Cadence:
         self.previous = (now, tuple(p['pos'])) if moving else None
         if not enabled:
             self.distance = 0.
+            self.reserved_credit = None
             event = stats.get('automine_event') or {}
             self.event_id = event.get('id')
             self.traversal_id = (stats.get('traversal_mine_event') or {}).get('id')
@@ -89,8 +92,13 @@ class Cadence:
             return 'distance', None
         return None
 
-    def claimed(self, demand, now):
+    def claimed(self, demand, now, *, request_id=None):
         self.last_request = now
+        # Travel during a pending placement earns the next bounded credit.
+        # Save only this claim's prior travel; restore it only after Flight's
+        # positive zero-activation reconciliation releases this exact request.
+        self.reserved_credit = ({'id': request_id, 'owner': self.owner, 'distance': self.distance}
+                                if isinstance(request_id, str) and request_id and self.distance > 0 else None)
         self.distance = 0.                           # no burst of catch-up drops after a long request
         if demand[1] is not None:
             if demand[0] == 'traversal':
@@ -99,6 +107,25 @@ class Cadence:
                 self.roulette_id = demand[1]
             else:
                 self.event_id = demand[1]
+
+    def reconcile(self, release, stats):
+        """Consume one private Flight release, never infer it from old telemetry."""
+        saved = self.reserved_credit
+        if (saved is None or not isinstance(release, dict)
+                or release.get('state') != 'verified_inactive'
+                or release.get('id') != saved['id'] or release.get('owner') != saved['owner']
+                or self.owner != saved['owner']):
+            return False
+        self.reserved_credit = None
+        before = self.distance
+        self.distance = min(DISTANCE_CM, self.distance + saved['distance'])
+        restored = self.distance - before
+        stats.update(automine_distance_cm=round(self.distance, 1),
+                     automine_credit_restorations=stats.get('automine_credit_restorations', 0) + 1,
+                     automine_credit_restore={'id': saved['id'], 'owner': list(self.owner),
+                         'restored_cm': round(restored, 1), 'carried_cm': round(before, 1),
+                         'total_cm': round(self.distance, 1)})
+        return True
 
 
 def enabled(memory):
@@ -136,6 +163,8 @@ class Flight:
         self.closed, self.live = False, False
         self.seen = -math.inf
         self.guard = None
+        self.refused_candidate = None
+        self.refusal_release = None
         self.clearance_cm = 500.
         self.emergency = False
         self.deployments = queue.Queue(maxsize=40)
@@ -160,6 +189,10 @@ class Flight:
                          and (p.get('hp') or 0) > R.DYING_HP
                          and (self.emergency or p.get('motion') not in R.MOTION_HELD))
         self.owner = owner
+        if self.refusal_release is not None and self.refusal_release['owner'] != owner:
+            self.refusal_release = None
+        if self.refused_candidate is not None and self.refused_candidate['owner'] != owner:
+            self.refused_candidate = None
         if self.job is not None and (not self.live or owner != self.job['owner']):
             self.cancel()
         if _owner_ok(owner):
@@ -171,11 +204,53 @@ class Flight:
             self.guard = guard
             setattr(self.memory, GUARD_ATTRIBUTE, guard)
 
+    def _reconcile_refusal(self, stats):
+        from . import re5_mine_refusal as refusal
+        item, now = self.refused_candidate, time.monotonic()
+        if (item is None or not self.live or self.job is not None
+                or self.owner != item['owner'] or self.blocked_owner != item['owner']
+                or now < item['next']):
+            return
+        item['next'] = now + REFUSAL_RECHECK_S
+        owner = item['owner']
+
+        def allowed():
+            return (not self.closed and self.live and self.owner == owner and self.job is None
+                    and self.blocked_owner == owner and self.refused_candidate is item
+                    and stats.get('round_evidence_id') == owner[0]
+                    and not stats.get('round_evidence_closed') and not stats.get('operator_control')
+                    and stats.get('automine_enabled', True) and stats.get('screen') in (None, 'playing')
+                    and enabled(self.memory) and 0 <= time.monotonic()-self.seen <= OBSERVER_FRESH_S)
+
+        proof = refusal.verify(self.memory, owner, item['receipt'], allowed=allowed)
+        stats['native_mine_refusal_retry'] = dict(proof, id=item['id'], at=now, owner=list(owner))
+        if proof['state'] == 'verified_inactive' and allowed():
+            self.blocked_owner = None
+            self.refused_candidate = None
+            # Combat-thread handoff, one use, issued only after admission and
+            # full native inactive/detached proof both succeed. Diagnostic
+            # receipt dictionaries are not authority to restore travel credit.
+            self.refusal_release = {'state': 'verified_inactive', 'id': item['id'], 'owner': owner}
+            stats['native_mine_refusal_recoveries'] = stats.get('native_mine_refusal_recoveries', 0) + 1
+            if stats.get('mine_blocked_reason') == 'native mine unavailable or previous placement uncertain':
+                stats.pop('mine_blocked_reason', None)
+        elif proof['state'] == 'unsafe':
+            self.refused_candidate = None  # preserve the owner lock; never reconsider an active/uncertain actor
+
+    def take_refusal_release(self):
+        release, self.refusal_release = self.refusal_release, None
+        if (release is not None and release['owner'] == self.owner and self.live and not self.closed
+                and self.blocked_owner is None and self.job is None):
+            return release
+        return None
+
     def poll(self, snap, stats):
         self.observe(snap, stats)
         job = self.job
         stats['native_mine_pending'] = bool(job and not job['done'].is_set())
         if job is None or not job['done'].is_set():
+            if job is None:
+                self._reconcile_refusal(stats)
             return None
         self.job = None
         result = job['result']
@@ -183,15 +258,21 @@ class Flight:
             stats['native_mine_retired'] = {'id': job['id'], 'owner': list(job['owner']),
                                            'state': result.get('state'), 'archive': str(job['path'])}
             return None
-        # An uncertain allocation is not a cue to allocate another actor. Its
-        # hazards remain observable; another round must begin before auto retry.
+        # Uncertain allocations remain locked for this life. The sole retry
+        # exception is an explicit preactivation floor refusal, independently
+        # reconciled below against its entire inactive pool and detached mailbox.
         if result.get('state') == 'uncertain' or result.get('prepared') and result.get('state') != 'confirmed':
             self.blocked_owner = job['owner']
+            self.refused_candidate = None
+            from . import re5_mine_refusal as refusal
+            if refusal.candidate(result, job['requested']):
+                self.refused_candidate = {'owner': job['owner'], 'id': job['id'], 'receipt': result, 'next': -math.inf}
         if self.guard is not None:
             for row in [*(result.get('prepared') or ()), *(result.get('mines') or ())]:
                 if isinstance(row, dict) and type(row.get('unit')) is int and type(row.get('generation')) is int:
                     self.guard['actors'][row['unit']] = row['generation']
             self.guard['pending'] = False
+        self._reconcile_refusal(stats)
         return {'id': job['id'], 'owner': job['owner'], 'receipt': result,
                 'requested': job['requested'], 'center': job['center'],
                 'reason': job['reason'],

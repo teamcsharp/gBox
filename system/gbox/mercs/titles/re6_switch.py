@@ -1236,7 +1236,7 @@ def _screen_impl(m, merc=None, now: float | None = None) -> dict:
             where, cursor, target = "main_menu", _i32(m, ui["uIdStartUp00"] + MENU_CURSOR), MAIN_PLAY_GAME
         elif "uIdTitle00" in ui and getattr(m, "mercs_split_screen", False) is True                 and snap.get("mercenaries_mode") == "no_mercy":
             # split screen's lobby (a live run 2026-10-27, real frames): after the stage select, "THE MERCENARIES NO
-            # MERCY · <stage>", Player 1 joined, Player 2's slot "Press -/+ to join", A starts the game. Its own unit is
+            # MERCY ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â‚¬Å¾Ã‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¦ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¡ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã¢â‚¬Â¦Ãƒâ€šÃ‚Â¡ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â· <stage>", Player 1 joined, Player 2's slot "Press -/+ to join", A starts the game. Its own unit is
             # not named yet; the title unit stays listed under it, and a real title never has the No Mercy mode set
             where = "split_lobby"
         elif "uIdTitle00" in ui:
@@ -1560,6 +1560,10 @@ def forget(what: str) -> None:
     """Drop a cached unit ("camera", "laser") for every main base: the next read looks for it again."""
     for key in [k for k in _FOUND if k[1] == what]:
         _FOUND.pop(key, None)
+    for key in [k for k in _MISS if k[1] == what]:
+        # A deliberate re-look (the raise's reraise / the stale ray) must not be
+        # held off by the negative cache for up to RESCAN_S beyond LASER_WAIT_S.
+        _MISS.pop(key, None)
 
 
 def camera(m, base: int, near=None) -> dict | None:
@@ -1924,6 +1928,10 @@ GEOM_FIRE_ERR, GEOM_FIRE_PITCH, GEOM_CLOSE_R = math.radians(8), math.radians(10)
 # without the laser or a mesh proof, the NOHIT fire_track self-limiting a walled line. Ordinary ground zombies at range
 # are NOT blind-fired at (they still need the close band or a mesh-proven line), keeping the no-wall-shot rule for them.
 LONGSHOT_FIRE_ERR, LONGSHOT_FIRE_PITCH = math.radians(4), math.radians(6)
+#: A laser-sight / rocket / distant shooter the operator named is answered at ANY distance his weapon can reach:
+#: the long-shot geometry gate runs to SNIPER_LONG_R (60 m), not merely LONG_R (the "one in front" raise range).
+#: Its 4/6 deg cone is already tight (a native lock aims at the chest); the ray must still be clear/LOS-proven.
+SNIPER_LONG_R = 6000.0
 UNAIM_ERR = math.radians(100)           # aiming, the target this far off the line with none in front: gun down, turn
 TURN_TOL, TURN_FINE = math.radians(8), math.radians(30)   # the camera's turn (gun down): pulsed inside TURN_FINE
 YAW_DEAD, PITCH_DEAD = math.radians(0.8), math.radians(1.0)
@@ -2140,8 +2148,8 @@ CMD_DROP_S = 15.0
 # window is read live (stats combo_window_full: the reading on the tick a kill raised the combo and refilled it);
 # COMBO_WINDOW_S stands in until then.
 # KILL_PACE_S after a kill the next is owed (combo_pace): the quickest kill is the target (the nearest open one; one he
-# is already aiming at is kept) unless a close one is on him, and no time-bonus run starts while any enemy is alive
-# (COMBO_BONUS_WAIT; the clock under BONUS_CLOCK_LOW_S lets it). COMBO_LOW_S (the urgent end) keeps its own rules.
+# is already aiming at is kept) unless a close one is on him. Time bonuses take priority until the current clock
+# reaches five minutes; combo pacing must not keep that run at spawn. COMBO_LOW_S keeps its combat rules.
 # stats combo_left_s, combo_since_kill_s, combo_pace_s, combo_window_full.
 COMBO_WINDOW_S = 15.0
 try:
@@ -2149,7 +2157,7 @@ try:
     KILL_PACE_S = float(getattr(_doctrine, "KILL_PACE_S", 3.0))
 except ImportError:                      # (a worker holding no doctrine module yet)
     KILL_PACE_S = 3.0
-COMBO_PACE, COMBO_BONUS_WAIT, BONUS_CLOCK_LOW_S = True, True, 120.0
+COMBO_PACE, COMBO_BONUS_WAIT, BONUS_CLOCK_LOW_S = True, True, 300.0
 # Never stand (operator 2026-11-09: "There is never ever ever a reason to stand still"): the backstop for every cause -
 # his position unchanged by STAND_MOVE_CM for STAND_MAX_S outside a hold, a tablet, a prompt, a throw, an aimed shot
 # (ZL held) or a tap, and he steps STAND_STEP_S along open floor (the mesh's, STAND_PROBE_CM ahead; toward the route's
@@ -2363,7 +2371,7 @@ NADE_LAND_SLACK = 150.0
 # the distant / elevated shooters (their GunAim / Shoot / Bow / Rocket action read on any floor). A ranged threat is a
 # top target in _choose, and the tick counts re6_threats_tracked (live enemies with a 3D position) and re6_sniper_targets
 # (those reading a ranged action). LONGSHOT_R: beyond it a ranged/elevated threat is engaged as a long shot (re6_longshots).
-LEDGE_RANGED_R, LONGSHOT_R = 4000.0, 1500.0
+LEDGE_RANGED_R, LONGSHOT_R = 8000.0, 1500.0
 # Where it lands (operator 2026-10-28 05:0x: "she is throwing the grenades off of a cliff and is facing a wall. I need her
 # throwing them at the ground and then using the commotion to dispatch, melee, flee"): every grenade, the flash too,
 # faces them first, and the aim lock holds the camera on the ground among them (NADE_GROUND_MIN out at least, on his
@@ -2496,6 +2504,17 @@ AIM_WALK_R, AIM_WALK_S = 800.0, 0.8     # aiming this long without the line on o
 TICK_S = 0.05                           # the engine's tick (gbox.mercs.engine tick_s)
 BOMB_FIGHT_R, BOMB_DET_NEAR_R, BOMB_FACE_CLEAR_R, BOMB_FACE_MAX_S = 200.0, 400.0, 400.0, 0.4
 BOMB_CROWD_N, BOMB_CROWD_R = 2, 300.0
+# A timed escape that has not cleared the rule's distance this long after the earliest armed placement cannot clear it
+# here (the five-second deadline is already missed and truthfully recorded): instead of walking until the round ends
+# with the gun down - which broke the operator's combo rule in the live RE6 No Mercy rounds of 2026-11-13 - the gun
+# comes back up and the retreat keys are merged into normal aimed fire (stats escape_timeouts). The escape route is
+# still kept; only the pure-movement monopoly ends. Deadlines are never waived: the blast is still set off only from
+# the rule's clearance, and a missed deadline stays in mine_deadline_incidents.
+ESCAPE_TIMEOUT_S, ESCAPE_TIMEOUT_FIGHT_R = 12.0, 600.0
+#: A timed-out escape retries on this cycle (live 2026-11-13): sprint ESCAPE_SPRINT_S toward open floor, fight in
+#: between, and detonate the moment the live clearance passes the rule. The old one-shot timeout meant no further
+#: pure-movement attempt ever happened once 12 s had passed, so a set could stay pending for the whole round.
+ESCAPE_SPRINT_S, ESCAPE_CYCLE_S = 6.0, 24.0
 DEATH_LOG_N, HP_HIST_S = 8, 3.0         # stats death_log: the last deaths, each with his last HP_HIST_S
 BOMB_STUCK_S, BOMB_SIDE_S = 0.6, 0.8    # walking off it: not 30 cm further in this long, a side step this long
 BOMB_HURT_HP = 50                       # a blast that takes this much of his health (BOMB_LEARN_S): stats bomb_self_hits
@@ -2601,6 +2620,12 @@ FIRE_CAP_HZ = 10.0                      # the bot's own: a press every second 20
 # Continue firing while correcting a moderate miss. The obstruction gates still
 # apply; this is acquisition tolerance, not evidence that the shot hit anything.
 SPRAY_YAW, SPRAY_PITCH = math.radians(30), math.radians(20)
+#: Fire only while the current angular error would still land inside the body at this distance: the error's offset
+#: at the target (dist * tan(err)) must stay within a body half-width. Operator 2026-11-13, watching live: "they're
+#: shooting up in the air ... aiming and shooting at the people". Measured on the same build: 106 shots, 37 hits
+#: (35 %), 36 of 54 confirmed geometry shots had no body under the ray, and nearly every fired "correcting" pull was
+#: 12-27 deg off at 1-4 m - 1 m of vertical/lateral miss. The cone limits stay as outer bounds.
+FIRE_BODY_HALF_CM, FIRE_BODY_HALF_V_CM = 30.0, 35.0
 FIRE_FAMILY = {1: "handgun", 2: "handgun", 3: "handgun", 40: "handgun", 4: "shotgun", 5: "shotgun", 6: "shotgun",
                16: "shotgun", 7: "magnum", 8: "magnum", 9: "rifle", 10: "rifle", 11: "rifle"}
 
@@ -3204,8 +3229,81 @@ class Bot:
             self.tablet_wait, self.tablet_missed, self.tablet_dying = None, False, False
         elif now - at >= TABLET_CONFIRM_S:
             self.stats["tablet_misses"] += 1
+            # Evidence for the heal-miss chain (dead round 2026-11-13 21:59: 17 presses, 8 misses, 4 taken, then
+            # knocked down at 1 health with 4 tablets still in the case): what the player was doing when the press
+            # was ignored. The gun-down window is forced so the retry cannot be swallowed by an aim hold again.
+            self.stats["tablet_miss_state"] = p.get("state")
+            self.stats["tablet_miss_held"] = int(p.get("state") in HELD_STATES)
+            self.stats["tablet_miss_doing"] = str(getattr(self, "doing", ""))[:20]
+            self.stats["tablet_miss_zl_ago"] = round(now - getattr(self, "_zl_at", -1e9), 2)
+            self._zl_at = now                                # the retry gets its gun-down window first
             self.heal_chain = False
             self.tablet_wait, self.tablet_missed, self.tablet_dying = None, True, False
+
+    def _note_dying_transition(self, p, live, flat, held) -> None:
+        """What took him from above 1 health to the dying crawl (the S-rank killer): the flat telemetry the death
+        watcher then carries into the next round. Instrumentation only - no decision changes.
+
+        Every death in the 2026-10-27 runs came through the 1-health state, and re-raising the dying tablet was
+        measured to do nothing (4 presses, the case count never fell). So the actionable evidence is the transition:
+        how much health was lost (a one-shot from high health is a grab/bite or a heavy attack), what the bot was
+        doing, whether a melee-range enemy or a ranged wind-up was there, and whether it was held.
+        """
+        hp = p.get('hp')
+        if not isinstance(hp, int):
+            return
+        last = getattr(self, '_hp_last', None)
+        self._hp_last = hp
+        stats = self.stats
+        if hp == DYING_HP and last is not None and last > DYING_HP:
+            near_melee = [e for e in live if flat(e) <= MELEE_R]
+            stats['dying_count'] = int(stats.get('dying_count', 0)) + 1
+            stats['dying_from_hp'] = last
+            stats['dying_near_melee'] = len(near_melee)
+            stats['dying_ranged_windup'] = sum(1 for e in live if windup(e, p['pos']) == 'ranged')
+            stats['dying_near2'] = sum(1 for e in live if flat(e) <= 200.)
+            stats['dying_doing'] = str(getattr(self, 'doing', '') or '')[:24]
+            stats['dying_held'] = int(bool(held))
+            stats['dying_state'] = p.get('state')
+            bomb = p.get('bomb') or {}
+            stats['dying_bomb_out'] = int(bool(bomb.get('out')))
+        elif last == DYING_HP and hp > DYING_HP:
+            stats['dying_recoveries'] = int(stats.get('dying_recoveries', 0)) + 1
+
+    def _critical_no_tablet_flash(self, p, live, flat, now) -> dict | None:
+        """Critical health in a melee crowd: the native flash and a gun-down moment instead of raising the gun.
+
+        Evidence: the 2026-11-13 15:37 death (1 health, tablets 0, 5 enemies within 2 m, doing=raise) and the
+        20:26 death (1 health, downed, 9 enemies within 2 m after 240 damage events with 19 tablets taken and 34
+        presses / 18 ignored). A heavy crowd at critical health needs the crowd broken before a tablet can land - the
+        tablet retry rules alone lose the race. So the flash fires at critical health either with an empty case
+        (3+ within 2 m) or with tablets but a real crowd (4+ within 2 m); with tablets and a smaller crowd the
+        healing rule still wins.
+
+        Rate-limited by _respond_flash's own gate; when the flash cannot fire (refused twice this life, resources
+        missing) this returns None and the ordinary fight continues. Instrumentation: critical_flash_requests/at.
+        """
+        hp, hp_max = p.get('hp') or 0, p.get('hp_max') or 0
+        if not (hp_max and 1 < hp <= TABLET_CRITICAL_HP * hp_max):
+            return None
+        if self.down or p.get('state') not in (0, None):
+            return None
+        crowd = sum(1 for e in live if flat(e) <= 200.)
+        tablets = p.get('tablets') or 0
+        if tablets > 0:
+            if crowd < 4:
+                return None                                  # a tablet in the case handles a smaller critical crowd
+            why = f"health {hp}/{hp_max}, {tablets} tablets, {crowd} within 2 m: the flash breaks the crowd first"
+        else:
+            if crowd < 3:
+                return None
+            why = f"health {hp}/{hp_max}, no tablets, {crowd} within 2 m: the native flash covers him"
+        if not self._respond_flash(why):
+            return None
+        self._gun_down()
+        self.stats['critical_flash_requests'] = int(self.stats.get('critical_flash_requests', 0)) + 1
+        self.stats['critical_flash_at'] = round(now, 2)
+        return self._go("flash", "critical_flash", {"hold": ()}, why)
 
     def _dying(self, p, now) -> dict | None:
         """At 1 health (RE6's dying crawl): R for a tablet every DYING_GAP_S while the case holds one. None: no press
@@ -3864,6 +3962,7 @@ class Bot:
         self.stats["re6_sniper_targets"] = sum(1 for e in all_enemies if windup(e, p["pos"]) == "ranged")
         state = p.get("state")                               # None: no state byte (the health / stick heuristics)
         held = state in HELD_STATES
+        self._note_dying_transition(p, live, flat, held)
         if self.in_hold and not held:                        # a hold read in RAM just ended: how it was freed
             self._hold_ended(now, snap)
         if p.get("hp") != DYING_HP:
@@ -4058,6 +4157,7 @@ class Bot:
         once a tick: the one-shots act on the tick they arrive (explore / next_area: the wall escape; mine: the bomb
         due), the standing modes (fight / hunt / score) are returned for the decision to apply. The emergency flash
         reads its own directive (_emergency_flashbang); nothing here presses a key."""
+        self._mode_is_automatic = False  # unknown command provenance always retains operator priority
         try:                                     # the operator's commands, else the doctrine's
             from ..core.doctrine import Reader
         except ImportError:                      # a worker still holding a doctrine module from before Reader
@@ -4065,7 +4165,23 @@ class Bot:
         try:
             if self.commands is None:
                 self.commands = Reader()
-            cmd, fresh = self.commands.current(self.stats, time.time())
+            from ..directives import Reader as OperatorReader
+            wall_now = time.time()
+            reader = getattr(self.commands, 'base', self.commands)
+            known_reader = type(reader) is OperatorReader and type(self.commands) in (Reader, OperatorReader)
+            command_keys = ('directive', 'directive_seq', 'directive_until', 'doctrine_directive',
+                            'doctrine_directive_seq', 'doctrine_directive_until')
+            command_state = tuple(self.stats.get(k) for k in command_keys)
+            # A fresh explicit command is delivered once even after its TTL.
+            # Capture its pre-read sequence; checking the deadline alone would
+            # incorrectly demote that first delivery to automatic doctrine.
+            directive, seq, until, automatic, auto_seq, auto_until = command_state
+            explicit = bool(directive and seq is not None and
+                            (not known_reader or seq != reader.seen or wall_now < float(until or 0)))
+            cmd, fresh = self.commands.current(self.stats, wall_now)
+            self._mode_is_automatic = bool(known_reader and not explicit and cmd == automatic
+                and auto_seq is not None and wall_now < float(auto_until or 0)
+                and command_state == tuple(self.stats.get(k) for k in command_keys))
         except Exception as exc:                             # noqa: BLE001 - the command never stops a tick
             self.stats["directive_error"] = f"{type(exc).__name__}: {exc}"[:120]
             return None
@@ -4532,9 +4648,16 @@ class Bot:
         # fire and bonus run ran past the tablet rule at TABLET_LOW_HP. Healing beats the fight when he is already half
         # dead; the normal tablet rule (TABLET_LOW_HP 60 %) still governs the healthier band above.
         hp_crit, hp_crit_max = p.get("hp") or 0, p.get("hp_max") or 0
+        # No tablets left at critical health in a melee crowd: the death capture of 2026-11-13 15:37 was exactly this
+        # state (1 health, heals tablets 0, 5 enemies within 2 m, doing=raise) and the bot just raised the gun until it
+        # died. The verified native flash plus a gun-down moment is the survival answer there.
+        critical_flash = self._critical_no_tablet_flash(p, live, flat, now)
+        if critical_flash is not None:
+            return critical_flash
         if (hp_crit_max and hp_crit > 1 and hp_crit <= TABLET_CRITICAL_HP * hp_crit_max
                 and (p.get("tablets") or 0) > 0 and p.get("state") in (0, None)
-                and (self.tablet_wait is None) and now - self.tablet_at >= TABLET_GAP_S):
+                and (self.tablet_wait is None)
+                and now - self.tablet_at >= (TABLET_RETRY_S if self.tablet_missed else TABLET_GAP_S)):
             self._gun_down()
             if now - self._zl_at < TABLET_LOWER_S:
                 return self._go("tablet", "tablet_lower", {"hold": ()}, "the gun down for a tablet")
@@ -4548,9 +4671,9 @@ class Bot:
             out = self._lethal_out(p, live, snap, now)           # a learned attack his shots do not stop: out of reach
             if out is not None:
                 return out
-        # shoot first (operator 2026-10-28: "just have the bot firing on the enemy like mad if they are in the vicinity of
-        # them ... I need him mainly shooting"): one in sight on his level within FIRE_ZONE_R - no bonus run, no green
-        # detour, the fight below (stats fire_zone_s)
+        # Ordinary firefights still take visible threats first. Below the five-minute
+        # bank the time run can pass a distant foe; its close-blocker, damage and
+        # earlier bomb/QTE/healing gates keep immediate survival ahead of the run.
         if getattr(self, "qa_burst", 0) > 0 and not self._burst().active(now):
             close_e = min((e for e in live if flat(e) <= MISS_QA_R and abs(e["pos"][1] - py) <= AIM_DY),
                           key=flat, default=None)
@@ -4571,7 +4694,7 @@ class Bot:
         if any(now - t <= 1.5 and isinstance(h, (int, float)) and isinstance(hp_now, (int, float))
                and h > hp_now for t, h, _ in self.hp_hist):
             self._burst().end('damage_response')  # emergency flash/heal may interrupt the commitment
-        # #5056: just took HP loss with no enemy within HAZARD_CONTACT_R — the damage came from a ranged enemy
+        # #5056: just took HP loss with no enemy within HAZARD_CONTACT_R ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â‚¬Å¾Ã‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¦ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¡ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã¢â‚¬Â¦Ãƒâ€šÃ‚Â¡ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â the damage came from a ranged enemy
         # (or a hazard), not a melee attacker. Break out of the current decision mode (cc_kick, quick_turn,
         # bonus_run, etc.) and turn to fight the ranged enemy or move to safety, rather than continuing the
         # current action that left the bot exposed.
@@ -4597,15 +4720,31 @@ class Bot:
                                 "just took ranged damage: moving to open space")
             return self._go("no_foes", "ranged_break", {"hold": ()}, "just took ranged damage: no foes to turn to")
         goal_tick = self._goal_drive == now                      # the operator's mark drives this tick
-        detours = not goal_tick and not (self.mode == "fight" and live)   # (fight: no detour with one on his floor)
-        if self.mode == "hunt" and live and near > HUNT_R and self.aim_since is None and not goal_tick:
+        time_run = self._time_bonus_priority(snap, now)
+        auto_time_run = time_run and getattr(self, '_mode_is_automatic', False)
+        if self.mode is not None and not getattr(self, '_mode_is_automatic', False):
+            self.stats['bonus_priority'] = 'standing command retains priority: '+self.mode
+        elif time_run:
+            t = snap.get('timer')
+            clock_reason = (f'current clock {t:.1f}/{BONUS_CLOCK_LOW_S:.0f}s'
+                            if type(t) in (int, float) and math.isfinite(t) else 'five-minute bank not observed')
+            self.stats['bonus_priority'] = 'time bonuses before combo: '+clock_reason
+        else:
+            self.stats['bonus_priority'] = ('combat/combo: five-minute bank reached'
+                if self._bonus_clock_ready(snap) else 'combat/combo: no eligible time bonus')
+        if not time_run:
+            self.stats['phase'] = 'match'
+        detours = not goal_tick and not (self.mode == "fight" and live and not auto_time_run)
+        if (self.mode == "hunt" and not auto_time_run and live and near > HUNT_R
+                and self.aim_since is None and not goal_tick):
             self._gun_down()                                     # hunt: after the nearest by the mesh, at once
             chase = self._pursue(p, snap, now)
             if chase is not None:
                 self.why = f"hunt: the nearest {near / 100:.0f} m off - " + str(self.why)
                 return chase
-        ran = None if hot or not detours or self._bonus_wait(snap) else self._bonus_run(p, live, flat, snap, now)
-        if ran is not None:                                      # phase 1: the bonuses first (not with a kill owed)
+        ran = (None if (hot and not time_run) or not detours or self._bonus_wait(snap)
+               else self._bonus_run(p, live, flat, snap, now))
+        if ran is not None:                                      # time bank first, even with a distant kill owed
             return ran
         saved = None if hot or not detours else self._green_save(p, live, flat, snap, now)   # a green bonus for a
         if saved is not None:                                                                  # running-out combo
@@ -4861,8 +5000,20 @@ class Bot:
             forget("laser")
         source = "laser"
         if origin is None:
-            if cam is None or now - self.aim_since < LASER_WAIT_S:
+            if cam is None:
                 return self._go("raise", "raise", {"hold": ("zl",) + back}, "the gun comes up (no laser yet)")
+            if now - self.aim_since < LASER_WAIT_S:
+                # The laser is still unread (it is flaky on this build: reraise 28 / t_raise 26 s in the live
+                # 2026-11-13 No Mercy round). The camera line never authorizes fire by itself, but a shot it
+                # already proves by the SAME geometry gate _aim applies below - same cone, same is_blocked test,
+                # and the same band (close, or the nav mesh proves no wall) - is pulled now instead of after the
+                # 0.7 s wait. Nothing new can fire: a line this gate rejects still waits for the measured laser.
+                err = ray_error(cam["pos"], cam["target"], aim_point(tgt, p["pos"]))
+                proven = dist <= ENGAGE_R and (dist <= GEOM_CLOSE_R or self._mesh_clear(tgt, now))
+                if not (proven and abs(err[0]) <= GEOM_FIRE_ERR
+                        and abs(err[1]) <= GEOM_FIRE_PITCH and not self.is_blocked(tgt, now)):
+                    return self._go("raise", "raise", {"hold": ("zl",) + back}, "the gun comes up (no laser yet)")
+                self.stats["raise_geometry_fires"] = self.stats.get("raise_geometry_fires", 0) + 1
             origin, dot, source = cam["pos"], cam["target"], "camera"
         cands = self._aimable if source == "laser" else (front or self._aimable)
         on_e = self._on_line(origin, dot, source, cands, now)
@@ -4928,20 +5079,29 @@ class Bot:
         # standing with the gun raised; a shot that takes no health self-limits via the NOHIT_S fire_track below.
         if (not on and p.get("ammo") != 0
                 and not self.is_blocked(aim_at, now)):
-            close_geom = (dist <= ENGAGE_R and abs(yaw_err) <= GEOM_FIRE_ERR and abs(pitch_err) <= GEOM_FIRE_PITCH
-                          and (dist <= GEOM_CLOSE_R or self._mesh_clear(aim_at, now)))
+            cone_geom = (dist <= ENGAGE_R and abs(yaw_err) <= GEOM_FIRE_ERR and abs(pitch_err) <= GEOM_FIRE_PITCH
+                         and (dist <= GEOM_CLOSE_R or self._mesh_clear(aim_at, now)))
+            close_geom = cone_geom and self._fire_envelope(dist, yaw_err, pitch_err)
+            if cone_geom and not close_geom:
+                self.stats['fire_envelope_blocks'] = self.stats.get('fire_envelope_blocks', 0) + 1
             # option (b): the long shot at an exposed threat the operator named - elevated / ledge (off his level) or a
-            # shooter aiming at him (windup ranged) - on a tight cone, to LONG_R, no laser / mesh needed
-            long_geom = (dist <= LONG_R and abs(yaw_err) <= LONGSHOT_FIRE_ERR and abs(pitch_err) <= LONGSHOT_FIRE_PITCH
+            # shooter aiming at him (windup ranged) - on a tight cone, out to SNIPER_LONG_R (any distance his weapon
+            # reaches), no laser / mesh needed. Its own 4/6 deg cone is already tight enough at range (the envelope
+            # above would make an elevated shot impossible: 2.4 deg of aim-point difference is 50 cm at 12 m).
+            long_geom = (dist <= SNIPER_LONG_R and abs(yaw_err) <= LONGSHOT_FIRE_ERR
+                         and abs(pitch_err) <= LONGSHOT_FIRE_PITCH
                          and (abs(aim_at["pos"][1] - p["pos"][1]) > AIM_DY or windup(aim_at, p["pos"]) == "ranged"))
             if close_geom or long_geom:
                 on, on_e, source = True, aim_at, "geometry"
                 self.stats["re6_geometry_fires"] = self.stats.get("re6_geometry_fires", 0) + 1
                 if long_geom and not close_geom:
                     self.stats["re6_longshot_fires"] = self.stats.get("re6_longshot_fires", 0) + 1
+                    if dist > LONG_R:
+                        self.stats["re6_sniper_longshots"] = self.stats.get("re6_sniper_longshots", 0) + 1
         contact = on
         correcting = (not on and p.get('ammo') != 0 and (aim_at.get('hp') or 0) > 0
                       and dist <= ENGAGE_R and abs(yaw_err) <= SPRAY_YAW and abs(pitch_err) <= SPRAY_PITCH
+                      and self._fire_envelope(dist, yaw_err, pitch_err)
                       and not self.is_blocked(aim_at, now)
                       and not (source == 'laser' and self._ray_short(origin, dot, aim_at))
                       and (source != 'laser' or math.dist(origin, dot) + body(aim_at).r >= math.dist(origin, foot))
@@ -5166,6 +5326,15 @@ class Bot:
         slope plus the learned correction; written and read back. A sustained actual-ray miss yields to the sticks.
         True: written this tick (no camera keys); a material redirect must await a new laser sample before firing.
         scatter: the fire pattern's offset (dx, dy, dz) added to his aim point (FIRE_PATTERN), the guards unchanged."""
+        last_heading = getattr(self, '_floor_heading_written_at', None)
+        if (self.stats.get('mine_escape_required') and isinstance(last_heading, (int, float))
+                and 0 <= now - last_heading < .25):
+            # Every native camera write invalidates this tick's movement yaw.
+            # Writing every frame made the final floor guard suppress retreat
+            # forever. Let fresh snapshots drive aimed movement between writes;
+            # ordinary laser/geometry fire and floor checks still apply.
+            self.stats['bomb_escape_aim_yields'] = self.stats.get('bomb_escape_aim_yields', 0) + 1
+            return False
         if tgt is None or not self._lock_ready(snap, now):
             self.lock_w = None
             return False
@@ -5581,7 +5750,11 @@ class Bot:
         for key in [k for k in self.prompt_live if k not in cur]:
             live = self.prompt_live.pop(key)
             if (not prompt_skipped(live["q"]) and live["pressed"] is None
-                    and self.stats.get("qte_solved_ram", 0) <= live.get("ram0", 0)):
+                    and self.stats.get("qte_solved_ram", 0) <= live.get("ram0", 0)
+                    and not snap.get("auto_qte")):
+                # Gone with no press and no RAM solve. With the game's own automatic action button ON (auto_qte) the
+                # game presses for him, and the RAM grant may not register on every prompt - counting those as bot
+                # failures overstated them (live 2026-11-13: qte_seen 15 / qte_failed 6 while every grab was solved).
                 self.stats["qte_failed"] += 1                    # gone with no press and no RAM solve (target 0)
             if live["pressed"] is not None and now - live["at"] <= PROMPT_TAKEN_S:
                 q = live["q"]
@@ -5633,7 +5806,7 @@ class Bot:
     def _prompt(self, p, snap, now) -> dict | None:
         """A shown prompt's button, pressed at once and again every PROMPT_REPEAT_S while it stays. None: no prompt to
         take this tick. A flanking crowd (4+ within CC_CROWD_R) defers the press: lowering the gun to take a prompt
-        in a surround is the crowd_gun_down trigger (cluster b294c62b554c77fd) — the bot waits for the crowd to
+        in a surround is the crowd_gun_down trigger (cluster b294c62b554c77fd) ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â‚¬Å¾Ã‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¦ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¡ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã¢â‚¬Â¦Ãƒâ€šÃ‚Â¡ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â the bot waits for the crowd to
         thin before pressing, matching the crowd_hold convention used by the other decision paths."""
         shown = getattr(self, "_prompt_shown", None) or []
         if not PROMPTS or not shown:
@@ -5650,7 +5823,7 @@ class Bot:
             if (key is None or (prompt_skipped(q) and not heal)
                     or (key != 'stick' and now - live["at"] < PROMPT_REPEAT_S)):
                 continue
-            # crowd guard: 4+ live enemies on his level within CC_CROWD_R → defer the press (gun stays up)
+            # crowd guard: 4+ live enemies on his level within CC_CROWD_R ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â‚¬Å¾Ã‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã¢â‚¬Â¦Ãƒâ€šÃ‚Â¡ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã¢â‚¬Â¦Ãƒâ€šÃ‚Â¡ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã¢â‚¬Â¦Ãƒâ€šÃ‚Â¾ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ defer the press (gun stays up)
             n = sum(1 for e in (snap.get("enemies") or ()) if (e.get("hp") or 0) > 0
                     and abs(e["pos"][1] - p["pos"][1]) <= MAX_DY
                     and math.hypot(e["pos"][0] - px, e["pos"][2] - pz) <= CC_CROWD_R)
@@ -5847,17 +6020,26 @@ class Bot:
         return float(left) if 0.0 < left < 600.0 else None
 
     def _bonus_wait(self, snap) -> bool:
-        """COMBO_BONUS_WAIT: a kill owed (combo_pace) with an enemy alive anywhere, the clock above BONUS_CLOCK_LOW_S -
-        no time-bonus run starts (one under way waits too; stats bonus_waits counts the ticks)."""
-        if not (COMBO_BONUS_WAIT and self.combo_pace):
-            return False
-        t = snap.get("timer")
-        if isinstance(t, (int, float)) and not isinstance(t, bool) and t <= BONUS_CLOCK_LOW_S:
+        """Combo pacing may defer time collection only after the five-minute bank."""
+        if not (COMBO_BONUS_WAIT and self.combo_pace and self._bonus_clock_ready(snap)):
             return False
         if not any((e.get("hp") or 0) > 0 for e in snap.get("enemies") or ()):
             return False
         self.stats["bonus_waits"] = self.stats.get("bonus_waits", 0) + 1
         return True
+
+    @staticmethod
+    def _bonus_clock_ready(snap) -> bool:
+        """Only a finite current clock proves the bank; zero is a valid low clock."""
+        t = snap.get('timer')
+        return (type(t) in (int, float) and math.isfinite(t) and t >= BONUS_CLOCK_LOW_S)
+
+    def _time_bonus_priority(self, snap, now) -> bool:
+        if self.mode in ('fight', 'hunt', 'score') and not getattr(self, '_mode_is_automatic', False):
+            return False  # explicit or unknown standing-command ownership is never displaced
+        return bool(BONUS_RUN and not self._bonus_clock_ready(snap)
+                    and any(b.get('kind') == 'time' and self.bonus_skip.get(b['ptr'], -1e9) <= now
+                            for b in snap.get('bonuses') or ()))
 
     def _combo_tick(self, snap, live, flat, now) -> None:
         """The combo's count and window (sGameMan): stats combo_best, combo_breaks (it lapsed with a zombie in reach),
@@ -6433,6 +6615,18 @@ class Bot:
         self.stats["burst_throw_speed"] = 0.0
 
     # --- line of sight ---------------------------------------------------------------------------------------------
+    @staticmethod
+    def _fire_envelope(dist, yaw_err, pitch_err) -> bool:
+        """The current aim error would still land inside the body at this distance (FIRE_BODY_HALF_CM/ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¦_V_CM).
+
+        A cone limit alone is not accuracy: the same 12 deg is 21 cm at 1 m but 89 cm at 4.2 m. This converts the
+        angular error at the target's distance into centimetres before authorising the pull, so a "correcting"
+        shot at a zombie two metres away is not fired a metre off the body.
+        """
+        reach = max(50.0, float(dist or 0.0))
+        return (abs(reach * math.tan(abs(yaw_err))) <= FIRE_BODY_HALF_CM
+                and abs(reach * math.tan(abs(pitch_err))) <= FIRE_BODY_HALF_V_CM)
+
     def _measured_contact(self, e, now) -> bool:
         """Current body contact, excluding a pre-redirect ray and a frozen ray after camera movement."""
         snap = getattr(self, "_snap", {}) or {}
@@ -6783,12 +6977,14 @@ class Bot:
         del log[:-BONUS_LOG_N]
 
     def _bonus_run(self, p, live, flat, snap, now) -> dict | None:
-        """Phase 1 (BONUS_RUN): while a bonus waits, the nearest one next (his floor first), walked to and attacked
+        """Below the five-minute bank, the nearest time bonus (his floor first), walked to and attacked
         physically within BONUS_MELEE_R; only a zombie within BONUS_BLOCK_R is fought. None: phase 2 this tick (no bonus
         waiting, every waiting one left for now, a zombie in the way, or the bomb / an item in hand)."""
         bs = snap.get("bonuses")
         px, py, pz = p["pos"]
-        cands = [b for b in bs or () if self.bonus_skip.get(b["ptr"], -1e9) <= now and b.get("kind") != "combo"]
+        cands = [b for b in bs or () if self.bonus_skip.get(b["ptr"], -1e9) <= now and b.get("kind") == "time"]
+        if not self._time_bonus_priority(snap, now):
+            cands = []
         self.stats["phase"] = "bonus_run" if cands else "match"
         eq = p.get("equipped")
         if (not BONUS_RUN or not cands or (p.get("bomb") or {}).get("out") or self.nade is not None
@@ -6799,7 +6995,7 @@ class Bot:
         if any(flat(e) <= BONUS_BLOCK_R for e in live):          # one in the way: fought first
             self.run_hit_since = None
             return None
-        if self._hazard_break_due(p, live, flat, now):          # #5056: just took HP loss with nobody near: bail, fight
+        if self.hazard is not None or self._hazard_break_due(p, live, flat, now):  # danger escape/fight before a run
             self.run_hit_since = None
             return None
         reach = lambda b: math.hypot(b["pos"][0] - px, b["pos"][2] - pz)
@@ -6861,9 +7057,9 @@ class Bot:
             return None                                         # a failed native route never becomes a blind direct walk
         if want is not None:                                     # along the nav mesh's way to it
             return self._go("bonus", "bonus_run", {"hold": self._walk_keys(p, want, snap, side)},
-                            f"the bonus run: a {kind} bonus at {d:.0f} cm by the nav mesh ({len(cands)} waiting)")
+                            f"time-bonus priority: a {kind} bonus at {d:.0f} cm by the nav mesh ({len(cands)} waiting)")
         return self._go("bonus", "bonus_run", {"hold": self._walk_keys(p, heading(b["pos"][0] - px, b["pos"][2] - pz), snap, side)},
-                        f"the bonus run: a {kind} bonus at {d:.0f} cm ({len(cands)} waiting)")
+                        f"time-bonus priority: a {kind} bonus at {d:.0f} cm ({len(cands)} waiting)")
 
     def _bonus_sight(self, p, b, snap) -> bool:
         """The nav mesh's line from him to the bonus's middle (~1.3 m up): False when a wall is between them.
@@ -6923,6 +7119,8 @@ class Bot:
     def _green_save(self, p, live, flat, snap, now) -> dict | None:
         """The match: the combo window under COMBO_LOW_S, a green (combo) bonus in sight within BONUS_SHOOT_R and nobody
         within BONUS_BLOCK_R - shot through the lock (kicked when it is right there)."""
+        if self._time_bonus_priority(snap, now):
+            return None
         combo, ct = snap.get("combo"), snap.get("combo_timer")
         if not (isinstance(combo, int) and combo > 0 and isinstance(ct, (int, float)) and ct < COMBO_LOW_S):
             return None
@@ -6945,6 +7143,8 @@ class Bot:
     def _bonus(self, p, live, flat, snap, now) -> dict | None:
         """A combo bonus in reach with nobody near (BONUS_SAFE_R): turned to, the gun up, the aim's ray closed
         onto it and the trigger down while the ray runs through it. None: no bonus to shoot (the fight goes on)."""
+        if self._time_bonus_priority(snap, now):
+            return None
         bs = snap.get("bonuses")
         eq = p.get("equipped")
         if (not BONUS_PURSUIT or not bs or (p.get("bomb") or {}).get("out")   # the remote in hand: ZR would set it off
@@ -7270,6 +7470,15 @@ class Bot:
         a set-off under way with him inside the rule's distance is called off. None: clear of it."""
         if not BOMBS or not self._bomb_out(p):
             return None
+        # Observability for the escape (the counters alone never explained why a set stayed pending): how far the
+        # current sprint actually runs and the best clearance this set has reached.
+        set_key = self.stats.get('mine_oldest_placed_at')
+        if getattr(self, '_clear_best_key', None) != set_key:
+            self._clear_best_key = set_key
+            self.stats['mine_escape_best_clear_cm'] = 0
+        _clear = self.stats.get('mine_clearance_cm')
+        if isinstance(_clear, (int, float)) and _clear > (self.stats.get('mine_escape_best_clear_cm') or 0):
+            self.stats['mine_escape_best_clear_cm'] = round(_clear)
         px, _, pz = p["pos"]
         known = [at for at in self.stats.get('mine_avoid_positions', [])
                  if isinstance(at, (list, tuple)) and len(at) == 3 and all(math.isfinite(v) for v in at)]
@@ -7372,13 +7581,74 @@ class Bot:
         if self.bomb_at is not None:
             bomb = round(math.hypot(px - self.bomb_at[0], pz - self.bomb_at[1]))
         log = self.stats.setdefault("death_log", [])
-        log.append({"held": bool(self.in_hold), "doing": self.doing, "why": self.why[:80],
-                    "lost_by_doing": doing_fall, "hp_3s": [h for _t, h, _d in self.hp_hist[::5]],
-                    "near_2m": sum(1 for d in near if d <= 200), "near_4m": sum(1 for d in near if d <= 400),
-                    "bomb_phase": self.bomb_phase, "bomb_cm": bomb})
+        entry = {"held": bool(self.in_hold), "doing": self.doing, "why": self.why[:80],
+                 "lost_by_doing": doing_fall, "hp_3s": [h for _t, h, _d in self.hp_hist[::5]],
+                 "near_2m": sum(1 for d in near if d <= 200), "near_4m": sum(1 for d in near if d <= 400),
+                 "bomb_phase": self.bomb_phase, "bomb_cm": bomb}
+        log.append(entry)
+        # The telemetry mirror keeps scalars only, so the nested death_log never reached the live panel or the
+        # watcher that captures a death: this one-line cause string does, so survival work starts from evidence.
+        lost = sorted(doing_fall.items(), key=lambda kv: -kv[1])[:3]
+        self.stats["death_cause"] = (
+            f"doing={self.doing} why={self.why[:60]} held={int(bool(self.in_hold))} "
+            f"lost={'/'.join(f'{d}:{v}' for d, v in lost) or '0'} hp3s={entry['hp_3s']} "
+            f"near2m={entry['near_2m']} near4m={entry['near_4m']} bomb={self.bomb_phase}@{bomb}cm")[:240]
         del log[:-DEATH_LOG_N]
         self.hp_hist = []
         self.bomb_phase, self.bomb_at, self.bomb_walk, self.bomb_walk_since = None, None, None, None
+
+    def _escape_route(self, p, now) -> float | None:
+        """The heading along a mesh A* route to the nearest floor point already clear of every armed bomb.
+
+        The greedy open heading - and even the guard's radial stick choice - can point into a railing corner, so a
+        set never reaches the detonation clearance (live 2026-11-13: one set cleared in 124 s, another never).
+        NavMesh.path plans around the walls; the goal is a triangle centre at least the rule's clearance plus a
+        margin from every known bomb, nearest to him, and the guard follows the first far-enough waypoint. The goal
+        is recomputed when the bomb set changes, the path every 0.5 s from his current position.
+        """
+        mesh, stats = getattr(self, '_mesh', None), self.stats
+        if mesh is None or not hasattr(mesh, 'path') or not getattr(mesh, 'C', None):
+            stats['escape_route_failed'] = stats.get('escape_route_failed', 0) + 1
+            return None
+        sites = [tuple(s) for s in (stats.get('mine_avoid_positions') or ())
+                 if isinstance(s, (list, tuple)) and len(s) == 3]
+        if not sites:
+            return None
+        required = stats.get('mine_required_clearance_cm')
+        need = float(required) if isinstance(required, (int, float)) and math.isfinite(required) else 1150.0
+        px, py, pz = p['pos']
+        key = (stats.get('round_evidence_id'), stats.get('mine_oldest_placed_at'), len(sites))
+        cache = getattr(self, '_escape_route_cache', None)
+        if cache is None or cache.get('key') != key:
+            goal = None
+            for c in mesh.C:
+                if abs(c[1] - py) > MAX_DY:
+                    continue
+                d = math.hypot(c[0] - px, c[2] - pz)
+                if d < 600. or d > 2600.:
+                    continue
+                if min(math.hypot(c[0] - s[0], c[2] - s[2]) for s in sites) < need + 50.:
+                    continue
+                if goal is None or d < goal[0]:
+                    goal = (d, c)
+            cache = {'key': key, 'goal': goal[1] if goal is not None else None, 'path': None, 'at': -1e9}
+            self._escape_route_cache = cache
+        if cache['goal'] is None:
+            stats['escape_route_failed'] = stats.get('escape_route_failed', 0) + 1
+            return None
+        if now - cache['at'] >= 0.5 or not cache['path']:
+            cache['path'] = mesh.path((px, py, pz), cache['goal'])
+            cache['at'] = now
+        for w in cache['path'] or ():
+            if math.hypot(w[0] - px, w[2] - pz) >= 80.:
+                h = heading(w[0] - px, w[2] - pz)
+                goal = cache['goal']
+                stats['escape_route_used'] = stats.get('escape_route_used', 0) + 1
+                stats['escape_route_goal_cm'] = round(math.hypot(goal[0] - px, goal[2] - pz))
+                stats['escape_route_path_n'] = len(cache['path'] or ())
+                stats['escape_route_heading_deg'] = round(math.degrees(h))
+                return h
+        return None
 
     def _bomb_walk(self, p, at, yaw, me, on, now, act="bomb_walk", why=None, live=()) -> dict | None:
         """Off the bomb: the camera turned to it and the stick back (he runs away from it); not 30 cm further in
@@ -7386,11 +7656,55 @@ class Bot:
         ESCAPE_FIGHT_R in the way out - the crowd between him and safe ground is fought first."""
         px, _, pz = p["pos"]
         deadline_escape = act == 'bomb_escape' and self.stats.get('mine_escape_required')
+        timed_out = False
+        if deadline_escape:
+            # One sprint is not a plan: live 2026-11-13 a set 1150 cm away stayed pending for 183 s because the
+            # single 12 s window expired and the bot then fought near the bomb (which walks it back inside the
+            # margin) for the rest of the round, with no pure-movement attempt ever again. Cycle the two: sprint
+            # ESCAPE_SPRINT_S at a time toward open floor, fight in between, and the native flag still detonates
+            # the instant the live clearance passes the rule (re6_remote_control.observe runs every tick).
+            started = self.stats.get('mine_escape_started_at')
+            if isinstance(started, (int, float)) and math.isfinite(started):
+                phase = (now - started) % ESCAPE_CYCLE_S
+                if phase >= ESCAPE_SPRINT_S:
+                    timed_out, deadline_escape = True, False
+                    window = int((now - started) // ESCAPE_CYCLE_S)
+                    if getattr(self, '_escape_window', None) != window:
+                        self._escape_window = window
+                        self.stats['escape_timeouts'] = self.stats.get('escape_timeouts', 0) + 1
+            else:
+                elapsed = self.stats.get('mine_elapsed_s')
+                if isinstance(elapsed, (int, float)) and math.isfinite(elapsed) and elapsed >= ESCAPE_TIMEOUT_S:
+                    timed_out, deadline_escape = True, False
+                    if getattr(self, '_escape_timeout_for', None) != self.stats.get('mine_oldest_placed_at'):
+                        self._escape_timeout_for = self.stats.get('mine_oldest_placed_at')
+                        self.stats['escape_timeouts'] = self.stats.get('escape_timeouts', 0) + 1
+        fight_r = ESCAPE_TIMEOUT_FIGHT_R if timed_out else BOMB_FIGHT_R
         # A pre-placement crowd push may lead back toward the new bomb. Rank
         # the escape from its current position instead; the final floor guard
         # checks the actual pad direction against every outstanding bomb.
         pushing = not deadline_escape and self.push is not None and now <= self.push["until"]
         way = self.push["h"] if pushing else self._open_heading(p, live, avoid=at)
+        # While the sprint window is open, follow a planned mesh route to clear floor instead of the greedy open
+        # heading: live 2026-11-13 a set took 124 s to clear and another never did, both against railings where the
+        # greedy heading pointed at a wall. The guard follows this heading among its floor-proven options.
+        route_heading = self._escape_route(p, now) if deadline_escape else None
+        if route_heading is not None:
+            way = route_heading
+        self._escape_heading = route_heading
+        if deadline_escape:
+            started = self.stats.get('mine_escape_started_at')
+            window = (int((now - started) // ESCAPE_CYCLE_S)
+                      if isinstance(started, (int, float)) and math.isfinite(started) else 0)
+            sp = getattr(self, '_sprint', None)
+            if (sp is None or sp.get('window') != window
+                    or sp.get('set') != self.stats.get('mine_oldest_placed_at')):
+                self._sprint = {'window': window, 'set': self.stats.get('mine_oldest_placed_at'),
+                                'x': p['pos'][0], 'z': p['pos'][2], 'best': 0.0}
+            sp = self._sprint
+            sp['best'] = max(sp['best'], math.hypot(p['pos'][0] - sp['x'], p['pos'][2] - sp['z']))
+            self.stats['escape_sprint_cm'] = round(sp['best'])
+            self.stats['escape_sprint_window'] = window
         stunned = self.flashed if now < self.fever_until else set()   # (flashed: walked through, kicked)
         if not deadline_escape and any(math.hypot(e["pos"][0] - px, e["pos"][2] - pz) <= ESCAPE_FIGHT_R
                and e.get("ptr", e.get("slot")) not in stunned
@@ -7417,7 +7731,7 @@ class Bot:
         d_near = min((math.hypot(e["pos"][0] - px, e["pos"][2] - pz) for e in live), default=math.inf)
         eq = p.get('equipped')
         if (type(eq) is int and 0 <= eq < WEAPON_INDEXES and (p.get('ammo') or 0) > 0
-                and not self.down and d_near <= BOMB_FIGHT_R and not deadline_escape):
+                and not self.down and d_near <= fight_r and not deadline_escape):
             # Escape is movement, not a reason to repeatedly lower a loaded gun.
             # Let the normal aim/LOS/fire gates fight while retaining this route.
             self._combat_escape_move = tuple(k for k in keys if k in ('lup', 'ldown', 'lleft', 'lright'))

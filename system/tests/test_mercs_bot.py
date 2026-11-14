@@ -1,6 +1,6 @@
 """The Mercenaries deployment layer (gbox.mercs_bot): a title takes part through its RAM map's "mercs" block, the
 playbook boots it from RAM through the block's menus module and hands each round to the engine
-(gbox.mercs.engine.play_round), and coaching notes and ⚑ reports on the title go to its run-lessons log
+(gbox.mercs.engine.play_round), and coaching notes and ÃƒÂ¢Ã…Â¡Ã¢â‚¬Ëœ reports on the title go to its run-lessons log
 (gbox.mercs.lessons.append) in the schema agreed with the engine."""
 import base64
 import sys
@@ -337,3 +337,20 @@ def test_an_alternating_select_pair_is_a_stall_the_signature_hides():
                                  now) is False, "settling on one screen is not a stall"
     old = [(50.0, "select_player"), (52.0, "select_stage"), (54.0, "select_player"), (56.0, "select_stage")]
     assert MB.select_oscillating(old, now) is False, "flips older than the window do not count"
+
+
+
+def test_the_round_op_receipt_is_mirrored_as_a_scalar(monkeypatch):
+    # The telemetry mirror drops lists/dicts, so round_ops (the RE6 loadout spread's verified/writes/reason) never
+    # reached the live panel. The last op's one-line receipt must be a scalar (live 2026-11-13: no launcher in any
+    # round and no way to tell whether the spread ran, wrote, or refused the build's table).
+    from gbox import mercs_bot as MB
+    from gbox.mercs.titles import re6_switch_mods as M
+    monkeypatch.setattr(M, "RE6Switch", lambda ad: object())
+    monkeypatch.setattr(M, "run", lambda ad, op, g=None, **kw: {"verified": True, "writes": 42, "merc_loadout": True})
+    stats = {}
+    failed = MB.apply_ops(object(), [("merc_loadout", {"on": True, "spread": True})],
+                          {"map_id": "01002A000CD48000", "platform": "switch"}, stats)
+    assert failed == []
+    assert stats["round_ops_last"].startswith("merc_loadout verified=True writes=42")
+    assert stats["round_ops"] == ["merc_loadout verified=True writes=42"]

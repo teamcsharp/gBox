@@ -100,8 +100,17 @@ class FlightRecorder:
                             if isinstance(snap.get('inventory'), list) else None,
                'aim': safe(snap.get('aim')), 'aim_plan': safe(plan.get('aim')),
                'laser': safe(snap.get('laser')), 'camera': safe(snap.get('camera', snap.get('aim_cam'))),
-               'native_action': safe(p.get('action', p.get('motion'))), 'fire_cooldown_s': safe(p.get('fire_cooldown_s')),
+               'native_action': safe(p.get('action', p.get('motion'))),
+               'native_state': safe(p.get('state')), 'native_motion': safe(p.get('motion')),
+               'fire_cooldown_s': safe(p.get('fire_cooldown_s')),
                'throwables': safe(snap.get('throwables')),
+               # Keep the historical census field, but distinguish observations
+               # of inactive/triggered units from the actual planner hazards.
+               'ground_mines_source': ('ground_mine_observations' if 'ground_mine_observations' in snap
+                                       else 'ground_mines' if 'ground_mines' in snap else None),
+               'ground_mine_hazards': [{k: safe(g.get(k)) for k in ('ptr', 'generation')}
+                                      for g in snap['ground_mines'][:40] if isinstance(g, dict)]
+                                     if isinstance(snap.get('ground_mines'), (list, tuple)) else None,
                 'ground_mines': [{**{k: safe(g.get(k)) for k in
                     ('ptr', 'generation', 'native_owner', 'active', 'trigger_observed',
                      'primary_enabled', 'proximity_enabled')}, 'pos': self.point(g.get('pos'))}
@@ -110,13 +119,20 @@ class FlightRecorder:
                    'decision_stages_ms', 'decision_work_ms', 'decision_work_p95_ms',
                    'snapshot_stages_json', 'heal_inventory_read', 'heal_inventory_slots', 'heal_quick_slots',
                    'heal_status', 'heal_unavailable_reason', 'native_equip',
-                   'aim_diag', 'aim_errdeg', 'laser_gate', 'sight_block_last', 'nav_status',
+                   'throw_equip_blocked_count', 'throw_equip_blocked_items', 'throw_equip_refusal',
+                   'automine_credit_restorations', 'automine_credit_restore',
+                   'qte_auto', 'qte_auto_reason', 'qte_solved_ram', 'qte_unconfirmed_writes',
+                   'qte_escape_flash', 'qte_escapes_observed', 'qte_escape_active', 'qte_escape_mines_due',
+                   'aim_diag', 'aim_errdeg', 'laser_gate', 'sight_block_last', 'nav_status', 'bonus_priority',
                    'navigation_identity', 'navigation_identity_source', 'stage_hazard_coverage',
                    'stage_hazard_blocks', 'stage_hazard_prompt_blocks', 'stage_hazard_heading_waits', 'stage_hazard_last',
                    'target_feedback_target', 'target_feedback_yaw_deg', 'target_feedback_pitch_deg',
                    'target_feedback_pose',
                    'target_feedback_gate', 'target_feedback_ram', 'target_feedback_block_why',
                    'target_feedback_writes', 'target_feedback_write_failures',
+                   'target_feedback_dt_ms', 'target_feedback_refresh_ms', 'target_feedback_refresh_error',
+                   'target_feedback_camera_pitch_deg', 'target_feedback_wanted_pitch_deg',
+                   'target_feedback_pitch_source',
                    'rapid_fire_configured_x', 'rapid_fire_active', 'automine_enabled',
                    'native_mine_pending', 'native_mine_request_id', 'native_mines_placed',
                     'native_mine_removals_observed', 'native_mine_triggers_observed', 'native_mine_removals_unattributed',
@@ -124,6 +140,8 @@ class FlightRecorder:
                     'native_mine_escape_replans', 'native_mine_escape_blocked',
                     'native_mine_escape_hazards', 'native_mine_escape_final', 'native_mine_escape_pause',
                     'native_mine_escape_final_overrides', 'native_equip_deferred_for_escape',
+                    'native_mine_alignment_failure', 'native_mine_alignment_native',
+                    'native_mine_refusal_retry', 'native_mine_refusal_recoveries',
                     'native_mine_admission_pause',
                     'automine_request_reason', 'automine_request_count', 'reactive_ring_requests', 'reactive_ring_event',
                    'reactive_escape_requests',
@@ -149,7 +167,7 @@ class FlightRecorder:
     'gun_rate_scaled_frames', 'gun_rate_restores', 'gun_rate_observation',
     'crowd_roulette_interval_s', 'crowd_roulette_due_in_s', 'crowd_roulette_wait',
     'crowd_roulette_chosen', 'crowd_roulette_executed', 'crowd_roulette_refused',
-    'crowd_roulette_uncertain', 'crowd_roulette_last', 'crowd_roulette_events',
+    'crowd_roulette_uncertain', 'crowd_roulette_last', 'crowd_roulette_events', 'crowd_roulette_coalesced',
     'crowd_roulette_followup', 'crowd_roulette_mine_status',
     'crowd_roulette_mine_request_id', 'crowd_roulette_mine_receipt',
     'weakpoint_aim', 'native_discharge_observations', 'native_discharge_last', 'aimbook_weapon_cells',
@@ -167,6 +185,8 @@ class FlightRecorder:
         if row['pos']:
             enemies = sorted(enemies, key=lambda e: math.dist(self.point(e.get('pos')) or [1e20]*3, row['pos']))
         row['nearby_enemies'] = [{'id': safe(e.get('ptr', e.get('slot'))), 'class': safe(e.get('class')),
+                                 'generation': safe(e.get('generation')),
+                                 'action': safe(e.get('action')), 'state': safe(e.get('state')),
                                  'hp': safe(e.get('hp')), 'pos': self.point(e.get('pos'))} for e in enemies[:8]]
         if self.first is None:
             self.first = row

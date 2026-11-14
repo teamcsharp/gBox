@@ -258,6 +258,15 @@ def rows(game=None, controller=None, ready_error: str = "") -> list | None:
             out.append({"kind": kind, "available": False, "reason": reason, "source": "title"})
             continue
         available, reason = spec.available, spec.reason
+        probe_spec = title.kinds.get(kind)
+        if probe_spec is not None and probe_spec.source == "probe":
+            # A probe kind stays labelled as one so the PiP's click carries allow_unverified and runs the research
+            # path: live 2026-11-13 the launcher-shell rows reached the PiP without their source, so the Nitrogen
+            # click was sent without the flag and hit the native refusal instead of the barrage. The controller's
+            # availability still decides whether the click is offered now; its refusal reason wins when unavailable.
+            if available and not reason:
+                reason = probe_spec.reason
+            spec = Kind(spec.available, reason, "probe")
         if available and spec.source == "bot":
             # The bot's own ring: it needs no native controller, and a live round is still required (ready_error).
             if ready_error:
@@ -273,8 +282,10 @@ def rows(game=None, controller=None, ready_error: str = "") -> list | None:
             available, reason = False, CONTROLLER_STATUS_UNREAD
         if available and ready_error:
             available, reason = False, ready_error
-        out.append({"kind": kind, "available": available, "reason": "" if available else reason,
-                    "source": spec.source})
+        # A probe kind keeps its research reason even when offered: the PiP shows it beside the "(probe)" label,
+        # and the row's source is what makes the click carry allow_unverified.
+        shown_reason = "" if available and spec.source != "probe" else reason
+        out.append({"kind": kind, "available": available, "reason": shown_reason, "source": spec.source})
     return out
 
 

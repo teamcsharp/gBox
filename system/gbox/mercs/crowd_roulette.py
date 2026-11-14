@@ -11,6 +11,7 @@ import math
 import random
 
 INTERVAL_S, RETRY_S, FOLLOWUP_S = 120., 10., 8.
+SEPARATION_S = 6.  # extra volleys remain separated; reactive rings may be accounted for in place
 RE5, RE6 = '010018100CD46000', '01002A000CD48000'
 
 
@@ -89,9 +90,10 @@ class Roulette:
                 or (p.get('hp') or 0) <= 0):
             return None
         # QTE/hit/traversal and boss responses retain their existing priority.
-        # The periodic clock stays due; those actions never satisfy it.
-        if (normal.get('reactive') or normal.get('traversal') or normal.get('defend')
-                or normal.get('dangerous') or (snap.get('game') or {}).get('phase') == 'grabbed'):
+        # Only coalesce() can credit an existing reactive flash to this clock.
+        if (normal.get('fire') and (normal.get('reactive') or normal.get('traversal')
+                or normal.get('defend') or normal.get('dangerous'))
+                or (snap.get('game') or {}).get('phase') == 'grabbed'):
             return None
         rows = G.enemies_near(snap, scatter['reach_cm'])
         pos = p.get('pos')
@@ -107,8 +109,8 @@ class Roulette:
         if now < self.retry_at:
             return wait('periodic crowd capability retry cooldown')
         last = stats.get('ring_last_at')
-        if isinstance(last, (int, float)) and now-last < policy['cooldown_s']:
-            return wait('periodic crowd tactic reserves the next ring cooldown slot')
+        if isinstance(last, (int, float)) and now-last < SEPARATION_S:
+            return wait('periodic crowd tactic waits for separation from the last ring')
         if normal['radius_cm'] > policy['max_radius_cm']:
             return wait('periodic crowd tactic lacks supported blast clearance')
         try:
@@ -131,7 +133,8 @@ class Roulette:
         operation, kind = self.rng.choice(choices)
         self.sequence += 1
         plan = {'id': f'{self.owner[0]}:{self.owner[1]}:{self.owner[2]}:crowd:{self.sequence}',
-                'owner': list(self.owner), 'operation': operation, 'kind': kind, 'selected_at': now}
+                'owner': list(self.owner), 'operation': operation, 'kind': kind, 'selected_at': now,
+                'count': scatter['count'] if operation == 'scatter' else normal['count']}
         if kind == 'flash' and self.title in (RE5, RE6):
             plan['followup_mines'] = self.rng.choice((1, 5)) if self.title == RE5 else 5
         self.pending, self.previous = plan, (operation, kind)
@@ -145,6 +148,54 @@ class Roulette:
                     'toward': [(e['pos'][0], e['pos'][2]) for _, e in rows[:scatter['toward_n']]],
                     'safe_cm': max(0., float(stats.get('bomb_safe_cm') or 0.))}
         return {**normal, 'fire': True, 'roulette': plan, 'kind': kind, 'flash_ok': True, 'reason': reason}
+
+    def coalesce(self, snap, stats, now, decision, policy, scatter, target, *, background=False):
+        """Account for one already-required full reactive flash, never add a native call.
+
+        Frequent hit/QTE flashes must not postpone the periodic clock forever.
+        Their existing admission and clearance still own the effect. Its exact
+        receipt can fulfill the due flash volley, explicitly as a coalesced
+        emergency action, without duplicating its hit/QTE mine demand.
+        """
+        p = snap.get('player') or {}
+        if (now < self.next_at or now < self.retry_at or self.pending is not None
+                or owner(snap, stats) != self.owner or not self.owner[0]
+                or any(type(v) is not int for v in self.owner[1:])
+                or not policy['enabled'] or stats.get('operator_control')
+                or stats.get('round_evidence_closed') or stats.get('screen') not in (None, 'playing', 'unknown')
+                or (p.get('hp') or 0) <= 0 or not decision.get('fire') or not decision.get('reactive')
+                or decision.get('kind') != 'flash' or type(decision.get('count')) is not int
+                or decision['count'] < policy['count']
+                or not isinstance(decision.get('radius_cm'), (int, float))
+                or not policy['min_safe_cm'] <= decision['radius_cm'] <= policy['max_radius_cm']):
+            return decision
+        # Pending/existing explosive and escape gates remain intact, even
+        # though this accounting method cannot start another constructor.
+        if pending_reason(snap, stats):
+            return decision
+        source = decision.get('reactive_event')
+        if isinstance(source, dict) and tuple(source.get('owner') or ()) != self.owner:
+            return decision
+        from . import grenade_ring as G
+        rows = G.enemies_near(snap, scatter['reach_cm'])
+        pos = p.get('pos')
+        if not pos or sum(abs(e['pos'][1]-pos[1]) <= scatter['floor_dy_cm'] for _, e in rows) < 2:
+            return decision
+        try:
+            if ('ring', 'flash') not in capabilities(target(), background=background):
+                return decision
+        except Exception:
+            return decision  # capability bookkeeping must never delay the actual emergency
+        self.sequence += 1
+        plan = {'id': f'{self.owner[0]}:{self.owner[1]}:{self.owner[2]}:crowd:{self.sequence}',
+                'owner': list(self.owner), 'operation': 'ring', 'kind': 'flash', 'selected_at': now,
+                'count': decision['count'], 'coalesced': 'reactive_flash',
+                'source_event': decision.get('reactive_event') or decision.get('trigger')}
+        self.pending, self.previous = plan, ('ring', 'flash')
+        stats.pop('crowd_roulette_wait', None)
+        stats['crowd_roulette_chosen'] = stats.get('crowd_roulette_chosen', 0)+1
+        self._event(stats, now, 'chosen', plan)
+        return {**decision, 'roulette': plan}
 
     def submitted(self, stats, now, decision, result):
         plan = decision.get('roulette')
@@ -164,7 +215,9 @@ class Roulette:
             return
         actual = receipt.get('kinds') if plan['operation'] == 'scatter' else [receipt.get('kind')]
         count = receipt.get('detonated')
-        complete = (receipt.get('state') == 'confirmed' and type(count) is int and count > 0
+        complete = (receipt.get('state') == 'confirmed' and receipt.get('verified') is True
+                    and type(count) is int and count == plan['count']
+                    and receipt.get('requested', plan['count']) == plan['count']
                     and isinstance(actual, (tuple, list)) and bool(actual)
                     and all(k == plan['kind'] for k in actual))
         state = 'executed' if complete else 'refused' if receipt.get('state') in ('refused', 'unavailable', 'failed') else 'uncertain'
@@ -172,7 +225,15 @@ class Roulette:
             ('state', 'verified', 'kind', 'kinds', 'requested', 'detonated', 'reason', 'self_damage')})
         field = 'crowd_roulette_'+state
         stats[field] = stats.get(field, 0)+1
-        self.pending, self.next_at = None, now+INTERVAL_S
+        if complete and plan.get('coalesced'):
+            stats['crowd_roulette_coalesced'] = stats.get('crowd_roulette_coalesced', 0)+1
+        # A proven unsubmitted busy/refused request may retry after a bounded
+        # delay. Never apply this to an allocated/partial/uncertain operation.
+        unsubmitted = (receipt.get('native_not_submitted') is True
+                       and receipt.get('state') in ('refused', 'failed', 'unavailable')
+                       and not receipt.get('prepared') and not receipt.get('mines')
+                       and not receipt.get('detonated') and not receipt.get('placed'))
+        self.pending, self.next_at = None, now+(RETRY_S if unsubmitted else INTERVAL_S)
         # Receipt completion schedules exactly one follow-up demand. It does
         # not claim a mine exists, bypass automine, or command an escape input.
         if complete and plan.get('followup_mines') and now-plan['selected_at'] <= 10.:
